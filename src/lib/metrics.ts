@@ -55,7 +55,23 @@ export function incCounter(name: string, labels: MetricLabels = {}, value = 1, h
 
 export function setGauge(name: string, value: number, labels: MetricLabels = {}, help = ''): void {
   const key = labelKey(name, labels)
+  // #758 finding: a gauge carries a measurement, and a non-finite value is not
+  // one. `renderMetrics` would print `NaN`, which Prometheus stores as a sample
+  // and a dashboard draws as a number; treat it exactly like `clearGauge` so an
+  // unknown reading removes the series instead of publishing a value nobody
+  // measured. The guard sits here because the next caller will not know this
+  // story — `observeHistogram` already refuses a non-finite sample the same way.
+  if (!Number.isFinite(value)) {
+    gauges.delete(key)
+    return
+  }
   gauges.set(key, { name, help, labels, value })
+}
+
+// #758: a gauge whose value is unknown is removed rather than published as 0, so a
+// dashboard cannot read "no measurement" as "everything is fine".
+export function clearGauge(name: string, labels: MetricLabels = {}): void {
+  gauges.delete(labelKey(name, labels))
 }
 
 export function observeHistogram(name: string, value: number, labels: MetricLabels = {}, help = '', buckets = DEFAULT_BUCKETS): void {

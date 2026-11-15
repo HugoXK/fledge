@@ -120,6 +120,10 @@ tracked as `sessions.recent_auth_at`:
   came back and the action is submitted again.
 - Role checks still run first: a non-admin is refused with 403 before the
   recency check, and a fresh re-authentication does not grant a role.
+- The repository danger zone shows the requirement before the delete form: a
+  stale session gets a **Confirm with GitHub** link whose `next` returns to
+  `/repos/<id>#danger` with the refreshed notice. The stale POST refusal also
+  targets `#danger`, so the returning form is on screen instead of the page top.
 - The handlers that name `config.rateLimit` are rate-limited (60 attempts a
   minute per route and client address) through `@fastify/rate-limit`, registered
   with `global: false` so the ceiling is a property of those eight routes and
@@ -138,6 +142,35 @@ A burst from one account — a batch of approvals, or a script driving several
 destructive calls — can therefore answer 429 inside a minute, and that is the
 control working, not a defect: the request was refused before anything was
 written or audited, and it succeeds again once the window has passed.
+
+### Rate limiting of mutating routes
+
+#708 gives the browser-facing mutations a class and a budget instead of leaving
+each one unlimited:
+
+- **login**: 30 attempts a minute per route and client address — the window the
+  sign-in routes (`/auth/token`, `/auth/github`, the callback) already carried.
+- **destructive**: 60 a minute by default — privilege changes and policy writes.
+  This slice limits `POST /admin/users/:id/role` and `POST /repos/:id/rules`
+  this way.
+- **expensive**: 60 a minute by default — routes that start real work or spend a
+  host slot. This slice limits `POST /repos` (it provisions an instance) and
+  `POST /repos/:id/run`.
+
+The three budgets live in `src/lib/rateLimit.ts` as one `RouteLimiters`, keyed by
+`rateLimitKey` and prefixed with the route's own bucket, so two routes in the
+same class never share a counter. They come from config (`RATE_LIMIT_LOGIN_MAX`,
+`RATE_LIMIT_DESTRUCTIVE_MAX`, `RATE_LIMIT_EXPENSIVE_MAX` and each
+`_WINDOW_MS`), with the defaults above, so tightening a window is a deployment
+change rather than a source edit. A refused browser mutation answers the same
+bilingual `请求过多` / `Too many requests` page the sign-in routes return, never
+a bare status a form post cannot explain.
+
+The rest of the state-changing routes are **not yet classified**: they are
+neither limited nor exempted by a recorded decision, and #708 stays open for the
+classifying sweep, the ADR and the remaining privileged routes. A route added
+tomorrow inherits nothing from this section, and the eight `config.rateLimit`
+handlers above are unchanged by it — same window, same key.
 
 ### CSRF
 
@@ -360,13 +393,59 @@ per day. Test mail is rate-limited to one per minute.
   off by default; Fledge verifies the PR, checks and reviews before merging.
 - A preview account that connects no repository within 7 days of registration is
   rejected by the sweep (hourly in the job service, or by hand with
-  `npm run trial:sweep -- [--dry-run] [--login <login>]`). It writes one
-  `trial.expired` audit row and sends one bilingual notice, and it never deletes
-  an account or a repository. Anyone with a `repos` row or a `repo.added` audit,
-  anyone with a job, admins and the super admin are never selected. The status
-  change and its audit row commit together and the notice is sent afterwards, so
-  the audit row is the record and a rerun is a no-op; the operator output carries
-  the login and the registration date, never an address.
+  `npm run trial:sweep -- [--dry-run] [--purge-dry-run] [--login <login>]`). It
+  writes one `trial.expired` audit row and sends one bilingual notice. Anyone
+  with a `repos` row or a `repo.added` audit, anyone with a job, admins and the
+  super admin are never selected. The status change and its audit row commit
+  together and the notice is sent afterwards, so the audit row is the record and
+  a rerun is a no-op; the operator output carries the login and the registration
+  date, never an address.
+- **Account purge (owner option 2, #689).** In the same sweep, once a
+  `trial.expired` row is at least `TRIAL_PURGE_GRACE_HOURS` (default 72) old, the
+  account is erased: one transaction deletes every row that names it or one of
+  its repositories — including `sessions`, `api_tokens`, `repo_instances` and the
+  other repo-scoped tables the cascade reaches, plus the plain-column rows no
+  cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`) and
+  the six `settings` shapes that carry the account in the key or the value
+  (`quota_notified:`, `digest_sent:`, `email_test:`, `email_reply:`,
+  `github_app_state:`, `installation_sender:`). An account that gained a
+  repository, job, instance or GitHub installation is not erased: the run records
+  `trial.purge_skipped` with the blocking resource and its count. The spend
+  aggregate is computed **before** the rows go and kept as one bucket per
+  currency (priced rows) plus a count of unpriced rows, because `cost_usd` holds
+  the amount in the row's own currency and the per-row detail is cascaded away.
+  What survives is exactly one `trial.purged` audit row with `at`, `reason`,
+  `operator`, the row counts and that aggregate — no login, email, user id,
+  GitHub id, token or hash. Deleting the account's audit rows is deliberate: the
+  owner chose "as if the account never registered" plus a single non-PII
+  retention row, not a tombstone. Backups keep the account until their existing
+  retention window (local encrypted 30 days, GitHub 14) expires; erasing a backup
+  early is not part of this control. Every step is idempotent by user id, so a
+  failed run is retried by the next sweep with no deletion-state column. The
+  superadmin deletion in #691 calls the same `purgeUserRows(id)` transaction with
+  its own reason and operator.
+- **Superadmin account deletion (#691).** `GET /admin/users/:id/delete` is a
+  read-only preview: it counts the account's repositories, jobs (all, running and
+  queued), FlyBot instances, API tokens and GitHub installations and names the
+  backup window, and it writes no audit row. `POST /admin/users/:id/delete` is
+  superadmin-only, CSRF-guarded, rate-limited by `destructiveLimit` and
+  re-authenticated with `requireRecentAuth(..., 'admin.user.delete')`; it refuses
+  self-deletion, the last superadmin and a login that is not the exact GitHub
+  login (case included). The teardown order is deliberate: cancel the account's
+  jobs, stop and remove its instances, revoke its API tokens, then call
+  `purgeUserRows(id, { reason: 'admin.deleted', operator: 'superadmin', action:
+  'admin.user.deleted' })` — the same transaction the trial purge uses, with the
+  candidate query intentionally not used, so a used account can be erased. Every
+  step is idempotent (by job id, instance repo id, token id and user id), so a
+  failure is retried by submitting the same confirm again; the failure is
+  audited as `admin.user.delete_failed` with the step name only (never the
+  login, email, token or a path), the account stays visible, and the page is not
+  reported healthy. The retained row has the same non-PII shape as the trial
+  purge, including the per-currency spend aggregate. Backups keep the account
+  until their retention window ends; the preview says so and never claims a
+  backup was erased. Fledge deletes its own rows and its FlyBot instances and
+  deletes the GitHub installation row with the account; it does not call GitHub
+  to uninstall the App installation.
 
 ### Platform emergency stop
 
@@ -638,6 +717,11 @@ Upstream `api_key:` hashes from log messages. Request bodies are never logged.
 The development mail outbox is written with mode 0600 and contains approval links;
 treat it as a secret.
 
+The evolution export uses a read-only database handle and passes every exported
+string through the same `redact()` before serialisation. It reads only
+repositories an admin opted in through the audited consent command, so a
+repository that never consented is absent from the dataset and its holdout.
+
 ### Headers
 
 - `Content-Security-Policy` for HTML pages: self only, no inline scripts, images
@@ -659,6 +743,27 @@ treat it as a secret.
   path is not free to hammer.
 - The model gateway should be rate-limited at the reverse proxy per token if the
   platform is exposed to many users.
+
+### CI install scripts
+
+A dependency's lifecycle script runs arbitrary code on the runner before any of
+our code does, so installing dependencies is a supply-chain boundary, not
+housekeeping. The `lint` job installs with `npm ci --ignore-scripts`; lint does
+not need any postinstall output, and `--ignore-scripts` removes the execution
+path without changing the linter's exit code.
+
+`test/ciIgnoreScripts.test.ts` judges the job's own command: it reads the
+install step out of `.github/workflows/ci.yml`, runs it against a fixture whose
+dependency carries a harmless `postinstall` marker, and fails if the marker is
+written. Dropping the flag therefore fails the suite instead of silently
+restoring script execution.
+
+The remaining `npm ci` calls (`typecheck`, `test`, `coverage`, `build`, `audit`,
+`visual`, `release.yml` and both Docker stages) still run scripts and move one
+job at a time, each on its own measured run. A dependency that genuinely needs a
+script gets a narrow, documented exception — never a blanket re-enable.
+Playwright's browser install stays an explicit step
+(`npx playwright install --with-deps chromium`), so it is unaffected.
 
 ## Threat notes
 
@@ -733,3 +838,39 @@ at an entry outside the actor's audience is refused as if the entry were absent,
 before the revision fence, so a hidden key is not a write target or a revision
 oracle. The store refuses a write whose `expected_revision` is stale instead of
 overwriting the current body.
+
+## Security-finding ledger (`#379`)
+
+A job may report the security findings it saw in `evidence.findings`, and the
+repository keeps one row per finding id instead of treating every run as a
+fresh snapshot. The id is `rule + " " + path + ":" + line` (`js/path-injection
+src/app.ts:120`), the list is bounded to 100 entries per report, and an entry
+that breaks the contract (rule over 120 characters, path over 200, a line that
+is not a positive integer, an unknown state, a duplicate id) is dropped and
+counted rather than silently discarded. The block is explicit that these are
+**reported** ids: the ledger does not read GitHub's code-scanning alert store in
+this slice, so it is a memory of what jobs said, not a second alert source.
+
+A finding is `open` the first time a job reports it. Two states are decisions,
+and each one needs a written reason:
+
+- `dismissed` is set by a maintainer on the repository page, with a reason; a
+  dismissal with no reason is refused by the route and by the store, so it can
+  never be stored as a silent accept (or as `open`).
+- `fixed` is set by a maintainer with evidence (a commit, a link or a
+  measurement). A fix with no evidence is refused, and a `fixed` row whose
+  evidence is missing is shown as **unverified** instead of "verified fixed".
+
+The ledger fails closed in both directions. A finding that no later job reports
+is not evidence of a fix: absence never moves a row, so only an explicit,
+evidenced decision can close one. And a finding that comes back after a decision
+is `regressed` — the row keeps the dismissal reason or the fix evidence, the job
+page says `regressed (dismissed in job <id>)` when the decision rests on a
+dismissal, and the repository page lists it under `regressed` until someone
+decides again. The job page lists the findings whose last report was that job,
+which is why the line names the job rather than the full history.
+
+Scope of this slice: recording and displaying reported ids. Reading the ids from
+GitHub's alerts (or the SARIF the CI gate already parses) and reconciling the two
+sources is a later slice, as is blocking an automatic merge on a `regressed`
+finding.

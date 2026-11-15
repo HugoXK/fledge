@@ -202,6 +202,8 @@ export const ENQUEUE_REFUSAL_CODES = [
   'INSTANCE_NOT_READY',
   'JOB_LIMIT',
   'RUNNER_ERROR',
+  'RULES_UNAVAILABLE',
+  'RULES_INVALID',
 ] as const
 
 export type EnqueueRefusalCode = (typeof ENQUEUE_REFUSAL_CODES)[number]
@@ -255,6 +257,11 @@ export const REFUSAL_SENTENCES: Record<EnqueueRefusalCode, [string, string]> = {
   INSTANCE_NOT_READY: ['FlyBot 实例未就绪，任务无法启动。', 'The FlyBot instance is not ready, so the job could not start.'],
   JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
   RUNNER_ERROR: ['任务启动失败。', 'The job did not start.'],
+  // #538: the rule layer refuses before a job row exists, so the code travels
+  // on the redirect. `RULES_INVALID` carries the loader's message, which names
+  // the file that crossed the limit and the byte count the maintainer can act on.
+  RULES_UNAVAILABLE: ['无法读取这个仓库的规则或技能，任务没有开始。', "This repository's rules or skills could not be read, so the job did not start."],
+  RULES_INVALID: ['这个仓库的规则或技能不合法：{detail}。', 'The repository rules or skills are invalid: {detail}.'],
 }
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']

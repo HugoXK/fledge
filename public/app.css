@@ -549,6 +549,18 @@ p { margin: 0 0 12px; }
 .preview-banner form { margin: 0; }
 .banner.ok { background: rgba(103, 232, 199, 0.08); border-color: rgba(103, 232, 199, 0.35); }
 .banner.bad { background: rgba(255, 138, 138, 0.08); border-color: rgba(255, 138, 138, 0.35); }
+.banner.warn { background: rgba(240, 198, 116, 0.1); border-color: rgba(240, 198, 116, 0.32); }
+/* 472: one stack for every page message, ordered by severity where the message
+   is built. A dismissed message keeps its node and its announcement; `hidden`
+   is the only thing that changes, so nothing is cut off mid-read. */
+.banner-stack { margin: 0 0 16px; }
+.banner-stack .banner { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 8px; }
+.banner-stack .banner:last-child { margin-bottom: 0; }
+.banner-stack .banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.banner[hidden] { display: none; }
+.banner-dismiss { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-pill); background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.banner-dismiss:hover { color: var(--text); border-color: var(--line-strong); }
+.banner-dismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .memory-form select { min-height: var(--touch); }
 .memory-body { margin: 12px 0 4px; padding: 12px 14px; background: var(--surface-sunken); border: 1px solid var(--line); border-radius: var(--radius-md); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 13px; line-height: 1.6; }
 .memory-versions { margin: 8px 0 0; padding-left: 18px; font-size: 13px; color: var(--muted); }
@@ -631,6 +643,7 @@ label.check { min-height: var(--touch); }
 .setup-step.is-done .setup-main strong { color: var(--muted); font-weight: 600; }
 .setup-done { color: var(--good); font-size: 12px; }
 .setup-blocked { color: var(--muted-2); font-size: 12px; }
+.setup-warning { color: var(--warn); font-size: 12px; line-height: 1.5; }
 
 .form { display: grid; gap: 13px; }
 .form label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
@@ -1085,6 +1098,15 @@ a.list-row:hover strong { color: var(--accent); }
 .add-choice h3 { margin: 0 0 6px; font-size: 15px; }
 .add-manual { margin-top: 8px; border-top: 1px dashed var(--line); padding-top: 10px; }
 .add-manual summary { cursor: pointer; color: var(--muted-2); font-size: 13px; }
+
+.repos-head { align-items: center; gap: 12px; margin-bottom: 12px; }
+.repos-head h2 { margin: 0; }
+.add-repo-dialog { width: min(680px, calc(100vw - 32px)); max-height: min(80vh, 720px); overflow: auto; border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 22px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.add-repo-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
+.add-repo-dialog .dialog-head { position: sticky; top: 0; z-index: 1; align-items: center; background: var(--panel); padding-bottom: 8px; }
+.add-repo-dialog .dialog-head h2 { margin: 0; }
+body:has(.add-repo-dialog[open]) { overflow: hidden; }
+@media (max-width: 640px) { .add-repo-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 16px; } }
 
 .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: var(--muted-2); font: inherit; font-size: 12px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
 .info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--tip-ink); font-size: 12px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; display: none; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }

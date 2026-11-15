@@ -6,13 +6,14 @@ import { Jobs } from '../src/jobs/service.js'
 import { ENQUEUE_REFUSAL_CODES, REFUSAL_SENTENCES, failureBannerSentence } from '../src/lib/failure.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import type { InstanceManager } from '../src/flybot/instances.js'
-import { json, makeUser, MemoryMailer, formBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { flashCookie, flashOf, json, makeUser, MemoryMailer, formBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 const CJK = /[\u3400-\u9fff]/
 const LEAK = /ECONNREFUSED|127\.0\.0\.1|8080|HttpError|500/
 
 function banner(html: string): string {
-  return /<div class="banner bad" role="alert">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? ''
+  // #472: one stack renders every message, so the refusal is its text span.
+  return /<span class="banner-text">([\s\S]*?)<\/span><button/.exec(html)?.[1] ?? ''
 }
 
 function makeRepo(store: Store, userId: string) {
@@ -136,9 +137,12 @@ test('INSTANCE_NOT_READY hides the bridge host and port from the banner but keep
     })
     assert.equal(response.statusCode, 302)
     const location = String(response.headers.location)
-    assert.match(location, /error=INSTANCE_NOT_READY(?:%3A|:)/, `the redirect did not carry the refusal code: ${location}`)
+    const message = flashOf(response)?.error
+    assert.match(message?.text ?? '', /^INSTANCE_NOT_READY(?:%3A|:)/, `the redirect did not carry the refusal code: ${message?.text ?? location}`)
+    const flash = flashCookie(response)
+    assert.ok(flash, 'the refusal must travel in the flash cookie')
 
-    const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+    const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: `${session.cookie}; ${flash}`, 'accept-language': 'en' } })
     assert.equal(page.statusCode, 200)
     const text = banner(page.body)
     assert.match(text, /FlyBot instance is not ready/i, `the banner lost the fixed sentence: ${text}`)
@@ -198,9 +202,12 @@ test('PREFLIGHT_FAILED hides the upstream error class and status from the banner
       })
       assert.equal(response.statusCode, 302)
       const location = String(response.headers.location)
-      assert.match(location, /error=PREFLIGHT_FAILED(?:%3A|:)/, `the redirect did not carry the refusal code: ${location}`)
+      const message = flashOf(response)?.error
+      assert.match(message?.text ?? '', /^PREFLIGHT_FAILED(?:%3A|:)/, `the redirect did not carry the refusal code: ${message?.text ?? location}`)
+      const flash = flashCookie(response)
+      assert.ok(flash, 'the refusal must travel in the flash cookie')
 
-      const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+      const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: `${session.cookie}; ${flash}`, 'accept-language': 'en' } })
       assert.equal(page.statusCode, 200)
       const text = banner(page.body)
       assert.match(text, /preflight check failed/i, `the banner lost the fixed sentence: ${text}`)

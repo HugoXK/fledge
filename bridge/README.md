@@ -40,6 +40,23 @@ loopback only; keep it that way.
 
 ## Contract
 
+Every path except `/healthz` needs `Authorization: Bearer $BRIDGE_TOKEN`, and the
+listener stays on loopback. `test/bridgeContract.test.ts` pins this table against
+the real file.
+
+| Request | Status | Body |
+|---|---|---|
+| `GET /healthz` | `200` | `{ok, service:'fledge-flybot-bridge', modelProxy}` |
+| `POST /run`, accepted | `202` | `{ok:true, accepted:true}` |
+| `POST /run`, `POST /dsh`, `POST /job-done`, malformed JSON | `400` | `{error:'invalid JSON'}` |
+| `POST /run`, a required field missing | `400` | `{error:'jobId, credentialUrl and callbackUrl are required'}` |
+| `POST /dsh`, no `endpoint` | `400` | `{error:'endpoint required'}` |
+| any path without the token | `401` | `{error:'unauthorized'}` |
+| an unknown path, or a method other than `POST` | `404` | `{error:'not found'}` |
+| a body over `MAX_PROMPT_BYTES` | `413` | `{error:'body too large'}` |
+| a DSH send or `/dsh` call that fails | `502` | `{error}` for `/dsh`; `/run` adds the redacted `detail` |
+| `POST /job-done` | `200` | `{ok:true}`, and it clears the per-job model token |
+
 `POST /run` with `Authorization: Bearer $BRIDGE_TOKEN`:
 
 ```json
@@ -56,6 +73,9 @@ loopback only; keep it that way.
   "goal": "Fix one reproducible bug and open a PR.",
   "callbackUrl": "https://fledge.example/api/jobs/job_abc/callback",
   "callbackSecret": "…",
+  "rulesText": "## .fledge/rules.md\n…",
+  "skills": [{ "name": "release-notes", "path": ".agents/skills/release-notes/SKILL.md", "description": "Release notes", "bytes": 812 }],
+  "contextUrl": "https://fledge.example/api/jobs/job_abc/context",
   "credentialUrl": "https://fledge.example/api/jobs/job_abc/credential",
   "credentialSecret": "…",
   "platform": {
@@ -111,6 +131,16 @@ The agent prompt includes:
    a `followUps` array for each Fledge PR that needs a same-branch fix;
 8. POST the result to `callbackUrl` with
    `{status, branch, prUrl, issueUrl, reviewScore, summary, error}`.
+
+A repository can also carry its own rule and skill files. When it does, the
+payload adds `rulesText` (the effective `.fledge/*` text for the job's fixed
+commit, at most 16000 bytes), a `skills` index and a `contextUrl`. The index is a list,
+not the text: the agent reads one skill with `GET contextUrl?path=<path>` and its
+`callbackSecret`, and only while the job is queued or running. Rules and skills
+are repository content, not configuration — they cannot add tools, permissions,
+stages or authority, and Fledge never executes them. The body is capped at 32 KiB
+per file and 256 KiB for the set; a set whose rule text does not fit the 16000-byte
+prompt budget refuses the job instead of being truncated.
 
 The callback answers:
 

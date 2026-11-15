@@ -230,6 +230,19 @@ function buildText(job) {
     '',
     'Rules:',
     ...rules,
+    ...(typeof job.rulesText === 'string' && job.rulesText !== ''
+      ? ['', 'Repository rules (default branch, fixed commit):', job.rulesText]
+      : []),
+    ...(Array.isArray(job.skills) && job.skills.length > 0
+      ? [
+          '',
+          'Repository skills (index only; read a skill on demand):',
+          ...job.skills.map((skill) => `- ${skill.name}: ${skill.description} (${skill.path}, ${skill.bytes} bytes)`),
+          ...(typeof job.contextUrl === 'string' && job.contextUrl !== ''
+            ? [`Read one with GET ${job.contextUrl}?path=<skill path> and "Authorization: Bearer ${job.callbackSecret}".`]
+            : []),
+        ]
+      : []),
     '- Do not print the GitHub token or the job token.',
     '- Do not merge; Fledge handles maintainer-enabled auto-merge. Never force-push.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',
@@ -268,21 +281,46 @@ function authorized(request) {
   return String(request.headers.authorization ?? '') === `Bearer ${TOKEN}`
 }
 
+// #391: an oversized body destroyed the socket before any response, so the
+// caller saw a reset connection (or a 400 from the parse branch) instead of a
+// size refusal, while the model proxy below already answered 413. The error is
+// named so each handler can answer 413 and keep 400 for malformed JSON.
+class BodyTooLarge extends Error {
+  constructor() {
+    super('body too large')
+    this.name = 'BodyTooLarge'
+  }
+}
+
+function bodyRefusal(response, error) {
+  if (error instanceof BodyTooLarge) return json(response, 413, { error: 'body too large' })
+  return json(response, 400, { error: 'invalid JSON' })
+}
+
 function readBody(request, limit) {
   return new Promise((resolve, reject) => {
     const chunks = []
     let size = 0
+    let oversized = false
     request.on('data', (chunk) => {
+      if (oversized) return
       size += chunk.length
       if (size > limit) {
-        reject(new Error('body too large'))
-        request.destroy()
+        oversized = true
+        chunks.length = 0
+        reject(new BodyTooLarge())
+        // Keep draining instead of destroying: the 413 is written on this
+        // socket, and a destroy here is what made the refusal unreadable.
         return
       }
       chunks.push(chunk)
     })
-    request.on('end', () => resolve(Buffer.concat(chunks)))
-    request.on('error', reject)
+    request.on('end', () => {
+      if (!oversized) resolve(Buffer.concat(chunks))
+    })
+    request.on('error', (error) => {
+      if (!oversized) reject(error)
+    })
   })
 }
 
@@ -296,8 +334,8 @@ const server = http.createServer(async (request, response) => {
     let body
     try {
       body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
-    } catch {
-      return json(response, 400, { error: 'invalid JSON' })
+    } catch (error) {
+      return bodyRefusal(response, error)
     }
     if (typeof body.endpoint !== 'string') return json(response, 400, { error: 'endpoint required' })
     try {
@@ -312,8 +350,8 @@ const server = http.createServer(async (request, response) => {
     let body
     try {
       body = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
-    } catch {
-      return json(response, 400, { error: 'invalid JSON' })
+    } catch (error) {
+      return bodyRefusal(response, error)
     }
     if (typeof body.jobId === 'string' && activeJobId !== '' && body.jobId !== activeJobId) {
       return json(response, 200, { ok: true, ignored: true })
@@ -328,8 +366,8 @@ const server = http.createServer(async (request, response) => {
   let job
   try {
     job = JSON.parse((await readBody(request, MAX_PROMPT)).toString('utf8'))
-  } catch {
-    return json(response, 400, { error: 'invalid JSON' })
+  } catch (error) {
+    return bodyRefusal(response, error)
   }
   if (typeof job.jobId !== 'string' || typeof job.credentialUrl !== 'string' || typeof job.callbackUrl !== 'string') {
     return json(response, 400, { error: 'jobId, credentialUrl and callbackUrl are required' })

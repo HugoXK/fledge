@@ -347,7 +347,9 @@ test('the surface this branch adds is declared, and the workflow runs no other r
 test('release.yml is not folded into this change and knows nothing about the tag write', () => {
   assert.equal(/git\/tags/.test(release), false)
   assert.equal(/git\/refs/.test(release), false)
-  assert.match(release, /Verify the tag is an ancestor of main/)
+  // #648 renamed this step and added the provenance read beside the ancestor
+  // check; the write stays in the tag job, so the two prohibitions above hold.
+  assert.match(release, /- name: Verify the tag's provenance/)
 })
 
 test('an added test or script is held to the release lists only on a release branch', () => {

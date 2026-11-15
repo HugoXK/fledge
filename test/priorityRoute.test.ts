@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { buildApp, type BuiltApp } from '../src/app.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #639: the page posts a level, a reason and evidence to one route, and the
 // refusal reaches the page as text in the request's locale. The service owns
@@ -55,7 +55,7 @@ async function fixture(tag: string, priority = 10): Promise<Fixture> {
   return { built, store, user, repoId: repo.id, jobId: job.id, close: async () => { await built.close() } }
 }
 
-async function post(f: Fixture, locale: 'zh' | 'en', payload: Record<string, string>): Promise<{ statusCode: number; location: string }> {
+async function post(f: Fixture, locale: 'zh' | 'en', payload: Record<string, string>): Promise<{ statusCode: number; location: string; flash: ReturnType<typeof flashOf> }> {
   const session = sessionFor(f.built, f.user)
   const response = await f.built.app.inject({
     method: 'POST',
@@ -63,11 +63,7 @@ async function post(f: Fixture, locale: 'zh' | 'en', payload: Record<string, str
     headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `${session.cookie}; fledge_lang=${locale}` },
     payload: formBody({ csrf: session.csrf, ...payload }),
   })
-  return { statusCode: response.statusCode, location: String(response.headers.location ?? '') }
-}
-
-function decoded(location: string): string {
-  return decodeURIComponent(location)
+  return { statusCode: response.statusCode, location: String(response.headers.location ?? ''), flash: flashOf(response) }
 }
 
 test('a P1 claim without evidence is refused in English when the request is English', async () => {
@@ -76,9 +72,9 @@ test('a P1 claim without evidence is refused in English when the request is Engl
     const before = f.store.getJob(f.jobId)!
     const response = await post(f, 'en', { level: 'P1', reason: 'this is urgent', evidence: 'critical' })
     assert.equal(response.statusCode, 302)
-    assert.match(decoded(response.location), /error=/)
-    assert.match(decoded(response.location), /checkable evidence/)
-    assert.doesNotMatch(decoded(response.location), /可核对的证据/, 'the English page does not carry the Chinese sentence')
+    assert.ok(response.flash?.error)
+    assert.match(response.flash?.error?.text ?? '', /checkable evidence/)
+    assert.doesNotMatch(response.flash?.error?.text ?? '', /可核对的证据/, 'the English page does not carry the Chinese sentence')
     const after = f.store.getJob(f.jobId)!
     assert.equal(after.priority, before.priority)
     assert.equal(after.queue_seq, before.queue_seq)
@@ -92,8 +88,8 @@ test('the same refusal is Chinese when the request is Chinese', async () => {
   try {
     const response = await post(f, 'zh', { level: 'P1', reason: '这是紧急的', evidence: '非常紧急' })
     assert.equal(response.statusCode, 302)
-    assert.match(decoded(response.location), /可核对的证据/)
-    assert.doesNotMatch(decoded(response.location), /checkable evidence/)
+    assert.match(response.flash?.error?.text ?? '', /可核对的证据/)
+    assert.doesNotMatch(response.flash?.error?.text ?? '', /checkable evidence/)
   } finally {
     await f.close()
   }
@@ -108,8 +104,8 @@ test('a P0 claim with a reason and evidence moves the job and answers in the req
       evidence: 'https://github.com/o/r/actions/runs/123',
     })
     assert.equal(response.statusCode, 302)
-    assert.match(decoded(response.location), /notice=/)
-    assert.match(decoded(response.location), /Priority is now P0/)
+    assert.ok(response.flash?.notice)
+    assert.match(response.flash?.notice?.text ?? '', /Priority is now P0/)
     assert.equal(f.store.getJob(f.jobId)!.priority, 30)
     assert.equal(f.store.listAudit(50).some((entry) => entry.action === 'job.priority_changed'), true)
   } finally {
@@ -123,7 +119,7 @@ test('an unknown level is refused by name, not by falling back to a default', as
     const before = f.store.getJob(f.jobId)!
     const response = await post(f, 'en', { level: 'P9', reason: 'x'.repeat(20), evidence: 'https://example.com/1' })
     assert.equal(response.statusCode, 302)
-    assert.match(decoded(response.location), /code=PRIORITY_LEVEL_INVALID/)
+    assert.match(response.flash?.error?.key ?? '', /^PRIORITY_LEVEL_INVALID:/)
     assert.equal(f.store.getJob(f.jobId)!.priority, before.priority)
   } finally {
     await f.close()

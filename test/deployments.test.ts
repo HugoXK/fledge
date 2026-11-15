@@ -8,7 +8,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { assessDeploymentDrift, evaluateCanaryGate, latestReleaseFromStatus } from '../src/lib/deployments.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 const A = 'a'.repeat(40)
 const B = 'b'.repeat(40)
@@ -205,9 +205,9 @@ test('the promotion form carries both thresholds, so a typed number cannot pass 
       payload: formBody({ csrf: session.csrf, ...before }),
     })
     assert.equal(probe.statusCode, 302)
-    const location = decodeURIComponent(String(probe.headers.location))
-    assert.match(location, /error=/)
-    assert.match(location, /threshold/i)
+    const flash = flashOf(probe)?.error
+    assert.ok(flash, 'the refusal must travel in the flash cookie')
+    assert.match(flash.text, /threshold/i)
     assert.equal(store.listDeployments('production').length, 0, 'a window with no threshold must not create a deployment record')
   } finally {
     await built.close()
@@ -230,7 +230,7 @@ test('a failed canary smoke job blocks the promotion record', async () => {
       payload: formBody({ csrf: session.csrf, ...promotionBody({ smoke_ok: '0' }) }),
     })
     assert.equal(blocked.statusCode, 302)
-    assert.match(String(blocked.headers.location), /error=/)
+    assert.ok(flashOf(blocked)?.error, 'a failed gate must travel as a flash error')
     assert.equal(store.listDeployments('production').length, 0, 'a failed gate must not create a deployment record')
 
     const promoted = await built.app.inject({
@@ -240,7 +240,7 @@ test('a failed canary smoke job blocks the promotion record', async () => {
       payload: formBody({ csrf: session.csrf, ...promotionBody() }),
     })
     assert.equal(promoted.statusCode, 302)
-    assert.match(String(promoted.headers.location), /notice=/)
+    assert.ok(flashOf(promoted)?.notice, 'the success must travel as a flash notice')
     const rows = store.listDeployments('production')
     assert.equal(rows.length, 1)
     assert.equal(rows[0]?.version, '0.3.2')
@@ -292,7 +292,7 @@ test('a rollback plan names the previous digest and commit, and records a verifi
       payload: formBody({ csrf: session.csrf, ...rollbackBody({ previous_digest: `sha256:${'9'.repeat(64)}` }) }),
     })
     assert.equal(missing.statusCode, 302)
-    assert.match(String(missing.headers.location), /error=/)
+    assert.ok(flashOf(missing)?.error, 'the missing digest must travel as a flash error')
     assert.equal(store.listDeploymentRollbacks('production').length, 0)
 
     const recorded = await built.app.inject({
@@ -302,7 +302,7 @@ test('a rollback plan names the previous digest and commit, and records a verifi
       payload: formBody({ csrf: session.csrf, ...rollbackBody() }),
     })
     assert.equal(recorded.statusCode, 302)
-    assert.match(String(recorded.headers.location), /notice=/)
+    assert.ok(flashOf(recorded)?.notice, 'the recorded rollback must travel as a flash notice')
     const plans = store.listDeploymentRollbacks('production')
     assert.equal(plans.length, 1)
     assert.equal(plans[0]?.previous_digest, DIGEST_OLD)
@@ -566,20 +566,20 @@ test('a status field with no readable HTTP code is refused instead of recorded a
 
     const healthzTypo = await post('/admin/deployments/promote', promotionBody({ healthz_status: 'not-a-number' }))
     assert.equal(healthzTypo.statusCode, 302)
-    assert.match(String(healthzTypo.headers.location), /error=/, 'the typo is refused by name')
+    assert.ok(flashOf(healthzTypo)?.error, 'the typo is refused by name')
     assert.equal(store.listDeployments(null).length, 0, 'no deployment is recorded from an unmeasured /healthz status')
 
     const readyzTypo = await post('/admin/deployments/promote', promotionBody({ readyz_status: 'nope' }))
-    assert.match(String(readyzTypo.headers.location), /error=/)
+    assert.ok(flashOf(readyzTypo)?.error)
     assert.equal(store.listDeployments(null).length, 0)
 
     const outOfRange = await post('/admin/deployments/promote', promotionBody({ healthz_status: '9999' }))
-    assert.match(String(outOfRange.headers.location), /error=/, 'a number outside 100-599 is not an HTTP status either')
+    assert.ok(flashOf(outOfRange)?.error, 'a number outside 100-599 is not an HTTP status either')
     assert.equal(store.listDeployments(null).length, 0)
 
     const measured = await post('/admin/deployments/promote', promotionBody({ healthz_status: '201' }))
     assert.equal(measured.statusCode, 302)
-    assert.match(String(measured.headers.location), /notice=/, 'a real status is still accepted')
+    assert.ok(flashOf(measured)?.notice, 'a real status is still accepted')
     assert.equal(store.listDeployments('production')[0]?.healthz_status, 201, 'a measured status is kept exactly')
 
     const rollbackTypo = await post('/admin/deployments/rollback', rollbackBody({
@@ -588,7 +588,7 @@ test('a status field with no readable HTTP code is refused instead of recorded a
       healthz_commit: C,
       healthz_status: 'nope',
     }))
-    assert.match(String(rollbackTypo.headers.location), /error=/)
+    assert.ok(flashOf(rollbackTypo)?.error)
     assert.equal(store.listDeploymentRollbacks(null).length, 0, 'the rollback form refuses it too')
   } finally {
     await built.close()

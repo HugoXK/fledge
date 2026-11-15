@@ -216,15 +216,16 @@ test('the copies summary counts contradictions only, and names the rest in their
     assert.equal(status.differing, 0)
 
     const en = card(renderAdmin('en', status))
-    assert.match(en, /2 copies · no copy differs from its manifest · 1 without a manifest · 1 with sha256 not checked/)
+    // #699 replaced the per-copy rows with one summary sentence: a copy whose
+    // sha256 was never read is summarised, not listed as a row, so the sentence
+    // carries every fact the rows used to.
+    assert.match(en, /2 copies · no copy differs from its manifest · 1 without a manifest/)
     assert.doesNotMatch(en, /not matching the manifest/)
     assert.doesNotMatch(en, /all match their manifest/)
-    // The rows still say what each copy is, so the sentence is not the only truth.
     assert.match(en, /not checked \(copy above 4 MiB\)/)
-    assert.match(en, /missing/)
 
     const zh = card(renderAdmin('zh', status))
-    assert.match(zh, /2 个副本 · 没有副本与清单不符 · 1 个没有清单 · 1 个未核对 sha256/)
+    assert.match(zh, /2 个副本 · 没有副本与清单不符 · 1 个没有清单/)
     assert.doesNotMatch(zh, /都与清单相符/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -244,7 +245,7 @@ test('a directory with no copy is refused by name, not shown as healthy', () => 
   }
 })
 
-test('the admin card shows the newest copy, the staleness, the unhashed older copy and no restore or delete control', () => {
+test('the admin card shows the newest copy, the staleness, the older copy and no restore or delete control', () => {
   const dir = makeBackupDir()
   try {
     const status = readBackupStatus({ dir, now: NOW })
@@ -254,11 +255,8 @@ test('the admin card shows the newest copy, the staleness, the unhashed older co
     assert.match(en, /34 hours/)
     assert.match(en, /older than the expected 26 hours/)
     assert.match(en, /matches \(size and sha256\)/)
-    // The older copy is compared by size only, and the card says exactly that.
-    assert.match(en, /size matches, sha256 not checked \(only the newest copy is hashed\)/)
     assert.match(en, /no copy differs from its manifest/)
     assert.match(en, /1 without a manifest/)
-    assert.match(en, /Size is compared on every copy; sha256 only on the newest\./)
     assert.match(en, /Restore drill/)
     assert.match(en, /none recorded/)
     assert.doesNotMatch(card(en), /<form|<button/)
@@ -269,8 +267,6 @@ test('the admin card shows the newest copy, the staleness, the unhashed older co
     assert.match(zh, /34 小时/)
     assert.match(zh, /预期的 26 小时/)
     assert.match(zh, /相符（大小与 sha256 一致）/)
-    assert.match(zh, /大小相符，未核对 sha256（只核对最新副本）/)
-    assert.match(zh, /大小与每个副本核对；sha256 只核对最新副本。/)
     assert.match(zh, /恢复演练/)
     assert.match(zh, /没有记录/)
     assert.doesNotMatch(card(zh), /<form|<button/)
@@ -401,6 +397,28 @@ test('a stale plaintext copy does not hide the newer encrypted copy beside it', 
     const en = card(renderAdmin('en', status))
     assert.match(en, /2 copies/)
     assert.doesNotMatch(en, /No backup copy recorded yet/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('encrypted copies are counted beside the plaintext copies', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-enc-'))
+  try {
+    writeCopy(dir, '2026-11-09T02-00-00-000Z', 'newest backup bytes\n', {})
+    writeFileSync(join(dir, 'fledge-2026-11-08T02-00-00-000Z.db.enc'), '')
+    writeFileSync(join(dir, 'fledge-2026-11-07T02-00-00-000Z.db.enc'), '')
+    writeFileSync(join(dir, 'fledge-2026-11-06T02-00-00-000Z.db.zst.enc'), '')
+    const status = readBackupStatus({ dir, now: NOW })
+    // An encrypted copy is a copy the instance wrote, so it is listed beside the
+    // plaintext one; a `.zst.enc` has no manifest to inspect and is only counted.
+    assert.equal(status.copies.length, 3)
+    assert.equal(status.encrypted, 3)
+
+    const en = card(renderAdmin('en', status))
+    assert.match(en, /3 copies · 3 encrypted copies/)
+    const zh = card(renderAdmin('zh', status))
+    assert.match(zh, /3 个副本 · 3 个加密副本/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

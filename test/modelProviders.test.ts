@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { formBody, json, makeUser, MemoryMailer, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, json, makeUser, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 test('a provider model is only saved after Fledge tests the connection', async () => {
   const modelServer = await startFakeServer(async (request, response) => {
@@ -30,7 +30,7 @@ test('a provider model is only saved after Fledge tests the connection', async (
     assert.equal(store.listProviderModels(provider.id).length, 1)
     const bad = await built.app.inject({ method: 'POST', url: `/settings/providers/${provider.id}/models`, headers, payload: formBody({ csrf, model: 'bad-model', label: 'Bad' }) })
     assert.equal(bad.statusCode, 302)
-    assert.match(String(bad.headers.location), /error=/)
+    assert.ok(flashOf(bad)?.error)
     assert.equal(store.listProviderModels(provider.id).length, 1)
   } finally {
     await built.close()
@@ -125,7 +125,7 @@ test('editing a provider refuses to save when an existing model fails the new te
     assert.equal(store.listProviderModels(provider.id).length, 1)
     const update = await built.app.inject({ method: 'POST', url: `/settings/providers/${provider.id}/update`, headers, payload: formBody({ csrf, label: 'Editable', baseUrl: `${badServer.url}/v1` }) })
     assert.equal(update.statusCode, 302)
-    assert.match(String(update.headers.location), /error=/)
+    assert.ok(flashOf(update)?.error)
     assert.equal(store.listModelProviders(user.id)[0]?.base_url, `${goodServer.url}/v1`)
   } finally {
     await built.close()

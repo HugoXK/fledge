@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
-import type { JobRow, RepoRow, Store, UserRow } from '../db.js'
+import type { JobRow, RepoRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
@@ -13,11 +13,12 @@ import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
+import { applyReport, findingId, type FindingState } from '../lib/securityFindings.js'
 import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type FailureCode } from '../lib/failure.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
-import { instanceReadyFor, nextRunFor, type NextRunForAnswer } from '../lib/nextRunFor.js'
 import { jobEmailDecision } from '../lib/emailPolicy.js'
+import { nextRunFor, type NextRunFor } from '../lib/nextRunFor.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
@@ -46,15 +47,29 @@ import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader } from './continuity.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
 import { repoGithubToken, ReadOnlyTokenUnavailable, triageReadOnlyToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
+import { isRuleChange, loadRepoRules, RulesError, type RepoRules } from '../rules.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
+
+// #732: the platform pays only when the job has no own model to use. A
+// repository selection is an own model too: the bridge patches the instance from
+// `listRepoModelSelection` and the gateway resolves the same row, so checking
+// only the legacy users.own_llm_* columns refused a job that would never spend
+// platform quota.
+function platformFundedFor(user: UserRow, store: Store, repoId: string): boolean {
+  const legacyOwnModel =
+    user.own_llm_base_url !== null &&
+    user.own_llm_base_url !== '' &&
+    user.own_llm_key_enc !== null
+  return !legacyOwnModel && store.listRepoModelSelection(repoId).length === 0
+}
 
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
@@ -271,6 +286,9 @@ export class Jobs {
   // `adversarialPass`. Null means "use the configured platform model, or skip
   // the pass when there is none".
   adversarialModel: AdversarialModel | null = null
+  // Tests inject a fake; production reads the repository's live state through
+  // `carryOverReader`. Null means "use the GitHub-backed reader".
+  carryOverReaderOverride: ((repo: RepoRow) => CarryOverReader) | null = null
 
   constructor(
     private readonly store: Store,
@@ -770,6 +788,55 @@ export class Jobs {
     return [...due].sort()
   }
 
+  private rulesCache = new Map<string, { at: number; rules: RepoRules }>()
+
+  private async loadRules(
+    repo: RepoRow,
+    baseBranch: string,
+    preflightSha: string | null,
+  ): Promise<{ ok: true; rules: RepoRules } | { ok: false; error: string; code: 'RULES_UNAVAILABLE' | 'RULES_INVALID'; detail?: string }> {
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    try {
+      const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+      const client = new GithubClient(token, this.config.github.apiBase)
+      let commit = preflightSha
+      if (commit === null) {
+        const branch = await client.getBranch(owner, name, baseBranch)
+        commit = branch?.sha ?? null
+      }
+      if (commit === null) {
+        return { ok: false, error: '无法确定仓库的基准提交，暂时不能读取仓库规则。', code: 'RULES_UNAVAILABLE' }
+      }
+      const overrides = this.store.listRepoRuleOverrides(repo.id).map((row) => ({ path: row.path, content: row.content, revision: row.revision }))
+      const key = `${repo.id}:${commit}:${overrides.map((override) => `${override.path}@${override.revision}`).join('|')}`
+      const cached = this.rulesCache.get(key)
+      if (cached !== undefined && Date.now() - cached.at < 5 * 60_000) {
+        return { ok: true, rules: cached.rules }
+      }
+      const rules = await loadRepoRules(client, owner, name, commit, overrides)
+      if (this.rulesCache.size > 100) this.rulesCache.clear()
+      this.rulesCache.set(key, { at: Date.now(), rules })
+      return { ok: true, rules }
+    } catch (error) {
+      if (error instanceof RulesError) {
+        return {
+          ok: false,
+          error: error.message,
+          code: error.code === 'rules_invalid' ? 'RULES_INVALID' : 'RULES_UNAVAILABLE',
+          // The banner reads `{detail}`, so an invalid set has to carry the
+          // message: it names the file that crossed the limit and the byte count.
+          detail: error.message,
+        }
+      }
+      return {
+        ok: false,
+        error: `读取仓库规则失败：${error instanceof Error ? error.message : String(error)}`,
+        code: 'RULES_UNAVAILABLE',
+      }
+    }
+  }
+
   private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
     // Only the FlyBot runner reads the upstream repository; the sibling
     // `preflight` has the same guard at its first line. Without it a deployment
@@ -902,6 +969,31 @@ export class Jobs {
     return options.ownerStarted ?? trigger === 'manual'
   }
 
+  // #365: the carry-over block may only carry work that is still live, and the
+  // read that proves it uses the same installation token the rest of the job
+  // uses. The client is built on the first read, so a block that names no link
+  // costs no token call, and a failure is per line: the reader throws, the line
+  // stays and is counted unverified rather than dropped on a failed read.
+  private carryOverReader(repo: RepoRow): CarryOverReader {
+    let client: GithubClient | null = null
+    return {
+      read: async (link: string) => {
+        const ref = parseCarryOverLink(link)
+        if (ref === null) throw new Error('carry-over link is not a GitHub issue or pull request')
+        if (client === null) {
+          const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+          client = new GithubClient(token, this.config.github.apiBase)
+        }
+        const active = client
+        if (ref.kind === 'issue') {
+          return (await active.issueIsClosed(ref.owner, ref.name, ref.number)) ? 'closed' : 'open'
+        }
+        const pull = await active.getPullRequest(ref.owner, ref.name, ref.number)
+        return pull.merged ? 'merged' : 'open'
+      },
+    }
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
@@ -987,8 +1079,15 @@ export class Jobs {
     }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'triage' ? DEFAULT_TRIAGE_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
+    // #365: a scheduled or follow-up run may only carry what is still live, so
+    // the block is built with one live read per linked line. Nothing about the
+    // block changes when a line names no issue or PR.
     const carryOver = trigger === 'schedule' || trigger === 'followup'
-      ? buildCarryOver({ recent: this.store.listJobsForRepo(repo.id, 3), openWork: this.store.listOpenWorkItems(repo.id) })
+      ? (await buildCarryOver({
+        recent: this.store.listJobsForRepo(repo.id, 3),
+        openWork: this.store.listOpenWorkItems(repo.id),
+        read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
+      })).text
       : ''
     const goal = ((preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`)
       + (carryOver === '' ? '' : `\n\n${carryOver}`)).slice(0, 4000)
@@ -996,7 +1095,7 @@ export class Jobs {
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
-    const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
+    const platformFunded = platformFundedFor(user, this.store, repo.id)
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, workType: workType.type, ownerStarted: this.ownerStartedFor(trigger, options) })
@@ -1045,11 +1144,23 @@ export class Jobs {
       }
     }
 
+    // Every refusal that needs no network comes first: the instance
+    // precondition (`INSTANCE_NOT_READY`), the busy queue (`JOB_ACTIVE`) and the
+    // platform limit (`JOB_LIMIT`). Only an enqueue that can create a job reads
+    // the rule layer, so an unreadable or oversized rule set cannot mask a busy
+    // or full queue with `RULES_INVALID`/`RULES_UNAVAILABLE`.
     if (this.store.activeJobForRepo(repo.id) !== undefined) {
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
     }
     if (!this.config.runner.queueDispatch && this.store.countActiveJobs() >= this.config.runner.maxActiveJobs) {
       return { ok: false, error: `平台当前已有 ${this.config.runner.maxActiveJobs} 个任务在运行，请稍后再试。`, code: 'JOB_LIMIT', detail: String(this.config.runner.maxActiveJobs) }
+    }
+
+    let rules: RepoRules | undefined
+    if (this.runner.name === 'flybot') {
+      const loaded = await this.loadRules(repo, baseBranch, preflightSha)
+      if (!loaded.ok) return { ok: false, error: loaded.error, code: loaded.code, detail: loaded.detail }
+      rules = loaded.rules
     }
 
     const platformToken = `flg_${randomToken(32)}`
@@ -1080,6 +1191,29 @@ export class Jobs {
       throw error
     }
     if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
+    if (rules !== undefined) {
+      this.store.saveJobContext({
+        jobId: job.id,
+        repoId: repo.id,
+        commitSha: rules.commit,
+        rulesJson: JSON.stringify({
+          owner: rules.owner,
+          name: rules.name,
+          commit: rules.commit,
+          hash: rules.hash,
+          effective: rules.effective,
+          layers: rules.layers,
+          files: rules.files.map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes, layer: file.layer })),
+          skills: rules.skills.map((skill) => ({ name: skill.name, path: skill.path, description: skill.description, sha256: skill.sha256, bytes: skill.bytes })),
+        }),
+        manifestJson: JSON.stringify([
+          ...rules.files.map((file) => ({ path: file.path, kind: 'rule', sha256: file.sha256, bytes: file.bytes })),
+          ...rules.skills.map((skill) => ({ path: skill.path, kind: 'skill', sha256: skill.sha256, bytes: skill.bytes })),
+        ]),
+        files: [...rules.files, ...rules.skills].map((file) => ({ path: file.path, sha256: file.sha256, bytes: file.bytes, content: file.content })),
+      })
+      this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.rules', step: kind, meta: `${rules.commit} ${rules.hash}`.slice(0, 200) })
+    }
     if (options.workItemId !== undefined) {
       this.store.updateWorkItem(options.workItemId, { state: 'in_progress', job_id: job.id, assignee_user_id: user.id })
     }
@@ -1158,6 +1292,7 @@ export class Jobs {
         credential: { url: `${this.config.baseUrl}/api/jobs/${job.id}/credential`, secret: callbackSecret },
         platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
         ...(flybot === undefined ? {} : { flybot }),
+        ...(rules === undefined ? {} : { rules }),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {
@@ -1259,6 +1394,25 @@ export class Jobs {
       finished_at: nowIso(),
     })
     if (!claimed) return false
+    // #379: the finding ledger is written inside the guarded transition, so a
+    // replayed callback never reaches this line and the counts it produces are
+    // the ones the ledger stored. The transition has already committed, so a
+    // failed ledger write (a locked file, a constraint the report trips) must
+    // not fail the callback, hold the lease or lose the job result: the rows
+    // roll back to what they were, which can never make a finding read as
+    // fixed, and the failure gets a durable row so it cannot vanish.
+    if (evidence !== null) {
+      try {
+        this.recordSecurityFindings(job, evidence)
+      } catch (error) {
+        log.warn('security finding ledger write failed', { trace: jobId, error: String(error) })
+        try {
+          this.store.audit(job.user_id, 'security_finding.write_failed', `${job.id}: ${String(error)}`.slice(0, 600))
+        } catch (auditError) {
+          log.warn('security finding ledger failure could not be audited', { trace: jobId, error: String(auditError) })
+        }
+      }
+    }
     this.store.releaseJobLease(jobId)
     this.clearLeaseHeartbeat(jobId)
     incCounter('fledge_jobs_total', { status: result.status, kind: job.kind }, 1, 'Jobs by terminal status')
@@ -1346,6 +1500,49 @@ export class Jobs {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { trace: jobId, error: String(error) }))
     }
     return true
+  }
+
+  // #379: the finding ledger's only writer, called from the claimed terminal
+  // transition. It touches only the ids this report names: a finding missing
+  // from a later report is not evidence of a fix, so absence cannot move a row.
+  // A dismissal without a reason and a malformed entry are refused here and
+  // counted, never turned into a clean report.
+  private recordSecurityFindings(job: JobRow, evidence: Evidence): void {
+    const findings = evidence.findings ?? []
+    const refused = evidence.findingsDismissedRefused ?? 0
+    const dropped = evidence.findingsDropped ?? 0
+    if (findings.length === 0 && refused === 0 && dropped === 0) return
+    const writes: SecurityFindingWrite[] = []
+    let regressed = 0
+    for (const finding of findings) {
+      const id = findingId(finding)
+      const previous = this.store.getSecurityFinding(job.repo_id, id)
+      const decision = applyReport(
+        previous === undefined
+          ? undefined
+          : { state: previous.state as FindingState, firstSeenJob: previous.first_seen_job, dismissedInJob: previous.dismissed_in_job },
+        finding,
+        job.id,
+      )
+      if (decision === null) continue
+      writes.push({
+        id,
+        state: decision.state,
+        firstSeenJob: previous?.first_seen_job ?? job.id,
+        lastSeenJob: decision.lastSeenJob,
+        reason: previous?.reason ?? null,
+        dismissedInJob: decision.dismissedInJob,
+      })
+      if (decision.state === 'regressed' && previous?.state !== 'regressed') {
+        regressed += 1
+        this.store.audit(job.user_id, 'security_finding.regressed', `${job.id}: ${id} first=${previous?.first_seen_job ?? job.id}`.slice(0, 600))
+      }
+    }
+    this.store.writeSecurityFindings(job.repo_id, writes)
+    if (refused > 0) this.store.audit(job.user_id, 'security_finding.dismissal_refused', `${job.id}: ${refused} dismissed report(s) without a reason`)
+    const summary = `findings=${findings.length} regressed=${regressed} dismissed_refused=${refused} dropped=${dropped}`
+    this.store.event('security_findings', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: summary })
+    this.store.audit(job.user_id, 'job.security_findings', `${job.id}: ${summary}`)
   }
 
   private notePostmortem(jobId: string): void {
@@ -1579,6 +1776,23 @@ export class Jobs {
     return checkPathGuard(listed.files.map((file) => file.filename), allow, deny, undefined, reportedFiles > 0 ? reportedFiles : listed.files.length, listed.complete)
   }
 
+  private async ruleChangePaths(
+    job: JobRow,
+    client: GithubClient,
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles: number,
+    knownFiles: string[],
+  ): Promise<string[]> {
+    // A job that never loaded a rule context cannot have a repository rule to
+    // protect, so it must not pay an extra changed-file request.
+    if (this.store.getJobContext(job.id) === undefined) return []
+    if (knownFiles.length > 0) return knownFiles.filter(isRuleChange)
+    const listed = await client.listPullRequestFiles(owner, name, number, reportedFiles)
+    return listed.files.map((file) => file.filename).filter(isRuleChange)
+  }
+
   // A truncated walk and a protected-path violation are different refusals. A
   // notification that names the path when the list was merely cut off accuses
   // the change of something it did not do, so the phrase follows `truncated`.
@@ -1650,6 +1864,14 @@ export class Jobs {
         reasons,
       }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
+      const rulePaths = await this.ruleChangePaths(job, client, owner, name, number, pr.changedFiles, guard.files)
+      if (rulePaths.length > 0) {
+        const acknowledged = this.store.getSetting(`rule_change_ack:${job.id}:${pr.headSha}`) !== undefined
+        verification.ruleChange = { paths: rulePaths, acknowledged }
+        if (!acknowledged) reasons.push('Pull request changes Fledge rules or skills; a maintainer must acknowledge the rule change.')
+        verification.reasons = reasons
+        verification.ok = reasons.length === 0
+      }
       this.store.updateJob(job.id, { verification_json: JSON.stringify(verification), path_guard_json: JSON.stringify(guard) })
       if (!guard.ok) {
         incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
@@ -1997,6 +2219,12 @@ export class Jobs {
       if (pr.state !== 'open' || pr.draft) return { ok: false, message: 'PR 不是 open 状态。' }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
       this.store.updateJob(job.id, { path_guard_json: JSON.stringify(guard) })
+      const changedRules = await this.ruleChangePaths(job, client, owner, name, number, pr.changedFiles, guard.files)
+      if (changedRules.length > 0 && this.store.getSetting(`rule_change_ack:${job.id}:${pr.headSha}`) === undefined) {
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: rule change needs acknowledgement (${changedRules.length} paths)`)
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR 修改了 Fledge 规则或技能，maintainer 确认后才能合并。`)
+        return { ok: false, message: 'PR 修改了 Fledge 规则或技能，需要 maintainer 先确认。' }
+      }
       if (!guard.ok) {
         incCounter('fledge_path_guard_blocked_total', {}, 1, 'Pull requests blocked by path guard')
         const detail = Jobs.pathGuardDetail(guard)
@@ -2601,24 +2829,6 @@ export class Jobs {
     return { date: `${get('year')}-${get('month')}-${get('day')}`, hour: Number(get('hour')) }
   }
 
-  // The digest owns only the Chinese wording: the instant and the state come from
-  // the same rule the repository page and the dashboard answer with (#713), so a
-  // scheduled repository cannot be promised a run the page says will not start.
-  private digestNextRun(answer: NextRunForAnswer): string {
-    switch (answer.state) {
-      case 'disabled': return '仓库已停用，自动运行不会开始'
-      case 'not-ready': return 'FlyBot 实例未就绪，自动运行不会开始'
-      case 'auto-off': return '自动工作已关闭'
-      case 'active-job': return '当前任务结束后再排'
-      case 'idle': return '空闲：没有开放工作项；会按发现间隔检查'
-      case 'waiting-first-run': return '等待首次运行'
-      case 'due': return '等待调度'
-      case 'scheduled': return this.digestTime(new Date(answer.at ?? 0))
-      case 'unknown-unreadable': return 'unknown（排期无法解析）'
-      case 'unknown-closed': return 'unknown（排期窗口已结束）'
-    }
-  }
-
   private digestTime(value: Date): string {
     return new Intl.DateTimeFormat('zh-CN', {
       timeZone: this.config.digest.timeZone,
@@ -2628,6 +2838,26 @@ export class Jobs {
       minute: '2-digit',
       hourCycle: 'h23',
     }).format(value)
+  }
+
+  // The digest's next-run line is the same decision the page and dashboard make,
+  // but the email owns its own Chinese wording because `src/jobs` must not import
+  // `src/views/**` (#713). The instant itself comes from `nextRunFor`, which
+  // delegates to `nextTime`/`dueAfterMs`, so the three surfaces cannot disagree
+  // about the time.
+  private digestNextRunLine(next: NextRunFor): string {
+    switch (next.state) {
+      case 'disabled': return '仓库已停用，自动运行不会开始'
+      case 'not-ready': return 'FlyBot 实例未就绪，自动运行不会开始'
+      case 'auto-off': return '自动工作已关闭'
+      case 'active-job': return '当前任务结束后再排'
+      case 'idle': return '空闲：没有开放工作项；会按发现间隔检查'
+      case 'waiting-first-run': return '等待首次运行'
+      case 'due': return '等待调度'
+      case 'scheduled': return this.digestTime(new Date(next.at ?? Date.now()))
+      case 'unknown-unreadable': return 'unknown（排期无法解析）'
+      case 'unknown-closed': return 'unknown（排期窗口已结束）'
+    }
   }
 
   private async buildDigest(user: UserRow, repos: RepoRow[], date: string): Promise<DigestInput> {
@@ -2641,19 +2871,16 @@ export class Jobs {
       const label = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
       teamLinks.push({ repo: label, url: `${this.config.baseUrl}/repos/${repo.id}#inbox` })
       if (repo.auto_iterate === 1) {
-        // #713: a saved schedule row owns this repository's cadence, exactly as
-        // it does on the repository page and the dashboard. The email used to
-        // compute `last_run_at + min(interval, cooldown)` here, so one
-        // repository had two next-run answers and a cron row was ignored.
-        const answer = nextRunFor({
+        const instance = this.store.getRepoInstance(repo.id)
+        const next = nextRunFor({
           repo,
-          schedule: this.store.scheduleForRepo(repo.id),
+          row: this.store.scheduleForRepo(repo.id),
           openWork: this.store.listOpenWorkItems(repo.id).length > 0,
           activeJob: this.store.activeJobForRepo(repo.id) !== undefined,
-          instanceReady: instanceReadyFor(this.config.flybot.instanceImage, this.store.getRepoInstance(repo.id)?.status),
+          instanceReady: this.config.flybot.instanceImage === '' ? true : instance?.status === 'ready',
           workCooldownMinutes: this.config.runner.workCooldownMinutes,
         })
-        nextRuns.push({ repo: label, when: this.digestNextRun(answer) })
+        nextRuns.push({ repo: label, when: this.digestNextRunLine(next) })
       }
       if (this.instances === undefined || this.config.flybot.instanceImage === '') continue
       try {
@@ -3160,7 +3387,7 @@ export class Jobs {
     } catch (error) {
       return fail(`任务密钥无法解密：${String(error)}`)
     }
-    const platformFunded = user.own_llm_base_url === null || user.own_llm_base_url === '' || user.own_llm_key_enc === null
+    const platformFunded = platformFundedFor(user, this.store, repo.id)
     if (platformFunded && quotaView(user, this.config).exhausted) {
       this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。' }, revoke)
       await this.quotaNotifier.notify(user)
@@ -3205,6 +3432,12 @@ export class Jobs {
     }
 
     const baseBranch = job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
+    let rules: RepoRules | undefined
+    if (this.runner.name === 'flybot') {
+      const loaded = await this.loadRules(repo, baseBranch, job.base_sha)
+      if (!loaded.ok) return fail(loaded.error)
+      rules = loaded.rules
+    }
     this.store.updateJob(job.id, {
       status: 'running',
       started_at: nowIso(),
@@ -3252,6 +3485,7 @@ export class Jobs {
         credential: { url: `${this.config.baseUrl}/api/jobs/${job.id}/credential`, secret: callbackSecret },
         platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
         ...(flybot === undefined ? {} : { flybot }),
+        ...(rules === undefined ? {} : { rules }),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') return
@@ -3455,8 +3689,17 @@ export class Jobs {
       const now = Date.now()
       const plan = schedule === null || scheduleRow === undefined
         ? null
-        : planTick(schedule, scheduleAnchor(scheduleRow, repo), now)
-      if (plan !== null && plan.dueAt === null) continue
+        : planTick(schedule, scheduleAnchor(scheduleRow, repo), now, {
+            misfire: scheduleRow.misfire === 'once' ? 'once' : 'skip',
+            graceMs: scheduleRow.grace_ms,
+          })
+      if (plan !== null && plan.dueAt === null) {
+        // #544 slice 5: a window whose only outcome is "too late" still has rows
+        // to record. Only a decision with nothing to say — no run and no skipped
+        // instant — is a no-op.
+        if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
+        continue
+      }
       if (this.store.activeJobForRepo(repo.id) !== undefined) {
         // A due instant that cannot run now is the misfire case: skip it with a
         // reason rather than queue a second run behind the active one.
@@ -3524,6 +3767,10 @@ export class Jobs {
         } else if (result.ok) {
           const at = Date.now()
           this.settleScheduledOccurrence(repo, plan, lease, 'dispatched', { jobId: result.job?.id, dispatchedAt: at, lagMs: at - dueAt })
+          // #544 slice 5: under `once` the instants this decision does not make up
+          // are rows, and the cursor moves past the whole window in the same
+          // transaction, or the next tick would re-decide them.
+          this.recordSkippedInstants(repo, plan)
         } else {
           this.settleScheduledOccurrence(repo, plan, lease, 'skipped', { reason: result.code ?? 'dispatch-refused' })
         }
@@ -3577,19 +3824,49 @@ export class Jobs {
   // now, so it needs no lease: recording it is already idempotent on the row's
   // unique key.
   private skipScheduledOccurrence(repo: RepoRow, plan: TickPlan, reason: string): void {
-    if (plan.dueAt === null) return
+    if (plan.dueAt === null && plan.skipped.length === 0) return
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return
     const at = Date.now()
-    const occurrence = this.recordScheduledOccurrence(repo, plan, 'skipped', { reason })
+    const recorded = this.store.recordScheduleDecisions({
+      scheduleId: schedule.id,
+      repoId: repo.id,
+      timingRevision: schedule.timing_revision,
+      skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
+      decision: plan.dueAt === null ? undefined : { id: randomId('occ'), at: plan.dueAt, state: 'skipped', reason, missed: plan.missed },
+      cursorAt: plan.cursorAt,
+    })
     this.store.audit(repo.user_id, 'schedule.skipped', JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
       occurrence_at: plan.dueAt,
       decided_at: at,
       missed: plan.missed,
       reason,
-      occurrence: occurrence?.id ?? null,
+      occurrence: recorded.decision?.id ?? recorded.skipped[0]?.id ?? null,
+      skipped: recorded.skipped.map((row) => row.id),
     }))
-    this.store.advanceScheduleOccurrence(repo.id, plan.dueAt)
-    log.info('scheduled occurrence skipped', { repo: `${repo.owner}/${repo.name}`, reason, at: plan.dueAt, missed: plan.missed })
+    log.info('scheduled occurrence skipped', {
+      repo: `${repo.owner}/${repo.name}`, reason, at: plan.dueAt, missed: plan.missed, skipped: recorded.skipped.length,
+    })
+  }
+
+  // #544 slice 5: the instants a dispatch decided not to make up under `once`.
+  // They are written after the settle, in one transaction with the cursor, so a
+  // rejected settle leaves no half-recorded window behind.
+  private recordSkippedInstants(repo: RepoRow, plan: TickPlan): void {
+    if (plan.skipped.length === 0) return
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return
+    const recorded = this.store.recordScheduleDecisions({
+      scheduleId: schedule.id,
+      repoId: repo.id,
+      timingRevision: schedule.timing_revision,
+      skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
+      cursorAt: plan.cursorAt,
+    })
+    log.info('scheduled instants skipped', {
+      repo: `${repo.owner}/${repo.name}`, count: recorded.skipped.length, at: plan.dueAt,
+    })
   }
 
   // #544 slice 3B-B2. The lease is taken before the dispatch, so the decision to
@@ -3714,10 +3991,14 @@ export class Jobs {
   // #265: the preview-trial sweep runs on its own clock rather than inside the
   // job tick, which can be skipped while a dispatch is in flight. The first
   // scheduled run is one interval after boot; an operator who needs it now runs
-  // `npm run trial:sweep`.
+  // `npm run trial:sweep`. #690: the purge phase shares this clock — one writer,
+  // so an account cannot be rejected and erased by two different schedulers.
   async runTrialSweep(now: Date = new Date()): Promise<TrialSweepResult> {
     const result = await sweepExpiredTrials(this.store, this.mailer, this.config, { now })
     if (result.rejected.length > 0) log.info('preview trials ended', { rejected: result.rejected.length, emailed: result.emailed })
+    if (result.purge.purged.length > 0 || result.purge.skipped.length > 0) {
+      log.info('trial purges', { purged: result.purge.purged.length, skipped: result.purge.skipped.length, failed: result.purge.failed.length })
+    }
     return result
   }
 

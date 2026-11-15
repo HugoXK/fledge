@@ -8,9 +8,9 @@ import { Jobs } from '../src/jobs/service.js'
 import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
+import { REVIEW_INSTRUCTION_MAX, REVIEW_INSTRUCTION_LABEL } from '../src/lib/followUpInstruction.js'
 import { nextTime } from '../src/schedules/next.js'
 import { scheduleFromRow } from '../src/schedules/tick.js'
-import { REVIEW_INSTRUCTION_MAX, REVIEW_INSTRUCTION_LABEL } from '../src/lib/followUpInstruction.js'
 import { json, makeUser, MemoryMailer, readBody, startFakeServer, testConfig } from './helpers.js'
 
 test('iterate dispatches to the Chief and review to the Reviewer', async () => {
@@ -268,6 +268,35 @@ test('a successful callback stores attribution and posts a PR automation comment
   }
 })
 
+test('a repository model bypasses the platform quota check in enqueue and dispatch', async () => {
+  const base = testConfig()
+  const config = testConfig({ runner: { ...base.runner, queueDispatch: true } })
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'repo-model-quota', status: 'approved', quota: 0 })
+    const repo = store.createRepo({ id: 'repo_model_quota', userId: user.id, owner: 'o', name: 'model-quota', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const plain = store.createRepo({ id: 'repo_plain_quota', userId: user.id, owner: 'o', name: 'plain-quota', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+
+    const provider = store.createModelProvider({ id: 'prv_model_quota', userId: user.id, label: 'Own', baseUrl: 'https://own.example/v1', keyEnc: encryptSecret('own-key', config.tokenEncryptionKey), allowPrivate: false })
+    const model = store.createProviderModel({ id: 'pvm_model_quota', providerId: provider.id, model: 'own-model', label: 'Own model' })
+    store.setRepoModelSelection(repo.id, [model.id], model.id)
+
+    const queued = await jobs.enqueue(repo, 'manual')
+    assert.equal(queued.ok, true, 'a repository selection is an own model')
+    await jobs.tick()
+    const dispatched = store.getJob(queued.job!.id)
+    assert.notEqual(dispatched?.status, 'quota_exhausted', 'dispatch uses the same own-model answer as enqueue')
+
+    const refused = await jobs.enqueue(plain, 'manual')
+    assert.equal(refused.ok, false)
+    assert.equal(refused.code, 'QUOTA_EXHAUSTED', 'a repository without a selection is still platform-funded')
+  } finally {
+    store.close()
+  }
+})
+
 test('quotaBlocked fails that user\'s active jobs and revokes their tokens', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -392,6 +421,92 @@ test('daily digest sends once and includes the day summary', async () => {
     assert.match(digests[0]!.replyTo ?? '', /\+[A-Za-z0-9_-]+@/)
     await jobs.tick()
     assert.equal(mailer.messages.filter((message) => /今日摘要/.test(message.subject)).length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+function digestTime(at: number): string {
+  return new Intl.DateTimeFormat('zh-CN', {
+    timeZone: 'Asia/Shanghai',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    hourCycle: 'h23',
+  }).format(new Date(at))
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+test('the digest prints the planner next run for a scheduled repository', async () => {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'Asia/Shanghai' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'digest-schedule', status: 'approved' })
+    const now = Date.now()
+    const repo = store.createRepo({ id: 'repo_digest_schedule', userId: user.id, owner: 'o', name: 'schedule', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { last_run_at: new Date(now - 10 * 60_000).toISOString() })
+    const row = store.saveSchedule({ id: 'sch_digest', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    const schedule = scheduleFromRow(row)
+    assert.ok(schedule !== null)
+    const expected = digestTime(nextTime(schedule, Date.now())!)
+    const intervalAnswer = digestTime(now - 10 * 60_000 + 15 * 60_000)
+    assert.notEqual(expected, intervalAnswer, 'the fixture separates the planner answer from the interval answer')
+
+    await jobs.tick()
+    const digest = mailer.messages.find((message) => /今日摘要/.test(message.subject))
+    assert.ok(digest, 'the digest was sent')
+    assert.match(digest.text, new RegExp(`下次自动迭代：o/schedule · ${escapeRegExp(expected)}`))
+    assert.doesNotMatch(digest.text, new RegExp(escapeRegExp(intervalAnswer)))
+  } finally {
+    store.close()
+  }
+})
+
+test('the digest says a disabled repository will not run when it has no schedule row', async () => {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'Asia/Shanghai' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'digest-disabled', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_digest_disabled', userId: user.id, owner: 'o', name: 'disabled', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { enabled: 0, last_run_at: new Date(Date.now() - 10 * 60_000).toISOString() })
+
+    await jobs.tick()
+    const digest = mailer.messages.find((message) => /今日摘要/.test(message.subject))
+    assert.ok(digest, 'the digest was sent')
+    assert.match(digest.text, /下次自动迭代：o\/disabled · 仓库已停用，自动运行不会开始/)
+    assert.doesNotMatch(digest.text, /下次自动迭代：o\/disabled · \d{2}\/\d{2}/, 'no instant is promised for a disabled repository')
+  } finally {
+    store.close()
+  }
+})
+
+test('the digest says a disabled repository will not run even with a schedule row', async () => {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'Asia/Shanghai' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'digest-disabled-scheduled', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_digest_disabled_scheduled', userId: user.id, owner: 'o', name: 'disabled-scheduled', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { enabled: 0, last_run_at: new Date(Date.now() - 10 * 60_000).toISOString() })
+    const row = store.saveSchedule({ id: 'sch_digest_disabled', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    const schedule = scheduleFromRow(row)
+    assert.ok(schedule !== null)
+    const expected = digestTime(nextTime(schedule, Date.now())!)
+
+    await jobs.tick()
+    const digest = mailer.messages.find((message) => /今日摘要/.test(message.subject))
+    assert.ok(digest, 'the digest was sent')
+    assert.match(digest.text, /下次自动迭代：o\/disabled-scheduled · 仓库已停用，自动运行不会开始/, 'enabled answers before the saved row')
+    assert.doesNotMatch(digest.text, new RegExp(escapeRegExp(expected)), 'a paused repository is not promised a run')
   } finally {
     store.close()
   }
@@ -1953,6 +2068,9 @@ test('scheduled jobs carry the previous run and open work, and classify meta out
     },
   }
   const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  // #365: the block reads live state through GitHub; this case is about what the
+  // goal carries, so the reader answers without a request.
+  jobs.carryOverReaderOverride = () => ({ read: async () => 'open' })
   try {
     const user = makeUser(store, { login: 'continuity-user', status: 'approved' })
     const repo = store.createRepo({
@@ -2232,8 +2350,8 @@ test('meta titles are recognised and classified separately', () => {
   assert.equal(carried.output_kind, 'issue')
 })
 
-test('carry-over is bounded, names the open work and is explicitly data', () => {
-  const text = buildCarryOver({
+test('carry-over is bounded, names the open work and is explicitly data', async () => {
+  const { text } = await buildCarryOver({
     recent: [job({ id: 'job_2', summary: 'created issue #2', issue_url: 'https://x/issues/2' })],
     openWork: [workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })],
     maxChars: 500,
@@ -3063,93 +3181,4 @@ test('one blocked tip keeps one audit row and one notification, and a moved head
     store.close()
     await github.close()
   }
-})
-
-// #713: the daily digest is a third next-run surface. It used to compute
-// `last_run_at + min(interval, cooldown)` and never read the schedule row, so
-// one repository had two next-run answers — the page named the planner instant,
-// the email promised a run within minutes. These cases drive the pass rather
-// than the template, because the faulty line was the part of the sentence no
-// template test could see.
-function digestZh(value: Date): string {
-  // The digest's own formatter, `digestTime` in src/jobs/service.ts, is private:
-  // build the expected string with the same Intl options instead of hard-coding
-  // it, so a timezone change cannot make the assertion pass by accident.
-  return new Intl.DateTimeFormat('zh-CN', {
-    timeZone: 'Asia/Shanghai',
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hourCycle: 'h23',
-  }).format(value)
-}
-
-async function digestTextFor(repoFixture: (store: Store, userId: string) => void): Promise<{ text: string; repoId: string }> {
-  const config = testConfig({ digest: { hour: 0, timeZone: 'Asia/Shanghai' } })
-  const store = new Store(':memory:')
-  const mailer = new MemoryMailer()
-  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, mailer)
-  try {
-    const user = makeUser(store, { login: `digest-next-run-${Math.random().toString(36).slice(2, 8)}`, status: 'approved' })
-    store.setEmailDailyDigest(user.id, true)
-    repoFixture(store, user.id)
-    await jobs.tick()
-    const mail = mailer.messages.find((message) => /今日摘要/.test(message.subject))
-    assert.ok(mail !== undefined, 'the digest went out')
-    const repo = store.listRepos(user.id)[0]
-    assert.ok(repo !== undefined)
-    return { text: mail.text, repoId: repo.id }
-  } finally {
-    store.close()
-  }
-}
-
-test('the digest prints the scheduled next run, not the interval answer', async () => {
-  const lastRunAt = new Date(Date.now() - 10 * 60_000).toISOString()
-  const { text } = await digestTextFor((store, userId) => {
-    const repo = store.createRepo({ id: 'repo_digest_cron', userId, owner: 'o', name: 'cron', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
-    store.updateRepo(repo.id, { last_run_at: lastRunAt })
-    store.saveSchedule({ id: 'sch_digest_cron', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
-  })
-  const expected = digestZh(new Date(Date.parse(lastRunAt) + 15 * 60_000))
-  // The fixture separates the two answers, or the assertion below proves nothing.
-  assert.ok(text.includes('下次自动迭代：o/cron'), 'the digest names the repository')
-  assert.ok(!text.includes(`下次自动迭代：o/cron · ${expected}`), 'the interval answer must not be the scheduled one')
-  const digestLine = /下次自动迭代：o\/cron · ([^\n<]+)/.exec(text)?.[1]
-  assert.ok(digestLine !== undefined)
-  assert.notEqual(digestLine, expected, 'the email must not restate the interval rule for a repository with a schedule row')
-  // The planner instant for `0 9 * * 1-5` in Asia/Shanghai, formatted by the
-  // digest's own formatter, is the only other candidate.
-  assert.match(digestLine, /^\d{2}\/\d{2} \d{2}:\d{2}$/)
-})
-
-test('a disabled repository with no schedule row says it is disabled instead of promising a run', async () => {
-  const { text } = await digestTextFor((store, userId) => {
-    const repo = store.createRepo({ id: 'repo_digest_norow', userId, owner: 'o', name: 'norow', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
-    // `/repos/:id/disable` zeroes both fields, so only the settings route leaves
-    // `auto_iterate = 1` with `enabled = 0`; that is the fixture this case needs.
-    store.updateRepo(repo.id, { enabled: 0, last_run_at: new Date(Date.now() - 10 * 60_000).toISOString() })
-  })
-  assert.ok(text.includes('下次自动迭代：o/norow · 仓库已停用，自动运行不会开始'), 'the digest repeats the page sentence')
-  assert.ok(!/下次自动迭代：o\/norow · \d\d\/\d\d/.test(text), 'no instant for a repository that will not run')
-})
-
-test('a disabled repository with a schedule row keeps the planner instant the page prints', async () => {
-  // A saved row wins over `enabled` on the page, so the digest must not start
-  // disagreeing with it by checking `enabled` first: that is the same defect
-  // pointed the other way.
-  const lastRunAt = new Date(Date.now() - 10 * 60_000).toISOString()
-  let planner: number | null = null
-  const { text } = await digestTextFor((store, userId) => {
-    const repo = store.createRepo({ id: 'repo_digest_disabled_row', userId, owner: 'o', name: 'drow', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
-    store.updateRepo(repo.id, { enabled: 0, last_run_at: lastRunAt })
-    const row = store.saveSchedule({ id: 'sch_digest_disabled_row', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
-    const schedule = scheduleFromRow(row)
-    assert.ok(schedule !== null)
-    planner = nextTime(schedule, Date.now())
-  })
-  assert.ok(planner !== null)
-  const digestLine = /下次自动迭代：o\/drow · ([^\n<]+)/.exec(text)?.[1]
-  assert.equal(digestLine, digestZh(new Date(planner)))
 })

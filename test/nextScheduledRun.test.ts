@@ -1,10 +1,10 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
-import { Store, type ScheduleRow, type WorkItemRow } from '../src/db.js'
+import { Store, type WorkItemRow } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { nextRun } from '../src/lib/nextRun.js'
-import { instanceReadyFor, nextRunFor } from '../src/lib/nextRunFor.js'
+import { nextRunFor } from '../src/lib/nextRunFor.js'
 import { humanTimeShort } from '../src/lib/time.js'
 import { nextTime } from '../src/schedules/next.js'
 import { scheduleFromRow } from '../src/schedules/tick.js'
@@ -113,6 +113,73 @@ function renderBoth(input: {
   return { dashboard, page }
 }
 
+test('the shared next-run helper chooses the planner for a saved row', () => {
+  const { store, repo } = fixture()
+  try {
+    const row = store.saveSchedule({ id: 'sch_for', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    const schedule = scheduleFromRow(row)
+    assert.ok(schedule !== null)
+    const expected = nextTime(schedule, NOW)
+    assert.ok(expected !== null)
+    const next = nextRunFor({ repo, row, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW })
+    assert.equal(next.state, 'scheduled')
+    assert.equal(next.at, expected)
+    store.updateRepo(repo.id, { enabled: 0 })
+    const disabled = nextRunFor({ repo: store.getRepo(repo.id)!, row, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW })
+    assert.equal(disabled.state, 'disabled', 'enabled answers before the saved row, exactly as the worker does')
+    assert.equal(disabled.at, null)
+    store.updateRepo(repo.id, { enabled: 1 })
+
+    const unreadable = store.saveSchedule({ id: 'sch_for_bad', repoId: repo.id, kind: 'cron', expression: null, timezone: 'Asia/Shanghai' })
+    assert.deepEqual(
+      nextRunFor({ repo: store.getRepo(repo.id)!, row: unreadable, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW }),
+      { at: null, state: 'unknown-unreadable' },
+    )
+    const closed = store.saveSchedule({ id: 'sch_for_closed', repoId: repo.id, kind: 'interval', everyMs: 60_000, endAt: NOW - 1 })
+    assert.deepEqual(
+      nextRunFor({ repo: store.getRepo(repo.id)!, row: closed, openWork: true, activeJob: false, instanceReady: true, workCooldownMinutes: COOLDOWN_MINUTES, now: NOW }),
+      { at: null, state: 'unknown-closed' },
+    )
+  } finally {
+    store.close()
+  }
+})
+
+test('the shared next-run helper keeps every interval state the page prints', () => {
+  const cases: Array<{ label: string; patch: { enabled?: number; autoIterate?: boolean; lastRunAt?: string | null; openWork?: boolean; activeJob?: boolean; instanceReady?: boolean }; state: string }> = [
+    { label: 'disabled', patch: { enabled: 0 }, state: 'disabled' },
+    { label: 'not-ready', patch: { instanceReady: false }, state: 'not-ready' },
+    { label: 'auto-off', patch: { autoIterate: false }, state: 'auto-off' },
+    { label: 'active-job', patch: { activeJob: true }, state: 'active-job' },
+    { label: 'idle', patch: { openWork: false }, state: 'idle' },
+    { label: 'waiting-first-run', patch: { lastRunAt: null }, state: 'waiting-first-run' },
+    { label: 'due', patch: { lastRunAt: new Date(NOW - 60 * 60_000).toISOString() }, state: 'due' },
+    { label: 'scheduled', patch: { lastRunAt: LAST_RUN_RECENT }, state: 'scheduled' },
+  ]
+  for (const testCase of cases) {
+    const { store, repo } = fixture()
+    try {
+      store.updateRepo(repo.id, {
+        enabled: testCase.patch.enabled ?? 1,
+        auto_iterate: testCase.patch.autoIterate === false ? 0 : 1,
+        ...(testCase.patch.lastRunAt === undefined ? {} : { last_run_at: testCase.patch.lastRunAt }),
+      })
+      const next = nextRunFor({
+        repo: store.getRepo(repo.id)!,
+        row: undefined,
+        openWork: testCase.patch.openWork ?? true,
+        activeJob: testCase.patch.activeJob ?? false,
+        instanceReady: testCase.patch.instanceReady ?? true,
+        workCooldownMinutes: COOLDOWN_MINUTES,
+        now: NOW,
+      })
+      assert.equal(next.state, testCase.state, `${testCase.label} keeps the page's state`)
+    } finally {
+      store.close()
+    }
+  }
+})
+
 test('the cooldown the worker uses decides the next run, not the discovery interval', () => {
   const next = nextRun({
     lastRunAt: LAST_RUN_AT,
@@ -207,6 +274,7 @@ test('the dashboard answers with the schedule row, not the interval, when one ex
     })
     store.createModelProvider({ id: 'prov_scheduled', userId: user.id, label: 'p', baseUrl: 'https://example.test', keyEnc: 'x', allowPrivate: false })
     store.createProviderModel({ id: 'pm_scheduled', providerId: 'prov_scheduled', model: 'm', label: 'm' })
+    store.setRepoModelSelection(repo.id, ['pm_scheduled'], 'pm_scheduled')
     store.createJob({ id: 'job_scheduled', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
     store.updateJob('job_scheduled', { status: 'succeeded' })
     const row = store.saveSchedule({ id: 'sch_scheduled', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
@@ -232,184 +300,107 @@ test('the dashboard answers with the schedule row, not the interval, when one ex
   }
 })
 
-// #713: the daily digest is the third surface of the one-next-run rule, so it
-// answers through a helper that the job module can call. A repository with a
-// saved schedule row is answered by the planner; every other repository keeps
-// the interval rule. The email owns its Chinese wording, never the rule.
-const CRON_ROW: ScheduleRow = {
-  id: 'sch_next_run_cron',
-  repo_id: 'repo_next_run_cron',
-  kind: 'cron',
-  expression: '0 9 * * 1-5',
-  every_ms: null,
-  timezone: 'Asia/Shanghai',
-  start_at: null,
-  end_at: null,
-  timing_revision: 1,
-  misfire: 'run',
-  last_occurrence_at: null,
-  created_at: new Date(NOW).toISOString(),
-  updated_at: new Date(NOW).toISOString(),
+// #723: the worker only ever considers an enabled repository (`listAutoRepos` is
+// `WHERE enabled = 1 AND auto_iterate = 1`) and a manual start on a paused one is
+// refused with REPO_DISABLED, so no surface may name a run for it. These cases
+// cover the two surfaces the card measured.
+function seedAllClear(store: Store, user: ReturnType<typeof makeUser>, repoId: string): void {
+  const at = new Date().toISOString()
+  store.saveRepoInstance({
+    repo_id: repoId, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/disabled', bridge_script: '/tmp/bridge',
+    dsh_port: 1, bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image', status: 'ready',
+    chief_session: 'c', team_json: null, bridge_token_enc: null, bridge_pid: null, log_pid: null,
+    last_error: null, created_at: at, updated_at: at, last_health_at: null,
+  })
+  store.createModelProvider({ id: `prov_${repoId}`, userId: user.id, label: 'p', baseUrl: 'https://example.test', keyEnc: 'x', allowPrivate: false })
+  store.createProviderModel({ id: `pm_${repoId}`, providerId: `prov_${repoId}`, model: 'm', label: 'm' })
+  // #732: a provider row is not an own model until a repository selects it, and
+  // this deployment configures no platform model, so the selection is what makes
+  // the first-run check complete.
+  store.setRepoModelSelection(repoId, [`pm_${repoId}`], `pm_${repoId}`)
+  store.createJob({ id: `job_${repoId}`, repoId, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `cb_${repoId}`, platformTokenHash: '' })
+  store.updateJob(`job_${repoId}`, { status: 'succeeded' })
 }
 
-interface NextRunForRepoFixture {
-  last_run_at: string | null
-  interval_minutes: number
-  auto_iterate: number
-  enabled: number
-}
-
-const REPO_FOR_RUN: NextRunForRepoFixture = {
-  last_run_at: LAST_RUN_RECENT,
-  interval_minutes: INTERVAL_MINUTES,
-  auto_iterate: 1,
-  enabled: 1,
-}
-
-function intervalAnswer(now = NOW): ReturnType<typeof nextRunFor> {
-  return nextRunFor({
-    repo: REPO_FOR_RUN,
-    schedule: undefined,
-    openWork: true,
-    activeJob: false,
-    instanceReady: true,
-    workCooldownMinutes: COOLDOWN_MINUTES,
-    now,
+function nextRunRepo(store: Store, user: ReturnType<typeof makeUser>, id: string, name: string) {
+  return store.createRepo({
+    id, userId: user.id, owner: 'acme', name, defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+    repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: INTERVAL_MINUTES,
   })
 }
 
-test('a saved cron row answers the planner instant, not the interval', () => {
-  // Saturday 12:52Z: the next weekday 09:00 Asia/Shanghai is Monday 01:00Z, days
-  // away from the interval answer the digest used to print.
-  const now = Date.parse('2026-11-14T12:52:00Z')
-  const answer = nextRunFor({
-    repo: { ...REPO_FOR_RUN, last_run_at: new Date(now - 10 * 60_000).toISOString() },
-    schedule: CRON_ROW,
-    openWork: true,
-    activeJob: false,
-    instanceReady: true,
-    workCooldownMinutes: COOLDOWN_MINUTES,
-    now,
-  })
-  const schedule = scheduleFromRow(CRON_ROW)
-  assert.ok(schedule !== null, 'the cron row parses')
-  assert.equal(answer.state, 'scheduled')
-  assert.equal(answer.at, nextTime(schedule, now))
-  assert.equal(new Date(answer.at ?? 0).toISOString(), '2026-11-16T01:00:00.000Z')
-  assert.notEqual(answer.at, now - 10 * 60_000 + COOLDOWN_MINUTES * 60_000, 'the interval answer is not the planner answer')
-})
+test('a disabled repository with a schedule row says so on the page, not a planner instant', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-run-disabled-page', status: 'approved' })
+    const session = sessionFor(built, user)
+    const repo = nextRunRepo(store, user, 'repo_disabled_row', 'paused')
+    store.updateRepo(repo.id, { last_run_at: LAST_RUN_RECENT })
+    store.createWorkItem({ id: 'wi_disabled_row', repoId: repo.id, userId: user.id, title: 'open work', detail: '' })
+    store.saveSchedule({ id: 'sch_disabled_row', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    store.updateRepo(repo.id, { enabled: 0 })
 
-test('a row the planner cannot read, and a window that has closed, name no instant', () => {
-  const unreadable = nextRunFor({
-    repo: REPO_FOR_RUN,
-    schedule: { ...CRON_ROW, expression: null },
-    openWork: true,
-    activeJob: false,
-    instanceReady: true,
-    workCooldownMinutes: COOLDOWN_MINUTES,
-    now: NOW,
-  })
-  assert.equal(unreadable.state, 'unknown-unreadable')
-  assert.equal(unreadable.at, null)
-
-  const now = Date.parse('2026-11-14T12:52:00Z')
-  const closed = nextRunFor({
-    repo: REPO_FOR_RUN,
-    schedule: { ...CRON_ROW, end_at: Date.parse('2026-11-14T14:00:00Z') },
-    openWork: true,
-    activeJob: false,
-    instanceReady: true,
-    workCooldownMinutes: COOLDOWN_MINUTES,
-    now,
-  })
-  assert.equal(closed.state, 'unknown-closed')
-  assert.equal(closed.at, null)
-})
-
-test('the interval branch keeps every state the page already words', () => {
-  const base = {
-    repo: REPO_FOR_RUN,
-    schedule: undefined,
-    openWork: true,
-    activeJob: false,
-    instanceReady: true,
-    workCooldownMinutes: COOLDOWN_MINUTES,
-    now: NOW,
-  }
-  // Ten minutes of cooldown left: a time, not "due", and never the discovery
-  // interval the digest used to print.
-  const scheduled = nextRunFor(base)
-  assert.equal(scheduled.state, 'scheduled')
-  assert.equal(scheduled.at, Date.parse(LAST_RUN_RECENT) + COOLDOWN_MINUTES * 60_000)
-  assert.notEqual(scheduled.at, Date.parse(LAST_RUN_RECENT) + INTERVAL_MINUTES * 60_000)
-
-  assert.equal(nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, last_run_at: LAST_RUN_AT } }).state, 'due')
-  assert.equal(nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, enabled: 0 } }).state, 'disabled')
-  assert.equal(nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, auto_iterate: 0 } }).state, 'auto-off')
-  assert.equal(nextRunFor({ ...base, instanceReady: false }).state, 'not-ready')
-  assert.equal(nextRunFor({ ...base, activeJob: true }).state, 'active-job')
-  assert.equal(nextRunFor({ ...base, openWork: false }).state, 'idle')
-  const neverRan = nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, last_run_at: null } })
-  assert.equal(neverRan.state, 'waiting-first-run')
-
-  // Every state that means "no run is scheduled" names no instant, so the email
-  // cannot print a formatted time for a repository that will not run.
-  for (const answer of [
-    nextRunFor({ ...base, repo: { ...REPO_FOR_RUN, enabled: 0 } }),
-    nextRunFor({ ...base, instanceReady: false }),
-    nextRunFor({ ...base, activeJob: true }),
-    nextRunFor({ ...base, openWork: false }),
-    neverRan,
-  ]) {
-    assert.equal(answer.at, null)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie: session.cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.equal(repoLine(page.body), '仓库已停用，自动运行不会开始', 'a paused repository is not given a next run')
+    const source = /data-next-source="([^"]*)"/.exec(page.body)?.[1]
+    assert.equal(source, 'interval', 'the line is not tagged as the planner answering for a paused repository')
+  } finally {
+    await built.app.close()
+    store.close()
   }
 })
 
-test('a deployment with no instance image never reports the instance as not ready', () => {
-  // Both existing surfaces apply this fallback; the digest must not print
-  // "FlyBot 实例未就绪" for every repository on a box with no instance image.
-  assert.equal(instanceReadyFor('', undefined), true)
-  assert.equal(instanceReadyFor('', 'stopped'), true)
-  assert.equal(instanceReadyFor('ghcr.io/flybot:1', 'ready'), true)
-  assert.equal(instanceReadyFor('ghcr.io/flybot:1', 'stopped'), false)
-  const answer = nextRunFor({
-    repo: REPO_FOR_RUN,
-    schedule: undefined,
-    openWork: true,
-    activeJob: false,
-    instanceReady: instanceReadyFor('', undefined),
-    workCooldownMinutes: COOLDOWN_MINUTES,
-    now: NOW,
-  })
-  assert.notEqual(answer.state, 'not-ready')
-  assert.equal(answer.at, Date.parse(LAST_RUN_RECENT) + COOLDOWN_MINUTES * 60_000)
+test('the dashboard never names a paused repository while an enabled one has a next run', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-run-disabled-dash', status: 'approved' })
+    const session = sessionFor(built, user)
+    const paused = nextRunRepo(store, user, 'repo_dash_paused', 'paused')
+    const enabled = nextRunRepo(store, user, 'repo_dash_enabled', 'enabled')
+    seedAllClear(store, user, enabled.id)
+    // The paused repository's cron is earlier, so before the fix it is both
+    // runnable and the earliest candidate, and the card names it.
+    store.saveSchedule({ id: 'sch_dash_paused', repoId: paused.id, kind: 'cron', expression: '0 * * * *', timezone: 'Asia/Shanghai' })
+    store.saveSchedule({ id: 'sch_dash_enabled', repoId: enabled.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    store.updateRepo(paused.id, { enabled: 0 })
+
+    const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
+    assert.equal(dashboard.statusCode, 200)
+    const section = /<section class="card" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
+    assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card, where the next run is named')
+    assert.match(section, /下次自动运行：acme\/enabled/, 'the enabled repository is the next automatic run')
+    assert.doesNotMatch(section, /acme\/paused/, 'a paused repository is never named as the next automatic run')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
 })
 
-// The interval branch is the same rule as before, so the helper adds no third
-// copy of the formula: it delegates to `nextRun`, which owns the floor.
-test('the helper delegates the interval branch to nextRun, floor included', () => {
-  const answer = intervalAnswer()
-  const direct = nextRun({
-    lastRunAt: LAST_RUN_RECENT,
-    intervalMinutes: 1,
-    workCooldownMinutes: 1,
-    autoIterate: true,
-    hasOpenWork: true,
-    hasActiveJob: false,
-    repoEnabled: true,
-    instanceReady: true,
-    now: NOW,
-  })
-  const floored = nextRunFor({
-    repo: { ...REPO_FOR_RUN, interval_minutes: 1 },
-    schedule: undefined,
-    openWork: true,
-    activeJob: false,
-    instanceReady: true,
-    workCooldownMinutes: 1,
-    now: NOW,
-  })
-  assert.equal(floored.at, Date.parse(LAST_RUN_RECENT) + 15 * 60_000, 'the 15-minute floor still applies')
-  assert.equal(floored.at, direct.at)
-  assert.equal(answer.state, 'scheduled')
+test('with only paused repositories the dashboard says runs are paused and names no instant', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-run-disabled-only', status: 'approved' })
+    const session = sessionFor(built, user)
+    const paused = nextRunRepo(store, user, 'repo_dash_only_paused', 'paused')
+    seedAllClear(store, user, paused.id)
+    store.saveSchedule({ id: 'sch_dash_only_paused', repoId: paused.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    store.updateRepo(paused.id, { enabled: 0 })
+
+    const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
+    assert.equal(dashboard.statusCode, 200)
+    const section = /<section class="card" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
+    assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card')
+    assert.match(section, /自动运行暂停：acme\/paused · 仓库已停用，自动运行不会开始/, 'the card says why nothing runs')
+    assert.doesNotMatch(section, /\d{2}:\d{2}/, 'no instant is printed for a paused repository')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
 })

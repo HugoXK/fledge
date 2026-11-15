@@ -2,6 +2,7 @@ import { createHmac, createSign, timingSafeEqual } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 import type { Config } from '../config.js'
 import { GithubError } from './github.js'
+import { log } from '../lib/log.js'
 
 export interface AppInstallation {
   id: number
@@ -35,10 +36,20 @@ function base64url(value: Buffer | string): string {
   return Buffer.from(value).toString('base64url')
 }
 
+// #758: one clock.skew line per measurement once the drift is worth reading, and
+// a five-minute refresh so the number on /readyz is never older than the JWT's.
+const CLOCK_SKEW_LOG_SECONDS = 60
+const SKEW_REFRESH_MS = 5 * 60_000
+
 export class GithubApp {
   private key: string | null = null
   private skewMs = 0
   private skewAt = 0
+  // The last successful measurement, kept apart from `skewMs`: the JWT needs a
+  // number, while a report has to be able to say "unknown". A 0 here would read
+  // as a clock that is exactly right, which is the one lie this slice exists to
+  // prevent.
+  private measuredSkewSeconds: number | null = null
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>()
 
   constructor(private readonly config: Config) {}
@@ -52,20 +63,57 @@ export class GithubApp {
     return this.key
   }
 
+  // One measurement of the process clock against GitHub's `Date` header. The JWT
+  // path calls it at most every five minutes; it is public so the report can read
+  // the value the JWT already uses instead of measuring again (a second reading
+  // per /readyz would cost a network call on a health endpoint), and so a test can
+  // force one.
+  async measureSkew(): Promise<number | null> {
+    if (!this.configured) {
+      this.measuredSkewSeconds = null
+      return null
+    }
+    try {
+      const response = await fetch(`${this.config.github.apiBase}/rate_limit`, { headers: { 'user-agent': 'fledge/0.1' }, signal: AbortSignal.timeout(10_000) })
+      const date = response.headers.get('date')
+      this.skewAt = Date.now()
+      if (date === null) {
+        this.measuredSkewSeconds = null
+        return null
+      }
+      const remote = Date.parse(date)
+      if (!Number.isFinite(remote)) {
+        // #758 finding: a `Date` header that is present but unparseable (a
+        // rewriting proxy is the realistic case) is a failed measurement, not a
+        // reading. `skewMs` keeps the last real correction for the JWT, and the
+        // report says "unknown" — `NaN` here used to travel to /readyz, to the
+        // metric, and into the JWT's `iat` without failing anything.
+        this.measuredSkewSeconds = null
+        return null
+      }
+      this.skewMs = Date.now() - remote
+      const seconds = Math.round(this.skewMs / 1000)
+      this.measuredSkewSeconds = seconds
+      if (Math.abs(seconds) > CLOCK_SKEW_LOG_SECONDS) log.warn('clock.skew', { skewSeconds: seconds, source: 'github' })
+      return seconds
+    } catch {
+      // The JWT keeps its last correction here; slice 2 of #758 owns that hole.
+      // The report does not keep it, because a measurement that failed is not a
+      // reading, and a stale number would hide the next drift.
+      this.skewAt = Date.now()
+      this.measuredSkewSeconds = null
+      return null
+    }
+  }
+
+  /** The last measured skew in seconds, or null when no measurement succeeded. */
+  clockSkewSeconds(): number | null {
+    return this.measuredSkewSeconds
+  }
+
   private async appJwt(): Promise<string> {
     if (!this.configured) throw new Error('GitHub App 未配置')
-    if (Date.now() - this.skewAt > 5 * 60_000) {
-      try {
-        const response = await fetch(`${this.config.github.apiBase}/rate_limit`, { headers: { 'user-agent': 'fledge/0.1' }, signal: AbortSignal.timeout(10_000) })
-        const date = response.headers.get('date')
-        if (date !== null) {
-          this.skewMs = Date.now() - Date.parse(date)
-          this.skewAt = Date.now()
-        }
-      } catch {
-        this.skewAt = Date.now()
-      }
-    }
+    if (Date.now() - this.skewAt > SKEW_REFRESH_MS) await this.measureSkew()
     const now = Math.floor((Date.now() - this.skewMs) / 1000)
     const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
     const payload = base64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: this.config.githubApp.id }))

@@ -433,3 +433,33 @@ test('a copy with the tables but user_version = 0 is refused', () => {
   assert.equal(existsSync(join(workDir, 'restored.db')), false)
   assert.equal(existsSync(join(workDir, 'restored.db.failed')), true)
 })
+
+test('the drill writes a status record the admin card can read', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const workDir = join(root, 'work')
+  const statusFile = join(root, 'backup-drill.json')
+  seed(dbPath)
+
+  const result = runDrill(['--db', dbPath, '--backup-dir', backupDir, '--work-dir', workDir, '--status-file', statusFile])
+  assert.equal(result.code, 0, result.stderr)
+  const record = JSON.parse(readFileSync(statusFile, 'utf8')) as { at: string; ok: boolean; detail: string }
+  assert.equal(record.ok, true)
+  assert.match(record.at, /^\d{4}-\d{2}-\d{2}T/)
+  assert.match(record.detail, /^RTO=\d+\.\d{3}s RPO=\d+\.\d{3}s$/)
+  assert.equal(mode(statusFile), 0o600)
+  assert.doesNotMatch(readFileSync(statusFile, 'utf8'), /drill-user|@|token/i)
+})
+
+test('a failed drill overwrites the last success with ok:false', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-drill-'))
+  const statusFile = join(root, 'backup-drill.json')
+  writeFileSync(statusFile, `${JSON.stringify({ at: '2026-01-01T00:00:00.000Z', ok: true, detail: 'old' })}\n`)
+
+  const result = runDrill(['--db', join(root, 'missing.db'), '--status-file', statusFile])
+  assert.notEqual(result.code, 0)
+  const record = JSON.parse(readFileSync(statusFile, 'utf8')) as { ok: boolean; detail: string }
+  assert.equal(record.ok, false)
+  assert.match(record.detail, /source database not found/)
+})

@@ -18,7 +18,7 @@ The branch protection API currently enforces three contexts directly:
 |---|---|---|
 | `ci-ok` | `ci.yml` | every aggregate job succeeded at the same tip |
 | `review-gate` | `review-gate.yml` | a PASS at that tip from the required reviewer |
-| `pr-lint` | `review-gate.yml` | the PR body, fragment and docs obligations |
+| `pr-lint` | `pr-lint.yml` | the PR body, fragment and docs obligations |
 
 Two more checks are enforced **inside** `ci-ok` rather than as separate required
 contexts:
@@ -28,11 +28,13 @@ contexts:
 | `dependency-review` | `ci-ok` need | no new high-severity advisory in the pull request diff |
 | `codeql-required` / `Analyze JavaScript/TypeScript` | `ci-ok` need + CodeQL analysis | no new high/critical CodeQL result |
 
-`ci-ok` is the aggregate: `changes`, `lint`, `typecheck`, `test` (Node 22 and
-24), `coverage`, `build`, `visual` (UI diffs), `docker` (image builds, scans and
+`ci-ok` is the aggregate: `changes`, `lint`, `typecheck`, `test` (Node 24),
+`coverage` (Node 22, the full-suite execution that also enforces the floor),
+`build`, `visual` (UI diffs), `docker` (image builds, scans and
 starts), `audit` (runtime and full graph), `changelog`, `version`, `risk`,
 `restore-drill`, `dependency-review`, `action-pins`, `workflow-lint`,
-`secret-scan`, `codeql-required`. The list asserted by the gate is
+`secret-scan`, `codeql-required`, `deploy-check` (the `deploy/` files, when the
+diff reaches them). The list asserted by the gate is
 `REQUIRED_JOBS` in `scripts/ci-ok.mjs`, and `test/ciOk.test.ts` fails when it and
 `needs:` in `ci.yml` drift apart.
 

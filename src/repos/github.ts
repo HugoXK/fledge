@@ -3,6 +3,7 @@ import { incCounter, observeHistogram } from '../lib/metrics.js'
 import { endSpan, startSpan } from '../lib/otel.js'
 import { acquireGithubBudget, noteGithubRateLimit } from '../lib/githubBudget.js'
 import type { MergedPullRequest } from '../lib/duplicates.js'
+import { sha256Hex } from '../lib/secrets.js'
 
 const DEFAULT_API = 'https://api.github.com'
 const SEGMENT = /^[A-Za-z0-9_.-]+$/
@@ -60,6 +61,24 @@ export interface PullRequestInfo {
   draft: boolean
   merged: boolean
   changedFiles: number
+  // #373: the body is what the agent already wrote about the change. The job
+  // page shows it; nothing here interprets it.
+  body: string
+}
+
+// #373: the job page shows how large the change is. The per-file walk below
+// already carries `additions` and `deletions`, so the sum is defined once, next
+// to the reader that owns the walk and its cap.
+export function summarizePullRequestFiles(
+  files: ReadonlyArray<{ additions: number; deletions: number }>,
+): { files: number; additions: number; deletions: number } {
+  let additions = 0
+  let deletions = 0
+  for (const file of files) {
+    additions += Number.isFinite(file.additions) ? file.additions : 0
+    deletions += Number.isFinite(file.deletions) ? file.deletions : 0
+  }
+  return { files: files.length, additions, deletions }
 }
 
 export interface CheckRunInfo {
@@ -436,12 +455,76 @@ export class GithubClient {
     }
   }
 
+  async getContentAtRef(
+    owner: string,
+    name: string,
+    path: string,
+    ref: string,
+  ): Promise<{ type: string; sha: string; size: number; content: string } | null> {
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+    try {
+      const data = await this.request<{
+        type?: string
+        sha?: string
+        size?: number
+        content?: string
+        encoding?: string
+      }>('GET', `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`)
+      if (Array.isArray(data) || typeof data.type !== 'string') return null
+      if (data.type !== 'file') {
+        return { type: data.type, sha: typeof data.sha === 'string' ? data.sha : '', size: Number(data.size ?? 0), content: '' }
+      }
+      const content = typeof data.content === 'string' && data.encoding === 'base64'
+        ? Buffer.from(data.content, 'base64').toString('utf8')
+        : typeof data.content === 'string' ? data.content : ''
+      return {
+        type: 'file',
+        sha: typeof data.sha === 'string' ? data.sha : sha256Hex(content),
+        size: Number(data.size ?? Buffer.byteLength(content)),
+        content,
+      }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  async listDirectory(
+    owner: string,
+    name: string,
+    path: string,
+    ref: string,
+  ): Promise<Array<{ name: string; type: string; path: string; sha: string }> | null> {
+    const encodedPath = path.split('/').map(encodeURIComponent).join('/')
+    try {
+      const data = await this.request<Array<{ name?: string; type?: string; path?: string; sha?: string }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encodedPath}?ref=${encodeURIComponent(ref)}`,
+      )
+      if (!Array.isArray(data)) return []
+      return data.flatMap((entry) => {
+        if (typeof entry.name !== 'string' || typeof entry.type !== 'string') return []
+        return [{
+          name: entry.name,
+          type: entry.type,
+          path: typeof entry.path === 'string' ? entry.path : `${path}/${entry.name}`,
+          // The release-readiness view needs the blob sha: an edited fragment is
+          // still pending work even when its filename is already released.
+          sha: typeof entry.sha === 'string' ? entry.sha : '',
+        }]
+      })
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
   async createPullRequest(
     owner: string,
     name: string,
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestInfo> {
-    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number }>(
+    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number; body?: string | null }>(
       'POST',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
       input,
@@ -459,6 +542,7 @@ export class GithubClient {
       draft: pr.draft === true,
       merged: pr.merged === true,
       changedFiles: Number(pr.changed_files ?? 0),
+      body: typeof pr.body === 'string' ? pr.body : '',
     }
   }
 
@@ -475,6 +559,7 @@ export class GithubClient {
       draft: boolean
       merged: boolean
       changed_files?: number
+      body?: string | null
     }>(
       'GET',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`,
@@ -492,6 +577,7 @@ export class GithubClient {
       draft: pr.draft,
       merged: pr.merged,
       changedFiles: Number(pr.changed_files ?? 0),
+      body: typeof pr.body === 'string' ? pr.body : '',
     }
   }
 
@@ -771,6 +857,20 @@ export class GithubClient {
     return { files, complete }
   }
 
+  // #373: the job page needs the change size, not the file list. A capped walk is
+  // reported as such rather than summed: a total taken from part of the change
+  // would understate it, and the page says the fact is unavailable instead.
+  async pullRequestDiffTotals(
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles = 0,
+  ): Promise<{ totals: { files: number; additions: number; deletions: number } | null; complete: boolean }> {
+    const listed = await this.listPullRequestFiles(owner, name, number, reportedFiles)
+    if (!listed.complete) return { totals: null, complete: false }
+    return { totals: summarizePullRequestFiles(listed.files), complete: true }
+  }
+
   async getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null> {
     try {
       const result = await this.request<{
@@ -838,6 +938,86 @@ export class GithubClient {
       if (error instanceof GithubError && error.status === 404) return false
       throw error
     }
+  }
+
+  // #546: the readiness view needs one commit's date to bound the merged
+  // pull-request window. A tag that no longer resolves returns null rather than
+  // throwing, because the page reports what it could not read.
+  async getCommitMeta(owner: string, name: string, ref: string): Promise<{ sha: string; committedAt: string } | null> {
+    try {
+      const data = await this.request<{ sha?: string; commit?: { committer?: { date?: string } } }>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits/${encodeURIComponent(ref)}`,
+      )
+      const committedAt = data.commit?.committer?.date
+      if (typeof data.sha !== 'string' || typeof committedAt !== 'string') return null
+      return { sha: data.sha, committedAt }
+    } catch (error) {
+      if (error instanceof GithubError && error.status === 404) return null
+      throw error
+    }
+  }
+
+  // Merged pull requests after one instant, with the labels the feature rule
+  // reads. The list is ordered by `updated_at`, so a pull request merged before
+  // the window can still appear on an early page with a comment; the filter runs
+  // per entry instead of stopping at the first old row. `complete` is false only
+  // when the page cap was reached while every row seen was still inside the
+  // window, and the caller reports that rather than a smaller count.
+  async listMergedPullRequestsSince(
+    owner: string,
+    name: string,
+    since: string,
+    maxPages = 3,
+  ): Promise<{ pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string }>; complete: boolean }> {
+    const sinceMs = Date.parse(since)
+    const pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string }> = []
+    let complete = false
+    for (let page = 1; page <= maxPages; page += 1) {
+      const batch = await this.request<Array<{
+        number?: number
+        html_url?: string
+        title?: string
+        merged_at?: string | null
+        updated_at?: string | null
+        labels?: Array<{ name?: string }>
+      }>>(
+        'GET',
+        `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}`,
+      )
+      if (!Array.isArray(batch) || batch.length === 0) {
+        complete = true
+        break
+      }
+      let oldestUpdated = Number.POSITIVE_INFINITY
+      for (const pull of batch) {
+        const updated = typeof pull.updated_at === 'string' ? Date.parse(pull.updated_at) : Number.NaN
+        if (!Number.isNaN(updated) && updated < oldestUpdated) oldestUpdated = updated
+        if (typeof pull.number !== 'number') continue
+        if (typeof pull.merged_at !== 'string' || pull.merged_at === '') continue
+        if (!(Date.parse(pull.merged_at) >= sinceMs)) continue
+        pulls.push({
+          number: pull.number,
+          title: typeof pull.title === 'string' ? pull.title : '',
+          url: typeof pull.html_url === 'string' ? pull.html_url : `https://github.com/${owner}/${name}/pull/${pull.number}`,
+          labels: Array.isArray(pull.labels)
+            ? pull.labels.flatMap((label) => (typeof label.name === 'string' ? [label.name] : []))
+            : [],
+          mergedAt: pull.merged_at,
+        })
+      }
+      if (batch.length < 100) {
+        complete = true
+        break
+      }
+      // Every later page is older by `updated_at`, and a merged pull request is
+      // updated no earlier than it merged, so this bounds the window exactly.
+      if (oldestUpdated < sinceMs) {
+        complete = true
+        break
+      }
+    }
+    return { pulls, complete }
   }
 
   async getRepoFile(owner: string, name: string, path: string, ref: string): Promise<string | null> {

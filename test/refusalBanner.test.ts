@@ -7,7 +7,7 @@ import { jobPage, repoPage } from '../src/views/pages.js'
 import { failureBannerSentence } from '../src/lib/failure.js'
 import { Jobs } from '../src/jobs/service.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { json, makeUser, MemoryMailer, formBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { MemoryMailer, flashCookie, flashOf, formBody, json, makeUser, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // #231 review: the enqueue path refuses before a job row exists, so its answer
 // never reaches `jobs.error_code`. The route used to put the service's Chinese
@@ -24,7 +24,9 @@ import { json, makeUser, MemoryMailer, formBody, sessionFor, startFakeServer, te
 const CJK = /[\u3400-\u9fff]/
 
 function banner(html: string): string {
-  return /<div class="banner bad" role="alert">([\s\S]*?)<\/div>/.exec(html)?.[1] ?? ''
+  // #472: the failure is one message inside the page's stack, so its text is the
+  // span the stack renders, not a div that owned its own `role="alert"`.
+  return /<span class="banner-text">([\s\S]*?)<\/span><button/.exec(html)?.[1] ?? ''
 }
 
 function fixture(): { store: Store; userId: string; repo: ReturnType<Store['createRepo']> } {
@@ -144,9 +146,11 @@ test('a queue-full refusal carries its code through the redirect', async () => {
     })
     assert.equal(response.statusCode, 302)
     const location = String(response.headers.location)
-    assert.match(location, /[?&]error=QUEUE_FULL(?:%3A|:)/, `the redirect did not carry the refusal code: ${location}`)
+    assert.match(flashOf(response)?.error?.key ?? '', /^QUEUE_FULL:/, `the redirect did not carry the refusal code: ${location}`)
+    const flash = flashCookie(response)
+    assert.ok(flash)
 
-    const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+    const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: `${session.cookie}; ${flash}`, 'accept-language': 'en' } })
     assert.equal(page.statusCode, 200)
     const text = banner(page.body)
     assert.doesNotMatch(text, CJK, `the landing page leaked the refusal: ${text}`)
@@ -219,8 +223,10 @@ test('every enqueue button carries the refusal code, not the service sentence', 
       const response = await built.app.inject({ method: 'POST', url, headers: posting, payload: formBody({ csrf: session.csrf }) })
       assert.equal(response.statusCode, 302, `${name} did not redirect`)
       const location = String(response.headers.location)
-      assert.match(location, new RegExp(`[?&]error=QUEUE_FULL(?:%3A|:).*?(?:#work)?$`), `the ${name} redirect did not carry the code and its sentence: ${location}`)
-      const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+      assert.match(flashOf(response)?.error?.key ?? '', /^QUEUE_FULL:/, `the ${name} redirect did not carry the code and its sentence: ${location}`)
+      const flash = flashCookie(response)
+      assert.ok(flash)
+      const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: `${session.cookie}; ${flash}`, 'accept-language': 'en' } })
       assert.equal(page.statusCode, 200)
       const text = banner(page.body)
       assert.doesNotMatch(text, CJK, `the ${name} landing page leaked the refusal: ${text}`)
@@ -297,13 +303,16 @@ test('the newly tabled refusal codes serve their sentence in both locales', asyn
       const response = await built.app.inject({ method: 'POST', url: item.url, headers: posting, payload: formBody({ csrf: session.csrf }) })
       assert.equal(response.statusCode, 302, `${item.name} did not redirect`)
       const location = String(response.headers.location)
-      assert.match(location, new RegExp(`error=${item.code}(?:%3A|:)`), `${item.name} did not carry its code: ${location}`)
-      assert.match(location, new RegExp(encodeURIComponent(item.text.slice(0, 6)).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${item.name} did not carry the writer text: ${location}`)
-      const en = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+      const message = flashOf(response)?.error
+      assert.match(message?.key ?? '', new RegExp(`^${item.code}:`), `${item.name} did not carry its code: ${location}`)
+      assert.match(message?.text ?? '', new RegExp(item.text.slice(0, 6).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), `${item.name} did not carry the writer text: ${location}`)
+      const flash = flashCookie(response)
+      assert.ok(flash)
+      const en = await built.app.inject({ method: 'GET', url: location, headers: { cookie: `${session.cookie}; ${flash}`, 'accept-language': 'en' } })
       const enText = banner(en.body)
       assert.doesNotMatch(enText, CJK, `the ${item.name} banner leaked Chinese in en: ${enText}`)
       assert.match(enText, item.en, `the ${item.name} en banner does not match base: ${enText}`)
-      const zh = await built.app.inject({ method: 'GET', url: location, headers: { cookie: session.cookie, 'accept-language': 'zh' } })
+      const zh = await built.app.inject({ method: 'GET', url: location, headers: { cookie: `${session.cookie}; ${flash}`, 'accept-language': 'zh' } })
       const zhText = banner(zh.body)
       assert.match(zhText, item.zh, `the ${item.name} zh banner does not match base: ${zhText}`)
     }

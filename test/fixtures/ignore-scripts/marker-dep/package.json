@@ -1,0 +1,7 @@
+{
+  "name": "marker-dep",
+  "version": "1.0.0",
+  "scripts": {
+    "postinstall": "node -e \"require('fs').writeFileSync(process.env.MARKER_PATH || 'postinstall-ran.txt', 'yes')\""
+  }
+}

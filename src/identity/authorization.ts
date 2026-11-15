@@ -20,6 +20,11 @@ export type Capability =
   | 'job.create'
   | 'job.resume'
   | 'job.retry'
+  // #540 slice 4: the merge-policy write the console has always let a
+  // `developer` connection make. It is named separately from `config.write`
+  // (maintainer only) so moving the write behind the contract does not take the
+  // action away from the role that held it before.
+  | 'repo.policy'
 
 export const ALL_CAPABILITIES: readonly Capability[] = [
   'tasks.read',
@@ -35,18 +40,19 @@ export const ALL_CAPABILITIES: readonly Capability[] = [
   'job.create',
   'job.resume',
   'job.retry',
+  'repo.policy',
 ]
 
 export const REPO_ROLES = ['maintainer', 'developer', 'viewer'] as const
 export type RepoRole = (typeof REPO_ROLES)[number]
 
 const ROLE_CAPABILITIES: Readonly<Record<RepoRole, readonly Capability[]>> = {
-  maintainer: ['tasks.read', 'tasks.write', 'config.write', 'release.manage', 'knowledge.read', 'knowledge.write', 'schedules.manage', 'job.cancel', 'job.pause', 'job.create', 'job.resume', 'job.retry'],
+  maintainer: ['tasks.read', 'tasks.write', 'config.write', 'repo.policy', 'release.manage', 'knowledge.read', 'knowledge.write', 'schedules.manage', 'job.cancel', 'job.pause', 'job.create', 'job.resume', 'job.retry'],
   // #624 added `job.create`, `job.resume` and `job.retry` as commands the
   // connection owner holds. `deriveRepoRole` maps a write-permission connection to
   // `developer`, so that role must carry them or an owner with a write token loses
   // commands it had before #541 (only the connection owner could act then).
-  developer: ['tasks.read', 'tasks.write', 'knowledge.read', 'knowledge.write', 'job.cancel', 'job.pause', 'job.create', 'job.resume', 'job.retry'],
+  developer: ['tasks.read', 'tasks.write', 'repo.policy', 'knowledge.read', 'knowledge.write', 'job.cancel', 'job.pause', 'job.create', 'job.resume', 'job.retry'],
   viewer: ['tasks.read', 'knowledge.read'],
 }
 

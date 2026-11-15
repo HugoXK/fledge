@@ -145,7 +145,7 @@ State:
 | Label | Meaning |
 |---|---|
 | `needs-info` | The report is not reproducible or the spec is unclear |
-| `needs-human` | A design, security or policy decision is required |
+| `needs-human` | An owner-only decision is required: a real signature, production, keys, data deletion, or opening a security surface. A design or policy question the team can settle is not `needs-human` — pick the answer and record it |
 | `agent-ready` | Clear, unblocked, no open design conflict |
 | `agent-working` | A claim is live |
 | `agent-pr` | A PR exists |
@@ -162,8 +162,13 @@ All four:
 3. It is not `hold`, not an umbrella, and not team-via-groups work.
 4. The Reviewer posted `Issue-review: PASS at issue #<N> body <12-hex>` and added
    `review:approved`. That verdict plus the label is the Reviewer's only state
-   write: it never adds `agent-ready`, never assigns, and never edits the body.
-   `agent-ready` is added by the Lead and only by the Lead.
+   write: it never adds `agent-ready` and never edits the body. `agent-ready` is
+   added by the Lead and only by the Lead.
+   For an owner-filed card the same write also removes `needs-review` and
+   assigns the card back to `HugoXK`; that hand-back is part of the verdict, not
+   a separate step (`AGENTS.md`, "Issue ownership and verdict writing"). A
+   verdict that leaves an owner-filed card assigned to the Reviewer is a board
+   defect, because dispatch reads the assignee.
 
 The hash is sha256 over the decoded body, first 12 hex. A verdict may name
 either the raw body or the body with trailing whitespace stripped — several
@@ -195,6 +200,11 @@ the human rule — a material edit voids the approval, so the Reviewer re-reads 
 covers that window.
 
 Otherwise `needs-human` or `needs-info`, with the blocking question in a comment.
+
+A reviewed branch never gains a merge commit whose only purpose is to absorb a
+newer base: it voids the PASS and makes the same change be judged twice. Fix the
+branch, push a new tip, and ask for a verdict at that tip. Resolve a real
+conflict inside the branch; never rewrite a tip that was already reviewed.
 
 ## Risk tiers
 
@@ -230,8 +240,10 @@ file is the record and not the gate — branch protection is an owner action.
 - `changes` (the diff classifier; it must succeed before any conditional job)
 - `lint`
 - `typecheck`
-- `test` on Node 22 and Node 24
-- `coverage` (the Node coverage floor recorded in `package.json`)
+- `test` on Node 24 (the supported-version compatibility run)
+- `coverage` (the Node 22 full-suite execution and the Node coverage floor
+  recorded in `package.json`; one execution per supported Node line, plus the
+  changed-lines floor on the pull request diff)
 - `build`
 - `visual` (the UI matrix, when the diff reaches a rendered surface)
 - `docker` (image builds, scans and starts)
@@ -245,6 +257,7 @@ file is the record and not the gate — branch protection is an owner action.
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
 - `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
+- `deploy-check` (the `deploy/` worker, alert rules and service samples parse, when the diff reaches `deploy/`)
 
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
@@ -253,8 +266,8 @@ A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 ### Change-aware gates
 
 The `changes` job in `ci.yml` classifies the pull request diff once and writes
-eight flags: `source`, `frontend`, `deps`, `db`, `docker`, `workflows`, `codeql`
-and `docsOnly`. Jobs that cannot learn anything from the diff carry a job-level `if`
+nine flags: `source`, `frontend`, `deps`, `db`, `docker`, `workflows`, `codeql`,
+`deploy` and `docsOnly`. Jobs that cannot learn anything from the diff carry a job-level `if`
 and are skipped **before a runner starts**, not after an install:
 
 | Flag false | Jobs skipped |
@@ -265,6 +278,7 @@ and are skipped **before a runner starts**, not after an install:
 | `db` | `restore-drill` |
 | `docker` | `docker` |
 | `workflows` | `action-pins`, `workflow-lint` |
+| `deploy` | `deploy-check` |
 | `codeql` | `codeql-required` (and the CodeQL workflow's own docs/deploy/Dockerfile path filter) |
 
 `test` and `coverage` are never conditional, and are not in this table. The suite
@@ -274,12 +288,58 @@ workflow-only diff still turns the suite red. Skipping it for `source: false` le
 `ci-ok` go green over a red suite, and for `docs/` (T0) and `public/` (T1) no
 verdict reads it either.
 
+`deploy` is its own flag because a deploy-only diff is not gate-free: `deploy/`
+ships the Cloudflare worker, the Prometheus rules and the nginx/systemd samples,
+and none of the app gates reads them. `deploy-check` parses the worker, runs
+`promtool check rules`, and checks nginx/systemd where the runner provides them
+(a missing tool is written to the job summary as a gap, never as a pass). The
+flag is computed from the same path list as `source`, so a diff that mixes
+`deploy/` with `src/` sets both and the code gates still run; the classifier
+cannot answer "deploy-only" for a mixed diff, and `test/ciChanges.test.ts`
+pins that refusal.
+
+One full-suite execution per supported Node line is enough (#642): `test (24)` is
+the compatibility run and `coverage` is the Node 22 run, since both commands
+execute `test/*.test.ts` and a second Node 22 leg bought no second signal. The
+matrix job keeps its name and `ci-ok` still requires both jobs; a failing test
+fails both remaining runs.
+
+`restore-drill` reuses the build artifact instead of installing and building a
+second time (#643). Reuse is bound to provenance, not to an artifact name: the
+`build` job writes `dist/build-manifest.json` naming `$GITHUB_SHA` and the sha256
+of every file it emitted, and the drill runs `node scripts/dist-manifest.mjs
+verify --dir dist --commit "$GITHUB_SHA"` before it does anything. A stale,
+partial, edited or foreign artifact fails there instead of standing in for the
+commit under test; a missing artifact fails at the download step, and there is no
+fallback rebuild, because that fallback is exactly what would hide a broken
+`build` job. The drill loads only `dist/` and the checked-out `scripts/`, so it
+needs no `npm ci`.
+
 The classifier is an allowlist. An unknown path, an unreadable diff or an empty
 path list runs every gate. A push, schedule or manual run sets every flag true,
 so `main` is still verified in full. `ci-ok` accepts a skipped conditional job
 only when the matching flag is false on a `pull_request` or `merge_group`
 event; a missing flag fails closed. `SKIP_WHEN` in `scripts/ci-ok.mjs` is the
 machine copy of this table.
+
+The diff is read by `scripts/ci-changes.mjs`, not by the step. A pull request
+whose branch was cut before the latest `main` names a base commit that the
+checkout does not carry, so the first diff fails. The script then fetches that
+commit **with its history**: a depth-limited fetch places the commit but grafts
+it as a shallow root, so the three-dot diff fails again — with `no merge base`
+instead of `Invalid symmetric difference expression` — and nothing is gained. It
+also deepens the checkout when the checkout itself is shallow, because a base
+with history shares no ancestor with a grafted head, and only then retries. The
+base branch ref is the fallback for a server that will not serve an arbitrary
+sha, fetched the same way and never as a depth-limited tip, since a branch tip
+without its ancestors cannot supply a merge base either. Only after those
+attempts does it fall back to running every gate (#752). That fallback is still
+the last resort — an unreadable diff must never shrink the gate — but without a
+fetch that keeps history it fired on every older branch, and the
+`codeql-required` job it woke then spent its full bound waiting for an analysis
+CodeQL never starts for an ignored path. The short circuit for a diff that
+touches only paths `codeql.yml` ignores is separate and is described under
+[Supply-chain gates](#supply-chain-gates).
 
 ### A red `main` reports itself
 
@@ -352,11 +412,55 @@ the synthetic fixture in the initial commit that #185 removed from the tree; a
 token committed afterwards is still a finding, which is why the exception names
 a commit rather than a path.
 
-`coverage` enforces a line floor with a number: `test:coverage` in
-`package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
-introduced it). Lowering it is a reviewed diff, not an edit. The job also writes
-the report into the run summary — not a pull request comment, since a fork pull
-request runs without `pull_request_target`.
+`coverage` enforces two floors, and they answer different questions.
+
+The whole-tree floor is a number in `test:coverage` in `package.json`
+(`--test-coverage-lines=84`, measured 84.59% at the commit that introduced it).
+It answers "is the tree still covered"; lowering it is a reviewed diff, not an
+edit. It cannot answer "is the code *this pull request adds* covered", because a
+200-line untested branch is invisible in a percentage over a large, well-covered
+`src/**`.
+
+The changed-lines floor is `scripts/coverage-diff.mjs`, run by the `coverage` job
+on a pull request after the report is written. It takes the added `src/**` lines
+of `git diff <base>...<head>`, joins them to the report Node printed (the
+uncovered line ranges, per file), and fails when the added code lines are below
+80% covered. `<head>` is the checked-out commit, not the pull request's head sha:
+the job's checkout is `refs/pull/<N>/merge` (it sets no `ref:`), so the report is
+numbered in the merge tree. The base is that merge's first parent, so the diff is
+still the pull request's own change; the two line numbers only agree when both
+sides describe the same tree, and with the head sha a base that moved inside a
+file the pull request edits made an uncovered line read as covered. Only added
+lines under `src/**` are measured, and only ones that can execute: comments,
+imports, type declarations, generated files and `*.d.ts` are not counted, because
+the report can never list them as uncovered. An uncovered added line is printed
+as `path:line` in the step log, so the fix is a test for that line rather than a
+request for a higher total. A changed file the report has no row for is the same
+failure: Node prints a file only when the suite loaded it, so a new module no test
+imports is printed as missing and counts as entirely uncovered.
+
+Two diff shapes used to make the gate skip a file it should have measured, and
+both now have a test. A path with a non-ASCII byte is C-quoted by `git diff`
+(`+++ "b/src/lib/\346\227\245.ts"`) unless it is told otherwise, so the diff is
+read with `-c core.quotePath=false` and the parser unquotes a quoted header too —
+quoted, the name starts with `"`, fails the `src/` test and the file is dropped.
+An added line whose text begins with `++ ` prints as `+++ …`, which is a file
+header only outside a hunk: the parser tracks hunk state, so such a line is
+content and the rest of its file is still measured.
+
+A pull request that genuinely cannot test the added lines says so in its body,
+on one line of its own:
+
+```
+No-test: the branch is unreachable until #700 lands
+```
+
+The step prints what waived it. A documentation, config or workflow-only diff
+adds no `src/**` line and the gate skips it — that is the classifier's own rule,
+not a second switch. The total floor stays in place: this gate is additional, and
+`npm run coverage:diff -- --diff <path> --report <path>` runs the same check
+locally. The job also writes the report into the run summary — not a pull
+request comment, since a fork pull request runs without `pull_request_target`.
 
 The release workflow signs the published image: `id-token: write` and
 `attestations: write` on the release job only, `actions/attest-build-provenance`
@@ -447,6 +551,20 @@ poll would turn a queued runner into a red required check. A scheduled run exits
 0 with its reason and is not in `SKIPPABLE_ON`: the gate must never be skippable
 on the event that merges.
 
+The gate also reads the change set, because `codeql.yml` filters its own trigger
+with `paths-ignore`: a pull request that changes only `docs/`, a Markdown file, a
+deploy file or the `Dockerfile` is analysed by nothing, so waiting ten minutes and
+then reporting "no analysis" reds a mergeable pull request (#752). When every
+changed path matches that list the job answers immediately and says why. The list
+is parsed out of `.github/workflows/codeql.yml` as it stands at the **base**
+commit rather than copied into the module or read from the checkout, so the policy
+cannot drift from the workflow and a pull request that edits the workflow is still
+judged by the filter in force before it. Every uncertainty — no inventory, an
+unreadable one, an empty change set, a failed read, a compare answer that could be
+truncated at the 300-file cap — falls through to the wait, which remains the
+answer for any change CodeQL does analyse. A `push` is never excused this way:
+that trigger is unfiltered.
+
 Every action a workflow runs is pinned to a 40-hex commit with the tag it came
 from in a trailing comment, and the `action-pins` job fails the build on a
 floating tag: a tag is a pointer the action's owner can move, and whatever it
@@ -462,6 +580,12 @@ node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` 
 `pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
 writer, and any `risk:T*` label against the computed tier.
+
+`pr-lint` is its own workflow (`.github/workflows/pr-lint.yml`), so a fixed PR
+body repaints that check and nothing else. Its activity types are `opened`,
+`synchronize`, `reopened`, `ready_for_review` and `edited`; the review gate
+keeps GitHub's default three and is not restarted by a body edit, because
+`review-gate` is the check that must move only when a verdict does.
 
 `review-gate` runs on `pull_request`, `pull_request_review`, `merge_group` and on
 a verdict posted as a comment by an owner, member or collaborator
@@ -522,12 +646,20 @@ by name was green. The step reads check runs with `filter=all` for that reason:
 `filter=latest` returned only the green one and the plan reported "nothing to do"
 while the merge gate kept refusing.
 
-- a PASS re-runs the failed runs whose own `review-gate` job failed, which clears
-  the pre-PASS red that would otherwise block the merge. No failed suite may be
-  left standing, because that is what the merge gate reads;
+- a PASS re-runs the failed runs whose own job of that context failed, for every
+  required context a verdict can invalidate — `review-gate`, owned by the
+  `Review gate` workflow, and `pr-lint`, owned by `.github/workflows/pr-lint.yml`
+  since `#753` — which clears the pre-PASS red that would otherwise block the
+  merge. No failed suite may be left standing, because that is what the merge gate
+  reads. One workflow never repaints another context: re-running `Review gate`
+  cannot move `pr-lint`, and a stale red `pr-lint` blocked a merge while the step
+  reported the tip was fine until `#770` paired each context with the workflow
+  that owns it. A red in a context with no run left below the cap is reported as
+  blocked, never passed;
 - a rejection re-runs the newest repairable run of the `Review gate` workflow at
   the SHA, so a run that is currently green turns red. A run of any other
-  workflow at the same SHA is never a target: re-running it paints no
+  workflow at the same SHA is never a target, and a red `pr-lint` does not count
+  as the rejection being visible: re-running another workflow paints no
   `review-gate` check;
 - a run is repairable while its `run_attempt` is at most 2
   (`MAX_REPAIR_ATTEMPT`), so a run that a person already re-ran by hand is still

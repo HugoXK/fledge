@@ -7,6 +7,12 @@ Every user starts with **1 CNY** of platform-funded model usage
 user to configure their own OpenAI-compatible model service. Their jobs then run
 on their key, with no platform metering.
 
+The first-run model step shows the remaining balance. Below
+`PLATFORM_QUOTA_COMFORT_CNY` (default 50) it warns that the balance may not cover
+the first run and recommends adding an own model now; at or above it the balance
+is shown without a warning and Settings → Model remains the later path. The
+threshold changes the checklist advice only; it never changes quota accounting.
+
 ## Units
 
 - Ledger: the provider's own **currency**, one bucket per currency (`USD`,
@@ -75,6 +81,10 @@ stream ends. A request that is already in flight is allowed to finish; the
 
 ## Enforcement
 
+- A job is platform-funded only when neither the legacy user-level model nor a
+  repository-selected provider model exists. The enqueue and dispatch paths use
+  the same predicate as the bridge and the gateway, so selecting a model for the
+  repository is enough to pass an exhausted platform quota.
 - Before a platform-funded request: if `remaining_cny <= 0`, return HTTP 402
   immediately and mark that user's active jobs `quota_exhausted` (their job
   tokens are revoked) so the UI does not wait for the job timeout.
@@ -91,7 +101,11 @@ stream ends. A request that is already in flight is allowed to finish; the
   leave the team with AUTH errors. Outside a job the instance token is used and
   the row has no job id.
 - When the balance crosses zero: create one in-app notification and at most one
-  email per user per day (deduped by `settings:quota_notified:<userId>`).
+  email per user per day (deduped by `settings:quota_notified:<userId>`). The
+  in-app notification is written before the mail attempt, so it survives a failed
+  send; a failed send also writes a `quota.mail_failed` audit row with the SMTP
+  error redacted, because the day key is already set and that row is the only
+  trace that the reminder was never delivered.
 - A failed job before it starts (quota already zero) is recorded as
   `quota_exhausted` and does not call the model.
 
@@ -166,7 +180,10 @@ provider models the repository may use and which is default
 A request that is refused before a model is called is not metered: an unknown,
 revoked or expired token gets `401 invalid_api_key`, and a live token whose
 `scope` is not `gateway` gets `403 insufficient_scope` before `last_used_at` is
-written. Only an authenticated call reaches the quota check and the ledger, so a
+written. That decision is one shared function, `authenticateApiToken` in
+`src/lib/apiToken.ts`, which the public read API (#392) calls with `jobs:read`;
+the gateway passes `gateway`, so a read token can never reach a model and a
+gateway token can never reach the job list — neither path spends quota. Only an authenticated call reaches the quota check and the ledger, so a
 refused token cannot spend and cannot leave a usage row. A personal token's
 finite expiry (default `PAT_EXPIRY_DAYS` 90) is what ends a leaked token's reach
 without a manual revoke; job and instance tokens keep the lifetime their own

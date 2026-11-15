@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { buildApp, type BuiltApp } from '../src/app.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { MemoryMailer, flashOf, formBody, makeUser, sessionFor, testConfig } from './helpers.js'
 
 // #639: a relation between two tasks is a claim a person makes with a reason and
 // evidence, in one project. Nothing derives it from a title: two tasks with the
@@ -67,7 +67,7 @@ async function fixture(tag: string): Promise<Fixture> {
   return { built, store, user, repoId: repo.id, otherRepoId: other.id, sourceId: source.id, targetId: target.id, foreignId: foreign.id, close: async () => { await built.close() } }
 }
 
-async function post(f: Fixture, payload: Record<string, string>, locale: 'zh' | 'en' = 'en'): Promise<{ statusCode: number; location: string }> {
+async function post(f: Fixture, payload: Record<string, string>, locale: 'zh' | 'en' = 'en'): Promise<{ statusCode: number; location: string; flash: ReturnType<typeof flashOf> }> {
   const session = sessionFor(f.built, f.user)
   const response = await f.built.app.inject({
     method: 'POST',
@@ -75,7 +75,7 @@ async function post(f: Fixture, payload: Record<string, string>, locale: 'zh' | 
     headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `${session.cookie}; fledge_lang=${locale}` },
     payload: formBody({ csrf: session.csrf, ...payload }),
   })
-  return { statusCode: response.statusCode, location: decodeURIComponent(String(response.headers.location ?? '')) }
+  return { statusCode: response.statusCode, location: decodeURIComponent(String(response.headers.location ?? '')), flash: flashOf(response) }
 }
 
 async function page(f: Fixture, jobId: string): Promise<string> {
@@ -92,8 +92,8 @@ test('an explicit relation is saved, listed on both job pages and audited', asyn
   try {
     const response = await post(f, { ...claim, target_job_id: f.targetId })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /notice=/)
-    assert.match(response.location, /Relation saved/)
+    assert.ok(response.flash?.notice)
+    assert.match(response.flash?.notice?.text ?? '', /Relation saved/)
 
     const rows = f.store.listTaskRelations(f.sourceId)
     assert.equal(rows.length, 1)
@@ -121,8 +121,8 @@ test('a target in another repository is refused and writes nothing', async () =>
   try {
     const response = await post(f, { ...claim, target_job_id: f.foreignId })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /error=/)
-    assert.match(response.location, /same repository/)
+    assert.ok(response.flash?.error)
+    assert.match(response.flash?.error?.text ?? '', /same repository/)
     assert.equal(f.store.listTaskRelations(f.sourceId).length, 0)
     assert.equal(f.store.listAudit(50).some((entry) => entry.action === 'job.relation_created'), false)
   } finally {
@@ -134,7 +134,7 @@ test('a task cannot be related to itself', async () => {
   const f = await fixture('self')
   try {
     const response = await post(f, { ...claim, target_job_id: f.sourceId })
-    assert.match(response.location, /cannot be related to itself/)
+    assert.match(response.flash?.error?.text ?? '', /cannot be related to itself/)
     assert.equal(f.store.listTaskRelations(f.sourceId).length, 0)
   } finally {
     await f.close()
@@ -145,7 +145,7 @@ test('an adjective instead of evidence is refused', async () => {
   const f = await fixture('weak')
   try {
     const response = await post(f, { kind: 'related', reason: 'they look similar', evidence: 'obviously', target_job_id: f.targetId })
-    assert.match(response.location, /checkable evidence/)
+    assert.match(response.flash?.error?.text ?? '', /checkable evidence/)
     assert.equal(f.store.listTaskRelations(f.sourceId).length, 0)
   } finally {
     await f.close()
@@ -155,9 +155,9 @@ test('an adjective instead of evidence is refused', async () => {
 test('the same relation saved twice is one row, not two', async () => {
   const f = await fixture('twice')
   try {
-    assert.match((await post(f, { ...claim, target_job_id: f.targetId })).location, /Relation saved/)
+    assert.match((await post(f, { ...claim, target_job_id: f.targetId })).flash?.notice?.text ?? '', /Relation saved/)
     const again = await post(f, { ...claim, target_job_id: f.targetId })
-    assert.match(again.location, /already exists/)
+    assert.match(again.flash?.notice?.text ?? '', /already exists/)
     assert.equal(f.store.listTaskRelations(f.sourceId).length, 1)
     const audits = f.store.listAudit(50).filter((entry) => entry.action === 'job.relation_created')
     assert.equal(audits.length, 1)

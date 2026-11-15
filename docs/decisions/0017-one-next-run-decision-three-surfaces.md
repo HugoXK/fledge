@@ -2,86 +2,77 @@
 
 Status: **accepted** (2026-11-15)
 Date: 2026-11-15
-Supersedes: nothing; it applies the one-next-run rule (`10ea236622`, stated at
-`docs/architecture.md`, "One next-run rule") to the third surface
+Supersedes: nothing; it applies the one-next-run rule to the daily digest
 
 ## Context
 
-Three surfaces answer "when does this repository run again?", and they have to
-agree:
+The repository page and the dashboard already print one next-run time per
+repository. The rule that picks it is decided by the repository, not by the
+surface: a repository with a saved schedule row is answered by the planner
+(`src/schedules/next.ts`, `nextTime`), and a repository without one is answered
+by the legacy interval rule (`src/lib/nextRun.ts`, `nextRun`, through
+`dueAfterMs`).
 
-- the repository page's next-run line, rendered by `nextRunLine` and
-  `plannedNextLine` (`src/views/pages.ts`);
-- the dashboard's all-clear card, which reaches the same two renderers through
-  the route's per-repository facts;
-- the daily digest email, built by `buildDigest` (`src/jobs/service.ts`) and
-  rendered by `src/email/templates.ts`.
-
-The first two were brought onto one rule by two commits: `10ea236622` made the
-page and the card print `nextRun`'s answer, and `f859f242` extended the rule to a
-repository with a saved schedule row, whose cadence the planner
-(`src/schedules/next.ts`, `nextTime`) owns. The digest was never moved. It
-computed `last_run_at + min(interval_minutes, workCooldownMinutes)` for every
-repository with `auto_iterate = 1`, never read the schedule row, never applied
-the 15-minute floor and never consulted `repos.enabled`.
-
-One repository therefore had two answers. A repository scheduled `0 9 * * 1-5`
-in `Asia/Shanghai`, with a 1440-minute interval and its last run ten minutes ago,
-was promised a run within minutes by the email and named the next weekday
-morning by the page. A disabled repository with no row — a state only the
-settings route can leave behind, because `/repos/:id/disable` zeroes both fields —
-was told by the email that a run was coming, while the page said it would never
-start.
-
-What the email could not reach was the *choice* between the interval rule and the
-planner. The instants already live in one place each (`nextRun` and `nextTime`),
-but the choice lived in `src/views/pages.ts` as two non-exported helpers, and a
-job module must not import the view layer.
+The daily digest was the third surface and the only one outside that rule.
+`buildDigest` (`src/jobs/service.ts`) computed `last_run_at + min(interval,
+workCooldownMinutes)` for every `auto_iterate = 1` repository. It never read
+`store.scheduleForRepo()`, `repos.enabled` or the interval floor, so a cron
+repository got a different time in the email, and a disabled repository was
+promised a run the page said would never start. The digest cannot import the
+view helpers that make this choice in `src/views/pages.ts`.
 
 ## Decision
 
-Add `src/lib/nextRunFor.ts` (`nextRunFor`) and let the digest answer through it.
+Add `src/lib/nextRunFor.ts` and use it from `buildDigest`:
 
-- It returns `{ at, state }` with its own union: `NextRunState` plus
-  `unknown-unreadable` and `unknown-closed`. The two planner-only answers are not
-  added to `NextRunState`, because `nextRunLine` switches on that union
-  exhaustively and a new member would drag a view change into this slice.
-- With a schedule row it delegates to `scheduleFromRow` + `nextTime`, and answers
-  `due` when the instant has passed, else `scheduled`; a row the planner refuses
-  is `unknown-unreadable`, a window that has ended is `unknown-closed`. A saved
-  row owns the cadence whether or not the repository is enabled, exactly as on
-  the page.
-- With no row it delegates to `nextRun` (`src/lib/nextRun.ts`), which owns the
-  floor through `dueAfterMs` and the reasons a run will not start — disabled,
-  not-ready, auto-off, active-job, idle, waiting-first-run.
-- `instanceReadyFor(instanceImage, status)` carries the fallback both existing
-  surfaces already apply: on a deployment with no instance image there is no
-  instance to wait for.
-- `buildDigest` maps `state` to its own Chinese sentence, reusing the page's
-  wording where the state exists. The email owns the wording; it does not own
-  the rule.
+- `nextRunFor` takes the `RepoRow`, the optional `ScheduleRow`, open-work,
+  active-job and instance-ready facts, plus the work cooldown.
+- A saved row is answered by `scheduleFromRow` + `nextTime`; a row the planner
+  cannot read answers `unknown-unreadable`, and a closed window answers
+  `unknown-closed`. The state for a live instant is `due` when it is at or
+  before `now`, otherwise `scheduled`, exactly as the page renders it.
+- A repository without a row delegates to `nextRun`, so the interval instant,
+  the disabled/not-ready/auto-off/active-job/idle/waiting-first-run states and
+  the 15-minute floor stay in one place.
+- The digest maps those states to its own Chinese sentences. It does not import
+  `src/views/**`; only the wording is duplicated, because the email is a
+  Chinese-only surface today.
+
+The instance-ready fallback stays in the caller: `config.flybot.instanceImage
+=== '' ? true : instance?.status === 'ready'`, the same guard the page and
+dashboard use, so a deployment with no FlyBot image never prints "not ready".
 
 ## Rejected
 
-- **Keeping the formula in the digest.** That is the defect: a third copy of the
-  rule with two guards missing.
-- **Widening `NextRunState`.** `nextRunLine`'s exhaustive switch would have to
-  handle the planner's two no-instant answers, turning an email fix into a view
-  change.
-- **Moving `nextRunLine`/`plannedNextLine` into `src/lib/`.** It re-points every
-  reference in `src/views/pages.ts` and rewrites the route's `ScheduledNext`
-  contract for a one-line email contradiction.
+- Keeping the formula in `buildDigest`: it is a second implementation of the
+  rule, and the page already proves the failure mode.
+- Widening `NextRunState` with the two planner answers: `nextRunLine` switches on
+  that union exhaustively, so a new member would drag a view change into this
+  slice.
+- Moving `nextRunLine`/`plannedNextLine` out of `src/views/pages.ts`: that
+  re-points every view reference and the route's `ScheduledNext` contract for a
+  one-line email contradiction.
 
 ## Consequences
 
-- The *choice* between a schedule row and the interval rule now has two
-  implementations — the route's (`src/app.ts`, the dashboard and repository page
-  facts) and the helper's — while the instant itself stays single-sourced in
-  `nextTime`/`dueAfterMs`. That is the accepted cost of not restructuring the
-  view layer in this slice; a later card can collapse the route onto the helper
-  if it is ever worth the diff.
-- `src/jobs` stays a caller of the rule, never an owner of it.
-- The digest starts printing the page's state sentence for a no-row repository
-  that will not run, instead of a formatted time. For a repository whose state is
-  `due` or `scheduled` the instant does not change: the floor cannot move it,
-  because both clamps already keep it at 15 minutes.
+- The choice between a saved row and the interval rule now lives in the route
+  (for the two existing surfaces) and in `nextRunFor` (for the digest). The
+  instant itself remains single-sourced in `nextTime`/`dueAfterMs`; a later card
+  can collapse the route onto the helper if the view-layer refactor is worth it.
+- The digest now prints the page's state sentences for disabled,
+  not-ready, auto-off, active-job, idle and never-run repositories, and the
+  planner instant for a scheduled repository — including a disabled repository
+  that has a saved row, where the row decides the cadence on both surfaces.
+- `src/jobs/` remains a caller of the rule, never its owner.
+
+## Amendment — #723 (2026-11-15)
+
+`enabled` answers before the saved row does, here and on every surface. The
+worker only considers `enabled = 1 AND auto_iterate = 1` (`src/db.ts`,
+`listAutoRepos`) and a manual start on a paused repository is refused with
+`REPO_DISABLED` (`src/jobs/service.ts`), so a paused repository must not be
+promised a run even when it keeps its schedule row. The Consequences sentence
+that let a disabled repository with a saved row follow the row's cadence is
+therefore superseded: the page route withholds the row's answer for a paused
+repository and `nextRunFor` returns `disabled` before it reads the row, so the
+page, the dashboard and the digest keep one sentence.

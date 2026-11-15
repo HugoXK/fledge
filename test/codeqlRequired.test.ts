@@ -440,3 +440,169 @@ test('each poll hands the lookup its deadline so a fallback scan cannot outlive 
   assert.equal(seen[0], 100, 'the first poll carries the absolute deadline the module computed')
   assert.ok(seen.every((deadline) => deadline === 100), 'every poll inside one run carries the same deadline')
 })
+
+// #752: `codeql.yml` filters its own trigger (`paths-ignore`). A pull request
+// whose every changed path is ignored gets no analysis at all, and the gate then
+// sat on its ten-minute bound and reddened `ci-ok` for a run that was never meant
+// to exist. The decision belongs here, where it can be driven without Actions;
+// the ignore list itself belongs in the workflow file, because a copy of it in
+// this module would drift from the workflow it describes.
+interface ChangeInventory {
+  paths: string[]
+  patterns: string[]
+}
+
+interface InventoryLookups extends Lookups {
+  changeInventory?: () => Promise<ChangeInventory | null>
+}
+
+interface IgnoreLib {
+  pathsIgnoreFromWorkflow: (text: string) => string[]
+  matchesIgnoredPath: (path: string, patterns: string[]) => boolean
+  onlyIgnoredPaths: (paths: string[], patterns: string[]) => boolean
+  changedPathsFromApi: (options: {
+    api: (path: string) => Promise<unknown>
+    repo: string
+    base: string
+    head: string
+    maxPages?: number
+    perPage?: number
+  }) => Promise<string[] | null>
+  changeInventory: (options: {
+    api: (path: string) => Promise<unknown>
+    repo: string
+    base: string
+    head: string
+    maxPages?: number
+    perPage?: number
+  }) => Promise<ChangeInventory | null>
+  MAX_COMPARE_PAGES: number
+}
+
+async function ignoreLib(): Promise<IgnoreLib> {
+  return (await import(libUrl)) as unknown as IgnoreLib
+}
+
+const REAL_IGNORE = ['docs/**', '**/*.md', 'LICENSE', 'deploy/**', 'Dockerfile']
+
+test('an ignored-only change set answers instead of waiting out the bound', async () => {
+  const { codeqlRequired } = await lib()
+  const clock = fakeClock()
+  let polled = 0
+  const lookups: InventoryLookups = {
+    analysisFor: async () => {
+      polled += 1
+      return null
+    },
+    changeInventory: async () => ({ paths: ['AGENTS.md', 'docs/deploy.md'], patterns: REAL_IGNORE }),
+  }
+  const result = await codeqlRequired({ eventName: 'pull_request', sha: SHA, payload: {} }, lookups, clock)
+  assert.equal(result.ok, true, `an ignored-only diff cannot produce an analysis: ${result.reason}`)
+  assert.equal(result.polls, 0, 'the answer is reached before the first poll, not after the bound')
+  assert.equal(polled, 0, 'the gate must not even look for an analysis it knows cannot exist')
+  assert.equal(clock.slept.length, 0, 'ten minutes of sleeping is the defect this card removes')
+  assert.match(result.reason, /ignore/i, 'the summary has to say why no analysis was expected')
+  assert.match(result.reason, new RegExp(SHA))
+})
+
+test('the control: one analysed path in the change set and the gate waits as before', async () => {
+  const { codeqlRequired } = await lib()
+  const clock = fakeClock()
+  const lookups: InventoryLookups = {
+    analysisFor: async () => null,
+    changeInventory: async () => ({ paths: ['AGENTS.md', 'src/app.ts'], patterns: REAL_IGNORE }),
+  }
+  const result = await codeqlRequired({ eventName: 'pull_request', sha: SHA, payload: {}, waitMs: 100, pollMs: 10 }, lookups, clock)
+  assert.equal(result.ok, false, 'a change CodeQL does analyse must not be excused by the ignored paths beside it')
+  assert.ok(clock.slept.length > 0, 'the gate still waits inside its bound for a real analysis')
+})
+
+test('an inventory that cannot be read, or is empty, does not shrink the gate', async () => {
+  const { codeqlRequired } = await lib()
+  const unanswered: InventoryLookups = {
+    analysisFor: async () => null,
+    changeInventory: async () => null,
+  }
+  const unreadable = await codeqlRequired({ eventName: 'pull_request', sha: SHA, payload: {}, waitMs: 100, pollMs: 10 }, unanswered, fakeClock())
+  assert.equal(unreadable.ok, false, 'an unreadable change set is not an ignored one')
+
+  const empty: InventoryLookups = {
+    analysisFor: async () => null,
+    changeInventory: async () => ({ paths: [], patterns: REAL_IGNORE }),
+  }
+  const nothing = await codeqlRequired({ eventName: 'pull_request', sha: SHA, payload: {}, waitMs: 100, pollMs: 10 }, empty, fakeClock())
+  assert.equal(nothing.ok, false, 'an empty list must not read as "everything is ignored"')
+
+  const thrower: InventoryLookups = {
+    analysisFor: async () => null,
+    changeInventory: async () => {
+      throw new Error('GitHub 502 compare')
+    },
+  }
+  const failed = await codeqlRequired({ eventName: 'pull_request', sha: SHA, payload: {}, waitMs: 100, pollMs: 10 }, thrower, fakeClock())
+  assert.equal(failed.ok, false, 'a failed inventory read falls back to the wait; it must not become a pass')
+})
+
+test('a push is not excused by the pull request ignore list', async () => {
+  const { codeqlRequired } = await lib()
+  const clock = fakeClock()
+  const lookups: InventoryLookups = {
+    analysisFor: async () => null,
+    changeInventory: async () => ({ paths: ['AGENTS.md'], patterns: REAL_IGNORE }),
+  }
+  const result = await codeqlRequired({ eventName: 'push', sha: SHA, payload: {}, waitMs: 100, pollMs: 10 }, lookups, clock)
+  assert.equal(result.ok, false, 'codeql.yml runs unfiltered on a push, so an analysis must exist there')
+  assert.ok(clock.slept.length > 0)
+})
+
+test('the ignore list is read from the workflow file, not copied into the code', async () => {
+  const { pathsIgnoreFromWorkflow, matchesIgnoredPath, onlyIgnoredPaths } = await ignoreLib()
+  const onDisk = pathsIgnoreFromWorkflow(readFileSync(codeqlWorkflowPath, 'utf8'))
+  assert.deepEqual(onDisk, REAL_IGNORE, 'the gate has to read the policy the workflow states')
+
+  // A different file, to prove this is a reader and not a constant matched back.
+  const other = pathsIgnoreFromWorkflow(
+    ['on:', '  pull_request:', '    paths-ignore:', "      - 'only/this/**'", "      - '*.txt'", '  push:', '    branches: [main]', ''].join('\n'),
+  )
+  assert.deepEqual(other, ['only/this/**', '*.txt'], 'a list the module does not know must come through unchanged')
+
+  assert.equal(matchesIgnoredPath('AGENTS.md', REAL_IGNORE), true, '**/*.md matches at the repository root')
+  assert.equal(matchesIgnoredPath('docs/a/b.md', REAL_IGNORE), true)
+  assert.equal(matchesIgnoredPath('deploy/nginx.conf', REAL_IGNORE), true)
+  assert.equal(matchesIgnoredPath('Dockerfile', REAL_IGNORE), true)
+  assert.equal(matchesIgnoredPath('src/app.ts', REAL_IGNORE), false)
+  assert.equal(matchesIgnoredPath('AGENTS.txt', REAL_IGNORE), false)
+  assert.equal(onlyIgnoredPaths(['AGENTS.md', 'docs/x.md'], REAL_IGNORE), true)
+  assert.equal(onlyIgnoredPaths(['AGENTS.md', 'src/x.ts'], REAL_IGNORE), false)
+})
+
+test('the change set comes from the compare API, and a truncated answer is not a pass', async () => {
+  const { changedPathsFromApi, MAX_COMPARE_PAGES } = await ignoreLib()
+  const asked: string[] = []
+  const api = async (path: string): Promise<unknown> => {
+    asked.push(path)
+    return { files: [{ filename: 'AGENTS.md' }, { filename: 'docs/deploy.md' }], total_commits: 1 }
+  }
+  const paths = await changedPathsFromApi({ api, repo: 'HugoXK/fledge', base: 'b'.repeat(40), head: 'h'.repeat(40) })
+  assert.deepEqual(paths, ['AGENTS.md', 'docs/deploy.md'])
+  assert.match(asked[0] ?? '', /\/compare\/b{40}\.\.\.h{40}/, 'the compare endpoint names both commits')
+
+  // A page that fills the cap could be the first page of a longer diff; saying
+  // "ignored" about the files it happened to return would shrink the gate.
+  const full = Array.from({ length: 100 }, (_value, index) => ({ filename: `docs/${String(index)}.md` }))
+  let calls = 0
+  const truncated = async (): Promise<unknown> => {
+    calls += 1
+    return { files: full, total_commits: 500 }
+  }
+  const answer = await changedPathsFromApi({ api: truncated, repo: 'HugoXK/fledge', base: 'b'.repeat(40), head: 'h'.repeat(40), perPage: 100 })
+  assert.equal(answer, null, 'an answer that could be incomplete is not an ignored-only change set')
+  assert.equal(calls, MAX_COMPARE_PAGES, 'the compare is paged to the cap and then refused')
+})
+
+test('the CLI reads the ignore list from the base commit and carries no copy of it', () => {
+  const cli = readFileSync(codeqlCliPath, 'utf8')
+  assert.match(cli, /pathsIgnoreFromWorkflow|changeInventory/, 'the ignore list has to come through the lib')
+  assert.doesNotMatch(cli, /docs\/\*\*/, 'a copied ignore list drifts from codeql.yml and cannot be reviewed with it')
+  assert.match(cli, /changeInventory:/, 'the job has to ask the lib for the change set')
+})

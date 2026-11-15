@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import { GATE_PLAN_LANES, planHash, validateGatePlan } from '../src/gates/plan.js'
-import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { flashOf, formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // #543 first slice: the plan is validated as a closed shape, stored as a
 // session, and confirmed by a maintainer. No route in this slice writes to the
@@ -294,7 +294,8 @@ test('the confirm form records the decision and redirects to the gate page', asy
     const id = (JSON.parse(created.body) as { id: string }).id
     const confirmed = await confirm(h, id, true)
     assert.equal(confirmed.statusCode, 302)
-    assert.match(String(confirmed.headers.location ?? ''), /\/gate\?notice=/)
+    assert.equal(confirmed.headers.location, `/repos/${h.repo.id}/gate`)
+    assert.equal(flashOf(confirmed)?.notice?.text, '计划已确认。还没有写入仓库。')
     assert.equal(h.store.getGateSession(id)?.status, 'confirmed')
     const page = await h.built.app.inject({ method: 'GET', url: `/repos/${h.repo.id}/gate`, headers: { cookie: `${h.cookie}; fledge_lang=en` } })
     assert.equal(page.statusCode, 200)

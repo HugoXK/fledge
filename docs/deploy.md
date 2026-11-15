@@ -39,6 +39,7 @@ Key settings:
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
 | `USD_CNY_RATE` | Default 7.2 |
+| `PLATFORM_QUOTA_COMFORT_CNY` | Default 50; below this the first-run checklist recommends an own model |
 | `RUNNER_MODE` | `mock` or `flybot` |
 | `JOB_TIMEOUT_MINUTES` / `JOB_STALL_MINUTES` | Hard timeout (default 90) and no-heartbeat stall timeout (default 30) |
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
@@ -204,6 +205,16 @@ and approve; 120/min across credential, callback, webhook, inbound and metrics).
 
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
+Both stages of the image pin `node:22-alpine` by digest (`Dockerfile`), so a tag
+that moves cannot change the toolchain under a build whose diff says nothing
+about it. Update the pin deliberately: resolve the digest a fresh pull reports
+for `22-alpine`, replace both `FROM` lines together, and keep the readable tag in
+the reference. `test/dockerfilePins.test.ts` fails on a `FROM` without
+`@sha256:<64 lowercase hex>` and on two stages pinned to different digests, so a
+dropped digest is a red suite rather than a silent tag. Dependabot's Docker
+ecosystem is the next slice; until it lands, the bump is manual and still needs a
+rebuild, the image scan and the smoke check.
+
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
 (`Dockerfile`, runtime stage). The console reads them for the footer version and
 the `/admin` release card, which states the running version, the newest changelog
@@ -345,6 +356,62 @@ before the ruleset existed still falls back to the pull request head.
 
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
+
+### Release tag provenance
+
+A `v*` tag is a published name: whatever it points at becomes an image, an SBOM,
+a GitHub release and, on a host, the next deployed version. The ruleset
+`release tag protection` (id `27014081`) blocks deletion and non-fast-forward
+updates of `v*`. Those two rules stop a tag being moved or removed; neither
+stops a **new** one being created, so anyone with write access can still push
+`v9.9.9`. Making that half true is a ruleset change — repository state, not a
+commit — so it is recorded here as an owner action, and `release.yml` verifies
+what a commit can.
+
+**The owner action, once.** In Settings → Rules → `release tag protection`,
+target `v*`, add the **Create** rule beside the existing deletion and
+non-fast-forward rules, with a bypass list holding exactly the release identity:
+the GitHub Actions integration (id `15368`) and, if manual tags are still
+wanted, the repository role `Admin`. Nothing else belongs in that list — a bypass
+is what makes a rule stop applying, so every actor there can create a version
+tag. The API form is `PUT /repos/{owner}/{repo}/rulesets/27014081` with the
+current rules, `{ "type": "creation" }` added, and `bypass_actors` naming those
+two. The tag job keeps working because it writes the tag with `GITHUB_TOKEN`,
+which is that integration. Keep the deletion and non-fast-forward rules as they
+are.
+
+**What `release.yml` verifies before it publishes.** The tag object is read from
+the checkout the run already fetched; the one API read is the release pull
+request behind the tag's commit. A tag that fails any check is a red run whose
+message names the field, and the publish stops before anything is built, pushed
+or released:
+
+- the tag is an **annotated object**, not a lightweight ref, so it carries the
+  tagger and message the next two checks read;
+- its tagger is the release routine (`github-actions[bot]`) or a documented owner
+  identity (`HugoXK`, `Day Dreamer` — the names on the tags created by hand
+  before the routine existed, which are still re-published after a bad image);
+- it points at a commit that is an **ancestor of `main`** — this check is
+  unchanged and still refuses a tag off the release line;
+- when the tagger is the routine, that commit is the one a merged pull request
+  titled `release: v<version>` produced: the pull request's `merge_commit_sha`
+  must equal the tag's commit, so a tag made by hand cannot borrow the routine's
+  identity without merging a release pull request.
+
+The tagger field is git text, not an authentication claim — anyone can write
+`Day Dreamer` into a tag object. It is checked because, together with the
+`creation` rule, it records which identity produced a tag that exists. The
+enforcement of *who may create* is the ruleset; this check is what keeps a tag
+that got in another way from publishing.
+
+One reading worth stating: the card asks for a tag that points at "a merge
+commit on `main`". That is verified as "points at the commit its release pull
+request merged", not as "has two parents". Every tag this repository has released
+points at a one-parent squash commit (`v0.3.6` → `aa83dc0`, one parent), so a
+two-parent check would refuse every real release.
+
+Not in this slice: no signed-commit requirement (a non-goal on the card) and no
+change to the release cadence or the tag name.
 
 ### Automatic tag deployment and verification
 
@@ -546,6 +613,17 @@ server {
 }
 ```
 
+CI syntax-checks the example on every diff that touches `deploy/`: `deploy-check`
+runs `scripts/check-nginx-config.sh`, which renders the example with generated
+certificates and loopback listens and parses it with `nginx`. The wrapper it
+renders, `deploy/nginx.check.conf`, declares `pid <tmp>/nginx.pid;` before
+`events {}` because `nginx -t` opens the pid path while it initialises the cycle,
+and an unprivileged runner cannot open nginx's compiled-in `/run/nginx.pid`; the
+result is a failed step and a red `ci-ok` (#795). When nginx is not installed on
+the runner the step writes a gap to the job summary instead of passing silently.
+With nginx installed, `bash scripts/check-nginx-config.sh` runs the same check
+locally and prints the parse output.
+
 The app trusts only the hops named in `TRUST_PROXY`, never every hop.
 `$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually
 saw is the rightmost `X-Forwarded-For` entry, and that is the value Fledge uses as
@@ -700,9 +778,12 @@ the command that verifies a large copy. The copies line counts only copies a
 manifest contradicts and names the rest separately, so `0 copies · nothing to
 check` is what an empty directory says. An encrypted copy is listed the same
 way: its manifest's size and `sha256` cover the file on disk, so the card
-compares the ciphertext and reads the age from the name. The drill prints its
-verdict and records nothing, so the card says `none recorded`
-rather than showing a green it cannot prove.
+compares the ciphertext and reads the age from the name. The restore drill
+writes `${DATA_DIR}/backup-drill.json` when `DATA_DIR` is set (or the path passed
+with `--status-file`), and the card shows that record's time, `ok`/`failed` and
+RTO/RPO. It says `none recorded` only when that file is absent or unreadable, so
+the card never shows a green it cannot prove.
+
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.
@@ -718,7 +799,7 @@ written `0600`, so the dump is not readable by other accounts on the host either
 Prove that the newest copy still restores, without touching the live database:
 
 ```sh
-npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR"
+npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json"
 # encrypted copy: prefix with BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key
 # manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
 # table=jobs expected=5000 actual=5000        one line per table: copy vs manifest
@@ -739,6 +820,11 @@ How it works and how to read it:
   directory (write a fresh copy first with `--fresh`; with a key configured that
   fresh copy is encrypted too). Nothing is created if a copy already exists, so
   the RPO you see is the age of your real backup schedule.
+- `--status-file <path>` records the result for `/admin`: `{at, ok, detail}`,
+  mode `0600`, written atomically. With neither the flag nor `DATA_DIR` the drill
+  writes nothing, so a CI run cannot touch an operator's data directory. A failed
+  drill overwrites the last success with `ok:false`, so the card never shows a
+  stale green.
 - **An encrypted copy is decrypted with the configured key before the database
   checks.** The `.db.enc` extension selects the encrypted path; the ciphertext is
   checked against the manifest first, then decrypted with
@@ -866,6 +952,25 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   `curl -H "Authorization: Bearer $METRICS_TOKEN" https://<host>/healthz`; without
   it the key is absent by design, not a deploy failure.
 - Watch for `level:"error"` in structured logs.
+- Clock skew: a wrong host clock shifts every stored timestamp, every digest line
+  and every scheduled run, and the container cannot be trusted to keep time on its
+  own. `GET /readyz` carries `clock.skewSeconds` — the last measured offset from
+  GitHub's `Date` header, positive when the process is ahead — and it is `null`
+  when nothing has been measured, never `0`:
+
+  ```sh
+  curl -s https://<host>/readyz | jq .clock
+  curl -s -H "Authorization: Bearer $METRICS_TOKEN" https://<host>/metrics \
+    | grep fledge_clock_skew_seconds
+  ```
+
+  An **absent** `fledge_clock_skew_seconds` line means "not measured" — no App
+  configured, GitHub unreachable, or a `Date` header the client could not parse
+  (a rewriting proxy) — and is not evidence that time is right.
+  `FledgeClockSkewHigh` fires on `abs(fledge_clock_skew_seconds) > 120` for ten
+  minutes. Fix the host clock (`timedatectl set-ntp true`, or start the container
+  with a host that keeps time); Fledge reports the drift and never rewrites a
+  stored timestamp to hide it.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
 - Disk: SQLite WAL files and logs.

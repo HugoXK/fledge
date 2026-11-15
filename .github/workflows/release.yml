@@ -33,10 +33,13 @@ jobs:
     # inherited from the workflow; they are repeated here because a job-level
     # block replaces the workflow set instead of merging with it, and dropping
     # one fails at tag time rather than in CI. `id-token` and `attestations` are
-    # the two the provenance record signs and stores with.
+    # the two the provenance record signs and stores with. `pull-requests: read`
+    # is #648: the tag's provenance is the merged release pull request behind its
+    # commit, and reading that pull request is the only API call the check makes.
     permissions:
       contents: write
       packages: write
+      pull-requests: read
       id-token: write
       attestations: write
     steps:
@@ -61,11 +64,20 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: node scripts/version.mjs check
 
-      # A tag off main would publish a commit nobody reviewed on the release line.
-      - name: Verify the tag is an ancestor of main
+      # #648: a tag is a published name, so a tag whose shape this repository's
+      # routine cannot have produced must not publish. The shape is read offline
+      # from the tag object the checkout already fetched; the one API read is the
+      # release pull request behind its commit, which is what a name someone with
+      # write access chose cannot fake. Where this tag was *allowed to exist* is
+      # the `creation` rule on the `v*` ruleset — repository state, so the owner
+      # action docs/deploy.md records — and a tag off main is refused here too.
+      - name: Verify the tag's provenance
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
         run: |
+          set -euo pipefail
           git fetch origin main --quiet
           if ! git rev-parse --verify --quiet "refs/tags/${RELEASE_TAG}" >/dev/null; then
             echo "::error::${RELEASE_TAG} is not a tag in this repository"
@@ -75,6 +87,34 @@ jobs:
             echo "::error::${RELEASE_TAG} is not an ancestor of main; refusing to publish"
             exit 1
           fi
+          export TAG_ON_MAIN=1
+          # Declare and assign separately: shellcheck SC2155, because a failing
+          # command inside an export would be masked by the export's own status.
+          TAG_OBJECT_TYPE="$(git cat-file -t "refs/tags/${RELEASE_TAG}")"
+          export TAG_OBJECT_TYPE
+          TAG_TAGGER="$(git for-each-ref --format='%(taggername)' "refs/tags/${RELEASE_TAG}")"
+          export TAG_TAGGER
+          TAG_COMMIT="$(git rev-parse "refs/tags/${RELEASE_TAG}^{commit}")"
+          export TAG_COMMIT
+          gh api "repos/${REPO}/commits/${TAG_COMMIT}/pulls" > "${RUNNER_TEMP}/tag-pulls.json"
+          node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            import { verifyTagProvenance } from "./scripts/lib/tag-provenance.mjs"
+            const result = verifyTagProvenance({
+              tag: process.env.RELEASE_TAG,
+              objectType: process.env.TAG_OBJECT_TYPE,
+              tagger: process.env.TAG_TAGGER,
+              onMain: process.env.TAG_ON_MAIN === "1",
+              commit: process.env.TAG_COMMIT,
+              pulls: JSON.parse(readFileSync(`${process.env.RUNNER_TEMP}/tag-pulls.json`, "utf8")),
+            })
+            console.log(`tag provenance: ${result.ok ? "ok" : "refused"} — ${result.reason}`)
+            if (!result.ok) {
+              console.log(`::error::${result.reason}`)
+              process.exit(1)
+            }
+          '
+          echo "verified ${RELEASE_TAG} on ${TAG_COMMIT} (${TAG_TAGGER})" >> "$GITHUB_STEP_SUMMARY"
 
       # GHCR rejects an uppercase owner, and the value is also used by the
       # steps whose inputs cannot run a shell: derive it once, lowercase, and

@@ -4,7 +4,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { Approvals } from '../src/users/approval.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { formBody, json, makeUser, sessionFor, startFakeServer, testConfig, MemoryMailer } from './helpers.js'
+import { flashOf, formBody, json, makeUser, sessionFor, startFakeServer, testConfig, MemoryMailer } from './helpers.js'
 
 test('browser flow: session, repo add, manual run, approval link', async () => {
   const github = await startFakeServer((request, response) => {
@@ -108,7 +108,8 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
       payload: formBody({ csrf, repo: 'octo/demo', token: 'repo-token', goal: 'duplicate', auto: '0', interval: '1440' }),
     })
     assert.equal(duplicateRepo.statusCode, 302)
-    assert.match(String(duplicateRepo.headers.location), new RegExp(`^/repos/${repo.id}\\?notice=`))
+    assert.equal(duplicateRepo.headers.location, `/repos/${repo.id}`)
+    assert.equal(flashOf(duplicateRepo)?.notice?.text, '这个仓库已经添加过了。')
 
     const noCsrf = await built.app.inject({
       method: 'POST',
@@ -229,7 +230,8 @@ test('browser flow: session, repo add, manual run, approval link', async () => {
       payload: formBody({ csrf: tokenCsrf, signature: 'token-user', disclaimer: '1', security: '1' }),
     })
     assert.equal(applicationSubmitted.statusCode, 302)
-    assert.equal(applicationSubmitted.headers.location, '/apply/status?notice=%E7%94%B3%E8%AF%B7%E5%B7%B2%E6%8F%90%E4%BA%A4%EF%BC%8C%E6%AD%A3%E5%9C%A8%E6%8E%92%E9%98%9F%E3%80%82')
+    assert.equal(applicationSubmitted.headers.location, '/apply/status')
+    assert.equal(flashOf(applicationSubmitted)?.notice?.text, '申请已提交，正在排队。')
     const submitted = store.userById(tokenUser.id)
     assert.ok(submitted)
     assert.equal(submitted.status, 'pending')
@@ -335,9 +337,9 @@ test('the bulk merge reports a job-state skip as a job state, not as a failed ch
       payload: formBody({ csrf }),
     })
     assert.equal(response.statusCode, 302)
-    // Nothing was merged, so the run reports its skip as an error redirect.
-    assert.match(String(response.headers.location), new RegExp(`^/repos/${repo.id}\\?error=`))
-    const message = decodeURIComponent(String(response.headers.location).split('?')[1] ?? '')
+    // Nothing was merged, so the run reports its skip as an error message.
+    assert.equal(response.headers.location, `/repos/${repo.id}#delivery`)
+    const message = flashOf(response)?.error?.text ?? ''
     assert.match(message, /跳过 1 个（最新任务还没有成功）/)
     assert.doesNotMatch(message, /检查\/保护未通过/)
   } finally {

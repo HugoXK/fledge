@@ -28,8 +28,9 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/api/application` | session | JSON status/queue for the status page |
 | GET | `/dashboard` | approved + session | Repos, quota, jobs, personal delivery metrics (`?window=7 or 30`) |
 | GET | `/console` | approved + session | Workspace overview (repos, jobs, quota) |
-| POST | `/repos` | approved + CSRF | Add an upstream repository; Fledge checks or creates the user's fork |
+| POST | `/repos` | approved + CSRF, expensive rate limit | Add an upstream repository; Fledge checks or creates the user's fork |
 | GET | `/repos/:id` | owner | Repo detail, including the selected role, delivery board and allowed roles (`?workState=...` filters the work-item list) |
+| GET | `/repos/:id/ci-gate` | owner | Read-only CI gate report: the workflows that trigger on `pull_request`, the test command they run, the default branch's required checks, and merged pull requests in the last 14 days that landed without a successful check. Names the file or branch it read; writes nothing to the repository |
 | GET | `/readyz` | public | Database and per-repository instance readiness summary |
 | GET | `/metrics` | `Authorization: Bearer <METRICS_TOKEN>` only | Prometheus metrics; a production start refuses an empty `METRICS_TOKEN`, so there is no unauthenticated production path, and a `?token=` query value is not accepted |
 | GET | `/api/read/metrics` | approved | Read-only metrics: a super admin gets the global window, users get their own personal window (`?window=7 or 30`) |
@@ -38,7 +39,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/repos/:id/schedule` | owner | Schedule console: the stored schedule, the planner's next run, the newest decided instant (state, reason, attempts, lease) and the last success; an unknown value prints `unknown` |
 | POST | `/repos/:id/schedule` | owner + CSRF | Save the console form (cron or interval, zone, window); audits `schedule.saved` and writes nothing when the form is refused |
 | POST | `/repos/:id/schedule/remove` | owner + CSRF | Delete the schedule so the repository returns to its legacy interval; audits `schedule.removed` |
-| POST | `/repos/:id/run` | owner + CSRF | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
+| POST | `/repos/:id/run` | owner + CSRF, expensive rate limit | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
+| POST | `/repos/:id/rules` | maintainer + CSRF, destructive rate limit | Save one repository rule override against its expected revision |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
 | POST | `/repos/:id/work/:workItemId/state` | owner + CSRF | Move a work item through the triage/assignment/review state machine |
 | POST | `/repos/:id/work/:workItemId/run` | owner + CSRF | Start a plan or iterate job for a work item |
@@ -92,7 +94,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | POST | `/admin/users/:id/approve` | admin + CSRF | Approve |
 | POST | `/admin/users/:id/reject` | admin + CSRF | Reject |
 | POST | `/admin/users/:id/quota` | admin / super admin + CSRF | Set quota in CNY; unlimited is super-admin-only |
-| POST | `/admin/users/:id/role` | owner + CSRF | Promote a normal user to admin or demote an admin |
+| POST | `/admin/users/:id/role` | owner + CSRF, destructive rate limit | Promote a normal user to admin or demote an admin |
 | POST | `/admin/simulation` | owner + CSRF | Toggle the normal-user UI preview |
 | POST | `/admin/platform/stop` | admin + CSRF | Stop all platform work: every enqueue is refused with `PLATFORM_PAUSED`, active jobs are paused or cancelled, one audit row records who and why. The read-only preview does not block it |
 | POST | `/admin/platform/resume` | admin + CSRF | Clear the platform stop and report the repositories the next tick will consider; it re-enqueues nothing |
@@ -170,6 +172,57 @@ service in every mode: the switch was the pilot's safety net for one operation. 
 revision fence runs before the receipt insert, as it does everywhere else — and a
 replayed key settles nothing, so a receipt that already answered is never
 rewritten and the revision moves once per command.
+
+## Public API v1
+
+Token-authenticated, versioned, and read-only today. A personal `flg_` token is
+the only credential; a browser session is not accepted here, and a token from
+this surface is not accepted as a session anywhere.
+
+Every route answers three stable failure shapes before it does any work, in the
+same words as the model gateway because both read the same authenticator
+(`src/lib/apiToken.ts`):
+
+| Status | `error.type` | When |
+|---|---|---|
+| `401` | `invalid_api_key` | no `flg_` token, an unknown hash, a revoked token, an expired `expires_at`, or a token whose user is not approved |
+| `403` | `insufficient_scope` | a live token whose `scope` is not the one the route requires; `last_used_at` is not written, so a refused token leaves no trace |
+| `429` | `rate_limited` | the shared API limiter refused the request |
+
+A token's scope is its whole capability. `gateway` reaches `/v1/models` and
+`/v1/chat/completions`; `jobs:read` reaches `/api/v1/jobs`. Neither substitutes
+for the other, and `/settings` mints both.
+
+### `GET /api/v1/jobs`
+
+```bash
+curl -H "Authorization: Bearer flg_…" 'http://localhost:8080/api/v1/jobs?limit=50'
+```
+
+Answers the caller's own jobs, newest first, as:
+
+```json
+{ "data": [ { "id": "job_…", "kind": "implement", "status": "succeeded", "repo": "repo_…",
+              "createdAt": "2026-11-15T03:00:00.000Z", "finishedAt": "2026-11-15T03:04:11.000Z",
+              "prUrl": "https://github.com/acme/demo/pull/7", "issueUrl": null,
+              "reviewScore": 91, "costUsd": 0.25 } ],
+  "next_cursor": null }
+```
+
+- `limit` is `1`–`100`, default `50`. A value outside the range is clamped, and a
+  value that is not a number takes the default; the page size is not an error.
+- `cursor` is the `id` of the last job in the previous page. The page boundary is
+  the sort order itself (`created_at DESC, id DESC`'s stable pair), so a job
+  created between two requests cannot shift a row across pages or repeat one.
+  `next_cursor` is `null` on the last page.
+- A `cursor` that is not one of the caller's own job ids answers `400` with
+  `error.type: invalid_cursor`; it is never resolved against another account.
+- The item carries those ten fields and nothing else. The row behind it also
+  holds a callback hash, a platform token hash and a callback secret, so the
+  mapper in `src/app.ts` is the boundary that keeps them out; no body in this
+  section contains a token or a secret.
+- Write endpoints (`POST /api/v1/jobs`, `pause`, `resume`, `cancel`) are a later
+  slice and a separate scope, `jobs:write`. v1 is read-only today.
 
 ## Read-only metrics
 
@@ -385,6 +438,13 @@ refused rather than judged, which is deliberate — an unread file is not a
 permitted one. Rows stored before these fields existed keep their old sentence
 and are upgraded on the next check, so there is no migration.
 
+`PullRequestInfo` also carries the pull request `body`, which the reader never
+interprets: the job page shows the three sections the agent wrote into it.
+`pullRequestDiffTotals` reduces the same listing to `{ files, additions,
+deletions }` for that page, and reports no totals when the walk was capped — the
+same rule as the path guard, stated once: a partial listing is unavailable, never
+rounded down and presented as the change.
+
 ## Job endpoints
 
 These are called by the FlyBot bridge/agent, not by a browser.
@@ -447,6 +507,29 @@ bring it back, and the bulk merge neither re-checks it nor counts it as skipped.
 Each `skipped` entry carries its reason, so the operator message tells a job-state
 skip apart from one where checks or branch protection refused the merge.
 
+### `GET /api/jobs/:id/context`
+
+Headers: `Authorization: Bearer <callbackSecret>`
+
+Serves the exact rule or skill text recorded on that job, so a running job can
+read a skill it was only told about at enqueue time:
+
+```
+GET /api/jobs/job_abc/context
+                    -> {"commit": "<sha>", "files": [{"path": ".fledge/rules.md", "kind": "rule", "sha256": "…", "bytes": 1210}]}
+GET /api/jobs/job_abc/context?path=.agents/skills/release-notes/SKILL.md
+                    -> 200 text/plain with the recorded body and `x-content-sha256`
+```
+
+Without `path` it answers the manifest recorded at enqueue. With `path` it
+serves one recorded file and refuses anything else: `400` for a path over 300
+bytes or containing a NUL, `404` for a path this job did not record, `409` once
+the job is no longer queued or running, `401` for a secret that is not this
+job's. The body comes from `job_context_files`, never from a live read, so a
+commit pushed after the job started cannot change what the job is told. Each
+served file is recorded as a `job.context_read` job event with the path, and the
+response is `no-store`. The endpoint is rate limited per job and caller.
+
 ### `POST /api/jobs/:id/callback`
 
 Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/json`
@@ -476,7 +559,10 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
     "checks": "CI green",
     "files": 3,
     "risk": "low",
-    "rollback": "revert the commit"
+    "rollback": "revert the commit",
+    "findings": [
+      { "rule": "js/path-injection", "path": "src/app.ts", "line": 120 }
+    ]
   },
   "checkpoint": "implemented the parser; next: add the rejection test"
 }
@@ -496,7 +582,13 @@ progress heartbeat: it updates `summary`, `checkpoint` and optionally `branch`,
 into the goal when a failed job is retried. A `plan` job writes the plan to
 `summary` and must not create a branch, issue or PR; the super admin can execute it
 later as an iterate job. `evidence` is stored structurally and shown on the job
-detail page; the Fledge automation comment stays compact. With
+detail page; the Fledge automation comment stays compact. `evidence.findings` is
+the security-finding report: up to 100 `{ rule, path, line, state? }` entries,
+with `rule` at most 120 characters, `path` at most 200, a positive integer
+`line` and `state` one of `open`/`dismissed`. An entry that breaks any of that,
+or repeats an id, is dropped and counted in `evidence.findingsDropped`; the
+ledger keeps one row per id and is described in
+[security.md](security.md#security-finding-ledger-379). With
 `repos.stage_mode = 'enforced'`, an iterate callback must also include `scope`,
 `acceptance`, `testRed`, `testGreen` and Dev/Test attribution, and a review
 callback must include a Reviewer and `reviewScore`; otherwise the job fails with
@@ -629,6 +721,39 @@ build and a denied caller indistinguishable. The status stays `200` for every
 caller — a liveness probe is never refused. The values above are illustrative;
 read the real ones from the running service.
 
+### `GET /readyz`
+
+Public, and answerable without a token, because a readiness probe that needs a
+credential fails when the credential does. The body is:
+
+```json
+{ "ok": true, "db": true, "instances": { "ready": 2, "failed": 0, "total": 2 }, "clock": { "skewSeconds": 1680, "source": "github" } }
+```
+
+`instances` counts the per-repository instances the database knows about.
+`clock.skewSeconds` is the last measured difference between this process's clock
+and GitHub's `Date` header, in seconds, positive when the process is ahead.
+`clock.skewSeconds` is `null` — never `0` — when no measurement has succeeded:
+an unconfigured App, an unreachable GitHub, or a `Date` header that cannot be
+parsed leaves no reading, and `0` would claim a clock that was verified to be
+right. `clock.source` is always present and names where the number comes from
+(`github`), the only source there is; when `skewSeconds` is `null` it still
+says where the measurement would have come from, so a client never has to
+handle a missing key. The route reads the stored measurement and makes no
+GitHub call of its own, so a health probe cannot turn into traffic against the
+API, and an outage cannot make readiness flap. An operator watches an absent
+`fledge_clock_skew_seconds` series as "not measured", not as "aligned" (see
+[`docs/deploy.md`](deploy.md)).
+
+The measurement itself lives on the GitHub App client
+(`src/repos/app.ts`): `measureSkew()` reads the `Date` header of one
+unauthenticated `GET /rate_limit`, records it, and leaves `null` behind when the
+request fails, the header is missing, or its value is present but unparseable
+(a rewriting proxy) — the last case keeps the JWT's last real correction rather
+than handing `NaN` to `iat`. `clockSkewSeconds()` returns that stored
+reading. The App JWT still refreshes the same figure at most every five minutes
+and corrects `iat` with it; the JWT path is unchanged by this field.
+
 ## Conventions
 
 - JSON errors always have `error.type` and `error.code`.
@@ -684,6 +809,18 @@ while any other status becomes the fixed `the tag reference was refused by GitHu
 the page. A 422 from `createAnnotatedTag` is the `target_missing` refusal rather
 than an exception. No call here updates or deletes a ref.
 
+The readiness view adds two more reads and one additive field. `getCommitMeta`
+(`GET /commits/{ref}`) returns one commit's SHA and committer date, and `null` on
+404, so a tag that stopped resolving becomes a named "could not read" instead of
+an exception. `listMergedPullRequestsSince` pages `GET /pulls?state=closed` in
+`updated_at` order, keeps only entries merged at or after one instant and carries
+their labels, and reports `complete: false` only when the page cap was reached
+while every row seen was still inside the window: a pull request merged before the
+window can appear on an early page after a comment, so the filter runs per entry
+rather than stopping at the first old row. `listDirectory` also returns each
+entry's blob `sha`, which is how a `changelog.d` fragment that was edited is told
+from one already released.
+
 Workflow tracking uses bounded reads and one draft-only write:
 `listWorkflowRunsForRef` (up to three pages of `GET /actions/runs?branch=<tag>`,
 so other workflows cannot push the tag's run out of the window),
@@ -710,3 +847,50 @@ against the same row, and
 `POST /repos/:id/releases/:releaseId/check` (owner only, CSRF, maintainer role)
 repeats it, then redirects to `?release=1&checked=<message>`. The check may
 prepare a draft Release; it never publishes, reruns, deletes or moves anything.
+
+### `GET /repos/:id/release-readiness`
+
+Owner only; no CSRF, because nothing is written. It answers whether a connected
+repository can be released before a version is typed, using only GETs on the
+installation token Fledge already holds — no tag is created, no Release is
+prepared, and no token with release scope is requested. The server-rendered page
+names the latest SemVer tag reachable from the default branch and its commit time
+(the highest tag is compared first, bounded to eight `compare` probes; running out
+of probes is reported as no answer rather than as "no previous tag"), the commits
+since that tag, the pull requests merged since it with how many are features (an
+`enhancement` or `feature` label, else a `feat` conventional title prefix, with
+the page naming which rule counted each one), and the `changelog.d` fragments
+present at the head with a blob the tag does not have.
+
+A release that would not go ahead is reported with the three version-independent
+refusals — `missing_gate`, `missing_release_workflow`, `no_new_commits` — printed
+verbatim from `releaseRefusals`, the same table `planRelease` reads, so the page
+and `POST /repos/:id/release` cannot state different reasons for the same facts.
+`tag_exists` and `not_higher` stay on the write path because they need a requested
+version. A merged count cut by the page cap says the count may be higher, and an
+unreadable default branch, an undetermined previous tag or a failed GitHub read
+renders "the repository state could not be read" instead of inventing a ready or a
+refused repository.
+
+The shared table keeps the sentences identical, not the list of checks. A
+version-independent blocker added to `planRelease` later must be added to
+`releaseReadiness` too; until it is, the page would predict ready where the write
+path refuses. The tag route is authoritative — the page is a read-only
+prediction — and the test asserts the three codes that exist today.
+
+### `POST /repos/:id/release-readiness/tag`
+
+Owner only, CSRF, maintainer role: the one write on the readiness page, and the
+only thing it creates is an annotated tag. The form carries `version`, the 40-hex
+`head` the page rendered, and `confirm=1`. The route **re-reads the default
+branch immediately before it writes**, and a head that is not the one the form
+carried is refused as `branch_moved`, naming both commits — because a tag is
+never moved or deleted, so a stale target costs a version rather than a retry. A
+version that fails `planRelease` is refused in that plan's own words, including
+the suggested next version. A 403 or 404 from the ref write is refused as
+`tag_scope_missing`, saying the installation needs `Contents: write`; the 422
+race stays `tag_exists`; no upstream GitHub body text reaches the page. The
+outcome travels to the page as a one-shot flash — "tag created" or the refusal —
+and never as a query string. Nothing else is written: no Release object, no draft
+notes, no workflow dispatch and no token beyond the repository's installation
+token. Draft notes and the Release are a later slice of #546.

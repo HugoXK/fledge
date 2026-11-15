@@ -7,7 +7,7 @@ import { parseManagementService } from '../src/management/mode.js'
 import { ManagementService } from '../src/management/service.js'
 import { managementActor } from '../src/management/actor.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { flashOf, formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
 // #540 slice 2: the pause form is an adapter over the same contract as cancel.
 // The switch decides how far the adapter goes — `off` is today's route, `shadow`
@@ -66,7 +66,7 @@ function pauseAction(f: Fixture): string {
   return `/repos/${f.repoId}/jobs/${f.jobId}/pause`
 }
 
-async function pausePost(f: Fixture, payload: Record<string, string>): Promise<{ statusCode: number; location: string }> {
+async function pausePost(f: Fixture, payload: Record<string, string>): Promise<{ statusCode: number; location: string; flash: ReturnType<typeof flashOf> }> {
   const session = sessionFor(f.built, f.user)
   const response = await f.built.app.inject({
     method: 'POST',
@@ -74,7 +74,7 @@ async function pausePost(f: Fixture, payload: Record<string, string>): Promise<{
     headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: session.cookie },
     payload: formBody({ csrf: session.csrf, ...payload }),
   })
-  return { statusCode: response.statusCode, location: String(response.headers.location) }
+  return { statusCode: response.statusCode, location: String(response.headers.location), flash: flashOf(response) }
 }
 
 test('the pause form carries the revision it rendered and a fresh key', async () => {
@@ -98,7 +98,7 @@ test('off keeps today: a stale submit pauses the job and writes no receipt', asy
   try {
     const response = await pausePost(f, { expected_revision: '99', idempotency_key: 'off-stale' })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /notice=/)
+    assert.ok(response.flash?.notice)
     assert.equal(f.built.store.getJob(f.jobId)?.status, 'paused', 'off is the route that existed before this slice')
     assert.equal(f.built.store.listAudit(50).filter((row) => row.action === 'management.command').length, 0, 'off writes no receipt')
   } finally {
@@ -111,8 +111,8 @@ test('on refuses a stale pause and leaves the job alone', async () => {
   try {
     const response = await pausePost(f, { expected_revision: '99', idempotency_key: 'on-stale' })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /error=/)
-    assert.match(response.location, /code=management_revision_conflict/)
+    assert.ok(response.flash?.error)
+    assert.match(response.flash?.error?.key ?? '', /^management_revision_conflict:/)
     assert.equal(f.built.store.getJob(f.jobId)?.status, 'queued', 'a page that is out of date pauses nothing')
     assert.equal(f.built.store.listAudit(50).filter((row) => row.action === 'job.paused').length, 0)
   } finally {
@@ -125,12 +125,12 @@ test('on replays a double submit: one receipt, one pause', async () => {
   try {
     const first = await pausePost(f, { expected_revision: '1', idempotency_key: 'on-key' })
     assert.equal(first.statusCode, 302)
-    assert.match(first.location, /notice=/)
+    assert.ok(first.flash?.notice)
     assert.equal(f.built.store.getJob(f.jobId)?.status, 'paused')
 
     const replay = await pausePost(f, { expected_revision: '1', idempotency_key: 'on-key' })
     assert.equal(replay.statusCode, 302)
-    assert.match(replay.location, /notice=/)
+    assert.ok(replay.flash?.notice)
     assert.equal(f.built.store.listAudit(50).filter((row) => row.action === 'job.paused').length, 1, 'the replay must not pause a second time')
     assert.equal(f.built.store.listAudit(50).filter((row) => row.action === 'management.command').length, 1, 'one command, one audit row')
   } finally {
@@ -146,7 +146,7 @@ test('shadow keeps today and records what the contract would have refused', asyn
     f.built.store.updateJob(f.jobId, { status: 'succeeded', finished_at: new Date().toISOString() })
     const response = await pausePost(f, { expected_revision: '1', idempotency_key: 'shadow-finished' })
     assert.equal(response.statusCode, 302)
-    assert.match(response.location, /error=/, 'shadow keeps the route a person already knows')
+    assert.ok(response.flash?.error, 'shadow keeps the route a person already knows')
     const receipts = f.built.store.listCommandReceipts(50).filter((row) => row.operation === 'task.pause')
     assert.equal(receipts.length, 1, 'shadow still records the command it would have run')
     const receipt = receipts[0]
@@ -186,11 +186,11 @@ test('an in-progress receipt says it is still processing, never "the cancel fail
       payload: formBody({ csrf: session.csrf, expected_revision: 1, idempotency_key: 'in-progress-key' }),
     })
     assert.equal(response.statusCode, 302)
-    const location = String(response.headers.location)
-    assert.doesNotMatch(location, /notice=/, 'nothing was cancelled, so nothing may say it was')
-    assert.match(location, /code=command_in_progress/)
-    assert.match(decodeURIComponent(location), /还在处理中/, 'the person is told the action is still running')
-    assert.doesNotMatch(decodeURIComponent(location), /取消失败/, 'and not that the cancel failed')
+    assert.equal(flashOf(response)?.notice, undefined, 'nothing was cancelled, so nothing may say it was')
+    const message = flashOf(response)?.error
+    assert.match(message?.key ?? '', /^command_in_progress:/)
+    assert.match(message?.text ?? '', /还在处理中/, 'the person is told the action is still running')
+    assert.doesNotMatch(message?.text ?? '', /取消失败/, 'and not that the cancel failed')
   } finally {
     await f.close()
   }
@@ -205,7 +205,7 @@ test('a replayed shadow pause never rewrites the receipt it already finished', a
   try {
     const first = await pausePost(f, { expected_revision: '1', idempotency_key: 'shadow-double' })
     assert.equal(first.statusCode, 302)
-    assert.match(first.location, /notice=/)
+    assert.ok(first.flash?.notice)
     const settled = f.built.store.listCommandReceipts(50).filter((row) => row.operation === 'task.pause')
     assert.equal(settled.length, 1)
     assert.equal(settled[0]?.status, 'succeeded', 'shadow recorded the pause it let through')
@@ -213,7 +213,7 @@ test('a replayed shadow pause never rewrites the receipt it already finished', a
 
     const replay = await pausePost(f, { expected_revision: '1', idempotency_key: 'shadow-double' })
     assert.equal(replay.statusCode, 302)
-    assert.match(replay.location, /error=/, 'shadow still answers with the route a person knows')
+    assert.ok(replay.flash?.error, 'shadow still answers with the route a person knows')
 
     const after = f.built.store.listCommandReceipts(50).filter((row) => row.operation === 'task.pause')
     assert.equal(after.length, 1, 'a replay is not a second command')

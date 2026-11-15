@@ -8,7 +8,7 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal } from '../src/lib/limits.js'
-import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
+import { flashOf, formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // #457: one user must not be able to connect repositories or provision FlyBot
 // instances without a ceiling — each one costs host CPU, memory, disk and a
@@ -78,9 +78,9 @@ test('a third repository is refused with REPO_LIMIT and creates no row', async (
       payload: formBody({ csrf, repo: 'o/two', token: 't', cap: '99', limit: '999' }),
     })
     assert.equal(refused.statusCode, 302)
-    const location = decodeURIComponent(String(refused.headers.location))
-    assert.match(location, /code=REPO_LIMIT/, 'the refusal must carry a stable code')
-    assert.match(location, /1\/1/, 'the message must say used / cap')
+    const flash = flashOf(refused)?.error
+    assert.match(flash?.key ?? '', /^REPO_LIMIT:/, 'the refusal must carry a stable code')
+    assert.match(flash?.text ?? '', /1\/1/, 'the message must say used / cap')
     assert.equal(store.countReposForUser(user.id), 1, 'a refused add must not create a row')
     assert.equal(store.listAudit(20).some((row) => row.action === 'limit.refused' && String(row.detail).includes('REPO_LIMIT')), true)
   } finally {
@@ -101,14 +101,14 @@ test('removing a repository releases its slot', async () => {
       headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
       payload: formBody({ csrf, repo: 'o/two', token: 't' }),
     })
-    assert.match(decodeURIComponent(String(before.headers.location)), /code=REPO_LIMIT/)
+    assert.match(flashOf(before)?.error?.key ?? '', /^REPO_LIMIT:/)
     store.deleteRepo(repo.id)
     const after = await built.app.inject({
       method: 'POST', url: '/repos',
       headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
       payload: formBody({ csrf, repo: 'o/two', token: 't' }),
     })
-    assert.equal(decodeURIComponent(String(after.headers.location)).includes('code=REPO_LIMIT'), false, 'the slot must be free again')
+    assert.equal((flashOf(after)?.error?.key ?? '').startsWith('REPO_LIMIT:'), false, 'the slot must be free again')
   } finally {
     await built.close()
   }
@@ -140,7 +140,7 @@ test('an instance beyond the per-user cap is refused with INSTANCE_LIMIT before 
       payload: formBody({ csrf }),
     })
     assert.equal(refused.statusCode, 302)
-    assert.match(decodeURIComponent(String(refused.headers.location)), /code=INSTANCE_LIMIT/)
+    assert.match(flashOf(refused)?.error?.key ?? '', /^INSTANCE_LIMIT:/)
     assert.equal(store.getRepoInstance(second.id), undefined, 'a refused provision must leave no instance row')
   } finally {
     await built.close()
@@ -168,8 +168,7 @@ test('a stopped instance holds no slot, so a user at the cap can restart it', as
       payload: formBody({ csrf }),
     })
     assert.equal(response.statusCode, 302)
-    const location = decodeURIComponent(String(response.headers.location))
-    assert.equal(location.includes('code=INSTANCE_LIMIT'), false, 'the restart of the repository own stopped instance must be allowed')
+    assert.equal((flashOf(response)?.error?.key ?? '').startsWith('INSTANCE_LIMIT:'), false, 'the restart of the repository own stopped instance must be allowed')
     assert.equal(provisions, 1, 'the restart must reach provisioning')
   } finally {
     await built.close()
@@ -192,7 +191,7 @@ test('adding a repository is refused when the instance it would provision does n
       payload: formBody({ csrf, repo: 'o/two', token: 't' }),
     })
     assert.equal(refused.statusCode, 302)
-    assert.match(decodeURIComponent(String(refused.headers.location)), /code=INSTANCE_LIMIT/, 'the add path must not bypass the instance ceiling')
+    assert.match(flashOf(refused)?.error?.key ?? '', /^INSTANCE_LIMIT:/, 'the add path must not bypass the instance ceiling')
     assert.equal(store.countReposForUser(user.id), 1, 'a refused add must not create a repository that cannot get an instance')
   } finally {
     await built.close()
@@ -212,7 +211,7 @@ test('a non-admin cannot talk the cap away with a posted value', async () => {
       headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
       payload: formBody({ csrf, repo: 'o/two', token: 't', reposPerUser: '50', LIMIT_REPOS_PER_USER: '50' }),
     })
-    assert.match(decodeURIComponent(String(refused.headers.location)), /code=REPO_LIMIT/, 'the ceiling comes from config, never from the form')
+    assert.match(flashOf(refused)?.error?.key ?? '', /^REPO_LIMIT:/, 'the ceiling comes from config, never from the form')
   } finally {
     await built.close()
   }
@@ -315,14 +314,14 @@ test('a bulk add is allowed when the selection exactly fills the cap, and refuse
     const fillsIt = prepare('bulk-fills')
     const filled = await post(fillsIt, ['o/a', 'o/b'])
     assert.equal(filled.statusCode, 302)
-    assert.equal(decodeURIComponent(String(filled.headers.location)).includes('code=REPO_LIMIT'), false, 'a selection that ends exactly at the cap is allowed')
+    assert.equal((flashOf(filled)?.error?.key ?? '').startsWith('REPO_LIMIT:'), false, 'a selection that ends exactly at the cap is allowed')
     assert.equal(store.countReposForUser(fillsIt.user.id), 2)
 
     // Case 2: one held, one fresh — allowed and one row created.
     const oneLeft = prepare('bulk-one-left')
     repoRow(store, oneLeft.user.id, 'repo_bulk_held', 'c')
     const added = await post(oneLeft, ['o/a'])
-    assert.equal(decodeURIComponent(String(added.headers.location)).includes('code=REPO_LIMIT'), false, 'the add that fills the last free slot is allowed')
+    assert.equal((flashOf(added)?.error?.key ?? '').startsWith('REPO_LIMIT:'), false, 'the add that fills the last free slot is allowed')
     assert.equal(store.countReposForUser(oneLeft.user.id), 2)
     assert.notEqual(store.getRepoByOwnerName(oneLeft.user.id, 'o', 'a'), undefined, 'the allowed bulk add creates its row')
 
@@ -330,15 +329,15 @@ test('a bulk add is allowed when the selection exactly fills the cap, and refuse
     const overflows = prepare('bulk-overflows')
     repoRow(store, overflows.user.id, 'repo_bulk_held_two', 'c')
     const refused = await post(overflows, ['o/a', 'o/b'])
-    const location = decodeURIComponent(String(refused.headers.location))
-    assert.match(location, /code=REPO_LIMIT/, 'a selection that would pass the cap is refused')
-    assert.match(location, /1\/2/, 'the message says what the user holds, not what the selection would reach')
+    const flash = flashOf(refused)?.error
+    assert.match(flash?.key ?? '', /^REPO_LIMIT:/, 'a selection that would pass the cap is refused')
+    assert.match(flash?.text ?? '', /1\/2/, 'the message says what the user holds, not what the selection would reach')
     assert.equal(store.countReposForUser(overflows.user.id), 1, 'a refused bulk add creates no row')
 
     // Case 4: the same repository twice is one add, not two.
     const repeats = prepare('bulk-repeats')
     const deduped = await post(repeats, ['o/a', 'O/A'])
-    assert.equal(decodeURIComponent(String(deduped.headers.location)).includes('code=REPO_LIMIT'), false, 'a repeated selection must not be counted twice')
+    assert.equal((flashOf(deduped)?.error?.key ?? '').startsWith('REPO_LIMIT:'), false, 'a repeated selection must not be counted twice')
     assert.equal(store.countReposForUser(repeats.user.id), 1)
   } finally {
     await built.close()
