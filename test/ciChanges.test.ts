@@ -1,6 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   allGateChanges,
@@ -152,6 +155,7 @@ interface ResolverGit {
   diff: (base: string, head: string) => string[] | null
   hasCommit: (sha: string) => boolean
   fetchSha: (sha: string) => boolean
+  deepen: () => boolean
   fetchRef: (ref: string) => boolean
 }
 
@@ -192,6 +196,7 @@ test('a base commit missing from the checkout is fetched before the diff is call
         calls.push('fetch-sha')
         return true
       },
+      deepen: () => false,
       fetchRef: () => {
         calls.push('fetch-ref')
         return true
@@ -220,6 +225,10 @@ test('a base commit that is present is not fetched a second time', async () => {
         fetched += 1
         return true
       },
+      deepen: () => {
+        fetched += 1
+        return false
+      },
       fetchRef: () => {
         fetched += 1
         return true
@@ -244,6 +253,7 @@ test('an unreadable base still runs every gate, by sha and then by ref', async (
         tried.push('sha')
         return false
       },
+      deepen: () => false,
       fetchRef: () => {
         tried.push('ref')
         return true
@@ -254,10 +264,150 @@ test('an unreadable base still runs every gate, by sha and then by ref', async (
   assert.deepEqual(tried, ['sha', 'ref'], 'both ways of naming the base are tried before the conservative fallback')
 })
 
+// The shape the reviewer reproduced: the base commit is in the object store and
+// the three-dot diff still cannot answer, because a depth-limited fetch grafted
+// it as a shallow root. A second fetch of the same commit changes nothing, so
+// deepening is the only attempt that can help, and it runs before the every-gate
+// answer.
+test('a base that is present but grafted is deepened before the diff is called unreadable', async () => {
+  const { changedPathsForPullRequest } = await resolver()
+  const calls: string[] = []
+  let diffs = 0
+  const paths = changedPathsForPullRequest({
+    base: BASE,
+    head: HEAD,
+    baseRef: 'main',
+    git: {
+      diff: () => {
+        diffs += 1
+        calls.push(`diff#${String(diffs)}`)
+        return diffs === 2 ? ['AGENTS.md'] : null
+      },
+      hasCommit: () => true,
+      fetchSha: () => {
+        calls.push('fetch-sha')
+        return true
+      },
+      deepen: () => {
+        calls.push('deepen')
+        return true
+      },
+      fetchRef: () => {
+        calls.push('fetch-ref')
+        return true
+      },
+    },
+  })
+  assert.deepEqual(paths, ['AGENTS.md'], 'the deepened history must answer the diff, not the every-gate fallback')
+  assert.deepEqual(calls, ['diff#1', 'deepen', 'diff#2'], 'a present base is deepened, not fetched again or skipped')
+})
+
 test('the classify step delegates the diff and keeps the every-gate fallback for other events', () => {
   const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
   const step = workflow.slice(workflow.indexOf('- name: Classify the changed paths'), workflow.indexOf('\n  lint:'))
   assert.match(step, /node scripts\/ci-changes\.mjs --git-base/, 'the classify step must delegate the diff so the fetch-before-fallback rule is testable')
   assert.match(step, /\*\) node scripts\/ci-changes\.mjs --all; exit 0 ;;/, 'a push or schedule still verifies the whole tree')
   assert.doesNotMatch(step, /git diff/, 'the untestable shell diff is what fell through to --all; it must not come back')
+})
+
+// The stubs above answer `diff` with a path list on their second call whatever
+// the fetch did, so they cannot see the shape a runner actually hits: a fetch
+// that places the base commit but not its history. `git fetch --depth=1`
+// grafts the base as a shallow root, the three-dot diff then fails again — with
+// `no merge base` instead of `Invalid symmetric difference expression` — and
+// the classifier falls back to every gate, which is the #752 outcome under a
+// new message. These two cases run the shipped script against a real
+// repository so the fetch itself, not the answer, is what the test measures.
+const CLI = fileURLToPath(new URL('../scripts/ci-changes.mjs', import.meta.url))
+
+function gitIn(cwd: string, ...args: string[]) {
+  return spawnSync(
+    'git',
+    ['-c', 'user.name=Fledge Test', '-c', 'user.email=test@example.invalid', '-c', 'commit.gpgsign=false', ...args],
+    { cwd, encoding: 'utf8' },
+  )
+}
+
+function gitOk(cwd: string, ...args: string[]): string {
+  const result = gitIn(cwd, ...args)
+  assert.equal(result.status, 0, `git ${args.join(' ')} failed in ${cwd}: ${result.stderr}`)
+  return result.stdout.trim()
+}
+
+// `main` at B, a branch cut from the older A, and a docs-only commit on it:
+// the diverged pull request from the #752 report.
+function buildDivergedRepository(tmp: string): { source: string; olderMain: string; mainTip: string; head: string } {
+  const source = join(tmp, 'source')
+  mkdirSync(join(source, 'src'), { recursive: true })
+  gitOk(source, 'init', '-q', '-b', 'main')
+  writeFileSync(join(source, 'AGENTS.md'), 'agents v1\n')
+  writeFileSync(join(source, 'src', 'app.ts'), 'export const app = 1\n')
+  gitOk(source, 'add', '-A')
+  gitOk(source, 'commit', '-qm', 'A: the merge base')
+  const olderMain = gitOk(source, 'rev-parse', 'HEAD')
+  writeFileSync(join(source, 'src', 'app.ts'), 'export const app = 2\n')
+  gitOk(source, 'commit', '-qam', 'B: main moved on')
+  const mainTip = gitOk(source, 'rev-parse', 'HEAD')
+  gitOk(source, 'switch', '-qc', 'head', olderMain)
+  mkdirSync(join(source, 'docs'), { recursive: true })
+  writeFileSync(join(source, 'docs', 'a.md'), '# doc\n')
+  gitOk(source, 'add', '-A')
+  gitOk(source, 'commit', '-qm', 'H: docs-only branch cut before B')
+  const head = gitOk(source, 'rev-parse', 'HEAD')
+  return { source, olderMain, mainTip, head }
+}
+
+function runClassifier(cwd: string, base: string, head: string) {
+  const env = { ...process.env }
+  delete env.GITHUB_OUTPUT
+  return spawnSync(process.execPath, [CLI, '--git-base', base, '--git-head', head, '--base-ref', 'main'], {
+    cwd,
+    encoding: 'utf8',
+    env,
+  })
+}
+
+// `file://` forces the transport: a path clone hardlinks every object, which
+// would hand the checkout commit B and hide the defect.
+function cloneHead(tmp: string, source: string, ...extra: string[]): string {
+  const checkout = join(tmp, 'checkout')
+  gitOk(tmp, 'clone', '-q', '--no-tags', '--single-branch', '--branch', 'head', ...extra, `file://${source}`, checkout)
+  return checkout
+}
+
+test('a fetched base brings the history the three-dot diff needs (real repository)', (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'fledge-ci-changes-'))
+  t.after(() => rmSync(tmp, { recursive: true, force: true }))
+  const { source, olderMain, mainTip, head } = buildDivergedRepository(tmp)
+  const checkout = cloneHead(tmp, source)
+  assert.notEqual(
+    gitIn(checkout, 'cat-file', '-e', `${mainTip}^{commit}`).status,
+    0,
+    'the base commit must start absent, or this case proves nothing',
+  )
+
+  const run = runClassifier(checkout, mainTip, head)
+  assert.equal(run.status, 0, run.stderr)
+  const changes = JSON.parse(run.stdout.trim())
+  assert.equal(changes.docsOnly, true, `the fetched base must be diffable; stderr: ${run.stderr}`)
+  assert.equal(changes.codeql, false, 'a docs-only diff must not wake codeql-required')
+  assert.equal(gitOk(checkout, 'merge-base', mainTip, head), olderMain, 'the merge base is what the three-dot diff needs')
+})
+
+test('a shallow checkout is deepened before the classifier gives up (real repository)', (t) => {
+  const tmp = mkdtempSync(join(tmpdir(), 'fledge-ci-changes-shallow-'))
+  t.after(() => rmSync(tmp, { recursive: true, force: true }))
+  const { source, mainTip, head } = buildDivergedRepository(tmp)
+  const checkout = cloneHead(tmp, source, '--depth=1')
+  assert.equal(gitOk(checkout, 'rev-parse', '--is-shallow-repository'), 'true')
+
+  // The base fetch alone cannot answer this one: a depth-one checkout has no
+  // ancestors under the head either, so a complete base still shares no
+  // history with it. Only deepening the checkout restores the merge base.
+  const run = runClassifier(checkout, mainTip, head)
+  assert.equal(run.status, 0, run.stderr)
+  const changes = JSON.parse(run.stdout.trim())
+  assert.equal(changes.docsOnly, true, `a deepened checkout must be diffable; stderr: ${run.stderr}`)
+  assert.equal(changes.codeql, false, 'a docs-only diff must not wake codeql-required')
+  assert.equal(gitOk(checkout, 'rev-parse', '--is-shallow-repository'), 'false', 'the checkout must be deepened to answer')
 })

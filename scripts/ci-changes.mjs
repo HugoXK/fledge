@@ -28,10 +28,20 @@ function fail(message) {
 // #752: the diff that used to live in the workflow. `git diff base...head` fails
 // when the pull request's base commit is not in the checkout, which is the whole
 // defect: the step then ran every gate. Here the base is fetched once by sha and
-// once by the base branch ref before that conservative answer is allowed.
+// once by the base branch ref before that conservative answer is allowed — with
+// its history, because a depth-limited fetch places the commit but grafts it as
+// a shallow root, so the three-dot diff fails again, now with `no merge base`.
 function git(args) {
   const result = spawnSync('git', args, { encoding: 'utf8' })
   return { ok: result.status === 0, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+}
+
+// A shallow checkout is missing the history under the head as well, so a
+// complete base still shares no ancestor with it; only unshallowing restores
+// the merge base the three-dot diff needs.
+function unshallow() {
+  if (git(['rev-parse', '--is-shallow-repository']).stdout.trim() !== 'true') return false
+  return git(['fetch', '--no-tags', '--unshallow', 'origin']).ok
 }
 
 function pathsFromGit(base, head, baseRef) {
@@ -49,13 +59,21 @@ function pathsFromGit(base, head, baseRef) {
           .filter((line) => line !== '')
       },
       hasCommit: (sha) => git(['cat-file', '-e', `${sha}^{commit}`]).ok,
+      // No `--depth=1`: the base's ancestors are exactly what the three-dot diff
+      // needs, and a depth-limited commit cannot supply a merge base. These
+      // events check out full history, so the usual case is one round trip.
       fetchSha: (sha) => {
-        // A shallow fetch of the commit is the cheap attempt; the full fetch
-        // covers a server that will not serve an arbitrary sha shallowly.
-        if (!git(['fetch', '--no-tags', '--depth=1', 'origin', sha]).ok) git(['fetch', '--no-tags', 'origin', sha])
+        if (!git(['fetch', '--no-tags', 'origin', sha]).ok) return false
         return git(['cat-file', '-e', `${sha}^{commit}`]).ok
       },
-      fetchRef: (ref) => git(['fetch', '--no-tags', '--depth=1', 'origin', ref]).ok,
+      deepen: unshallow,
+      // The branch fallback fetches the ref itself, never a depth-limited copy:
+      // a branch tip without its ancestors hands back the same grafted base.
+      fetchRef: (ref) => {
+        if (!git(['fetch', '--no-tags', 'origin', ref]).ok) return false
+        unshallow()
+        return true
+      },
     },
   })
 }

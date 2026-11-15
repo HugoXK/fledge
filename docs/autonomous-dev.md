@@ -283,13 +283,22 @@ machine copy of this table.
 
 The diff is read by `scripts/ci-changes.mjs`, not by the step. A pull request
 whose branch was cut before the latest `main` names a base commit that the
-checkout does not carry, so the first diff fails; the script fetches that commit
-by sha and then, if the server will not serve it that way, by the base branch
-ref, and classifies again. Only after both attempts does it fall back to running
-every gate (#752). The fallback is still there and is still the last resort — an
-unreadable diff must never shrink the gate — but without the fetch it fired on
-every older branch, and the `codeql-required` job it woke then spent its full
-bound waiting for an analysis CodeQL never starts for an ignored path.
+checkout does not carry, so the first diff fails. The script then fetches that
+commit **with its history**: a depth-limited fetch places the commit but grafts
+it as a shallow root, so the three-dot diff fails again — with `no merge base`
+instead of `Invalid symmetric difference expression` — and nothing is gained. It
+also deepens the checkout when the checkout itself is shallow, because a base
+with history shares no ancestor with a grafted head, and only then retries. The
+base branch ref is the fallback for a server that will not serve an arbitrary
+sha, fetched the same way and never as a depth-limited tip, since a branch tip
+without its ancestors cannot supply a merge base either. Only after those
+attempts does it fall back to running every gate (#752). That fallback is still
+the last resort — an unreadable diff must never shrink the gate — but without a
+fetch that keeps history it fired on every older branch, and the
+`codeql-required` job it woke then spent its full bound waiting for an analysis
+CodeQL never starts for an ignored path. The short circuit for a diff that
+touches only paths `codeql.yml` ignores is separate and is described under
+[Supply-chain gates](#supply-chain-gates).
 
 ### A red `main` reports itself
 
