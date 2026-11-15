@@ -299,11 +299,17 @@ function statusLabel(t: Translate, status: string): string {
   return labels[status] ?? status
 }
 
-// #805: a raw bridge error is not a status. Map the common transport failures to
-// one short sentence, and keep the original text for the technical disclosure.
-function instanceReason(t: Translate, error: string | null | undefined): string {
+// #805: the status answers "why is this not ready" on its own; `last_error` only
+// explains a failure. `Instances.stop()` leaves the previous `last_error` in place
+// and a starting instance has none, so reading that column for every non-ready
+// status called a stopped instance healthy. Only `failed` reads the error, and an
+// empty error there means a failed check, never a healthy one.
+function instanceReason(t: Translate, status: string, error: string | null | undefined): string {
+  if (status === 'ready') return t('健康检查正常', 'Health check ok')
+  if (status === 'stopped') return t('实例已停止，不会接受新任务', 'The instance is stopped and takes no new jobs')
+  if (status === 'starting') return t('实例正在创建，还未就绪', 'The instance is being created and is not ready yet')
+  if (status === 'provisioning') return t('实例正在初始化，还未就绪', 'The instance is being provisioned and is not ready yet')
   const text = String(error ?? '').toLowerCase()
-  if (text === '') return t('健康检查正常', 'Health check ok')
   if (/\b502\b/.test(text)) return t('Bridge 返回 502', 'Bridge returned 502')
   if (/fetch failed|econnrefused|enotfound|etimedout|network/.test(text)) return t('Bridge 无法连接', 'Bridge unreachable')
   if (/container|docker|not running/.test(text)) return t('容器未运行', 'Container is not running')
@@ -1430,7 +1436,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     ? t('这个部署没有启用每仓库 FlyBot 实例。', 'This deployment has no per-repository FlyBot instance.')
     : instance === undefined
       ? t('实例尚未创建。', 'The instance has not been created yet.')
-      : instance.status === 'ready' ? t('健康检查正常', 'Health check ok') : instanceReason(t, instance.last_error)
+      : instanceReason(t, instance.status, instance.last_error)
   const instanceLastHealth = instance === undefined || instance.last_health_at === null ? t('未知', 'unknown') : humanTimeShort(instance.last_health_at)
   // #472 slice 3: the instance state is a page-level message, not a banner in the
   // team card. `failed` is an error; any other non-ready state is informational.
