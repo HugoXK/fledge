@@ -22,6 +22,7 @@ function state(patch: Partial<SetupState> = {}): SetupState {
     repos: 0,
     roleChosen: false,
     modelConfigured: false,
+    platformAvailable: false,
     instanceReady: false,
     jobs: 0,
     firstJobStatus: null,
@@ -79,6 +80,47 @@ test('the next step follows the data, and a completed step stops being the actio
   assert.equal(withInstance.next?.key, 'job')
   assert.equal(withInstance.next?.blocked, null)
   assert.equal(withInstance.complete, false, 'the job is the step that finishes the run')
+})
+
+test('platform quota satisfies the model step and skips its NEXT ACTION', () => {
+  const withRole = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, repoHref: '/repos/r1' }), en)
+  assert.equal(withRole.next?.key, 'instance', 'the missing own model must not be the next action while platform quota is available')
+  const model = withRole.steps.find((step) => step.key === 'model')
+  assert.ok(model !== undefined)
+  assert.equal(model.done, true)
+  assert.equal(model.optional, true)
+  assert.equal(model.note, 'Using platform quota (default)')
+  assert.equal(model.action.label, 'Add your own model (optional)')
+  assert.equal(model.blocked, null)
+  assert.equal(withRole.steps.find((step) => step.key === 'instance')?.blocked, null)
+
+  const complete = setupChecklist(state({ repos: 1, roleChosen: true, platformAvailable: true, instanceReady: true, jobs: 1, firstJobStatus: 'succeeded', repoHref: '/repos/r1' }), en)
+  assert.equal(complete.done, 5)
+  assert.equal(complete.complete, true)
+})
+
+test('the dashboard shows platform quota instead of a model requirement when the platform can fund the run', async () => {
+  const config = testConfig()
+  config.llm.baseUrl = 'https://platform.example/v1'
+  config.llm.key = 'platform-key'
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'platform-quota', status: 'approved' })
+    const session = sessionFor(built, user)
+    store.createRepo({ id: 'repo_platform', userId: user.id, owner: 'o', name: 'platform', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-setup-next="instance"/)
+    assert.match(page.body, /Using platform quota/)
+    assert.match(page.body, /Add your own model/)
+    const nextAction = page.body.match(/<section class="card" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
+    assert.match(nextAction, /Start the FlyBot instance/, 'the platform-funded run does not stop at the model step')
+    assert.doesNotMatch(nextAction, /Add a model provider/, 'the optional model step is not the primary action')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
 })
 
 test('the checklist completes on the first job, not on the instance being ready', () => {

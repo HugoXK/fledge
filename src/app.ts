@@ -1229,12 +1229,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const firstJob = store.firstJobForUser(viewer.user.id)
     // #227: the checklist state is read from the database on this request, never
     // from a cookie, so a second tab or a fresh browser sees the same step.
+    const platformAvailable =
+      config.llm.baseUrl !== '' &&
+      config.llm.key !== '' &&
+      !quotaView(viewer.user, config).exhausted
     const setup = {
       repos: reposTotal,
       roleChosen: allRepos.some((repo) => repo.repo_role !== null),
       modelConfigured: store
         .listModelProviders(viewer.user.id)
         .some((provider) => store.listProviderModels(provider.id).length > 0),
+      platformAvailable,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
       jobs: jobsTotal,
       firstJobStatus: firstJob?.status ?? null,
