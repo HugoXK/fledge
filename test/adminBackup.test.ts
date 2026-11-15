@@ -384,3 +384,22 @@ test('BACKUP_DIR and BACKUP_EXPECTED_HOURS resolve where the writer resolves the
     }
   }
 })
+
+test('encrypted copies are counted beside the plaintext copies', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-enc-'))
+  try {
+    writeCopy(dir, '2026-11-09T02-00-00-000Z', 'newest backup bytes\n', {})
+    writeFileSync(join(dir, 'fledge-2026-11-08T02-00-00-000Z.db.enc'), '')
+    writeFileSync(join(dir, 'fledge-2026-11-07T02-00-00-000Z.db.enc'), '')
+    writeFileSync(join(dir, 'fledge-2026-11-06T02-00-00-000Z.db.zst.enc'), '')
+    const status = readBackupStatus({ dir, now: NOW })
+    assert.equal(status.encrypted, 3)
+
+    const en = card(renderAdmin('en', status))
+    assert.match(en, /1 copy · 3 encrypted copies/)
+    const zh = card(renderAdmin('zh', status))
+    assert.match(zh, /1 个副本 · 3 个加密副本/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
