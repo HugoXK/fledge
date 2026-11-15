@@ -1,0 +1,1 @@
+A quota reminder that cannot be mailed now leaves a `quota.mail_failed` audit row with the SMTP error redacted, next to the existing warning log, so an operator can see that the day's reminder never reached the user. The in-app notification and the once-per-day limit are unchanged.

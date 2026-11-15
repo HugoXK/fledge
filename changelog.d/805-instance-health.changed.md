@@ -1,0 +1,1 @@
+The FlyBot instance card now shows a status badge, a human-readable health reason, the last health-check time and the relevant Start/Stop/Reinitialize action, while the raw bridge error stays in a technical disclosure instead of the page message.

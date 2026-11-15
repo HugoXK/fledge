@@ -241,7 +241,9 @@ file is the record and not the gate — branch protection is an owner action.
 - `lint`
 - `typecheck`
 - `test` on Node 24 (the supported-version compatibility run)
-- `coverage` (the Node 22 full-suite execution and the Node coverage floor recorded in `package.json`; one execution per supported Node line)
+- `coverage` (the Node 22 full-suite execution and the Node coverage floor
+  recorded in `package.json`; one execution per supported Node line, plus the
+  changed-lines floor on the pull request diff)
 - `build`
 - `visual` (the UI matrix, when the diff reaches a rendered surface)
 - `docker` (image builds, scans and starts)
@@ -255,6 +257,7 @@ file is the record and not the gate — branch protection is an owner action.
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
 - `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
+- `deploy-check` (the `deploy/` worker, alert rules and service samples parse, when the diff reaches `deploy/`)
 
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
@@ -263,8 +266,8 @@ A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 ### Change-aware gates
 
 The `changes` job in `ci.yml` classifies the pull request diff once and writes
-eight flags: `source`, `frontend`, `deps`, `db`, `docker`, `workflows`, `codeql`
-and `docsOnly`. Jobs that cannot learn anything from the diff carry a job-level `if`
+nine flags: `source`, `frontend`, `deps`, `db`, `docker`, `workflows`, `codeql`,
+`deploy` and `docsOnly`. Jobs that cannot learn anything from the diff carry a job-level `if`
 and are skipped **before a runner starts**, not after an install:
 
 | Flag false | Jobs skipped |
@@ -275,6 +278,7 @@ and are skipped **before a runner starts**, not after an install:
 | `db` | `restore-drill` |
 | `docker` | `docker` |
 | `workflows` | `action-pins`, `workflow-lint` |
+| `deploy` | `deploy-check` |
 | `codeql` | `codeql-required` (and the CodeQL workflow's own docs/deploy/Dockerfile path filter) |
 
 `test` and `coverage` are never conditional, and are not in this table. The suite
@@ -284,11 +288,32 @@ workflow-only diff still turns the suite red. Skipping it for `source: false` le
 `ci-ok` go green over a red suite, and for `docs/` (T0) and `public/` (T1) no
 verdict reads it either.
 
+`deploy` is its own flag because a deploy-only diff is not gate-free: `deploy/`
+ships the Cloudflare worker, the Prometheus rules and the nginx/systemd samples,
+and none of the app gates reads them. `deploy-check` parses the worker, runs
+`promtool check rules`, and checks nginx/systemd where the runner provides them
+(a missing tool is written to the job summary as a gap, never as a pass). The
+flag is computed from the same path list as `source`, so a diff that mixes
+`deploy/` with `src/` sets both and the code gates still run; the classifier
+cannot answer "deploy-only" for a mixed diff, and `test/ciChanges.test.ts`
+pins that refusal.
+
 One full-suite execution per supported Node line is enough (#642): `test (24)` is
 the compatibility run and `coverage` is the Node 22 run, since both commands
 execute `test/*.test.ts` and a second Node 22 leg bought no second signal. The
 matrix job keeps its name and `ci-ok` still requires both jobs; a failing test
 fails both remaining runs.
+
+`restore-drill` reuses the build artifact instead of installing and building a
+second time (#643). Reuse is bound to provenance, not to an artifact name: the
+`build` job writes `dist/build-manifest.json` naming `$GITHUB_SHA` and the sha256
+of every file it emitted, and the drill runs `node scripts/dist-manifest.mjs
+verify --dir dist --commit "$GITHUB_SHA"` before it does anything. A stale,
+partial, edited or foreign artifact fails there instead of standing in for the
+commit under test; a missing artifact fails at the download step, and there is no
+fallback rebuild, because that fallback is exactly what would hide a broken
+`build` job. The drill loads only `dist/` and the checked-out `scripts/`, so it
+needs no `npm ci`.
 
 The classifier is an allowlist. An unknown path, an unreadable diff or an empty
 path list runs every gate. A push, schedule or manual run sets every flag true,
@@ -315,6 +340,51 @@ fetch that keeps history it fired on every older branch, and the
 CodeQL never starts for an ignored path. The short circuit for a diff that
 touches only paths `codeql.yml` ignores is separate and is described under
 [Supply-chain gates](#supply-chain-gates).
+
+### Gate integrity: the evaluator runs from the base branch
+
+A pull request decides nothing about itself. Every evaluator is checked out from
+the base branch into `base/` and executed from there:
+
+| Job | Runs |
+|---|---|
+| `changes` | `node base/scripts/ci-changes.mjs --repo . --git-base <base> --git-head <head>` |
+| `risk` | `node base/scripts/risk-gate.mjs --repo . --base <ref>` |
+| `action-pins` | `node base/scripts/action-pins.mjs --workflows .github/workflows` |
+| `workflow-lint` | `node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json` |
+| `codeql-required` | `node base/scripts/codeql-required.mjs` |
+| `ci-ok` | `node base/scripts/ci-ok.mjs` |
+| CodeQL gate | `node base/scripts/codeql-gate.mjs --sarif codeql-results --baseline base/.github/agent/codeql-baseline.json` |
+
+Only the data under test comes from the head: the diff (`--repo .` names the
+checkout that carries the pull request's commits), the workflow files the two
+supply-chain checks read, and the SARIF the analysis produced. The CodeQL
+baseline and the workflow-injection allowlist are read from `base/`, because a
+pull request that could widen either would grade its own work.
+
+`ci-ok` also prints the blob the base tree holds for the evaluator it is about to
+run: `scripts/ci-ok.mjs from the base tree: blob <sha>`. That line is how a
+reviewer tells the two copies apart in a run log — the sha named there is the
+file the next step executes — so a branch that rewrites `scripts/ci-ok.mjs` is
+visible as a mismatch instead of an invisible substitution. It is evidence, not
+a gate: the verdict still comes from the base file.
+
+The `changes` job also runs `scripts/gate-integrity.mjs`, which writes every
+gate file in the diff into the job summary. It fails closed when the diff cannot
+be read: a summary that says "no gate file" over an unreadable diff would be a
+blind gate, not a clean one. The step runs it only when the base tree has the
+file (`[ -f base/scripts/gate-integrity.mjs ]`), because the pull request that
+introduces the summary runs against a base branch that predates it; the test is
+on the base path, so a diff cannot decide whether the summary runs. Nothing
+about the merge requirement changes — a diff that edits the gate is still T3 and
+still needs a PASS at the tip.
+
+What this does not move: for a `pull_request` event GitHub fetches the workflow
+YAML itself from the pull request, so a job's own `run:` lines are, by
+construction, the head's text. The protection for that shape is the required
+check plus the T3 PASS on a diff the `gate-integrity` summary names, not this
+checkout split. Moving the aggregate onto a `workflow_run` workflow, which always
+executes the default branch's copy, is a separate slice.
 
 ### A red `main` reports itself
 
@@ -387,11 +457,55 @@ the synthetic fixture in the initial commit that #185 removed from the tree; a
 token committed afterwards is still a finding, which is why the exception names
 a commit rather than a path.
 
-`coverage` enforces a line floor with a number: `test:coverage` in
-`package.json` (`--test-coverage-lines=84`, measured 84.59% at the commit that
-introduced it). Lowering it is a reviewed diff, not an edit. The job also writes
-the report into the run summary — not a pull request comment, since a fork pull
-request runs without `pull_request_target`.
+`coverage` enforces two floors, and they answer different questions.
+
+The whole-tree floor is a number in `test:coverage` in `package.json`
+(`--test-coverage-lines=84`, measured 84.59% at the commit that introduced it).
+It answers "is the tree still covered"; lowering it is a reviewed diff, not an
+edit. It cannot answer "is the code *this pull request adds* covered", because a
+200-line untested branch is invisible in a percentage over a large, well-covered
+`src/**`.
+
+The changed-lines floor is `scripts/coverage-diff.mjs`, run by the `coverage` job
+on a pull request after the report is written. It takes the added `src/**` lines
+of `git diff <base>...<head>`, joins them to the report Node printed (the
+uncovered line ranges, per file), and fails when the added code lines are below
+80% covered. `<head>` is the checked-out commit, not the pull request's head sha:
+the job's checkout is `refs/pull/<N>/merge` (it sets no `ref:`), so the report is
+numbered in the merge tree. The base is that merge's first parent, so the diff is
+still the pull request's own change; the two line numbers only agree when both
+sides describe the same tree, and with the head sha a base that moved inside a
+file the pull request edits made an uncovered line read as covered. Only added
+lines under `src/**` are measured, and only ones that can execute: comments,
+imports, type declarations, generated files and `*.d.ts` are not counted, because
+the report can never list them as uncovered. An uncovered added line is printed
+as `path:line` in the step log, so the fix is a test for that line rather than a
+request for a higher total. A changed file the report has no row for is the same
+failure: Node prints a file only when the suite loaded it, so a new module no test
+imports is printed as missing and counts as entirely uncovered.
+
+Two diff shapes used to make the gate skip a file it should have measured, and
+both now have a test. A path with a non-ASCII byte is C-quoted by `git diff`
+(`+++ "b/src/lib/\346\227\245.ts"`) unless it is told otherwise, so the diff is
+read with `-c core.quotePath=false` and the parser unquotes a quoted header too —
+quoted, the name starts with `"`, fails the `src/` test and the file is dropped.
+An added line whose text begins with `++ ` prints as `+++ …`, which is a file
+header only outside a hunk: the parser tracks hunk state, so such a line is
+content and the rest of its file is still measured.
+
+A pull request that genuinely cannot test the added lines says so in its body,
+on one line of its own:
+
+```
+No-test: the branch is unreachable until #700 lands
+```
+
+The step prints what waived it. A documentation, config or workflow-only diff
+adds no `src/**` line and the gate skips it — that is the classifier's own rule,
+not a second switch. The total floor stays in place: this gate is additional, and
+`npm run coverage:diff -- --diff <path> --report <path>` runs the same check
+locally. The job also writes the report into the run summary — not a pull
+request comment, since a fork pull request runs without `pull_request_target`.
 
 The release workflow signs the published image: `id-token: write` and
 `attestations: write` on the release job only, `actions/attest-build-provenance`
@@ -416,7 +530,13 @@ already reviewed in the alert UI does not fail the gate again — recording them
 dismisses nothing. The same step runs on a push to `main`, so new
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
 and the PR that does it says why the alert is accepted; a line that drifts for an
-unrelated reason fails loudly rather than being silently re-labelled.
+unrelated reason fails loudly rather than being silently re-labelled. Every open
+entry carries `owner` and an ISO `expires`; the gate validates the file before it
+compares keys and fails closed on a malformed entry or an expiry in the past,
+naming the owner and the date. A dismissed entry carries `dismissed: true` with
+its alert-UI rationale and no expiry, so a reviewed false positive never turns red
+on a date nobody can act on. `expires` is the only age rule; `recordedAtSha` keeps
+its one job as the sha printed in the failure line.
 `security-severity` is read whether the SARIF writes it as a number or a string,
 and rules a query pack keeps under `tool.extensions[].rules` are resolved by
 `ruleId` and `ruleIndex`. A security result whose severity cannot be read — and
@@ -577,12 +697,20 @@ by name was green. The step reads check runs with `filter=all` for that reason:
 `filter=latest` returned only the green one and the plan reported "nothing to do"
 while the merge gate kept refusing.
 
-- a PASS re-runs the failed runs whose own `review-gate` job failed, which clears
-  the pre-PASS red that would otherwise block the merge. No failed suite may be
-  left standing, because that is what the merge gate reads;
+- a PASS re-runs the failed runs whose own job of that context failed, for every
+  required context a verdict can invalidate — `review-gate`, owned by the
+  `Review gate` workflow, and `pr-lint`, owned by `.github/workflows/pr-lint.yml`
+  since `#753` — which clears the pre-PASS red that would otherwise block the
+  merge. No failed suite may be left standing, because that is what the merge gate
+  reads. One workflow never repaints another context: re-running `Review gate`
+  cannot move `pr-lint`, and a stale red `pr-lint` blocked a merge while the step
+  reported the tip was fine until `#770` paired each context with the workflow
+  that owns it. A red in a context with no run left below the cap is reported as
+  blocked, never passed;
 - a rejection re-runs the newest repairable run of the `Review gate` workflow at
   the SHA, so a run that is currently green turns red. A run of any other
-  workflow at the same SHA is never a target: re-running it paints no
+  workflow at the same SHA is never a target, and a red `pr-lint` does not count
+  as the rejection being visible: re-running another workflow paints no
   `review-gate` check;
 - a run is repairable while its `run_attempt` is at most 2
   (`MAX_REPAIR_ATTEMPT`), so a run that a person already re-ran by hand is still

@@ -39,6 +39,10 @@ export const REQUIRED_JOBS = [
   'action-pins',
   'workflow-lint',
   'secret-scan',
+  // #644: deploy/ is not code, but it ships the worker, the alert rules and the
+  // nginx/systemd samples, so a deploy-only diff gets its own syntax gate
+  // instead of being waved through on review alone.
+  'deploy-check',
   // #304: the CodeQL analysis conclusion, read by `scripts/codeql-required.mjs`.
   // It is deliberately absent from SKIPPABLE_ON: a gate skipped on the event that
   // merges would be vacuous. The change-aware exception is narrower: a docs-only
@@ -75,6 +79,7 @@ export const SKIP_WHEN = {
   'action-pins': 'workflows',
   'workflow-lint': 'workflows',
   'codeql-required': 'codeql',
+  'deploy-check': 'deploy',
 }
 
 function flagIsFalse(changes, name) {

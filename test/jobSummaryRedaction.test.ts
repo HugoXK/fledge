@@ -102,7 +102,7 @@ test('both store writers redact a summary written directly', () => {
   }
 })
 
-test('a pre-change digest row carries no literal into the next job goal', () => {
+test('a pre-change digest row carries no literal into the next job goal', async () => {
   const { store, user, repo } = setup()
   try {
     store.createJob({ id: 'job_old_digest', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
@@ -111,7 +111,7 @@ test('a pre-change digest row carries no literal into the next job goal', () => 
     const summary = `${'y'.repeat(210)}${TOKEN} tail`
     store.run('UPDATE jobs SET continuity_json = ? WHERE id = ?', JSON.stringify({ schema_version: 1, summary }), 'job_old_digest')
     const row = store.getJob('job_old_digest')
-    const carry = buildCarryOver({ recent: [row!] })
+    const carry = (await buildCarryOver({ recent: [row!] })).text
     assertClean(carry, 'carry-over block')
   } finally {
     store.close()

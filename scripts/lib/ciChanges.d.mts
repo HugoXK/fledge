@@ -10,6 +10,7 @@ export interface GateChanges {
   docker: boolean
   workflows: boolean
   codeql: boolean
+  deploy: boolean
 }
 
 export declare function isDocPath(path: string): boolean
@@ -18,6 +19,7 @@ export declare function isFrontendPath(path: string): boolean
 export declare function isDependencyPath(path: string): boolean
 export declare function isDbPath(path: string): boolean
 export declare function isWorkflowPath(path: string): boolean
+export declare function isDeployPath(path: string): boolean
 export declare function isDockerInputPath(path: string): boolean
 export declare function allGateChanges(): GateChanges
 export declare function classifyChanges(paths: string[]): GateChanges

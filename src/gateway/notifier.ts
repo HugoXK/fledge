@@ -4,6 +4,7 @@ import type { Mailer } from '../email/mailer.js'
 import { quotaExhaustedEmail } from '../email/templates.js'
 import { notifyEmail } from '../email/recipient.js'
 import { log } from '../lib/log.js'
+import { redact } from '../lib/secrets.js'
 
 export class QuotaNotifier {
   constructor(
@@ -24,6 +25,11 @@ export class QuotaNotifier {
       await this.mailer.send({ to: email, ...quotaExhaustedEmail(user, this.config.baseUrl) })
     } catch (error) {
       log.warn('quota notice failed', { user: user.login, error: String(error) })
+      // #58: a failed quota send must leave a record the operator can read, not
+      // only a stdout line. The day key is already set, so this row is the only
+      // trace that the reminder was never delivered. Redacted before storage: an
+      // SMTP error can quote the credential it rejected.
+      this.store.audit(user.id, 'quota.mail_failed', `quota notice could not be sent: ${redact(String(error))}`)
     }
   }
 }

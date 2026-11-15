@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
+import { validateBaseline } from '../scripts/lib/codeql-alerts.mjs'
 
 // #304: a red CodeQL analysis blocked nothing. `analyze` lives in its own
 // workflow (`codeql.yml`), so `ci-ok` in `ci.yml` could never aggregate its
@@ -88,6 +89,15 @@ function fakeClock(): Clock & { slept: number[] } {
     slept,
   }
 }
+
+
+test('the live CodeQL baseline is well-formed, owned and unexpired', () => {
+  const baseline = JSON.parse(readFileSync(new URL('../.github/agent/codeql-baseline.json', import.meta.url), 'utf8'))
+  const checked = validateBaseline(baseline, Date.now())
+  assert.deepEqual(checked.errors, [], 'the recorded baseline must pass its own reader')
+  assert.equal(checked.entries.filter((entry) => entry.dismissed === true).length, 3, 'the three dismissed results keep their record')
+  assert.equal(checked.entries.filter((entry) => entry.dismissed !== true).length, 4, 'the four open results stay open')
+})
 
 const SHA = 'a'.repeat(40)
 
@@ -225,7 +235,9 @@ test('codeql-required is in ci-ok needs, is never skippable, and adds no merge_g
   const jobStart = ci.indexOf('\n  codeql-required:')
   assert.ok(jobStart !== -1, 'ci.yml must declare the codeql-required job')
   const job = ci.slice(jobStart, ci.indexOf('\n  ci-ok:', jobStart))
-  assert.match(job, /run: node scripts\/codeql-required\.mjs/, 'the job must run the decision script')
+  // #640: the decision script runs from the base branch tree, so a pull request
+  // cannot edit the code that reads its own analysis.
+  assert.match(job, /run: node base\/scripts\/codeql-required\.mjs/, 'the job must run the base branch copy of the decision script')
   assert.match(job, /GITHUB_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/, 'a step inherits no token, so the lookup needs one mapped the way review-gate.yml maps it')
   assert.match(job, /actions: read/, 'reading this repository\'s workflow runs needs actions: read, and a job-level block replaces the workflow set')
 

@@ -189,7 +189,9 @@ test('every conditional job is wired to the change classifier', async () => {
 
 test('the workflow runs the script and no longer accepts a skipped job inline', () => {
   const workflow = readFileSync(workflowPath, 'utf8')
-  assert.match(workflow, /node scripts\/ci-ok\.mjs/, 'ci-ok must call scripts/ci-ok.mjs')
+  // #640: the aggregate runs from the base branch tree, never from the pull
+  // request it judges.
+  assert.match(workflow, /node base\/scripts\/ci-ok\.mjs/, 'ci-ok must call the base branch copy of scripts/ci-ok.mjs')
   assert.doesNotMatch(workflow, /value\.result !== "skipped"/, 'the inline predicate that treated skipped as a pass must be gone')
 })
 

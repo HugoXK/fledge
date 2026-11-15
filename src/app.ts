@@ -29,8 +29,9 @@ import { parseAttributionJson } from './lib/attribution.js'
 import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { parseVerification } from './lib/verification.js'
+import { readChangeStory, type ChangeStory } from './lib/changeStory.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
-import { parseIssueUrl } from './jobs/prUrl.js'
+import { parseIssueUrl, parsePrUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
 import type { PriorityLevel } from './lib/priority.js'
@@ -74,10 +75,12 @@ import { parsePreviewQuery, previewSchedule, type PreviewResult } from './schedu
 import { intervalFieldText, scheduleConsole } from './schedules/console.js'
 import { nextTime } from './schedules/next.js'
 import { scheduleFromRow } from './schedules/tick.js'
+import { DAILY_RUNS_MAX, parseDailyRuns, utcDayEnd, utcDayStart } from './schedules/budget.js'
 import { Approvals } from './users/approval.js'
 import {
   adminPage,
   adminSupportPage,
+  adminDeleteUserPage,
   adminTrialsPage,
   adminSearchPage,
   adminWebhooksPage,
@@ -105,7 +108,8 @@ import {
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
 import { gatePage } from './views/gate.js'
-import { planHash, validateGatePlan } from './gates/plan.js'
+import { planHash, validateGatePlan, type GatePlan } from './gates/plan.js'
+import { applyGatePlan } from './gates/apply.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { rulesOverridesPage } from './views/rules.js'
 import { ciGatePage } from './views/ciGate.js'
@@ -122,7 +126,7 @@ import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/w
 import { managementActor } from './management/actor.js'
 import { ManagementService, type CommandOutcome, type ManagementCode } from './management/service.js'
 import type { JobKind } from './jobs/runner.js'
-import { listEffectiveScopes, platformCapabilitiesForRole, resolveUserActor, type Capability } from './identity/authorization.js'
+import { identityPrincipalId, listEffectiveScopes, platformCapabilitiesForRole, resolveUserActor, type Capability } from './identity/authorization.js'
 
 export interface BuildOptions {
   config: Config
@@ -342,6 +346,10 @@ function managementRefusal(t: Translate, code: string, fallback: string): string
       return t('这个请求已经用不同的内容提交过，已拒绝。请刷新页面后重试。', 'That request was already submitted with different content; reload the page and try again.')
     case 'command_in_progress':
       return t('这个操作还在处理中，请刷新页面查看结果。', 'This action is still being processed; reload to see the result.')
+    case 'management_unknown':
+      // #540 slice 5: the external write did not answer, so the honest sentence
+      // is "not confirmed, submit again to check" — never "it failed".
+      return t('这一步没有收到确认，结果未知。请再次提交同一个操作，系统会先核对再决定是否重发。', 'This step was not confirmed, so the result is unknown. Submit the same action again and it will check before resending.')
     case 'authorization_revoked':
       return t('你已经没有执行这个操作的权限。', 'You no longer have permission for this action.')
     case 'job_not_cancellable':
@@ -750,18 +758,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     reply: FastifyReply,
     viewer: Viewer,
     action: string,
+    backOverride?: string,
   ): boolean => {
     if (recentAuthFresh(viewer)) return false
     const path = request.url.split('?')[0] ?? ''
     store.audit(viewer.user.id, 'recent_auth_required', `${action} ${path}`)
-    const referer = String(request.headers.referer ?? '')
-    let back = referer.startsWith('/') ? referer : ''
-    if (back === '' && referer !== '') {
-      try {
-        const url = new URL(referer)
-        back = `${url.pathname}${url.search}`
-      } catch {
-        back = ''
+    let back = backOverride ?? ''
+    if (back === '') {
+      const referer = String(request.headers.referer ?? '')
+      back = referer.startsWith('/') ? referer : ''
+      if (back === '' && referer !== '') {
+        try {
+          const url = new URL(referer)
+          back = `${url.pathname}${url.search}`
+        } catch {
+          back = ''
+        }
       }
     }
     const t = translator(request.locale ?? 'zh')
@@ -834,6 +846,41 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     summary: job.summary === null ? null : localizeMessage(locale, job.summary) ?? job.summary,
     error: job.error === null ? null : localizeMessage(locale, job.error) ?? job.error,
   }))
+
+  // #373 slice 1: the job page's "Why this change" block reads the pull request
+  // body and the changed-file totals. One read per job with a 60 s bound, the
+  // same shape as `inboxCache` above: a page refresh must not spend a GitHub
+  // request, and a job without a pull request spends none at all.
+  const changeStoryTtlMs = 60_000
+  const changeStoryCache = new Map<string, { at: number; story: ChangeStory }>()
+  const changeStoryFor = async (repo: RepoRow, job: JobRow): Promise<ChangeStory | undefined> => {
+    if (job.pr_url === null || job.pr_url === '') return undefined
+    const cached = changeStoryCache.get(job.id)
+    if (cached !== undefined && Date.now() - cached.at < changeStoryTtlMs) return cached.story
+    const parsed = parsePrUrl(repo, job.pr_url, config.github.apiBase)
+    let story: ChangeStory
+    if (!parsed.ok) {
+      story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+    } else {
+      try {
+        const token = await repoGithubToken(repo, config, githubApp, store)
+        const client = new GithubClient(token, config.github.apiBase)
+        const pr = await client.getPullRequest(parsed.ref.owner, parsed.ref.name, parsed.ref.number)
+        const diff = await client.pullRequestDiffTotals(parsed.ref.owner, parsed.ref.name, parsed.ref.number, pr.changedFiles)
+        story = readChangeStory({ body: pr.body, totals: diff.totals, diffState: diff.complete ? 'ok' : 'capped' })
+      } catch (error) {
+        // A read that failed is a fact the block reports, not a reason to fail
+        // the page: the evidence below it is what the maintainer came for.
+        log.warn('change story read failed', { repo: repo.id, job: job.id, error: error instanceof Error ? error.message : String(error) })
+        story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+      }
+    }
+    if (changeStoryCache.size >= 200) {
+      for (const [key, entry] of changeStoryCache) if (Date.now() - entry.at >= changeStoryTtlMs) changeStoryCache.delete(key)
+    }
+    changeStoryCache.set(job.id, { at: Date.now(), story })
+    return story
+  }
 
   const requireAdvanced = (viewer: { user: UserRow; preview?: boolean }): void => {
     if (viewer.user.role !== 'superadmin' || viewer.preview === true) throw httpError(403, '仅超级管理员可访问实时团队页面。', 'SUPERADMIN_ONLY')
@@ -1580,12 +1627,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const locale = request.locale ?? 'zh'
     const t = translator(locale)
     const row = store.scheduleForRepo(repo.id)
+    const now = Date.now()
     const state = scheduleConsole({
       repoId: repo.id,
       row,
       occurrences: store.listScheduleOccurrences(repo.id, 20),
-      now: Date.now(),
+      now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
+      // #544 slice 6: the same count function the worker charges with, read over
+      // today's UTC day — the worker charges the *instant's* day, so a catch-up
+      // run can spend a past day while this fact answers "how much of today is
+      // used". A repository with no schedule row read no count, which is unknown.
+      ...(row === undefined ? {} : { runsToday: store.countScheduleDispatchesBetween(row.id, utcDayStart(now), utcDayEnd(now)) }),
     })
     const refused = queryText(request, 'refused')
     const instant = (value: number | null | undefined): string => (value === null || value === undefined ? '' : new Date(value).toISOString())
@@ -1605,6 +1658,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // Minutes, because a person thinks in minutes and the stored column is
         // milliseconds. Empty means no bound, which is the old behaviour.
         grace: row?.grace_ms === null || row?.grace_ms === undefined ? '' : String(Math.round(row.grace_ms / 60_000)),
+        dailyRuns: row?.daily_runs === null || row?.daily_runs === undefined ? '' : String(row.daily_runs),
       },
       ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
       ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
@@ -1640,6 +1694,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (graceMinutes !== null && (!Number.isFinite(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
       return reply.redirect(`${back}?refused=${encodeURIComponent(t('宽限时间必须是 0 到 10080 分钟之间的整数。', 'The grace bound must be an integer between 0 and 10080 minutes.'))}`)
     }
+    // #544 slice 6: an absent field keeps the stored limit, so a form that
+    // predates the budget cannot silently clear it. An explicit empty field is
+    // unbounded, which is the behaviour every schedule had.
+    const dailyRunsField = body.daily_runs
+    const parsedDailyRuns = dailyRunsField === undefined
+      ? ({ ok: true, dailyRuns: undefined } as const)
+      : parseDailyRuns(String(dailyRunsField))
+    if (!parsedDailyRuns.ok) {
+      const message = parsedDailyRuns.reason === 'not-an-integer'
+        ? t('每日运行上限必须是大于 0 的整数。', 'The daily run limit must be a whole number greater than 0.')
+        : t(`每日运行上限必须在 1 到 ${DAILY_RUNS_MAX} 之间。`, `The daily run limit must be between 1 and ${DAILY_RUNS_MAX}.`)
+      return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
+    }
     store.saveSchedule({
       id: existing?.id ?? randomId('sch'),
       repoId: repo.id,
@@ -1651,6 +1718,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       endAt: schedule.endAt,
       misfire,
       graceMs: graceMinutes === null ? null : Math.round(graceMinutes) * 60_000,
+      dailyRuns: parsedDailyRuns.dailyRuns,
     })
     const label = schedule.kind === 'cron'
       ? `${schedule.expression} ${schedule.timezone}`
@@ -1769,7 +1837,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/repos/new', async (request, reply) => {
     const viewer = requireApproved(request)
-    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置；仍可使用 PAT 接入。')}`)
+    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置；仍可使用 PAT 接入。')}#add-repo`)
     const installations = store.listInstallations(viewer.user.id)
     const raw = Number(queryText(request, 'installation'))
     const installationId = Number.isFinite(raw) && raw > 0 ? raw : undefined
@@ -1798,7 +1866,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/app', async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
-    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置。')}`)
+    if (!githubApp.configured) return reply.redirect(`/dashboard?error=${encodeURIComponent('GitHub App 未配置。')}#add-repo`)
     const body = (request.body ?? {}) as Record<string, unknown>
     const installationId = Number(body.installation)
     const installation = store.getInstallation(installationId)
@@ -1975,7 +2043,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(bits.join(' '))}`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      return reply.redirect(`/dashboard?error=${encodeURIComponent(message)}`)
+      // The dashboard renders this slot only inside `#add-repo` (`#472` slice 3),
+      // so the redirect has to land with the dialog open.
+      return reply.redirect(`/dashboard?error=${encodeURIComponent(message)}#add-repo`)
     }
   })
 
@@ -2022,6 +2092,31 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // what each number means, including when a window has no review at all.
     const trendSince = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString()
     const reviewTrend = { week: store.reviewTrend(repo.id, trendSince(7)), month: store.reviewTrend(repo.id, trendSince(30)) }
+    // #697: the two budget scopes this page can set, each with the spend it is
+    // compared against. Both read the same rolling 30-day window the repository
+    // budget already uses, and both are USD-billed only.
+    const budgetWindow = trendSince(30)
+    const budgetPrincipal = identityPrincipalId(repo.user_id)
+    const repositoryScopeRow = store.getBudgetScope('repository', repo.id)
+    const principalScopeRow = store.getBudgetScope('principal', budgetPrincipal)
+    const budgetScopes = [
+      {
+        kind: 'repository' as const,
+        label: `${repo.owner}/${repo.name}`,
+        capCny: repositoryScopeRow?.cap_cny ?? 0,
+        spentCny: store.repoUsageSince(repo.id, budgetWindow) * config.quota.usdCny,
+        action: repositoryScopeRow?.action ?? 'alert',
+        unknownCount: store.repoUnknownCountSince(repo.id, budgetWindow),
+      },
+      {
+        kind: 'principal' as const,
+        label: `@${store.userById(repo.user_id)?.login ?? repo.user_id}`,
+        capCny: principalScopeRow?.cap_cny ?? 0,
+        spentCny: store.principalUsageSince(repo.user_id, budgetWindow) * config.quota.usdCny,
+        action: principalScopeRow?.action ?? 'alert',
+        unknownCount: store.principalUnknownCountSince(repo.user_id, budgetWindow),
+      },
+    ]
     const repoModels = store.listRepoModelSelection(repo.id)
     const scheduleRow = store.scheduleForRepo(repo.id)
     const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
@@ -2063,6 +2158,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         config,
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
+        recentAuthAt: viewer.recentAuthAt,
         repo,
         releases: store.listReleasesForRepo(repo.id),
         instance,
@@ -2076,6 +2172,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         queued: store.listQueuedJobs(),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems,
+        // #379: the repository page lists every state the ledger can hold. These
+        // are the ids jobs reported, not GitHub's alert store.
+        securityFindings: store.listSecurityFindings(repo.id),
         commands,
         // #359: the page names the deadline and the way out, so an ignored plan
         // is a visible decision with a date rather than a silent wait.
@@ -2103,7 +2202,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
         repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
-        repoSpendCny: store.repoUsageSince(repo.id, new Date(Date.now() - 30 * 86_400_000).toISOString()) * config.quota.usdCny,
+        repoSpendCny: store.repoUsageSince(repo.id, budgetWindow) * config.quota.usdCny,
+        budgetScopes,
         questions,
         chiefMessages,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
@@ -2114,11 +2214,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #546: the release form is on this page, so its outcome has to land here
         // too — a refusal the maintainer cannot see reads as a click that did
         // nothing, and a success that is not confirmed is indistinguishable from
-        // one that never ran.
-        releaseRefused: queryText(request, 'refused'),
-        releaseTagged: queryText(request, 'tagged'),
-        releaseRetagged: queryText(request, 'retagged'),
-        releaseChecked: queryText(request, 'checked'),
+        // one that never ran. #472 slice 3: the outcome now rides in the one-shot
+        // flash (its own slot, so it stays beside the form instead of becoming a
+        // top-of-page notice); a hand-typed query parameter renders nothing.
+        releaseRefused: request.flash?.outcome?.key === 'refused' ? request.flash.outcome.text : undefined,
+        releaseTagged:
+          request.flash?.outcome?.key === 'tagged' || request.flash?.outcome?.key === 'retagged'
+            ? request.flash.outcome.text
+            : undefined,
+        releaseRetagged: request.flash?.outcome?.key === 'retagged' ? '1' : undefined,
+        releaseChecked: request.flash?.outcome?.key === 'checked' ? request.flash.outcome.text : undefined,
       }),
     )
   })
@@ -2506,6 +2611,118 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(t('计划已确认。还没有写入仓库。', 'The plan is confirmed. Nothing has been written to the repository yet.'))}`)
     }
     return reply.send(gateSessionView(confirmed))
+  })
+
+  // #543 second slice: a confirmed plan may be applied once. The claim below is
+  // a compare-and-set on the session row, so two clicks cannot both open a pull
+  // request; the loser gets a 409 and the winner records the branch and PR URL on
+  // the same row. Planning and confirming still write nothing to the repository.
+  app.post('/repos/:id/gate/sessions/:sessionId/create', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') return gateMaintainerRefusal(reply, request)
+    const sessionId = String((request.params as Record<string, string>).sessionId)
+    const t = translator(request.locale ?? 'zh')
+    const session = store.getGateSessionForRepo(repo.id, sessionId)
+    if (session === undefined) {
+      return reply.code(404).send({ error: { type: 'GATE_SESSION_NOT_FOUND', message: t('门禁会话不存在。', 'That gate session does not exist.') } })
+    }
+    if (session.pr_url !== null) {
+      return reply.code(409).send({
+        error: {
+          type: 'GATE_PR_ALREADY_CREATED',
+          prUrl: session.pr_url,
+          message: t(`这个会话已经创建了门禁 PR：${session.pr_url}`, `This session already created its gate pull request: ${session.pr_url}`),
+        },
+      })
+    }
+    if (session.status !== 'confirmed') {
+      return reply.code(409).send({
+        error: {
+          type: 'SESSION_NOT_CONFIRMED',
+          message: t(`这个会话的状态是 ${session.status}；先由维护者确认计划，才会写入仓库。`, `The session is ${session.status}; a maintainer must confirm the plan before anything is written.`),
+        },
+      })
+    }
+    const claimed = store.claimGateSession(session.id, 'confirmed', 'analyzing')
+    if (claimed === undefined) {
+      return reply.code(409).send({
+        error: {
+          type: 'SESSION_NOT_CONFIRMED',
+          message: t('另一个请求正在应用这个会话，或它的状态已经改变。', 'Another request is applying this session, or its status changed.'),
+        },
+      })
+    }
+    const refused = (status: number, code: string, message: string, branch?: string): FastifyReply => {
+      store.updateGateSession(session.id, {
+        status: code === 'stale_base_sha' ? 'refused' : 'failed',
+        error_code: code,
+        ...(branch === undefined ? {} : { branch }),
+      })
+      store.audit(viewer.user.id, 'gate.pr.refused', `${repo.owner}/${repo.name} session=${session.id} code=${code}`)
+      return reply.code(status).send({ error: { type: code, message } })
+    }
+    let plan: GatePlan | null = null
+    try {
+      const parsed = validateGatePlan(JSON.parse(claimed.plan_json))
+      // The hash is recomputed from the stored plan: a row edited behind the
+      // store cannot be applied under the hash the human confirmed.
+      if (parsed.ok && planHash(parsed.plan) === claimed.plan_hash) plan = parsed.plan
+    } catch {
+      plan = null
+    }
+    if (plan === null) {
+      return refused(409, 'plan_invalid', t('存储的计划与它记录的哈希不一致，请重新提交计划。', 'The stored plan does not match its recorded hash; submit the plan again.'))
+    }
+    let token = ''
+    try {
+      token = await repoGithubToken(repo, config, githubApp, store)
+    } catch (error) {
+      log.warn('gate token unavailable', { repo: repo.id, error: String(error) })
+      token = ''
+    }
+    if (token === '') {
+      // Nothing was written; put the row back to `confirmed` so the same
+      // confirmation can be applied once the connection is repaired.
+      store.updateGateSession(session.id, { status: 'confirmed' })
+      return reply.code(409).send({
+        error: {
+          type: 'GITHUB_TOKEN_MISSING',
+          message: t('这个仓库没有可用的 GitHub 凭据，无法创建门禁 PR。', 'This repository has no usable GitHub credential, so the gate pull request cannot be created.'),
+        },
+      })
+    }
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const baseBranch = repo.target_branch || repo.upstream_default_branch || repo.default_branch
+    const applied = await applyGatePlan({
+      client: new GithubClient(token, config.github.apiBase),
+      owner,
+      name,
+      baseBranch,
+      plan,
+      planHash: claimed.plan_hash,
+      confirmedBy: claimed.confirmed_by ?? viewer.user.login,
+    })
+    if (!applied.ok) {
+      const status = applied.code === 'github_unavailable' || applied.code === 'write_failed' || applied.code === 'pr_failed' ? 502 : 409
+      return refused(status, applied.code, applied.message, applied.branch)
+    }
+    const created = store.updateGateSession(session.id, {
+      status: 'created',
+      branch: applied.branch,
+      pr_url: applied.prUrl,
+      error_code: null,
+    })!
+    store.audit(viewer.user.id, 'gate.pr.created', `${owner}/${name} session=${session.id} branch=${applied.branch} pr=${applied.prUrl}`)
+    const notice = t(
+      `门禁 PR 已创建：${applied.prUrl}（${applied.files.length} 个文件）`,
+      `Gate pull request created: ${applied.prUrl} (${applied.files.length} files)`,
+    )
+    const contentType = String(request.headers['content-type'] ?? '')
+    if (contentType.includes('application/x-www-form-urlencoded')) {
+      return reply.redirect(`/repos/${repo.id}/gate?notice=${encodeURIComponent(notice)}`)
+    }
+    return reply.code(201).send(gateSessionView(created))
   })
 
   // #538: console overrides for the three rule files. A repository file stays
@@ -2971,17 +3188,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // label map keeps the viewer's own repositories readable without naming
     // anybody else's.
     const repoLabels = new Map(store.listRepos(viewer.user.id).map((entry) => [entry.id, `${entry.upstream_owner || entry.owner}/${entry.upstream_name || entry.name}`]))
+    // #373: one read of the pull request, cached per job, so the page can say
+    // what the change is and not only that its checks passed.
+    const changeStory = await changeStoryFor(repo, job)
     return reply.type('text/html').send(jobPage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       repo,
       job,
+      changeStory,
       queued,
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
       events: store.listJobEvents(job.id, 200),
       relations: store.listTaskRelations(job.id),
+      // #379: the findings whose last report was this job, so the page can name
+      // where a dismissed finding was last seen when it came back.
+      findings: store.listSecurityFindingsForJob(job.id),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       // #540: the cancel form carries the revision it rendered and a fresh key,
       // so a double submit replays the same receipt and a stale page conflicts.
@@ -3424,6 +3648,42 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}?${result.merged.length > 0 ? 'notice' : 'error'}=${encodeURIComponent(message)}#delivery`)
   })
 
+  // #379: the two operator decisions a reported finding can receive. Both need a
+  // written reason, refused here and again by the store: a dismissal with no
+  // reason would read as a silent accept, and a fix with no evidence is exactly
+  // the claim the ledger exists to keep honest.
+  // #379: the two written decisions on a finding. Both are maintainer-only and
+  // both refuse a blank reason/evidence in the route *and* in the store, because
+  // a row that reads as dismissed or fixed with nothing behind it is exactly the
+  // silent-accept this ledger exists to prevent.
+  app.post('/repos/:id/security-findings/:findingId/dismiss', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const t = translator(request.locale ?? 'zh')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('只有 maintainer 可以处理安全发现。', 'Only a maintainer can act on a security finding.'))}#security`)
+    const finding = String((request.params as Record<string, string>).findingId)
+    const reason = (form(request).reason ?? '').trim().slice(0, 500)
+    if (reason === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('忽略一条安全发现需要写明理由。', 'Dismissing a security finding needs a written reason.'))}#security`)
+    if (!store.setSecurityFindingState(repo.id, finding, 'dismissed', reason)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('这条安全发现不存在。', 'That security finding does not exist.'))}#security`)
+    }
+    store.audit(viewer.user.id, 'security_finding.dismissed', `${repo.id}: ${finding}`.slice(0, 600))
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('已忽略这条安全发现；如果它再次出现，会记为回归。', 'Dismissed. If the same id appears again it is recorded as a regression.'))}#security`)
+  })
+
+  app.post('/repos/:id/security-findings/:findingId/fix', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const t = translator(request.locale ?? 'zh')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('只有 maintainer 可以处理安全发现。', 'Only a maintainer can act on a security finding.'))}#security`)
+    const finding = String((request.params as Record<string, string>).findingId)
+    const evidence = (form(request).evidence ?? '').trim().slice(0, 500)
+    if (evidence === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('标记已修复需要写明证据（提交、链接或测量值）。', 'Marking a finding fixed needs evidence: a commit, a link or a measurement.'))}#security`)
+    if (!store.setSecurityFindingState(repo.id, finding, 'fixed', evidence)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('这条安全发现不存在。', 'That security finding does not exist.'))}#security`)
+    }
+    store.audit(viewer.user.id, 'security_finding.fixed', `${repo.id}: ${finding}`.slice(0, 600))
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('已记录修复证据；如果同一个 id 再次出现，会记为回归。', 'Fix evidence recorded. If the same id appears again it is recorded as a regression.'))}#security`)
+  })
+
   app.post('/repos/:id/work/:workItemId/scope', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const item = store.getWorkItem(String((request.params as Record<string, string>).workItemId))
@@ -3787,6 +4047,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
+    // #697: the two scopes this form owns. A zero cap removes the row, so
+    // "cleared" and "a cap of zero" cannot be confused, and both writes are the
+    // same additive table the job checkpoint reads.
+    const scopeAction = (value: string | undefined): string => (value === 'pause' || value === 'cancel' ? value : 'alert')
+    store.setBudgetScope({
+      kind: 'repository',
+      id: repo.id,
+      capCny: Math.max(0, Math.min(10000, Number(body.repoBudget) || 0)),
+      action: scopeAction(body.repoBudgetAction),
+    })
+    store.setBudgetScope({
+      kind: 'principal',
+      id: identityPrincipalId(repo.user_id),
+      capCny: Math.max(0, Math.min(10000, Number(body.principalBudget) || 0)),
+      action: scopeAction(body.principalBudgetAction),
+    })
     const policyWritten = Array.isArray(outcome.result.changed)
       ? outcome.result.changed.filter((field): field is string => typeof field === 'string')
       : []
@@ -3857,7 +4133,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (requireRecentAuth(request, reply, viewer, 'repo.delete')) return reply
+    if (requireRecentAuth(request, reply, viewer, 'repo.delete', `/repos/${repo.id}#danger`)) return reply
     const confirmName = (form(request).confirmName ?? '').trim()
     if (confirmName !== repo.name && confirmName !== `${repo.owner}/${repo.name}`) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请输入仓库名确认删除。')}#danger`)
@@ -4266,6 +4542,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       rows: store.trialCandidates(),
+      // #690: the purge records, so a skipped or erased account is visible on the
+      // page and not only in the sweep's output.
+      purges: store.recentPurgeAudits(10),
+      purgesGraceHours: config.trialPurgeGraceHours,
       filter: isTrialFilter(requested) ? requested : 'all',
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,
@@ -4839,6 +5119,85 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.setUserRole(id, role)
     store.audit(id, 'admin.role', `role=${user.role}->${role} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为用户。')}`)
+  })
+
+  // #691: account deletion. The preview is read-only; the confirm is the
+  // largest destructive action on the platform. It removes repositories, jobs,
+  // instances and credentials, then reuses #690's `purgeUserRows` transaction
+  // with its eligibility check bypassed on purpose — the superadmin asserts the
+  // account is dead. Every step is idempotent, so a failed run is retried by
+  // submitting the same confirm again, and the audit row is the state.
+  const accountDeleteBlocked = (viewer: Viewer, user: UserRow): 'self' | 'last_superadmin' | null => {
+    // A superadmin is always a viewer's peer here, so the last-superadmin guard
+    // is defence in depth: it matters if a future caller deletes by id without
+    // a superadmin session in front of it.
+    if (user.id === viewer.user.id) return 'self'
+    if (user.role !== 'superadmin') return null
+    return store.listUsers().filter((row) => row.role === 'superadmin' && row.id !== user.id).length === 0 ? 'last_superadmin' : null
+  }
+
+  app.get('/admin/users/:id/delete', async (request, reply) => {
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const user = store.userById(String((request.params as Record<string, string>).id))
+    if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    return reply.type('text/html').send(adminDeleteUserPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      user,
+      counts: {
+        repos: store.listRepos(user.id).length,
+        jobs: store.countJobsForUser(user.id),
+        running: store.countJobsForUser(user.id, { status: 'running' }),
+        queued: store.countJobsForUser(user.id, { status: 'queued' }),
+        instances: store.listRepoInstances().filter((row) => row.user_id === user.id).length,
+        tokens: store.listApiTokens(user.id).length,
+        installations: store.listInstallations(user.id).length,
+      },
+      blocked: accountDeleteBlocked(viewer, user),
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
+    }))
+  })
+
+  app.post('/admin/users/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可访问。', 'SUPERADMIN_ONLY')
+    if (viewer.preview === true) throw httpError(403, '预览模式不可删除账号。', 'PREVIEW_READ_ONLY')
+    if (requireRecentAuth(request, reply, viewer, 'admin.user.delete')) return reply
+    const t = translator(request.locale ?? 'zh')
+    const id = String((request.params as Record<string, string>).id)
+    const user = store.userById(id)
+    if (user === undefined) throw httpError(404, '用户不存在。', 'USER_NOT_FOUND')
+    const back = `/admin/users/${user.id}/delete`
+    const blocked = accountDeleteBlocked(viewer, user)
+    if (blocked === 'self') throw httpError(403, '不能删除自己的账号。', 'SELF_DELETE')
+    if (blocked === 'last_superadmin') throw httpError(403, '不能删除最后一个超级管理员。', 'LAST_SUPERADMIN')
+    const confirmLogin = (form(request).confirmLogin ?? '').trim()
+    if (confirmLogin !== user.login) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('请输入完整的 GitHub 登录名确认删除。', 'Type the exact GitHub login to confirm the deletion.'))}`)
+    }
+    // Teardown order is deliberate: stop work, stop the external instances,
+    // revoke credentials, then erase the rows. A failed step is named in one
+    // audit row without the login, address, token or path, and the account stays
+    // visible so the same confirm can be retried.
+    let step = 'cancel_jobs'
+    try {
+      await jobs.cancelUserJobs(user.id, '账号已被超级管理员删除')
+      step = 'stop_instances'
+      for (const instance of store.listRepoInstances().filter((row) => row.user_id === user.id)) {
+        await instances.remove(instance.repo_id)
+      }
+      step = 'revoke_tokens'
+      for (const token of store.listApiTokens(user.id)) store.revokeApiToken(token.id, user.id)
+      step = 'purge_rows'
+      store.purgeUserRows(user.id, { reason: 'admin.deleted', operator: 'superadmin', action: 'admin.user.deleted' })
+    } catch {
+      store.audit(user.id, 'admin.user.delete_failed', JSON.stringify({ step }))
+      return reply.redirect(`${back}?error=${encodeURIComponent(t(`删除在「${step}」步骤失败，账号仍在，请重试。`, `Deletion failed at the "${step}" step; the account is still here, submit the same confirmation to retry.`))}`)
+    }
+    return reply.redirect(`/admin?notice=${encodeURIComponent(t('账号已删除，并写入一条不含身份信息的删除记录。', 'The account is deleted, with one non-identity deletion record.'))}`)
   })
 
   app.post('/admin/simulation', async (request, reply) => {
