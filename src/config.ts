@@ -88,6 +88,16 @@ export interface Config {
     /** Below this remaining balance the first-run checklist recommends an own model. */
     comfortCny: number
   }
+  // #814: the server-deployed FlyBot's Fledge Lead. `leadRepoId` uses a repo
+  // Fledge already manages; the bridge trio targets an externally managed
+  // instance. `publicRepo` is the sanitized issue target the Lead may write to.
+  feedback: {
+    leadRepoId: string
+    leadBridgeUrl: string
+    leadBridgeToken: string
+    leadSessionId: string
+    publicRepo: string
+  }
   runner: {
     mode: RunnerMode
     bridgeUrl: string
@@ -343,6 +353,13 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       initialCny: number('INITIAL_QUOTA_CNY', 1),
       usdCny: number('USD_CNY_RATE', 7.2),
       comfortCny: number('PLATFORM_QUOTA_COMFORT_CNY', 50),
+    },
+    feedback: {
+      leadRepoId: text('FLEDGE_LEAD_REPO_ID'),
+      leadBridgeUrl: text('FLEDGE_LEAD_BRIDGE_URL').replace(/\/$/, ''),
+      leadBridgeToken: text('FLEDGE_LEAD_BRIDGE_TOKEN'),
+      leadSessionId: text('FLEDGE_LEAD_SESSION_ID'),
+      publicRepo: text('FEEDBACK_PUBLIC_REPO', 'HugoXK/fledge'),
     },
     runner: {
       mode: (text('RUNNER_MODE', 'mock') as RunnerMode) || 'mock',

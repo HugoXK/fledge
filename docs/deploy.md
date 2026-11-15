@@ -36,6 +36,9 @@ Key settings:
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@example.com` |
 | `FEEDBACK_EMAIL` | Optional feedback/error-report destination; defaults to `ADMIN_EMAIL` |
+| `FLEDGE_LEAD_REPO_ID` | Repo connected to Fledge whose FlyBot Lead triages feedback |
+| `FLEDGE_LEAD_BRIDGE_URL/TOKEN/SESSION_ID` | Direct bridge target when the Fledge Lead is external |
+| `FEEDBACK_PUBLIC_REPO` | Sanitized public issue target; defaults to `HugoXK/fledge` |
 | `PLATFORM_LLM_BASE_URL` | OpenAI-compatible `/v1` endpoint |
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |

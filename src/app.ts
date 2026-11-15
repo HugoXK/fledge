@@ -19,6 +19,9 @@ import { dedupeRepoNames, instanceLimitRefusal, repoLimitRefusal, type LimitRefu
 import { isTrialFilter } from './lib/trials.js'
 import { createMailer, type Mailer } from './email/mailer.js'
 import { approvedEmail, errorReportMail, feedbackMail, rejectedEmail, testEmail } from './email/templates.js'
+import { attemptLeadDelivery, publicIssueDraft, retryPendingLeadDeliveries, verifyTriageToken } from './feedback/lead.js'
+import { triageProblems } from './feedback/lifecycle.js'
+import { notifyFeedbackReporter, notifyReleasedFeedback } from './feedback/notify.js'
 import { notifyEmail } from './email/recipient.js'
 import { authenticateApiToken } from './lib/apiToken.js'
 import { registerGateway } from './gateway/gateway.js'
@@ -3937,6 +3940,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         sessions: store.listSessions(viewer.user.id),
         currentSessionHash: viewer.sessionHash,
         providers: store.listModelProviders(viewer.user.id).map((provider) => ({ ...provider, models: store.listProviderModels(provider.id) })),
+        feedback: store.listFeedbackTriageForUser(viewer.user.id, 10),
         discoveredProvider: queryText(request, 'discoveredProvider'),
         discovered: (queryText(request, 'discovered') ?? '').split(',').filter((value) => value !== ''),
         notice: request.flash?.notice?.text,
@@ -4154,7 +4158,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (message === '') return reply.redirect(`/settings?error=${encodeURIComponent('请填写反馈内容。')}#feedback`)
     const id = randomId('fb')
     const createdAt = new Date().toISOString()
+    const publishConsent = body.publishConsent === '1'
     store.createFeedback({ id, userId: viewer.user.id, kind, message, page, createdAt })
+    const triage = store.createFeedbackTriage({ ref: id, userId: viewer.user.id, userLogin: viewer.user.login, kind, publishConsent, createdAt })
+    void attemptLeadDelivery({ store, config, instances, triage, feedback: store.feedbackById(id) }).catch((error) => log.warn('feedback lead delivery failed', { ref: id, error: redact(String(error)) }))
     store.audit(viewer.user.id, 'feedback.created', `${id} kind=${kind} chars=${message.length}`)
     const replyTo = notifyEmail(viewer.user)
     try {
@@ -4184,12 +4191,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (report === undefined) {
       return htmlPage(reply, 404, errorPage(config, viewer, '页面不存在', '这个报告编号不存在。', request.locale))
     }
-    if (form(request).consent !== '1') {
+    const reportBody = form(request)
+    if (reportBody.consent !== '1') {
       return htmlPage(reply, 400, errorPage(config, viewer, '需要授权', '请先勾选“我已知晓并授权 Fledge 平台读取这些失败数据”，再提交报告。', request.locale))
     }
     if (!store.claimErrorReport(ref, ERROR_REPORT_CONSENT_VERSION)) {
       return htmlPage(reply, 200, errorPage(config, viewer, '报告已发送', `这个报告（${ref}）已经发送过了，谢谢。`, request.locale))
     }
+    const publishConsent = request.viewer !== undefined && reportBody.publish === '1'
+    const triage = store.createFeedbackTriage({
+      ref,
+      userId: report.user_id,
+      userLogin: report.user_login,
+      kind: 'error',
+      publishConsent,
+      createdAt: report.created_at,
+    })
+    void attemptLeadDelivery({ store, config, instances, triage, error: report }).catch((error) => log.warn('error report lead delivery failed', { ref, error: redact(String(error)) }))
     try {
       await mailer.send({
         to: config.mail.feedbackEmail,
@@ -4214,6 +4232,76 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(report.user_id, 'error.reported', `${ref} ${report.status_code} ${report.path}`)
     return htmlPage(reply, 200, errorPage(config, viewer, '报告已发送', `谢谢。编号：${ref}。开发者会查看这个错误的类型、页面和时间；报告不包含你的输入、token 或请求体。`, request.locale))
+  })
+
+  const triageAuthorized = (request: FastifyRequest, ref: string): boolean => {
+    const header = String(request.headers.authorization ?? '')
+    const token = header.toLowerCase().startsWith('bearer ') ? header.slice(7).trim() : ''
+    return verifyTriageToken(config.sessionSecret, ref, token)
+  }
+
+  app.get('/api/feedback/:ref', async (request, reply) => {
+    if (!apiLimiter.take(`feedback-triage:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many requests' } })
+    const ref = String((request.params as Record<string, string>).ref ?? '')
+    if (!triageAuthorized(request, ref)) return reply.code(401).send({ error: { type: 'invalid_triage_token', message: 'Missing or invalid triage token' } })
+    const triage = store.feedbackTriageByRef(ref)
+    if (triage === undefined) return reply.code(404).send({ error: { type: 'not_found', message: 'No such feedback reference' } })
+    return {
+      triage,
+      feedback: store.feedbackById(ref) ?? null,
+      error: store.errorReportByRef(ref) ?? null,
+      events: store.listFeedbackEvents(ref),
+      issueDraft: publicIssueDraft(triage),
+    }
+  })
+
+  app.post('/api/feedback/:ref/triage', async (request, reply) => {
+    if (!apiLimiter.take(`feedback-triage:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many requests' } })
+    const ref = String((request.params as Record<string, string>).ref ?? '')
+    if (!triageAuthorized(request, ref)) return reply.code(401).send({ error: { type: 'invalid_triage_token', message: 'Missing or invalid triage token' } })
+    const triage = store.feedbackTriageByRef(ref)
+    if (triage === undefined) return reply.code(404).send({ error: { type: 'not_found', message: 'No such feedback reference' } })
+    const body = (request.body ?? {}) as Record<string, unknown>
+    const status = typeof body.status === 'string' ? body.status.trim() : ''
+    const userMessage = redact(String(body.user_message ?? '')).trim().slice(0, 1000)
+    const publicSummary = redact(String(body.public_summary ?? '')).trim().slice(0, 1000)
+    const issueUrl = String(body.issue_url ?? '').trim()
+    const prUrl = String(body.pr_url ?? '').trim()
+    const fixedVersion = String(body.fixed_version ?? '').trim()
+    const problems = triageProblems({ status, userMessage, publicSummary, issueUrl, prUrl, fixedVersion, publicRepo: config.feedback.publicRepo })
+    if (problems.length > 0) return reply.code(400).send({ error: { type: 'invalid_triage', message: problems.join('; ') } })
+    if (fixedVersion !== '' && parseVersion(fixedVersion) === null) return reply.code(400).send({ error: { type: 'invalid_version', message: 'fixed_version must be SemVer' } })
+    const unchanged = triage.status === status &&
+      (triage.user_message ?? '') === userMessage &&
+      (triage.public_summary ?? '') === publicSummary &&
+      (triage.issue_url ?? '') === issueUrl &&
+      (triage.pr_url ?? '') === prUrl &&
+      (triage.fixed_version ?? '') === fixedVersion
+    if (unchanged) {
+      return { ok: true, status, unchanged: true, issueDraft: publicIssueDraft(triage) }
+    }
+    store.updateFeedbackTriage(ref, {
+      status,
+      user_message: userMessage === '' ? null : userMessage,
+      public_summary: publicSummary === '' ? null : publicSummary,
+      issue_url: issueUrl === '' ? null : issueUrl,
+      pr_url: prUrl === '' ? null : prUrl,
+      fixed_version: fixedVersion === '' ? null : fixedVersion,
+    })
+    store.addFeedbackEvent(ref, status, userMessage.slice(0, 300), 'fledge-lead')
+    store.audit(triage.user_id, 'feedback.triaged', `${ref} ${status}`)
+    await notifyFeedbackReporter({
+      store,
+      mailer,
+      ref,
+      userId: triage.user_id,
+      status,
+      userMessage,
+      issueUrl: issueUrl === '' ? null : issueUrl,
+      prUrl: prUrl === '' ? null : prUrl,
+    })
+    const updated = store.feedbackTriageByRef(ref)
+    return { ok: true, status, issueDraft: updated === undefined ? null : publicIssueDraft(updated) }
   })
 
   app.post('/settings/tokens', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
@@ -5575,14 +5663,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale, undefined, report))
   })
 
+  let retryingLead = false
   const sweeper = setInterval(() => {
     limits.sweep()
     apiLimiter.sweep()
     store.deleteExpiredSessions()
+    if (options.startScheduler === false || retryingLead) return
+    retryingLead = true
+    void retryPendingLeadDeliveries({ store, config, instances })
+      .catch((error) => log.warn('feedback lead retry failed', { error: redact(String(error)) }))
+      .finally(() => { retryingLead = false })
   }, 60_000)
   sweeper.unref()
 
-  if (options.startScheduler !== false) jobs.start()
+  if (options.startScheduler !== false) {
+    jobs.start()
+    void notifyReleasedFeedback({ store, mailer }).catch((error) => log.warn('released feedback notification failed', { error: redact(String(error)) }))
+    void retryPendingLeadDeliveries({ store, config, instances }).catch((error) => log.warn('feedback lead retry failed', { error: redact(String(error)) }))
+  }
 
   return {
     app,

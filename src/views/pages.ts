@@ -1,6 +1,6 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
 import { assetUrl } from '../lib/assetVersion.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
 import { agreementContent } from '../users/agreements.js'
@@ -1869,6 +1869,23 @@ export function teamPage(input: {
   return layout({ title: t('团队工作台', 'Team console'), viewer, body, config, locale, path: `/repos/${repo.id}/team`, active: 'dashboard', notice, error })
 }
 
+function feedbackStatusLabel(t: Translate, status: string): string {
+  const labels: Record<string, [string, string]> = {
+    new: ['已收到', 'Received'],
+    user_error: ['使用问题', 'User error'],
+    duplicate: ['重复', 'Duplicate'],
+    needs_info: ['需要补充信息', 'Needs info'],
+    confirmed: ['已确认', 'Confirmed'],
+    issue_opened: ['已建 issue', 'Issue opened'],
+    pr_opened: ['修复中', 'Fix in review'],
+    fixed: ['已修复', 'Fixed'],
+    released: ['已上线', 'Released'],
+    wontfix: ['不修复', 'Won\'t fix'],
+  }
+  const label = labels[status]
+  return label === undefined ? status : t(label[0], label[1])
+}
+
 export function settingsPage(input: {
   config: Config
   locale: Locale
@@ -1877,13 +1894,14 @@ export function settingsPage(input: {
   sessions: SessionRow[]
   currentSessionHash: string
   providers: Array<ModelProviderRow & { models: ProviderModelRow[] }>
+  feedback?: FeedbackTriageRow[]
   discoveredProvider?: string
   discovered?: string[]
   newToken?: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, tokens, sessions, currentSessionHash, providers, discoveredProvider, discovered = [], newToken, notice, error } = input
+  const { config, locale, viewer, tokens, sessions, currentSessionHash, providers, feedback = [], discoveredProvider, discovered = [], newToken, notice, error } = input
   const t = translator(locale)
   const user = viewer.user
   const quota = quotaView(user, config)
@@ -2081,9 +2099,20 @@ export function settingsPage(input: {
         <label class="grow">${escapeHtml(t('相关页面（可选）', 'Related page (optional)'))} <input name="page" maxlength="200" placeholder="/settings 或 /dashboard" /></label>
       </div>
       <label>${escapeHtml(t('内容', 'Message'))}<textarea name="message" rows="4" maxlength="2000" required placeholder="${escapeHtml(t('发生了什么？你期望什么？', 'What happened, and what did you expect?'))}"></textarea></label>
+      <label class="check"><input type="checkbox" name="publishConsent" value="1" /> ${escapeHtml(t('我同意 Fledge 在公开 GitHub issue 中 @ 我的账号，并引用脱敏后的反馈摘要。', 'I agree Fledge may @ my GitHub account in a public issue, citing a sanitized summary of this feedback.'))}</label>
       <p class="fine">${escapeHtml(t('不要粘贴 token、密码或他人的隐私信息。反馈会保存并邮件通知开发者。', 'Do not paste tokens, passwords or another person’s private data. The note is stored and mailed to the maintainer.'))}</p>
       <button class="btn" type="submit">${escapeHtml(t('发送反馈', 'Send feedback'))}</button>
     </form>
+    ${feedback.length === 0 ? '' : `<div class="list" data-feedback-history>
+      ${feedback.map((row) => {
+        const links = [
+          row.issue_url === null ? '' : `<a class="link" href="${escapeHtml(row.issue_url)}" target="_blank" rel="noreferrer">Issue</a>`,
+          row.pr_url === null ? '' : `<a class="link" href="${escapeHtml(row.pr_url)}" target="_blank" rel="noreferrer">PR</a>`,
+        ].filter((value) => value !== '').join(' · ')
+        const version = row.released_version ?? row.fixed_version
+        return `<div class="list-row"><div class="list-main"><strong>#${escapeHtml(row.ref)} · ${escapeHtml(feedbackStatusLabel(t, row.status))}</strong><small>${escapeHtml(row.kind)}${links === '' ? '' : ` · ${links}`}${version === null ? '' : ` · v${escapeHtml(version)}`} · ${escapeHtml(humanTimeShort(row.updated_at))}</small></div></div>`
+      }).join('')}
+    </div>`}
   </section>
 
   <section class="card">
@@ -2552,6 +2581,7 @@ export function errorPage(
   const reportHtml = report === undefined ? '' : `<form method="post" action="/errors/${escapeHtml(report.ref)}/report" class="form">
       <p class="fine">${escapeHtml(t('报告只包含错误类型、消息、脱敏后的堆栈、页面、版本和时间；不包含请求体、query、cookie、token 或完整邮箱。', 'The report includes only the error type, message, redacted stack, page, version and time; not the request body, query, cookies, tokens or a full email address.'))}</p>
       <label class="check"><input type="checkbox" name="consent" value="1" required /> ${escapeHtml(t('我已知晓并授权 Fledge 平台读取这些失败数据用于定位问题。', 'I understand and authorize Fledge to read this failure data to diagnose the problem.'))}</label>
+      ${viewer === null ? '' : `<label class="check"><input type="checkbox" name="publish" value="1" /> ${escapeHtml(t('我同意 Fledge 在公开 GitHub issue 中 @ 我的账号，并引用脱敏后的摘要。', 'I agree Fledge may @ my GitHub account in a public issue with a sanitized summary.'))}</label>`}
       <button class="btn" type="submit">${escapeHtml(t('报告给开发者', 'Report to the maintainer'))}</button>
     </form>`
   return layout({
