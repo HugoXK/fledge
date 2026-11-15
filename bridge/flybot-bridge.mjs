@@ -230,6 +230,19 @@ function buildText(job) {
     '',
     'Rules:',
     ...rules,
+    ...(typeof job.rulesText === 'string' && job.rulesText !== ''
+      ? ['', 'Repository rules (default branch, fixed commit):', job.rulesText]
+      : []),
+    ...(Array.isArray(job.skills) && job.skills.length > 0
+      ? [
+          '',
+          'Repository skills (index only; read a skill on demand):',
+          ...job.skills.map((skill) => `- ${skill.name}: ${skill.description} (${skill.path}, ${skill.bytes} bytes)`),
+          ...(typeof job.contextUrl === 'string' && job.contextUrl !== ''
+            ? [`Read one with GET ${job.contextUrl}?path=<skill path> and "Authorization: Bearer ${job.callbackSecret}".`]
+            : []),
+        ]
+      : []),
     '- Do not print the GitHub token or the job token.',
     '- Do not merge; Fledge handles maintainer-enabled auto-merge. Never force-push.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',

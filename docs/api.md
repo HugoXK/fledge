@@ -447,6 +447,29 @@ bring it back, and the bulk merge neither re-checks it nor counts it as skipped.
 Each `skipped` entry carries its reason, so the operator message tells a job-state
 skip apart from one where checks or branch protection refused the merge.
 
+### `GET /api/jobs/:id/context`
+
+Headers: `Authorization: Bearer <callbackSecret>`
+
+Serves the exact rule or skill text recorded on that job, so a running job can
+read a skill it was only told about at enqueue time:
+
+```
+GET /api/jobs/job_abc/context
+                    -> {"commit": "<sha>", "files": [{"path": ".fledge/rules.md", "kind": "rule", "sha256": "…", "bytes": 1210}]}
+GET /api/jobs/job_abc/context?path=.agents/skills/release-notes/SKILL.md
+                    -> 200 text/plain with the recorded body and `x-content-sha256`
+```
+
+Without `path` it answers the manifest recorded at enqueue. With `path` it
+serves one recorded file and refuses anything else: `400` for a path over 300
+bytes or containing a NUL, `404` for a path this job did not record, `409` once
+the job is no longer queued or running, `401` for a secret that is not this
+job's. The body comes from `job_context_files`, never from a live read, so a
+commit pushed after the job started cannot change what the job is told. Each
+served file is recorded as a `job.context_read` job event with the path, and the
+response is `no-store`. The endpoint is rate limited per job and caller.
+
 ### `POST /api/jobs/:id/callback`
 
 Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/json`
