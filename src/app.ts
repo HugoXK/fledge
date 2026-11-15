@@ -124,7 +124,7 @@ import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/w
 import { managementActor } from './management/actor.js'
 import { ManagementService, type CommandOutcome, type ManagementCode } from './management/service.js'
 import type { JobKind } from './jobs/runner.js'
-import { listEffectiveScopes, platformCapabilitiesForRole, resolveUserActor, type Capability } from './identity/authorization.js'
+import { identityPrincipalId, listEffectiveScopes, platformCapabilitiesForRole, resolveUserActor, type Capability } from './identity/authorization.js'
 
 export interface BuildOptions {
   config: Config
@@ -2065,6 +2065,31 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // what each number means, including when a window has no review at all.
     const trendSince = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString()
     const reviewTrend = { week: store.reviewTrend(repo.id, trendSince(7)), month: store.reviewTrend(repo.id, trendSince(30)) }
+    // #697: the two budget scopes this page can set, each with the spend it is
+    // compared against. Both read the same rolling 30-day window the repository
+    // budget already uses, and both are USD-billed only.
+    const budgetWindow = trendSince(30)
+    const budgetPrincipal = identityPrincipalId(repo.user_id)
+    const repositoryScopeRow = store.getBudgetScope('repository', repo.id)
+    const principalScopeRow = store.getBudgetScope('principal', budgetPrincipal)
+    const budgetScopes = [
+      {
+        kind: 'repository' as const,
+        label: `${repo.owner}/${repo.name}`,
+        capCny: repositoryScopeRow?.cap_cny ?? 0,
+        spentCny: store.repoUsageSince(repo.id, budgetWindow) * config.quota.usdCny,
+        action: repositoryScopeRow?.action ?? 'alert',
+        unknownCount: store.repoUnknownCountSince(repo.id, budgetWindow),
+      },
+      {
+        kind: 'principal' as const,
+        label: `@${store.userById(repo.user_id)?.login ?? repo.user_id}`,
+        capCny: principalScopeRow?.cap_cny ?? 0,
+        spentCny: store.principalUsageSince(repo.user_id, budgetWindow) * config.quota.usdCny,
+        action: principalScopeRow?.action ?? 'alert',
+        unknownCount: store.principalUnknownCountSince(repo.user_id, budgetWindow),
+      },
+    ]
     const repoModels = store.listRepoModelSelection(repo.id)
     const scheduleRow = store.scheduleForRepo(repo.id)
     const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
@@ -2150,7 +2175,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repoModelIds: repoModels.map((model) => model.id),
         repoBotModels: store.listRepoBotModels(repo.id),
         repoDefaultModelId: repoModels.find((model) => model.is_default === 1)?.id ?? '',
-        repoSpendCny: store.repoUsageSince(repo.id, new Date(Date.now() - 30 * 86_400_000).toISOString()) * config.quota.usdCny,
+        repoSpendCny: store.repoUsageSince(repo.id, budgetWindow) * config.quota.usdCny,
+        budgetScopes,
         questions,
         chiefMessages,
         activeJob: store.activeJobForRepo(repo.id) !== undefined,
@@ -3881,6 +3907,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       interval_minutes: interval,
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
+    })
+    // #697: the two scopes this form owns. A zero cap removes the row, so
+    // "cleared" and "a cap of zero" cannot be confused, and both writes are the
+    // same additive table the job checkpoint reads.
+    const scopeAction = (value: string | undefined): string => (value === 'pause' || value === 'cancel' ? value : 'alert')
+    store.setBudgetScope({
+      kind: 'repository',
+      id: repo.id,
+      capCny: Math.max(0, Math.min(10000, Number(body.repoBudget) || 0)),
+      action: scopeAction(body.repoBudgetAction),
+    })
+    store.setBudgetScope({
+      kind: 'principal',
+      id: identityPrincipalId(repo.user_id),
+      capCny: Math.max(0, Math.min(10000, Number(body.principalBudget) || 0)),
+      action: scopeAction(body.principalBudgetAction),
     })
     const policyWritten = Array.isArray(outcome.result.changed)
       ? outcome.result.changed.filter((field): field is string => typeof field === 'string')

@@ -24,6 +24,7 @@ export interface UsageDetail {
   known?: boolean
 }
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
+import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
@@ -1318,6 +1319,19 @@ CREATE TABLE IF NOT EXISTS quota_ledger (
 );
 CREATE INDEX IF NOT EXISTS quota_ledger_user_idx ON quota_ledger(user_id, at DESC);
 
+-- #697: one stored cap per scope, keyed by scope kind and scope id. The
+-- repository and principal scopes read this table; repos.job_budget_cny keeps
+-- its meaning and is not overloaded. A missing row means "no cap at this scope",
+-- never a zero cap, so an absent row can never stop a job.
+CREATE TABLE IF NOT EXISTS budget_scopes (
+  kind TEXT NOT NULL CHECK (kind IN ('job', 'repository', 'principal')),
+  id TEXT NOT NULL,
+  cap_cny REAL NOT NULL DEFAULT 0,
+  action TEXT NOT NULL DEFAULT 'alert' CHECK (action IN ('alert', 'pause', 'cancel')),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (kind, id)
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -2061,6 +2075,17 @@ export interface SecurityFindingRow {
   last_seen_job: string
   reason: string | null
   dismissed_in_job: string | null
+  updated_at: string
+}
+
+// #697: one stored cap for one scope. `kind` and `id` are the key; `id` is a
+// repository id or an `identityPrincipalId()`. A row exists only while a cap is
+// set, so an absent row means "no cap" and never "a cap of zero".
+export interface BudgetScopeRow {
+  kind: string
+  id: string
+  cap_cny: number
+  action: string
   updated_at: string
 }
 
@@ -5870,6 +5895,59 @@ export class Store {
       repoId, sinceIso,
     )
     return Number(row?.total ?? 0)
+  }
+
+  // #697: one cap per scope. A zero cap deletes the row rather than storing a
+  // zero, because "no cap" and "a cap of zero" must not be the same thing: a
+  // stored zero would stop every job that spent anything at all.
+  setBudgetScope(input: { kind: string; id: string; capCny: number; action: string }): void {
+    if (!isBudgetScopeKind(input.kind)) throw new Error(`budget scope kind must be one of ${BUDGET_SCOPE_KINDS.join(', ')}: ${input.kind}`)
+    if (!isBudgetScopeAction(input.action)) throw new Error(`budget scope action must be one of ${BUDGET_SCOPE_ACTIONS.join(', ')}: ${input.action}`)
+    if (!Number.isFinite(input.capCny) || input.capCny < 0) throw new Error(`budget scope cap must be a non-negative number: ${String(input.capCny)}`)
+    const id = input.id.slice(0, 200)
+    if (id === '') throw new Error('budget scope id is required')
+    if (input.capCny <= 0) {
+      this.run('DELETE FROM budget_scopes WHERE kind = ? AND id = ?', input.kind, id)
+      return
+    }
+    this.run(
+      `INSERT INTO budget_scopes (kind, id, cap_cny, action, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(kind, id) DO UPDATE SET cap_cny = excluded.cap_cny, action = excluded.action, updated_at = excluded.updated_at`,
+      input.kind, id, input.capCny, input.action, nowIso(),
+    )
+  }
+
+  getBudgetScope(kind: string, id: string): BudgetScopeRow | undefined {
+    return this.get<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes WHERE kind = ? AND id = ?', kind, id)
+  }
+
+  listBudgetScopes(kind?: string): BudgetScopeRow[] {
+    if (kind === undefined) return this.all<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes ORDER BY kind, id')
+    return this.all<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes WHERE kind = ? ORDER BY id', kind)
+  }
+
+  // #697: the principal scope sums the same rolling window the repository scope
+  // uses, and the same USD-only rule: a row priced in another currency cannot
+  // move a CNY cap.
+  principalUsageSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ? AND ${usdBilled()}`, userId, sinceIso)
+    return Number(row?.total ?? 0)
+  }
+
+  // A cap compared against spend that could not be priced would be a lie, so each
+  // scope reports how many calls in its window went unpriced; the console turns
+  // that into a lower-bound caveat.
+  repoUnknownCountSince(repoId: string, sinceIso: string): number {
+    const row = this.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ? AND q.cost_known = 0`,
+      repoId, sinceIso,
+    )
+    return Number(row?.n ?? 0)
+  }
+
+  principalUnknownCountSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE user_id = ? AND at >= ? AND cost_known = 0', userId, sinceIso)
+    return Number(row?.n ?? 0)
   }
 
   usageAttribution(sinceIso: string): { unattributedCount: number; unattributedUsd: number; attributedUsd: number } {
