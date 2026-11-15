@@ -568,3 +568,24 @@ test('the search page shows the newest export for the viewer: when, rows, scope 
     await built.close()
   }
 })
+
+test('the admin header summarizes sections and folds user controls behind manage', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'summary-admin', admin: true, status: 'approved' })
+    const { cookie } = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /class="admin-summary"/)
+    for (const hash of ['#pending', '#users', '#jobs', '#audit', '#release', '#backups']) {
+      assert.match(page.body, new RegExp(`href="${hash}"`), `the summary links to ${hash}`)
+    }
+    assert.match(page.body, /class="admin-adjust-details"/)
+    assert.match(page.body, /<summary>管理/)
+    assert.match(page.body, /name="quota"/, 'the folded controls keep the existing field names')
+  } finally {
+    await built.close()
+  }
+})

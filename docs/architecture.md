@@ -1728,6 +1728,13 @@ incomplete`. A published GitHub Release is therefore never labelled "not
 released" just because the host runs a local build. A snapshot that claims `ok`
 with no links, or that contradicts its own problems, is refused as unparseable —
 a green header over an empty table is the one shape the card must never render.
+
+The admin header also carries a compact summary strip (Pending, Users, Jobs,
+Audit, Release, Backups) whose items link to the existing sections; it lives
+inside the header card, so no new `.card[id]` is added and the section-nav
+contract is unchanged. The user table keeps its fields and POST routes but
+folds quota, role, private-model and approve/reject controls behind a `Manage`
+details control, so the default row is a summary rather than a stack of forms.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without

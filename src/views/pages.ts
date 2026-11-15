@@ -2250,6 +2250,8 @@ export function adminPage(input: {
         <td data-priority="low" data-label="${escapeHtml(t('已用', 'Used'))}">${quotaMoney(quotaView(user, config).usedCny)}</td>
         <td data-priority="low" data-label="${escapeHtml(t('活动', 'Activity'))}"><small class="muted">${escapeHtml(t('最近登录', 'Last sign-in'))} ${escapeHtml(humanTimeShort(user.last_login_at))}<br />${escapeHtml(t('仓库', 'Repos'))} ${activity?.get(user.id)?.repos ?? 0} · ${escapeHtml(t('任务', 'Jobs'))} ${activity?.get(user.id)?.jobs ?? 0}<br />${escapeHtml(t('最近任务', 'Last job'))} ${escapeHtml(humanTimeShort(activity?.get(user.id)?.lastJobAt))}</small></td>
         <td class="admin-adjust" data-label="${escapeHtml(t('调整', 'Adjust'))}">
+          <details class="admin-adjust-details">
+            <summary>${escapeHtml(t('管理', 'Manage'))} · ${user.quota_unlimited === 1 ? '∞' : money(user.quota_cny)} · ${escapeHtml(roleLabel(t, user.role))}</summary>
           <div class="admin-control-row">
             <form method="post" action="/admin/users/${escapeHtml(user.id)}/quota" class="admin-inline-form">${csrf(viewer)}<input class="admin-quota" name="quota" type="number" step="0.1" min="0" value="${user.quota_cny}" aria-label="${escapeHtml(t('额度', 'Quota'))}" />${superadmin ? `<label class="check admin-check"><input type="checkbox" name="unlimited" value="1"${user.quota_unlimited === 1 ? ' checked' : ''} /> ${escapeHtml(t('不限额', 'Unlimited'))}</label>` : ''}<button class="link" type="submit">${escapeHtml(t('改额度', 'Set quota'))}</button></form>
           </div>
@@ -2259,6 +2261,7 @@ export function adminPage(input: {
             ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'rejected' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/approve">${csrf(viewer)}<button class="link good" type="submit">${escapeHtml(t('重新批准', 'Re-approve'))}</button></form>` : ''}
             ${user.role !== 'superadmin' && user.id !== viewer.user.id && user.status === 'approved' ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/reject" data-confirm="${escapeHtml(t('停用这个用户并停止其所有 FlyBot 实例？', 'Disable this user and stop all their FlyBot instances?'))}">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('停用', 'Disable'))}</button></form>` : ''}
           </div>
+          </details>
         </td>
       </tr>`,
     )
@@ -2434,11 +2437,26 @@ export function adminPage(input: {
     <form method="post" action="/admin/platform/resume" class="row">${csrf(viewer)}<button class="btn btn-danger" type="submit">${escapeHtml(t('恢复平台', 'Resume platform'))}</button></form>
   </div>`
       })()
+  const releaseShort = releaseStatus === null
+    ? t('未记录', 'not recorded')
+    : !releaseArtifactsOk
+      ? t('未完成', 'incomplete')
+      : running?.state === 'ok' ? t('正常', 'ok') : t('不一致', 'differs')
+  const backupShort = newest === null ? t('无副本', 'none') : backup.stale ? t('过期', 'stale') : t('正常', 'fresh')
+  const adminSummary = `<div class="admin-summary">
+    <a href="#pending"><strong>${pending.length}</strong><span>${escapeHtml(t('待审批', 'Pending'))}</span></a>
+    <a href="#users"><strong>${users.length}</strong><span>${escapeHtml(t('用户', 'Users'))}</span></a>
+    <a href="#jobs"><strong>${jobsTotal}</strong><span>${escapeHtml(t('任务', 'Jobs'))}</span></a>
+    ${showAudit ? `<a href="#audit"><strong>${auditTotal}</strong><span>${escapeHtml(t('审计', 'Audit'))}</span></a>` : ''}
+    <a href="#release"><strong>${escapeHtml(releaseShort)}</strong><span>${escapeHtml(t('发布', 'Release'))}</span></a>
+    <a href="#backups"><strong>${escapeHtml(backupShort)}</strong><span>${escapeHtml(t('备份', 'Backups'))}</span></a>
+  </div>`
   const body = `${stopBanner}<section class="card">
     <div class="eyebrow">${escapeHtml(t('管理', 'ADMIN'))}</div>
     <h1>${escapeHtml(t('管理控制台', 'Admin console'))}</h1>
     <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}</p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
+    ${adminSummary}
   </section>
   <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
     <a href="#pending" data-allow-overflow>${escapeHtml(t('待审批', 'Pending'))}</a>

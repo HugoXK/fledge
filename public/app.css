@@ -707,6 +707,15 @@ textarea { resize: vertical; min-height: 70px; }
 .admin-control-row .link { white-space: nowrap; }
 .admin-actions { gap: 12px; }
 .admin-users-table th:last-child, .admin-users-table td:last-child { min-width: 320px; }
+.admin-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 14px; }
+.admin-summary a { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--field); color: var(--text); text-decoration: none; }
+.admin-summary a:hover { border-color: var(--accent); }
+.admin-summary strong { font-size: var(--text-md); font-variant-numeric: tabular-nums; }
+.admin-summary span { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.admin-adjust-details { min-width: 0; }
+.admin-adjust-details > summary { cursor: pointer; color: var(--accent); font-size: var(--text-sm); font-weight: 650; }
+.admin-adjust-details[open] > summary { margin-bottom: 8px; }
+@media (max-width: 680px) { .admin-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* issue 232: the job filters. The state is the URL, so the form is a plain GET
    and every control keeps the 44px target; below 641px the three selects stack
    in one column and the actions share a row. */
