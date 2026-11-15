@@ -104,15 +104,22 @@ defect.
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
   disagree with the sections below it.
-- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): both the all-clear card
-  and the repository page's next-run line call one function, which copies the
-  worker's due rule — `max(15, min(intervalMinutes, workCooldownMinutes))` after
-  the last run (`src/jobs/service.ts`, `workDue`) — instead of the discovery
+- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): the all-clear card and
+  the repository page's next-run line print one answer per repository, and which
+  rule answers is decided by the repository, never by the surface. A repository
+  that has saved no schedule row is answered by the interval rule, which copies
+  the worker's due rule — `max(15, min(intervalMinutes, workCooldownMinutes))`
+  after the last run (`src/jobs/service.ts`, `workDue`) — instead of the discovery
   interval. It also answers why a run will not start now: a disabled repository, a
   FlyBot instance that is not ready, auto-iteration switched off, an active job,
-  no open work, or a repository the scheduler has never run. The dashboard route
-  passes open work, the active job and instance readiness per repository because
-  those live outside `RepoRow`; the two surfaces therefore print one string, and
+  no open work, or a repository the scheduler has never run. A repository that has
+  a schedule row is answered by the planner (`src/schedules/next.ts`, `nextTime`)
+  because that row owns its cadence; the dashboard route passes the instant with
+  the repository's facts and both surfaces render it through `plannedNextLine`, so
+  the card cannot fall back to the interval rule for a scheduled repository and
+  disagree with the page below it. The dashboard route passes open work, the
+  active job and instance readiness per repository because those live outside
+  `RepoRow`; the two surfaces therefore print one string, and
   the wording says "next run", never an estimate. The newest job is read on its own, not
   from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
   `?status=` must not change the sentence the page opens with. The first-run
@@ -317,9 +324,15 @@ defect.
   interval that arrives with one is refused by name instead of being accepted and
   shown as if a zone applied. A preview stores nothing and creates no job. Each
   refusal is authored in both Chinese and English where the planner raises it,
-  from the request's locale, so the page alert and `GET /api/schedule/preview`
-  show the same reason in the reader's language rather than an English-only
-  sentence.
+  The console page leads with a human mode picker (#675): every N
+  minutes/hours, every day at a time, weekdays at a time, weekly on a weekday,
+  monthly on a day, and an advanced cron mode. `src/schedules/preview.ts` builds
+  the same `cron`/`every` planner input from those fields, so the page and the
+  JSON API agree, and a mode ignores stale legacy fields. Weekday and
+  day-of-month are selects; time is a native `time` input; the timezone is a
+  select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
+  is optional and lives under an advanced disclosure, so a reader who only wants
+  "weekdays at 09:30" never types cron or an ISO offset.
   Leases, misfire policies, layered budgets and the notification outbox are not
   built yet.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
