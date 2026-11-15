@@ -1229,14 +1229,37 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const firstJob = store.firstJobForUser(viewer.user.id)
     // #227: the checklist state is read from the database on this request, never
     // from a cookie, so a second tab or a fresh browser sees the same step.
+    // #734: the checklist describes the account, not the job table. `jobsTotal`
+    // carries the current filter for the table; the checklist must not read it.
+    const setupJobsTotal = store.countJobsForUser(viewer.user.id)
+    // #732: a provider row is not an own model until a repository selects it (or
+    // the legacy user-level model is set). The gateway and the bridge both read
+    // the repository selection, so the checklist must use the same answer.
+    const providerConfigured = store
+      .listModelProviders(viewer.user.id)
+      .some((provider) => store.listProviderModels(provider.id).length > 0)
+    const legacyOwnModel =
+      viewer.user.own_llm_base_url !== null &&
+      viewer.user.own_llm_base_url !== '' &&
+      viewer.user.own_llm_key_enc !== null
+    const setupQuota = quotaView(viewer.user, config)
+    const platformAvailable =
+      config.llm.baseUrl !== '' &&
+      config.llm.key !== '' &&
+      !setupQuota.exhausted
     const setup = {
       repos: reposTotal,
       roleChosen: allRepos.some((repo) => repo.repo_role !== null),
-      modelConfigured: store
-        .listModelProviders(viewer.user.id)
-        .some((provider) => store.listProviderModels(provider.id).length > 0),
+      providerConfigured,
+      modelConfigured:
+        legacyOwnModel ||
+        allRepos.some((repo) => store.listRepoModelSelection(repo.id).length > 0),
+      platformAvailable,
+      platformQuotaRemainingCny: setupQuota.remainingCny,
+      platformQuotaUnlimited: setupQuota.unlimited,
+      platformQuotaComfortCny: config.quota.comfortCny,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
-      jobs: jobsTotal,
+      jobs: setupJobsTotal,
       firstJobStatus: firstJob?.status ?? null,
       firstPrUrl: firstJob?.pr_url ?? null,
       repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
@@ -3312,6 +3335,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!roleAllowed(repo.permission, role)) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'))}#role`)
     }
+    // #718: this route writes the same `repo_role` column as the settings form,
+    // and demoting to developer clears `auto_merge` and `reviewer_enabled`. The
+    // role check above still answers first; the confirmation comes before the
+    // write. The limiter half of this route belongs to #708.
+    if (requireRecentAuth(request, reply, viewer, 'repo.role')) return reply
     store.updateRepo(repo.id, { repo_role: role, auto_merge: 0, reviewer_enabled: role === 'maintainer' ? repo.reviewer_enabled : 0, role_checked_at: nowIso() })
     store.audit(viewer.user.id, 'repo.role', `${repo.owner}/${repo.name} role=${role} previous=${repo.repo_role ?? 'none'}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(role === 'maintainer' ? t('已选择角色：Maintainer。', 'Role selected: Maintainer.') : t('已选择角色：Developer。', 'Role selected: Developer.'))}`)

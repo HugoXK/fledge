@@ -1,0 +1,1 @@
+An upstream stream that fails mid-flight is no longer missing from the cost ledger: the aborted attempt writes one row, using the provider's cost header when it sent one and an unknown-cost row otherwise.

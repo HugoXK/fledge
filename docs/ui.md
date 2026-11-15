@@ -312,6 +312,15 @@ cannot disagree, and JavaScript only hides the groups that do not match the
 selected mode. With script off every group renders and the server still builds
 from the selected mode.
 
+### Admin modules (管理页工具入口)
+
+The admin page is titled **Admin console / 管理控制台**, not Approvals & quota.
+The opening paragraph names the role and the audit logging but carries no tool
+links. Product metrics, Webhook deliveries, Deployments, Audit and jobs and
+Preview trials are module tiles below the primary sections. A tile is one link
+with a title, a one-line purpose and an "Open" action; it keeps the 44px touch
+floor. Metrics and webhooks are rendered for superadmins only.
+
 ### Section navigation (区块导航)
 
 The admin page orders its sections by the admin's work: Pending, Users, Jobs,

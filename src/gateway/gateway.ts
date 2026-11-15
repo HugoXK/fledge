@@ -377,6 +377,14 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       const decoder = new StringDecoder('utf8')
       let pending = ''
       let usage: unknown = null
+      // #701: a stream ends once, either cleanly or in an error. Both paths are
+      // one attempt the user consumed, so both write exactly one ledger row.
+      let finished = false
+      const finishOnce = (usageValue: unknown): void => {
+        if (finished) return
+        finished = true
+        finishCost(usageValue)
+      }
       upstream.res.on('data', (chunk: Buffer) => {
         reply.raw.write(chunk)
         pending += decoder.write(chunk)
@@ -392,13 +400,17 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
         const found = sseUsage(pending)
         if (found !== null) usage = found
         reply.raw.end()
-        finishCost(usage)
+        finishOnce(usage)
       })
       upstream.res.on('error', (error) => {
         log.warn('gateway stream error', { error: String(error) })
         try {
           reply.raw.end()
         } catch {}
+        // The provider died mid-flight: record the attempt rather than losing it
+        // from the ledger. No usable usage block survived the cut, so the row is
+        // `unknown` unless the provider billed it with a cost header.
+        finishOnce(usage)
       })
       return
     }

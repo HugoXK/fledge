@@ -1,0 +1,1 @@
+The repository schedule console now renders its eight facts as a two-column grid with muted labels and readable values, stacking to one column on phones. The facts used a bare `<dl>` and the stylesheet had no `dt`/`dd` rule, so the page's main data painted as the browser's default plain-text definition list between the styled cards.

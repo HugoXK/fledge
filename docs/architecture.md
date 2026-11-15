@@ -26,6 +26,22 @@
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
 its design tokens are documented in [docs/ui.md](ui.md).
 
+The console serves two surfaces with different jobs (#235). `/dashboard` is the
+owner's home: one next action, the first-run checklist, cost and status.
+`/console` is the operator workspace: every repository, the job queue, quota and
+the inbox. Both URLs are kept, neither is re-gated, and the boundary is recorded
+in [0020](decisions/0020-owner-and-operator-surfaces.md). On the repository page
+the settings card keeps the loop controls inline — goal, target branch, role,
+auto-iterate, enabled, discovery interval, reviewer, auto-merge, plan-first — and
+puts the operator policy in one closed
+`<details data-advanced="repo-settings">` inside the same form: allowed and
+forbidden paths, merge method, team stage gate, branch protection, the monthly
+and per-job budgets with spend, the available models and providers, and the
+per-bot model assignment. `<details>` still submits its inputs, so
+`POST /repos/:id/settings` and every authorization check behind it are unchanged;
+the per-bot model restart stays its own form and therefore outside the settings
+form.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
@@ -88,16 +104,37 @@ defect.
   step's state is read from the database on the request, so a cookie, a second
   browser or a cleared store cannot change which step is next. The pure state
   machine decides the single primary action; a step whose prerequisite is
-  missing states the reason instead of offering a control. Once a job exists the
-  checklist is replaced by a first-run summary whose outcome is the first job's
-  own status, read all-time (not a window-scoped count), in four shapes: the
+  missing states the reason instead of offering a control. The model-provider
+  step is optional while the platform model is configured
+  (`PLATFORM_LLM_BASE_URL` and `PLATFORM_LLM_KEY`) and the account's platform
+  quota is not exhausted: it reads as satisfied by the platform quota, keeps the
+  own-provider link as an optional upgrade, and does not block the instance or
+  the first job. Once the quota is exhausted or the platform model is not
+  configured, the same step becomes required again; the answer is derived from
+  the rows and config on every request, so no skip cookie or second store is
+  needed. The step is completed by a repository selection (or the legacy
+  user-level model), not by a provider row: a provider that no repository has
+  selected links to the repository picker instead of claiming the step is done.
+  The quota next action is shown only while no usable own model exists. The
+  model row prints the remaining balance. Below `PLATFORM_QUOTA_COMFORT_CNY`
+  (default 50) it warns that the balance may not cover the first run and
+  recommends an own model now (Settings → Model, or the repository picker when a
+  provider is already configured); at or above it it only names the balance and
+  keeps the own-model link as a later option. The checklist reads the account's
+  unfiltered job count, so a
+  `status`/`repo`/`kind`/`priority` filter on the recent-jobs table cannot bring
+  the checklist back after the first job. Once a job exists the checklist is
+  replaced by a first-run summary
+  whose outcome is the first job's own status, read all-time (not a
+  window-scoped count), in four shapes: the
   job's PR link when it opened one, "finished" with a link to Recent jobs when it
   succeeded without a PR, "running" while it is queued or running, and the retry
   path on the repository page when it failed.
 - **Next action** (`src/views/pages.ts`, `nextActionFor`): `/dashboard` opens
   with one server-derived action instead of a wall of equal cards. The order is
   the order a person would take them — an open question only they can answer, an
-  exhausted platform quota, the most urgent alert (stalled or slow job, stale
+  exhausted platform quota when no usable own model exists, the most urgent
+  alert (stalled or slow job, stale
   PR, invalid credential, repository budget), the account's newest failed job,
   the unfinished first-run step — and when none applies, an all-clear that names
   the known next scheduled automatic run (a repository the scheduler has never
@@ -182,6 +219,17 @@ defect.
   (`.fine-link`) and the class carries the floor. Text fields, selects and
   textareas are 16px below 641px, the size below which iOS zooms a focused
   field.
+- **Asset URLs carry a content version** (`src/lib/assetVersion.ts`): the host
+  serves `/assets/` with a four-hour freshness lifetime and the page sets no
+  cache directive of its own, so every asset URL is emitted as
+  `?v=<first 12 hex of the file's sha256>` — the four in `src/views/layout.ts`,
+  the six in `src/views/pages.ts` (`repoPage`, `teamPage`,
+  `applicationStatusPage`) and the two `rewriteWorkspaceHtml` injects into the
+  proxied workspace page. The digest is memoised per path and is the file's own
+  bytes, never the commit: `/healthz` withholds `config.build.commit` behind
+  `diagnosticsAccess` (#236, #466) and an asset URL is public. A deploy that
+  changes a file therefore changes its URL, so a browser cannot serve the old
+  copy inside the lifetime whatever header the host sends.
 - **Repository page tabs** (`src/views/pages.ts` `repoPage`, `public/repoTabs.js`):
   `/repos/:id` renders six sections — Overview, Delivery, Work, Team, Settings,
   Danger — behind a sticky subnav. The sections are a regroup of the cards the
@@ -418,7 +466,10 @@ defect.
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
   last instant whose job succeeded. A value nobody recorded prints `unknown`: a
   schedule with no occurrence row has not run, and this slice has no delivery
-  outbox, so neither is a zero. `src/schedules/console.ts` is that view model. The
+  outbox, so neither is a zero. The eight facts render through `.schedule-facts`,
+  a two-column grid with muted labels that stacks to one column below 640px, so
+  the console does not fall back to the browser's default definition-list text.
+  `src/schedules/console.ts` is that view model. The
   repository page passes the planner's answer for a scheduled repository and keeps
   the legacy interval line only for one without a row, so the page prints one
   number instead of a second, weaker one; the comment that claimed the interval
@@ -585,6 +636,13 @@ command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
 path. The page owns the Users section at `/admin#users`; `/admin/users` is an
 admin-only redirect to that section for older links and bookmarks, while
 `/admin/users/:id` remains the read-only support view.
+
+The admin page is a hub, not an approvals-only page. Its primary sections are
+Pending, Users, Jobs, Audit, Release and Backups; Product metrics, Webhook
+deliveries, Deployments, Audit and jobs search and Preview trials are module
+tiles at the bottom. Metrics and webhooks remain superadmin-only; the other
+three are available to admins. The opening paragraph always names the role and
+the audit logging, and carries no tool links.
 
 ### Team console and live events
 
@@ -1572,13 +1630,18 @@ The `/admin` card renders the snapshot the command writes to
 GitHub, and a missing or unparseable snapshot renders "no release chain is
 recorded" rather than an empty card. The snapshot carries the tag target and the
 Release URL as fields (`targetSha`, `releaseUrl`); the target is never re-read
-out of a link's detail text. The one live row is `This process`, which compares
-the version in `package.json` and the commit stamp this process booted with
-against that recorded tag target, so an operator can see at a glance whether the
-instance they are looking at is the release the chain names. A snapshot that
-claims `ok` with no links, or that contradicts its own problems, is refused as
-unparseable — a green header over an empty table is the one shape the card must
-never render.
+out of a link's detail text. The card renders the artifact links, omits links the
+snapshot marked `skipped` (a deleted release branch, no local image) and the
+stored `healthz` probe, and adds one live `Running instance` row. That row
+compares the version in `package.json` and the commit stamp this process booted
+with against the recorded tag target, so an operator can see at a glance whether
+the instance they are looking at is the release the chain names. The header says
+`released and running` only when every artifact link is ok and the live row is
+the tag target; otherwise it says `published; running differs` or `chain
+incomplete`. A published GitHub Release is therefore never labelled "not
+released" just because the host runs a local build. A snapshot that claims `ok`
+with no links, or that contradicts its own problems, is refused as unparseable —
+a green header over an empty table is the one shape the card must never render.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without
@@ -1875,7 +1938,7 @@ private self-hosted target. Errors name the host but never the secret or payload
 
 | Boundary | Control |
 |---|---|
-| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`). The bounce returns to the page the form was on with exactly one `notice` — the key is replaced, not appended, because a page that just came out of a save already carries one and a second key parses as an array that `queryText()` refuses |
+| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`), and that includes both posts that write a repository's `repo_role` — the settings form and the role form, which also clears `auto_merge` and `reviewer_enabled` when it demotes to developer. The bounce returns to the page the form was on with exactly one `notice` — the key is replaced, not appended, because a page that just came out of a save already carries one and a second key parses as an array that `queryText()` refuses |
 | Fledge → GitHub | user's fine-grained token; platform OAuth only for identity |
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
@@ -2028,9 +2091,11 @@ The page is the only surface a maintainer reads, so every outcome lands there:
 `?release=1&refused=<reason>` renders the refusal (with the suggested version)
 above the form, and `?release=1&tagged=<tag>` confirms the tag that was created.
 A name that already has a `repo_releases` row is a re-tag: the row is updated in
-place to the new `target_sha` and `tag_object_sha` (keeping its `created_at`),
-`status` stays `tagged`, `updated_at` moves forward, the audit appends a new
-`release.tagged` row, and `?release=1&tagged=<tag>&retagged=1` renders the
+place to the new `target_sha`, `tag_object_sha`, `user_id` and preflight (the
+previous tag and the actor of this tag), keeping its `created_at`, so the row
+describes the action that produced the state it shows rather than the first
+tagger. `status` stays `tagged`, `updated_at` moves forward, the audit appends a
+new `release.tagged` row, and `?release=1&tagged=<tag>&retagged=1` renders the
 re-tag wording instead of the created-tag banner or a refusal. A refusal from
 the ref write that is not a 422 reports only `the tag reference was refused by
 GitHub (HTTP <status>); nothing was moved or deleted`; the upstream body text is

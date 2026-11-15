@@ -1,0 +1,1 @@
+The language switch now marks the active language with `aria-current="true"` and no longer carries `aria-pressed` on its links. `aria-pressed` is defined for buttons, so screen readers either ignored it or announced a toggle the link cannot honour; the highlight that marked the current language moved to the new state, so nothing visible changes.

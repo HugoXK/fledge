@@ -1,0 +1,1 @@
+The first-run card now reads the account's unfiltered job count. A status, repository, kind or priority filter on the recent-jobs table no longer makes the first-run checklist reappear after the first job or changes the page's next action; the table still shows the filtered count.

@@ -7,6 +7,12 @@ Every user starts with **1 CNY** of platform-funded model usage
 user to configure their own OpenAI-compatible model service. Their jobs then run
 on their key, with no platform metering.
 
+The first-run model step shows the remaining balance. Below
+`PLATFORM_QUOTA_COMFORT_CNY` (default 50) it warns that the balance may not cover
+the first run and recommends adding an own model now; at or above it the balance
+is shown without a warning and Settings → Model remains the later path. The
+threshold changes the checklist advice only; it never changes quota accounting.
+
 ## Units
 
 - Ledger: the provider's own **currency**, one bucket per currency (`USD`,
@@ -62,8 +68,10 @@ An unknown call is also outside **enforcement**: with no figure to compare, the
 user quota and the ambiguous per-job budget cannot refuse it. A job whose calls
 are all unknown has no ceiling at either level until one call is priced; that is
 the same rule stated the other way (an unknown cost is not read as zero), not a
-free allowance. On a stream that fails mid-flight Fledge records no row at all
-yet, so such a call is missing from the ledger rather than counted as unknown.
+free allowance. A stream that fails mid-flight is still one attempt the user consumed, so it
+writes one of those rows rather than none: the provider's `x-litellm-response-cost`
+figure as a known USD row when the response carried one, and a `cost_known = 0`
+row with reason `no_usage`, its audit entry and its job event when it did not.
 
 For streaming requests Fledge adds `stream_options.include_usage = true` and
 parses each SSE `data:` line. It keeps the last `usage` object, including nested
@@ -73,6 +81,10 @@ stream ends. A request that is already in flight is allowed to finish; the
 
 ## Enforcement
 
+- A job is platform-funded only when neither the legacy user-level model nor a
+  repository-selected provider model exists. The enqueue and dispatch paths use
+  the same predicate as the bridge and the gateway, so selecting a model for the
+  repository is enough to pass an exhausted platform quota.
 - Before a platform-funded request: if `remaining_cny <= 0`, return HTTP 402
   immediately and mark that user's active jobs `quota_exhausted` (their job
   tokens are revoked) so the UI does not wait for the job timeout.

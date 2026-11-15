@@ -348,7 +348,7 @@ p { margin: 0 0 12px; }
   color: var(--muted-2); font-size: 12px; font-weight: 700; letter-spacing: 0.02em;
 }
 .lang a:hover { color: var(--text); text-decoration: none; }
-.lang a[aria-pressed="true"] { background: rgba(123, 149, 255, 0.16); color: var(--accent); }
+.lang a[aria-current="true"] { background: rgba(123, 149, 255, 0.16); color: var(--accent); }
 /* Issue 682: the theme choice is one 44px icon button with a small menu, not three
    text labels that read as "AutoLightDark" and consume a whole row segment. The
    summary shows the saved mode through `data-theme`; the menu options are plain
@@ -631,6 +631,7 @@ label.check { min-height: var(--touch); }
 .setup-step.is-done .setup-main strong { color: var(--muted); font-weight: 600; }
 .setup-done { color: var(--good); font-size: 12px; }
 .setup-blocked { color: var(--muted-2); font-size: 12px; }
+.setup-warning { color: var(--warn); font-size: 12px; line-height: 1.5; }
 
 .form { display: grid; gap: 13px; }
 .form label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
@@ -1204,3 +1205,46 @@ html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }
 /* A schedule panel hidden by the mode selector must stay hidden: `.row` sets
    display:flex, which would otherwise outrank the user-agent [hidden] rule. */
 .schedule-panel[hidden], [data-schedule-timezone-wrap][hidden] { display: none !important; }
+
+/* issue 743: the schedule console's eight facts were a bare <dl>, and the stylesheet
+   had no dt/dd rule at all, so the page's main data painted as browser-default
+   plain text between the styled cards. One two-column grid with muted labels
+   keeps the same card rhythm; the phone band stacks each label over its value. */
+.schedule-facts {
+  display: grid;
+  grid-template-columns: minmax(112px, 180px) minmax(0, 1fr);
+  gap: var(--space-2) var(--space-5);
+  margin: var(--space-4) 0 0;
+  align-items: start;
+}
+.schedule-facts dt {
+  color: var(--muted);
+  font-size: var(--text-sm);
+  line-height: 1.5;
+}
+.schedule-facts dd {
+  min-width: 0;
+  margin: 0;
+  color: var(--text);
+  font-size: var(--text-md);
+  line-height: 1.5;
+  overflow-wrap: anywhere;
+}
+@media (max-width: 640px) {
+  .schedule-facts { grid-template-columns: minmax(0, 1fr); gap: 0; }
+  .schedule-facts dt { margin-top: var(--space-3); }
+  .schedule-facts dt:first-child { margin-top: 0; }
+  .schedule-facts dd { margin-top: var(--space-1); }
+}
+/* Admin module tiles: the operations pages are one entry in the admin hub, not
+   a sentence of inline links. A tile is a link and keeps the 44px target. */
+.admin-modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); margin-top: var(--space-3); }
+.admin-module {
+  display: flex; flex-direction: column; gap: 6px; min-height: var(--touch);
+  padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md);
+  background: var(--surface-sunken); color: var(--text); text-decoration: none;
+}
+.admin-module:hover { background: var(--surface-raised); border-color: var(--accent); text-decoration: none; }
+.admin-module strong { font-size: var(--text-md); }
+.admin-module small { color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
+.admin-module-go { margin-top: auto; color: var(--accent); font-size: var(--text-sm); font-weight: 650; }

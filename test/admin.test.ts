@@ -61,6 +61,42 @@ test('the empty release chain explains itself without dumping a host path', asyn
   }
 })
 
+test('the admin page is a module hub, not an Approvals & quota link bar', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const owner = makeUser(store, { login: 'hub-owner', superadmin: true, status: 'approved' })
+    const admin = makeUser(store, { login: 'hub-admin', admin: true, status: 'approved' })
+    const ownerSession = sessionFor(built, owner)
+    const adminSession = sessionFor(built, admin)
+    const ownerPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${ownerSession.cookie}; fledge_lang=en` } })
+    assert.equal(ownerPage.statusCode, 200)
+    assert.match(ownerPage.body, /<h1>Admin console<\/h1>/)
+    assert.doesNotMatch(ownerPage.body, /Approvals &amp; quota|Approvals & quota/)
+    for (const [href, label] of [
+      ['/admin/metrics', 'Product metrics'],
+      ['/admin/webhooks', 'Webhook deliveries'],
+      ['/admin/deployments', 'Deployments and drift'],
+      ['/admin/search', 'Audit and jobs'],
+      ['/admin/trials', 'Preview trials'],
+    ] as const) {
+      assert.match(ownerPage.body, new RegExp(`<a class="admin-module" href="${href}">[\\s\\S]*?${label}`), `${label} must be a module tile`)
+    }
+    assert.match(ownerPage.body, /class="admin-modules"/)
+
+    const adminPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${adminSession.cookie}; fledge_lang=en` } })
+    assert.equal(adminPage.statusCode, 200)
+    for (const href of ['/admin/deployments', '/admin/search', '/admin/trials']) {
+      assert.match(adminPage.body, new RegExp(`<a class="admin-module" href="${href}">`), `${href} must remain available to an admin`)
+    }
+    assert.doesNotMatch(adminPage.body, /class="admin-module" href="\/admin\/metrics"/)
+    assert.doesNotMatch(adminPage.body, /class="admin-module" href="\/admin\/webhooks"/)
+  } finally {
+    await built.close()
+  }
+})
+
 test('rejecting a user cancels active jobs and frees the global slot', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

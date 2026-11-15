@@ -246,7 +246,7 @@ test('a snapshot that claims released with no links is refused, not rendered as 
 })
 
 // The admin surface renders the recorded chain; it never calls GitHub itself.
-async function adminPage(body: unknown | null): Promise<string> {
+async function adminPage(body: unknown | null, buildCommit = ''): Promise<string> {
   const { buildApp } = await import('../src/app.js')
   const { Store } = await import('../src/db.js')
   const { MockRunner } = await import('../src/jobs/mock.js')
@@ -254,7 +254,7 @@ async function adminPage(body: unknown | null): Promise<string> {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-release-'))
   mkdirSync(dir, { recursive: true })
   if (body !== null) writeFileSync(join(dir, 'release-status.json'), JSON.stringify(body))
-  const config = helpers.testConfig({ dataDir: dir })
+  const config = helpers.testConfig({ dataDir: dir, build: { commit: buildCommit, builtAt: '' } })
   const store = new Store(':memory:')
   const built = await buildApp({ config, store, mailer: new helpers.MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
@@ -276,7 +276,7 @@ test('the admin page renders the recorded chain, its digest and its Release URL,
   assert.match(page, /发布链/)
   assert.match(page, /releases\/tag\/v0\.3\.2/)
   assert.match(page, /sha256:e{64}/)
-  assert.match(page, /这个进程/)
+  assert.match(page, /运行实例/)
   // The snapshot's `releaseUrl` is rendered as a link: it is a field the page
   // reads, not one it merely stores.
   assert.match(page, /<a class="link" href="https:\/\/github\.com\/HugoXK\/fledge\/releases\/tag\/v0\.3\.2"/)
@@ -477,4 +477,47 @@ test('the unit checks the recorded release before start and refuses a host that 
   const refused = spawnSync(process.execPath, argv.split(/\s+/).map((part) => (part === missing ? wrong : part)), { encoding: 'utf8', env: { ...process.env } })
   assert.equal(refused.status, 1, refused.stdout + refused.stderr)
   assert.match(refused.stdout, /local\s+mismatch/)
+})
+
+test('a published release with a different running commit says so once', async () => {
+  const version = String(JSON.parse(readFileSync('package.json', 'utf8')).version)
+  const running = 'f'.repeat(12)
+  const target = SHA('c')
+  const body = {
+    schema: 1,
+    version,
+    checkedAt: '',
+    baseUrl: '',
+    ok: false,
+    links: [
+      { id: 'version', state: 'ok', detail: `package.json is at v${version}` },
+      { id: 'tag', state: 'ok', detail: `v${version} annotated, targets ${target}` },
+      { id: 'healthz', state: 'mismatch', detail: `https://fledge.example/healthz runs ${running}, the tag targets ${target.slice(0, 12)}` },
+    ],
+    problems: [`healthz: the tag targets ${target.slice(0, 12)}`],
+    targetSha: target,
+    releaseUrl: `https://github.com/HugoXK/fledge/releases/tag/v${version}`,
+  }
+  const page = await adminPage(body, running)
+  // The artifacts are published; only the running instance differs. Calling
+  // that "not released" is the bug this card fixes.
+  assert.match(page, /已发布，运行实例不一致/)
+  assert.doesNotMatch(page, /· 未完成/)
+  // The stored healthz probe and the live comparison are the same question;
+  // only the live row is rendered.
+  assert.equal((page.match(/<strong>运行实例<\/strong>/g) ?? []).length, 1)
+  assert.equal((page.match(/the tag targets/g) ?? []).length, 1)
+})
+
+test('skipped provenance links do not render rows', async () => {
+  const { evaluateReleaseStatus } = await import('../scripts/lib/release-status.mjs')
+  const version = String(JSON.parse(readFileSync('package.json', 'utf8')).version)
+  const status = evaluateReleaseStatus(chain({
+    version,
+    packageVersion: version,
+    branch: { name: 'release/v0.3.2', tip: SHA('b'), deleted: true },
+  }))
+  const page = await adminPage(status)
+  assert.doesNotMatch(page, /发布分支/)
+  assert.doesNotMatch(page, /<strong>local<\/strong>/)
 })
