@@ -83,12 +83,16 @@ function skipReason(counts: { repos: number; jobs: number; instances: number; in
 export function purgeExpiredTrialAccounts(
   store: Store,
   config: Config,
-  options: { now?: Date; dryRun?: boolean } = {},
+  options: { now?: Date; dryRun?: boolean; login?: string } = {},
 ): TrialPurgePhaseResult {
   const now = options.now ?? new Date()
   const graceHours = config.trialPurgeGraceHours
   const cutoff = new Date(now.getTime() - graceHours * 3_600_000).toISOString()
-  const candidates = store.trialPurgeCandidates(now.toISOString(), graceHours)
+  const offered = store.trialPurgeCandidates(now.toISOString(), graceHours)
+  // #823: a run scoped with `--login` writes only for that login. The filter sits
+  // on the selected candidates so the global timer path keeps its exact query and
+  // a scoped run cannot reach an account it was not asked about.
+  const candidates = options.login === undefined ? offered : offered.filter((row) => row.login === options.login)
   const result: TrialPurgePhaseResult = {
     dryRun: options.dryRun === true,
     graceHours,
@@ -144,7 +148,7 @@ export async function sweepExpiredTrials(
   if (result.dryRun) {
     // A dry run writes nothing: report the purge candidates the same way the
     // rejection list is reported.
-    result.purge = purgeExpiredTrialAccounts(store, config, { now, dryRun: true })
+    result.purge = purgeExpiredTrialAccounts(store, config, { now, dryRun: true, login: options.login })
     return result
   }
 
@@ -173,6 +177,6 @@ export async function sweepExpiredTrials(
     }
   }
 
-  result.purge = purgeExpiredTrialAccounts(store, config, { now, dryRun: options.purgeDryRun === true })
+  result.purge = purgeExpiredTrialAccounts(store, config, { now, dryRun: options.purgeDryRun === true, login: options.login })
   return result
 }

@@ -56,6 +56,9 @@ const config = loadConfig()
 const store = openStore(config.dbPath)
 try {
   const mailer = createMailer(config)
+  // #823: state the scope before anything is written, so a hand-run sweep says
+  // which accounts it may touch before the deletions happen, not after.
+  if (login !== undefined) console.log(`scope: login=${login} — only this account is considered by both phases`)
   const result = await sweepExpiredTrials(store, mailer, config, { dryRun, purgeDryRun, login })
   console.log(`trial: approved accounts registered before ${result.cutoff} with no repository (${TRIAL_DAYS} days)`)
   for (const row of result.eligible) {
