@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os'
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import { decryptBackupFile, encryptBackupFile, loadBackupKey } from './lib/backup-crypto.mjs'
 import { databaseFacts, manifestPath, readManifest, sha256File, writeManifest } from './lib/backup-manifest.mjs'
+import { backupWorkRoot, createPlaintextWorkDir, removeWorkDir } from './lib/backup-plaintext.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
@@ -160,44 +161,58 @@ function encryptionKeyForDrill() {
 async function writeBackup(sourcePath, dir, key) {
   const stamp = new Date().toISOString().replace(/[:.]/g, '-')
   const target = join(dir, `fledge-${stamp}.db${key === null ? '' : '.enc'}`)
-  // Same rule as the backup script: a plaintext intermediate never looks like a
-  // finished backup while the encrypted copy is being written.
-  const plaintextTarget = key === null ? target : `${target}.plaintext.tmp`
-  const source = new DatabaseSync(sourcePath, { readOnly: true })
-  try {
-    await backup(source, plaintextTarget)
-  } finally {
-    source.close()
-  }
-  chmodSync(plaintextTarget, 0o600)
-  let facts
-  // A copy taken by the drill is a normal backup: it is verified and gets the
-  // same manifest, so the checks below are exact on the very first run of an
-  // instance. The manifest records what this run wrote, so the copy is verified
-  // before it is described - a manifest over a file that cannot be opened would
-  // launder a bad backup - and an unreadable copy is removed rather than left
-  // looking usable.
-  try {
-    const fresh = openRestored(plaintextTarget, plaintextTarget)
-    fresh.close()
-    facts = databaseFacts(plaintextTarget)
-  } catch (error) {
-    rmSync(plaintextTarget, { force: true })
-    throw error
-  }
-  let encryption
+  // Same rule as the backup script: the plaintext copy an encrypted backup is
+  // taken from never sits in the backup directory - it is a readable database in
+  // the artifact an operator copies off-host. It is taken in an owner-only work
+  // directory and removed however this drill ends.
+  let workDir = null
   if (key !== null) {
     try {
-      encryption = await encryptBackupFile(plaintextTarget, target, key)
+      workDir = createPlaintextWorkDir(backupWorkRoot(process.env))
+    } catch (error) {
+      fail(2, `cannot create the plaintext work directory: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  const plaintextTarget = workDir === null ? target : join(workDir, 'fledge.db.plaintext.tmp')
+  try {
+    const source = new DatabaseSync(sourcePath, { readOnly: true })
+    try {
+      await backup(source, plaintextTarget)
+    } finally {
+      source.close()
+    }
+    chmodSync(plaintextTarget, 0o600)
+    let facts
+    // A copy taken by the drill is a normal backup: it is verified and gets the
+    // same manifest, so the checks below are exact on the very first run of an
+    // instance. The manifest records what this run wrote, so the copy is verified
+    // before it is described - a manifest over a file that cannot be opened would
+    // launder a bad backup - and an unreadable copy is removed rather than left
+    // looking usable.
+    try {
+      const fresh = openRestored(plaintextTarget, plaintextTarget)
+      fresh.close()
+      facts = databaseFacts(plaintextTarget)
     } catch (error) {
       rmSync(plaintextTarget, { force: true })
-      rmSync(target, { force: true })
       throw error
     }
-    rmSync(plaintextTarget, { force: true })
+    let encryption
+    if (key !== null) {
+      try {
+        encryption = await encryptBackupFile(plaintextTarget, target, key)
+      } catch (error) {
+        rmSync(plaintextTarget, { force: true })
+        rmSync(target, { force: true })
+        throw error
+      }
+      rmSync(plaintextTarget, { force: true })
+    }
+    await writeManifest(target, { facts, encryption })
+    return target
+  } finally {
+    if (workDir !== null) removeWorkDir(workDir)
   }
-  await writeManifest(target, { facts, encryption })
-  return target
 }
 
 function openRestored(restoredPath, backupPath) {

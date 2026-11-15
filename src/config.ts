@@ -73,10 +73,14 @@ export interface Config {
     key: string
     model: string
     pricePerTokenUsd: number
+    /** #636: JSON price table per model; empty means the single USD price above. */
+    priceTable?: string
   }
   quota: {
     initialCny: number
     usdCny: number
+    /** Below this remaining balance the first-run checklist recommends an own model. */
+    comfortCny: number
   }
   runner: {
     mode: RunnerMode
@@ -312,10 +316,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       key: text('PLATFORM_LLM_KEY'),
       model: text('PLATFORM_LLM_MODEL', 'your-model'),
       pricePerTokenUsd: number('PLATFORM_LLM_PRICE_PER_TOKEN', 0.0000002),
+      priceTable: text('PLATFORM_LLM_PRICE_TABLE'),
     },
     quota: {
       initialCny: number('INITIAL_QUOTA_CNY', 1),
       usdCny: number('USD_CNY_RATE', 7.2),
+      comfortCny: number('PLATFORM_QUOTA_COMFORT_CNY', 50),
     },
     runner: {
       mode: (text('RUNNER_MODE', 'mock') as RunnerMode) || 'mock',

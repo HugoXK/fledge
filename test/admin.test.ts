@@ -42,6 +42,61 @@ test('admin jobs and audit paginate at ten rows with friendly audit labels', asy
   }
 })
 
+test('the empty release chain explains itself without dumping a host path', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'release-chain-admin', admin: true, status: 'approved' })
+    const { cookie } = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /No release chain is recorded/)
+    assert.match(page.body, /This is expected, not an error/)
+    assert.match(page.body, /&lt;DATA_DIR&gt;\/release-status\.json/)
+    assert.doesNotMatch(page.body, new RegExp(config.dataDir.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')), 'the admin page must not print the real data directory')
+    assert.doesNotMatch(page.body, /\/home\/xuke\//, 'the admin page must not print a host path')
+  } finally {
+    await built.close()
+  }
+})
+
+test('the admin page is a module hub, not an Approvals & quota link bar', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const owner = makeUser(store, { login: 'hub-owner', superadmin: true, status: 'approved' })
+    const admin = makeUser(store, { login: 'hub-admin', admin: true, status: 'approved' })
+    const ownerSession = sessionFor(built, owner)
+    const adminSession = sessionFor(built, admin)
+    const ownerPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${ownerSession.cookie}; fledge_lang=en` } })
+    assert.equal(ownerPage.statusCode, 200)
+    assert.match(ownerPage.body, /<h1>Admin console<\/h1>/)
+    assert.doesNotMatch(ownerPage.body, /Approvals &amp; quota|Approvals & quota/)
+    for (const [href, label] of [
+      ['/admin/metrics', 'Product metrics'],
+      ['/admin/webhooks', 'Webhook deliveries'],
+      ['/admin/deployments', 'Deployments and drift'],
+      ['/admin/search', 'Audit and jobs'],
+      ['/admin/trials', 'Preview trials'],
+    ] as const) {
+      assert.match(ownerPage.body, new RegExp(`<a class="admin-module" href="${href}">[\\s\\S]*?${label}`), `${label} must be a module tile`)
+    }
+    assert.match(ownerPage.body, /class="admin-modules"/)
+
+    const adminPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${adminSession.cookie}; fledge_lang=en` } })
+    assert.equal(adminPage.statusCode, 200)
+    for (const href of ['/admin/deployments', '/admin/search', '/admin/trials']) {
+      assert.match(adminPage.body, new RegExp(`<a class="admin-module" href="${href}">`), `${href} must remain available to an admin`)
+    }
+    assert.doesNotMatch(adminPage.body, /class="admin-module" href="\/admin\/metrics"/)
+    assert.doesNotMatch(adminPage.body, /class="admin-module" href="\/admin\/webhooks"/)
+  } finally {
+    await built.close()
+  }
+})
+
 test('rejecting a user cancels active jobs and frees the global slot', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -230,6 +285,31 @@ test('admins can inspect a normal user read-only from a support view', async () 
     const normal = makeUser(store, { login: 'normal-user', status: 'approved' })
     const normalSession = sessionFor(built, normal)
     const denied = await built.app.inject({ method: 'GET', url: `/admin/users/${user.id}`, headers: { cookie: normalSession.cookie } })
+    assert.equal(denied.statusCode, 403)
+  } finally {
+    await built.close()
+  }
+})
+
+test('the empty-state View users action and /admin/users land on the Users section', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'users-link-admin', admin: true })
+    const normal = makeUser(store, { login: 'users-link-normal', status: 'approved' })
+    const adminSession = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: adminSession.cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /href="\/admin#users">[^<]*(查看用户|View users)/, 'the empty state must link to the Users section')
+    assert.doesNotMatch(page.body, /href="\/admin\/users"/, 'nothing may link to the bare /admin/users path')
+
+    const redirect = await built.app.inject({ method: 'GET', url: '/admin/users', headers: { cookie: adminSession.cookie } })
+    assert.equal(redirect.statusCode, 302)
+    assert.equal(redirect.headers.location, '/admin#users')
+
+    const normalSession = sessionFor(built, normal)
+    const denied = await built.app.inject({ method: 'GET', url: '/admin/users', headers: { cookie: normalSession.cookie } })
     assert.equal(denied.statusCode, 403)
   } finally {
     await built.close()

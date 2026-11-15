@@ -7,19 +7,71 @@ Every user starts with **1 CNY** of platform-funded model usage
 user to configure their own OpenAI-compatible model service. Their jobs then run
 on their key, with no platform metering.
 
+The first-run model step shows the remaining balance. Below
+`PLATFORM_QUOTA_COMFORT_CNY` (default 50) it warns that the balance may not cover
+the first run and recommends adding an own model now; at or above it the balance
+is shown without a warning and Settings → Model remains the later path. The
+threshold changes the checklist advice only; it never changes quota accounting.
+
 ## Units
 
-- Ledger and provider cost: **USD**.
-- User-facing quota: **CNY**.
+- Ledger: the provider's own **currency**, one bucket per currency (`USD`,
+  `CNY`, …). There is no exchange rate between buckets.
+- User-facing quota: **CNY**, computed from the USD bucket.
 - `remaining_cny = quota_cny - quota_used_usd * USD_CNY_RATE`.
 - `USD_CNY_RATE` defaults to `7.2`; change it in `.env`.
+- `users.quota_used_usd`, `jobs.cost_usd` and the CNY repository budgets are
+  **USD columns**: they only read rows billed in USD (a row with no currency is
+  the legacy shape and counts as USD). A row priced in another currency is
+  reported by `Store.costByCurrency()` in its own bucket and is **not**
+  converted into any of them, because there is no rate between the buckets. A
+  CNY-priced call therefore does not consume the CNY quota or trip a CNY budget;
+  the currency table is where its cost is visible.
 
 ## Cost source
 
-1. `x-litellm-response-cost` response header (USD), when present. This is the
-   gateway's actual charge and includes retries/discounts.
-2. Otherwise `usage.total_tokens` (or prompt + completion) ×
-   `PLATFORM_LLM_PRICE_PER_TOKEN` (default `0.0000002` USD/token).
+1. `x-litellm-response-cost` response header, when present. This is the
+   gateway's actual charge and includes retries/discounts; it is recorded in
+   **USD** because that header is denominated in USD.
+2. Otherwise the model's own price entry, multiplied by its token counts. Each
+   entry carries input, output and cached-input prices per token:
+
+   ```sh
+   PLATFORM_LLM_PRICE_TABLE='[
+     {"model":"deepseek-chat","currency":"CNY","inputPerToken":0.000002,"outputPerToken":0.000008,"cachedInputPerToken":0.0000005}
+   ]'
+   ```
+
+   A model the table does not list is **unknown**, never a guess: the table is
+   the whole truth once it is set. With no table at all, the single
+   `PLATFORM_LLM_PRICE_PER_TOKEN` (default `0.0000002` USD/token) still prices the
+   platform model, so an upgrade keeps metering.
+
+Every ledger row records the **snapshot** it was charged at — model, currency
+and the three per-token prices — so changing the table never rewrites history.
+A cached token is a subset of the input tokens and is charged at the cached
+price instead of the input price; both `prompt_tokens_details.cached_tokens` and
+DeepSeek's `prompt_cache_hit_tokens` are read. Charging both would bill it twice.
+
+### Unknown cost is not free cost
+
+A call that cannot be priced — no table entry for the model, no `usage` block, or
+a usage block with no token count — writes a ledger row with `cost_known = 0` and
+`cost_usd = 0`, plus one `request.cost_unknown` audit entry (and a
+`request.cost_unknown` job event when a job token is in scope). It does not
+increment `users.quota_used_usd`, because adding zero would claim the call was
+free. `Store.costByCurrency()` therefore reports `unknownRequests`, and its
+`semantics` is `lower_bound` while any request in the window is unknown — the
+spend it shows is a floor, not the whole bill.
+
+An unknown call is also outside **enforcement**: with no figure to compare, the
+user quota and the ambiguous per-job budget cannot refuse it. A job whose calls
+are all unknown has no ceiling at either level until one call is priced; that is
+the same rule stated the other way (an unknown cost is not read as zero), not a
+free allowance. A stream that fails mid-flight is still one attempt the user consumed, so it
+writes one of those rows rather than none: the provider's `x-litellm-response-cost`
+figure as a known USD row when the response carried one, and a `cost_known = 0`
+row with reason `no_usage`, its audit entry and its job event when it did not.
 
 For streaming requests Fledge adds `stream_options.include_usage = true` and
 parses each SSE `data:` line. It keeps the last `usage` object, including nested
@@ -29,16 +81,20 @@ stream ends. A request that is already in flight is allowed to finish; the
 
 ## Enforcement
 
+- A job is platform-funded only when neither the legacy user-level model nor a
+  repository-selected provider model exists. The enqueue and dispatch paths use
+  the same predicate as the bridge and the gateway, so selecting a model for the
+  repository is enough to pass an exhausted platform quota.
 - Before a platform-funded request: if `remaining_cny <= 0`, return HTTP 402
   immediately and mark that user's active jobs `quota_exhausted` (their job
   tokens are revoked) so the UI does not wait for the job timeout.
 - Before the upstream call: a token that claims a `job:` id it does not own is
   refused with `403 invalid_job_token` (#481), so a forged name spends no quota
   and writes no ledger row, no `jobs.cost_usd` and no `users.quota_used_usd`.
-- After a platform-funded request: record a `quota_ledger` row and increment
-  `users.quota_used_usd`. While a job is running the bridge injects the
-  job-scoped `flg_` token into the model proxy, so the row also carries
-  `job_id`; the gateway adds the same cost to `jobs.cost_usd` for per-job
+- After a platform-funded request: record a `quota_ledger` row and, when the row
+  is billed in USD, increment `users.quota_used_usd`. While a job is running the
+  bridge injects the job-scoped `flg_` token into the model proxy, so the row also
+  carries `job_id`; the gateway adds a USD cost to `jobs.cost_usd` for per-job
   display. On job finish Fledge calls the bridge `/job-done` endpoint to drop
   the job token immediately; the proxy also retries once with the instance
   token if the gateway returns 401/403, so a revoked/expired job token cannot
@@ -87,12 +143,21 @@ settings:
     `JOB_BUDGET_CANCELLED`, the job token is revoked and only a new job continues
     the work.
 
-  A terminal callback that arrives after a `pause` or `cancel` is refused, so a
-  late result cannot revive a job the budget stopped. The threshold is never
-  compared against an unknown cost: a job with no `quota_ledger` row yet (a
-  provider error deducts nothing, so there may be none) is left running and the
-  checkpoint writes one `job.budget_unknown` audit entry instead of treating the
-  unknown as zero.
+  A retry does not reset the budget: the new attempt names the attempt it
+  continues in `jobs.retry_of` (the immediate parent, so a retried retry keeps
+  every attempt), and the checkpoint sums the whole chain, so a second attempt
+  starts from the spend the first one recorded (a resume reuses the same job row
+  and needs no chain). A terminal callback that arrives after a `pause`
+  or `cancel` is refused, so a late result cannot revive a job the budget
+  stopped. The threshold is never
+  compared against an unknown cost: a job with no **priced** `quota_ledger` row
+  yet (a provider error deducts nothing, so there may be none) is left running
+  and the checkpoint writes one `job.budget_unknown` audit entry instead of
+  treating the unknown as zero. Rows with `cost_known = 0` do not count as a
+  priced row, so a job whose only calls are unknown keeps that refusal. The cap
+  reads USD-billed rows only (see **Units**), so a call priced in another
+  currency is reported in the currency table instead of being converted into the
+  CNY budget by an invented rate.
 
 Cost is attributed through `quota_ledger.repo_id`; rows written before that
 column existed fall back to the job's `repo_id` when they can be joined. Both

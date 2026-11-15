@@ -133,7 +133,7 @@ test('every card with an id is named by exactly one chip, in document order', ()
 test('every nav chip resolves to exactly one section in the same rendered page', () => {
   const pages = [
     { picker: 'settings' as const, ids: ['account', 'model-providers', 'notifications', 'tokens', 'sessions'] },
-    { picker: 'admin' as const, ids: ['release', 'release-chain', 'backups', 'pending', 'users', 'jobs', 'audit'] },
+    { picker: 'admin' as const, ids: ['pending', 'users', 'jobs', 'audit', 'release', 'backups'] },
   ]
   for (const page of pages) {
     const html = render(page.picker)
@@ -259,8 +259,9 @@ test('a section taller than the band stays current until the next one takes its 
 
 test('the page loads the rule before the script that uses it, and a tap marks its own chip', () => {
   const html = render('settings')
-  const ruleAt = html.indexOf('src="/assets/section-nav.js"')
-  const appAt = html.indexOf('src="/assets/app.js"')
+  // #700: both URLs now carry a content version, so the pin is the path prefix.
+  const ruleAt = html.indexOf('src="/assets/section-nav.js?v=')
+  const appAt = html.indexOf('src="/assets/app.js?v=')
   assert.ok(ruleAt !== -1 && appAt !== -1 && ruleAt < appAt, 'section-nav.js must load before app.js')
   assert.match(script, /sectionNavRule\.currentSection\(/)
   assert.match(script, /bandTop:\s*sectionNavRule\.scrollBandTop\(window\.innerHeight, anchorOffset\)/)

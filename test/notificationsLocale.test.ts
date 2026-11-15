@@ -30,6 +30,29 @@ function noticeRow(html: string): string {
   return /<div class="notice"><span>(.*?)<\/span>/.exec(html)?.[1] ?? ''
 }
 
+// #409: the per-job budget stop writes two different sentences — one into
+// `jobs.error` and one into the notification — and only the plain `localizeMessage`
+// arm can fix the first. The dashboard reads notifications through
+// `localizeNotification`, so the notice needs its own row or an English user
+// sees the Chinese sentence under an English title.
+test('a per-job budget stop notifies an English dashboard in English', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'notice-budget', status: 'approved' })
+    store.notify(user.id, 'quota', '任务 job_8 因单任务预算暂停：已用 12.50 元，预算 10.00 元。提高预算或重新开始任务。', 'JOB_BUDGET_PAUSED')
+
+    const en = noticeRow(render(store, user.id, 'en'))
+    assert.equal(CJK.test(en), false, `the English budget notice must not contain CJK: ${en}`)
+    assert.match(en, /per-job budget/i, `the English budget notice must say why it stopped: ${en}`)
+    assert.match(en, /12\.50 CNY/, `the English budget notice must keep the observed cost: ${en}`)
+
+    const zh = noticeRow(render(store, user.id, 'zh'))
+    assert.match(zh, /因单任务预算暂停/, `the Chinese dashboard keeps the sentence the service wrote: ${zh}`)
+  } finally {
+    store.close()
+  }
+})
+
 test('a quota notice written in Chinese renders in English on an English dashboard', async () => {
   const store = new Store(':memory:')
   try {
@@ -145,6 +168,8 @@ test('every localisation row is pinned by a sample in both directions', () => {
     ['en', 'alice 团队提问：继续吗', 'alice team question: 继续吗'],
     ['en', '平台额度已用完，请到 Settings → Model 配置你自己的模型 API。后重试。', 'Platform quota is used up. Configure your own model API in Settings → Model.'],
     ['en', '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', 'Platform quota is used up. Configure your own model API in Settings → Model.'],
+    ['en', '任务 job_8 因单任务预算暂停：已用 12.50 元，预算 10.00 元。提高预算或重新开始任务。', 'Job job_8 was paused for its per-job budget: 12.50 CNY used, 10.00 CNY budget. Raise the budget or start the job again.'],
+    ['en', '任务 job_19 因单任务预算取消：已用 12.50 元，预算 10.00 元。提高预算或重新开始任务。', 'Job job_19 was cancelled for its per-job budget: 12.50 CNY used, 10.00 CNY budget. Raise the budget or start the job again.'],
     ['zh', 'The scope job job_3 is missing stage evidence: 缺少范围（evidence.scope）', 'scope 任务 job_3 缺少阶段证据：缺少范围（evidence.scope）'],
     ['zh', 'job job_9 has no callback for 49m', '任务 job_9 已有 49 分钟没有回报。'],
     ['zh', 'PR https://github.com/o/r/pull/7 has been open for 49h', 'PR https://github.com/o/r/pull/7 已开启 49 小时。'],

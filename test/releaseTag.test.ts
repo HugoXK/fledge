@@ -232,6 +232,11 @@ interface ReleaseRouteOptions {
   refWriteRaw?: string
   refWriteContentType?: string
   commitStatus?: number
+  // The first observation after a tag write reads the tag's Release and its run;
+  // a test that cares about the tracked row supplies them here.
+  existingRelease?: Record<string, unknown>
+  runs?: Array<Record<string, unknown>>
+  jobs?: Array<Record<string, unknown>>
 }
 
 async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
@@ -258,6 +263,17 @@ async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
     }
     if (method === 'GET' && url.startsWith('/repos/o/r/tags')) return json(response, 200, options.tags ?? [])
     if (method === 'GET' && url.startsWith('/repos/o/r/compare/')) return json(response, 200, { status: 'ahead', ahead_by: 3 })
+    if (method === 'GET' && url.startsWith('/repos/o/r/releases/tags/')) {
+      return options.existingRelease === undefined
+        ? json(response, 404, { message: 'Not Found' })
+        : json(response, 200, options.existingRelease)
+    }
+    if (options.runs !== undefined && method === 'GET' && url.startsWith('/repos/o/r/actions/runs?')) {
+      return json(response, 200, { total_count: options.runs.length, workflow_runs: options.runs })
+    }
+    if (options.jobs !== undefined && method === 'GET' && /\/repos\/o\/r\/actions\/runs\/\d+\/jobs/.test(url)) {
+      return json(response, 200, { total_count: options.jobs.length, jobs: options.jobs })
+    }
     if (method === 'POST' && url === '/repos/o/r/git/tags') {
       const status = options.tagWriteStatus ?? 201
       return json(response, status, status === 201 ? { sha: ROUTE_TAG_OBJECT } : { message: 'Object does not exist' })
@@ -443,6 +459,33 @@ test('a re-tag updates the recorded row and is confirmed as an existing tag, not
   }
 })
 
+test('a re-tag keeps the pointer when the Release this row prepared is already published', async () => {
+  // Finding 2 of the review, on the re-tag path: the first observation used to
+  // pass a null pointer, so the row recorded its own published Release as
+  // external and dropped the link the page shows.
+  const RELEASE_URL = 'https://github.com/o/r/releases/500'
+  const h = await releaseRouteHarness({
+    existingRelease: { id: 500, tag_name: 'v1.4.0', draft: false, prerelease: false, html_url: RELEASE_URL },
+  })
+  try {
+    const recorded = h.store.recordRelease({ repoId: h.repo.id, userId: h.repo.user_id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: 'b'.repeat(40), tagObjectSha: 'd'.repeat(40), previousTag: null, actor: 'release-route-user' })
+    assert.ok(recorded)
+    h.store.run('UPDATE repo_releases SET draft_release_id = ?, draft_url = ? WHERE id = ?', '500', RELEASE_URL, recorded.id)
+
+    const posted = await h.post()
+    assert.equal(posted.statusCode, 302)
+    assert.match(decodeURIComponent(String(posted.headers.location)), /retagged=1/)
+
+    const row = h.store.releaseById(recorded.id)
+    assert.equal(row?.status, 'draft_published', 'the re-tag reads its own published Release as its own')
+    assert.equal(row?.draft_release_id, '500', 'the pointer to our own Release survives the re-tag')
+    assert.equal(row?.draft_url, RELEASE_URL)
+    assert.equal(row?.external_release_id, null, 'our own Release is never recorded as someone else’s')
+  } finally {
+    await h.close()
+  }
+})
+
 test('a 500 from the ref write names the HTTP status and never quotes the upstream body', async () => {
   const upstream = 'Protected branch update failed for refs/tags/v1.4.0'
   const h = await releaseRouteHarness({ refWriteStatus: 500, refWriteBody: { message: upstream } })
@@ -492,5 +535,38 @@ test('a 422 from the ref write stays the tag_exists sentence, not the fixed ref 
     assert.equal(h.store.listReleasesForRepo(h.repo.id).length, 0)
   } finally {
     await h.close()
+  }
+})
+
+// #665: the retag path used to carry only the new SHAs, so the row kept the
+// first tagger and the first preflight while it pointed at someone else's
+// commit. A row has to describe the action that produced the state it shows.
+test('a re-tag records the new tagger and the new preflight, not the first ones', () => {
+  const store = new Store(':memory:')
+  try {
+    const alice = makeUser(store, { login: 'retag-alice', status: 'approved' })
+    const bob = makeUser(store, { login: 'retag-bob', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_retag_attribution', userId: alice.id, owner: 'o', name: 'retag', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const FIRST_TARGET = '1'.repeat(40)
+    const SECOND_TARGET = '2'.repeat(40)
+
+    const first = store.recordRelease({ repoId: repo.id, userId: alice.id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: FIRST_TARGET, tagObjectSha: '3'.repeat(40), previousTag: 'v1.3.0', actor: alice.login })
+    assert.ok(first)
+    const createdAt = first.created_at
+
+    const second = store.recordRelease({ repoId: repo.id, userId: bob.id, version: 'v1.4.0', tagName: 'v1.4.0', targetSha: SECOND_TARGET, tagObjectSha: '4'.repeat(40), previousTag: 'v1.3.0', actor: bob.login })
+    assert.ok(second)
+    assert.equal(second.id, first.id, 'the re-tag updates the one row for the tag name')
+    assert.equal(second.user_id, bob.id, 'the row names the user who performed the re-tag')
+    assert.equal(second.target_sha, SECOND_TARGET)
+    assert.deepEqual(JSON.parse(String(second.preflight_json)), { previousTag: 'v1.3.0', actor: bob.login }, 'the preflight names the re-tagging actor')
+    assert.equal(second.created_at, createdAt, 'the first release time is kept')
+    assert.ok(second.updated_at > createdAt, 'the update time moves forward')
+
+    const row = store.releaseByTag(repo.id, 'v1.4.0')
+    assert.equal(row?.user_id, bob.id, 'the stored row, not only the returned copy, names the re-tagger')
+    assert.deepEqual(JSON.parse(String(row?.preflight_json)), { previousTag: 'v1.3.0', actor: bob.login })
+  } finally {
+    store.close()
   }
 })

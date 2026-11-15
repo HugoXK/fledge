@@ -184,6 +184,77 @@ test('a role entry is invisible to the other role, even to an administrator acti
   }
 })
 
+test('a revision is read under its own audience, not the current entry audience', async () => {
+  const h = await harness({ repoRole: 'maintainer' })
+  try {
+    await write(h, entry({ key: 'deploy-window', audience: 'role:maintainer', body: 'Maintainer-only deploy window.' }))
+    const second = await write(h, entry({
+      key: 'deploy-window',
+      audience: 'project',
+      body: 'Shared deploy window.',
+      expected_revision: '1',
+    }))
+    assert.equal(second.statusCode, 302)
+    assert.match(location(second), /saved=1/)
+
+    // The current revision moved to `project`, so a developer reads the entry,
+    // but revision 1 was written for maintainers and stays outside that audience.
+    h.store.updateRepo(h.repo.id, { repo_role: 'developer' })
+    const current = await page(h, '?key=deploy-window')
+    assert.equal(current.statusCode, 200)
+    assert.match(current.body, /Shared deploy window\./)
+    assert.match(current.body, /data-memory-version-count="1"/, 'only visible revisions are counted')
+    assert.doesNotMatch(current.body, /data-memory-version="1"/, 'the hidden revision is not listed')
+
+    const hidden = await page(h, '?key=deploy-window&rev=1')
+    assert.equal(hidden.statusCode, 404, 'a hidden revision is not rendered through a visible entry')
+    assert.doesNotMatch(hidden.body, /Maintainer-only deploy window\./)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a write aimed at a hidden entry is refused and leaves the row untouched', async () => {
+  const h = await harness({ repoRole: 'maintainer' })
+  try {
+    await write(h, entry({ key: 'deploy-window', audience: 'role:maintainer', body: 'Maintainer-only deploy window.' }))
+    const before = h.store.getMemory(h.repo.id, 'deploy-window')
+    assert.ok(before !== undefined)
+
+    h.store.updateRepo(h.repo.id, { repo_role: 'developer' })
+    const attempt = await write(h, entry({
+      key: 'deploy-window',
+      audience: 'project',
+      body: 'Developer overwrite.',
+      expected_revision: '1',
+    }))
+    assert.equal(attempt.statusCode, 302)
+    assert.match(location(attempt), /refused=memory_not_found/)
+    assert.doesNotMatch(location(attempt), /saved=1|conflict=/, 'the refusal neither writes nor names the revision')
+
+    const after = h.store.getMemory(h.repo.id, 'deploy-window')
+    assert.equal(after?.body, 'Maintainer-only deploy window.')
+    assert.equal(after?.revision, 1)
+    assert.equal(after?.audience, 'role:maintainer')
+    assert.equal(h.store.listMemoryVersions(before.id).length, 1, 'the refused write appended no revision')
+
+    // The guard runs before the revision fence: a deliberately wrong revision
+    // still gets the same refusal, so a hidden target is not a revision oracle.
+    const wrongRevision = await write(h, entry({
+      key: 'deploy-window',
+      audience: 'project',
+      body: 'Developer overwrite.',
+      expected_revision: '99',
+    }))
+    assert.equal(wrongRevision.statusCode, 302)
+    assert.match(location(wrongRevision), /refused=memory_not_found/)
+    assert.doesNotMatch(location(wrongRevision), /conflict=/, 'a hidden target is not a revision oracle')
+    assert.equal(h.store.getMemory(h.repo.id, 'deploy-window')?.body, 'Maintainer-only deploy window.')
+  } finally {
+    await h.close()
+  }
+})
+
 test('reading an old revision returns the old body and marks it historical', async () => {
   const h = await harness()
   try {

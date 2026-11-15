@@ -2,6 +2,7 @@ import type { UserRow } from '../db.js'
 import { quotaView, type QuotaView } from '../gateway/quota.js'
 import type { Config } from '../config.js'
 import { localizeMessage, translator, type Locale, type Translate } from '../i18n.js'
+import { assetUrl } from '../lib/assetVersion.js'
 import { refusalBanner } from '../lib/failure.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import type { Density } from './density.js'
@@ -56,21 +57,38 @@ export interface LayoutOptions {
 function languageSwitch(locale: Locale, path: string): string {
   const encoded = encodeURIComponent(path)
   const item = (value: Locale, label: string) =>
-    `<a href="/lang/${value}?next=${encoded}" data-lang-btn="${value}" aria-pressed="${value === locale}"${value === locale ? ' aria-current="true"' : ''}>${label}</a>`
+    `<a href="/lang/${value}?next=${encoded}" data-lang-btn="${value}"${value === locale ? ' aria-current="true"' : ''}>${label}</a>`
   return `<div class="lang" role="group" aria-label="Language">${item('zh', '中')}${item('en', 'EN')}</div>`
 }
 
-// #657: the palette is a preference like the language, so it is a plain list of
-// links and works with JavaScript off. It rides inside `#main-nav` on purpose:
-// at 960px and below that element is the compact header's panel, so the chooser
-// costs the phone row nothing and cannot overflow it at 360px (#133), while
-// above 960px it sits in the row after the navigation.
+// #682: three text labels read as one word ("AutoLightDark") and a 3x44px group
+// competed with the navigation, language switch and account in the same row.
+// One icon button with a small menu is the same choice in 44px, works signed-out,
+// and needs no JavaScript: `<details>` opens the three plain links.
 function themeSwitch(locale: Locale, path: string, theme: Theme): string {
   const t = translator(locale)
   const encoded = encodeURIComponent(path)
-  const item = (value: Theme, label: string) =>
-    `<a href="/theme/${value}?next=${encoded}" data-theme-btn="${value}" aria-current="${value === theme ? 'true' : 'false'}">${escapeHtml(label)}</a>`
-  return `<div class="theme" role="group" aria-label="${escapeHtml(t('主题', 'Theme'))}">${item('system', t('自动', 'Auto'))}${item('light', t('浅色', 'Light'))}${item('dark', t('深色', 'Dark'))}</div>`
+  const svg = {
+    system: '<circle cx="12" cy="12" r="8" stroke="currentColor" stroke-width="2"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/>',
+    light: '<circle cx="12" cy="12" r="4" stroke="currentColor" stroke-width="2"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>',
+    dark: '<path d="M20 15.2A8.4 8.4 0 0 1 8.8 4a8.4 8.4 0 1 0 11.2 11.2Z" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/>',
+  } as const
+  const glyph = (name: keyof typeof svg, className: string): string =>
+    `<span class="${className}" aria-hidden="true"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" focusable="false">${svg[name]}</svg></span>`
+  const item = (value: Theme, label: string): string =>
+    `<a href="/theme/${value}?next=${encoded}" data-theme-btn="${value}" aria-current="${value === theme ? 'true' : 'false'}">${glyph(value, 'theme-option-icon')}<span>${escapeHtml(label)}</span></a>`
+  return `<details class="theme-menu">
+    <summary aria-label="${escapeHtml(t('主题', 'Theme'))}" title="${escapeHtml(t('主题', 'Theme'))}">
+      ${glyph('system', 'theme-glyph theme-glyph-system')}
+      ${glyph('light', 'theme-glyph theme-glyph-light')}
+      ${glyph('dark', 'theme-glyph theme-glyph-dark')}
+    </summary>
+    <div class="theme-options">
+      ${item('system', t('跟随系统', 'System'))}
+      ${item('light', t('浅色', 'Light'))}
+      ${item('dark', t('深色', 'Dark'))}
+    </div>
+  </details>`
 }
 
 export function quotaPill(user: UserRow, config: Config, locale: Locale = 'zh'): string {
@@ -147,7 +165,6 @@ export function layout(options: LayoutOptions): string {
         ${navItem('schedule', '/schedule', t('排期', 'Schedule'))}
         ${navItem('settings', '/settings', t('设置', 'Settings'))}
         ${!preview && (viewer.user.role === 'admin' || viewer.user.role === 'superadmin') ? navItem('admin', '/admin', t('管理', 'Admin')) : ''}
-        ${themeSwitch(locale, path, 'system')}
       </nav>`
   // A phone header is one fixed row (#133), so the navigation collapses behind
   // this toggle instead of wrapping. It is rendered only when there is a nav to
@@ -185,7 +202,7 @@ export function layout(options: LayoutOptions): string {
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   ${themeMeta('system')}
   <title>${escapeHtml(title)} · Fledge</title>
-  <link rel="stylesheet" href="/assets/app.css" />
+  <link rel="stylesheet" href="${assetUrl('/assets/app.css')}" />
 </head>
 <body>
   <a class="skip-link" href="#main">${escapeHtml(t('跳到主要内容', 'Skip to main content'))}</a>
@@ -195,6 +212,7 @@ export function layout(options: LayoutOptions): string {
       ${navToggle}
       ${nav}
       <div class="spacer"></div>
+      ${themeSwitch(locale, path, 'system')}
       ${languageSwitch(locale, path)}
       ${account}
     </div>
@@ -206,7 +224,7 @@ export function layout(options: LayoutOptions): string {
     ${body}
   </main>
   ${footer}
-  <script src="/assets/section-nav.js" defer></script>
+  <script src="${assetUrl('/assets/section-nav.js')}" defer></script>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
     <form method="dialog">
       <h2 id="confirm-dialog-title">${escapeHtml(t('请确认', 'Please confirm'))}</h2>
@@ -217,8 +235,8 @@ export function layout(options: LayoutOptions): string {
       </div>
     </form>
   </dialog>
-  <script src="/assets/app.js" defer></script>
-  <script src="/assets/questions.js" defer></script>
+  <script src="${assetUrl('/assets/app.js')}" defer></script>
+  <script src="${assetUrl('/assets/questions.js')}" defer></script>
 </body>
 </html>`
 }

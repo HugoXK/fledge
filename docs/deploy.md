@@ -39,6 +39,7 @@ Key settings:
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
 | `USD_CNY_RATE` | Default 7.2 |
+| `PLATFORM_QUOTA_COMFORT_CNY` | Default 50; below this the first-run checklist recommends an own model |
 | `RUNNER_MODE` | `mock` or `flybot` |
 | `JOB_TIMEOUT_MINUTES` / `JOB_STALL_MINUTES` | Hard timeout (default 90) and no-heartbeat stall timeout (default 30) |
 | `FLYBOT_BRIDGE_URL` / `FLYBOT_BRIDGE_TOKEN` | Bridge endpoint and shared secret |
@@ -337,8 +338,118 @@ Without `--base-url` the running-instance link is reported as skipped, and a
 release branch a merged release already deleted is skipped too — the pull
 request head is then the record of the tip.
 
+Release branches are retained on this repository. The ruleset `keep release
+branches` blocks deletion of `refs/heads/release/*`, so GitHub's "automatically
+delete head branches" setting leaves a merged release branch in place. That keeps
+the pre-squash tip readable and lets the branch link stay `ok`; a branch deleted
+before the ruleset existed still falls back to the pull request head.
+
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
+
+### Automatic tag deployment and verification
+
+The release plan → release pull request → tag half lives in
+`.github/workflows/daily-release.yml` and `release.yml`. The last two steps are
+tracked here as host scripts under `deploy/`:
+
+```sh
+# Deploy a newer tag; never roll a newer main back.
+*/10 * * * * /opt/fledge/deploy/fledge-deploy-tag.sh
+
+# Refresh release-status.json for /admin.
+*/30 * * * * /opt/fledge/deploy/fledge-verify-release.sh
+```
+
+`fledge-deploy-tag.sh` fetches tags, takes the newest `vX.Y.Z`, and deploys only
+when that version is newer than the running `package.json`. It uses a detached
+tag worktree, builds, stops/starts the configured service, checks `/healthz`
+reports that version, and restores the previous `dist` and build identity if
+the build or health check fails. It never runs `git push`, `--admin`, a merge or
+a rollback to an older tag. On success it invokes the verifier.
+
+`fledge-verify-release.sh` reads `GITHUB_TOKEN` from the environment or the
+`GITHUB_TOKEN` entry in `FLEDGE_SECRETS_FILE` (default
+`~/.dsh/bot/secrets.json`), loads `METRICS_TOKEN` / `BASE_URL` from `.env`, and
+writes `release-status.json` through a temporary file and rename. The token is
+never printed or passed as an argument. A `not released` verdict is a normal
+result in the log and status file, not a cron crash; missing input exits 1.
+
+Both scripts accept `FLEDGE_APP_DIR`, `FLEDGE_SOURCE_DIR`, `FLEDGE_DATA_DIR`,
+`FLEDGE_DEPLOY_LOG`, `FLEDGE_STOP_CMD`, `FLEDGE_START_CMD`, `FLEDGE_HEALTH_URL`,
+`FLEDGE_SECRETS_FILE` and `FLEDGE_REPOSITORY` overrides. They hold a `flock`
+so two cron ticks cannot overlap, and the deploy script exits without changing
+anything when production is already at the newest tag or ahead of it.
+
+### Required before start
+
+The sample unit runs the same verifier as `ExecStartPre=` (#462), so a host whose
+recorded release is absent or disagrees does not start. Record the release on the
+host first, with the digest the machine actually has:
+
+```sh
+# the API half: the chain, and the digest this host would run
+digest="$(sudo docker image inspect ghcr.io/hugoxk/fledge:v0.3.2 \
+  --format '{{index .RepoDigests 0}}' | cut -d@ -f2)"
+: "${digest:?docker image inspect returned no digest — pull the released tag by digest first}"
+GITHUB_TOKEN=… METRICS_TOKEN=… sudo node scripts/verify-release.mjs --version 0.3.2 \
+  --base-url https://fledge.hugoxk.online \
+  --local-image-digest "$digest" \
+  --write /etc/fledge/release-status.json
+# the hook runs as User=fledge, so a root:root 0600 record is unreadable to it
+sudo chown root:fledge /etc/fledge/release-status.json
+sudo chmod 0640 /etc/fledge/release-status.json
+```
+
+The group ownership is the part that is easy to miss: `EnvironmentFile=` is read
+by systemd as root *before* privileges drop, so root-only `0600` is right for
+`fledge.env`, but `ExecStartPre=` runs as the unit's `User=fledge`. Hand the
+record to the group the unit runs as — `root:fledge` with mode `0640` — and the
+hook can read it without the record being world-readable. An image with no
+`RepoDigests` entry (built locally, `docker load`ed, a tag never pulled by
+digest) makes the substitution empty; the `: "${digest:?…}"` line above stops
+before the record is written, and passing an empty `--local-image-digest` at all
+is refused with exit `2` rather than recorded as a skipped link.
+
+`--local-image-digest` is the one comparison the API cannot make: the digest
+`docker image inspect` reports for the tag on this host, compared with the digest
+the release and its build-provenance attestation name. It is one more row in the
+same output, and a mismatch names both digests. Without the flag the row reads
+`skipped`, and the chain is still judged on its API links.
+
+The file the command writes is also the record the unit starts from. `ExecStartPre=`
+replays it with `--fixtures /etc/fledge/release-status.json --package
+/opt/fledge/package.json`: no token, no API call, no docker. It re-checks the
+recorded chain, the recorded digest and the version of the tree that will
+actually run. What it catches is a record that disagrees with itself or with
+`/opt/fledge`: a changed `package.json` version, a mangled or hand-edited
+record. The image comparison happens at recording time — the boot hook has no
+docker, so at start the recorded digest is compared with the recorded image
+digest, which is a self-consistency check, and a same-version image swap on the
+host is not caught by it; re-record after such a swap. **A host with no
+`/etc/fledge/release-status.json` does not start** — that is the hook doing its
+job, not a bug.
+
+The console's copy of the same snapshot lives under `${DATA_DIR}`; run the
+command a second time with `--write "${DATA_DIR}/release-status.json"` if the
+`/admin` card should show it too.
+
+A non-zero exit means **do not start**. Read the failing row in
+`journalctl -u fledge` and fix the release:
+
+| Exit | Row | Meaning | Action |
+|---|---|---|---|
+| `2` | `verify-release: cannot read /etc/fledge/release-status.json: ENOENT…` | nothing was recorded on this host | run the recording command above on this host; never hand-write the file |
+| `2` | `verify-release: cannot read /etc/fledge/release-status.json: EACCES…` | the file exists but `User=fledge` may not read it | `chown root:fledge` and `chmod 0640` the record, as in the recording command; do not widen it to `0644` |
+| `2` | `verify-release: /opt/fledge/package.json has no readable version` | the installed tree is incomplete | finish the install, then start |
+| `1` | `local mismatch the local image sha256:… is not the attested digest sha256:…` | the image on this host is not the released one | pull the tag the chain names; do not start |
+| `1` | `version mismatch package.json is at vX, the chain is for vY` | `/opt/fledge` is not the recorded release | install the recorded version, or re-record if the new version really is the release |
+| `1` | `healthz mismatch …` | the recorded probe disagrees with the tag it was compared with | fix the deployment or the record; do not start |
+
+Both non-zero codes refuse the start: `1` is a fact that disagrees, `2` is an
+input that could not be read. They are printed as different lines so the journal
+says which one happened. The hook never contacts GitHub, so a reboot depends on
+one local file and nothing else — a stale record is refused rather than started.
 
 ### Deployment records, drift and rollback
 
@@ -477,6 +588,8 @@ npm run db:backup
 # plaintext is the default; with a backup key this writes fledge-<timestamp>.db.enc
 # and the manifest records the ciphertext checksum plus the non-secret key id/version
 # BACKUP_ENCRYPTION_REQUIRED=true refuses the run when no key is configured
+# the plaintext copy an encrypted run is made from lives in a 0700 work directory
+# outside the backup directory; BACKUP_WORK_DIR moves it (default: the temp dir)
 ```
 
 ### Backup encryption
@@ -558,23 +671,42 @@ starting a new key and keeping the old one for as long as its copies are
 retained; the manifest names the key id each copy needs (a per-copy id for a
 passphrase, a stable id for a base64 key).
 
-`/admin` shows what is in that directory, read-only: the newest plaintext copy
-with its size and age, whether that copy's manifest still matches (size and
-`sha256`), how many plaintext and encrypted copies exist, and a warning when the
-newest copy is older than `BACKUP_EXPECTED_HOURS` (default 26) — a night that
-stopped running leaves no error anywhere, so the card can only show it as
-staleness. It never opens `fledge.db`, and it carries no backup, restore or
-delete control; those stay host commands. Hashing is bounded: the card hashes
-only the newest copy, and only when that copy is at most 4 MiB, so a page render
-cannot stall on a large dump; every older copy is compared by size only. The
-copies line counts contradictions, names copies without a manifest in one
-clause, and counts encrypted copies beside the plaintext ones. Only a copy a
-manifest contradicts or one whose manifest cannot be read gets its own row, so
-a directory with legacy copies does not turn the card into a wall of
-"unchecked" rows. The restore drill writes `${DATA_DIR}/backup-drill.json` when
-`DATA_DIR` is set (or the path passed with `--status-file`), and the card shows
-that record's time, `ok`/`failed` and RTO/RPO. It says `none recorded` only when
-that file is absent or unreadable.
+**Where the plaintext copy is taken.** An encrypted backup is made from a
+plaintext copy of the database, and that copy is never written into the backup
+directory: it goes into an owner-only (`0700`) work directory outside it, as
+`fledge.db.plaintext.tmp` at mode `0600`, and the directory is removed however
+the process ends — including every non-zero exit. The work area defaults to the
+system temporary directory; set `BACKUP_WORK_DIR` to move it, which matters when
+`/tmp` is a tmpfs or a container's small filesystem, because it needs room for one
+copy of the database. A process killed outright (OOM, `SIGKILL`, power loss)
+cannot clean up after itself: the next backup sweeps `fledge-backup-*` and
+`fledge-drill-*` work directories older than an hour, and `prune` collects a
+`*.plaintext.tmp` an older tip left in the backup directory once it is that old.
+Anything younger is left alone, because during a rolling restart it may belong to
+a backup that is still running. A copy of the backup directory therefore never
+contains a readable database, whatever happens to a run.
+
+`/admin` shows what is in that directory, read-only: the newest copy with its
+size and age, whether that copy's manifest still matches (size and `sha256`),
+how many copies exist, and a warning when the newest copy is older than
+`BACKUP_EXPECTED_HOURS` (default 26) — a night that stopped running leaves no
+error anywhere, so the card can only show it as staleness. It never opens
+`fledge.db`, and it carries no backup, restore or delete control; those stay
+host commands. Hashing is bounded: the card hashes only the newest copy, and
+only when that copy is at most 4 MiB, so a page render cannot stall on a large
+dump; every older copy is compared by size only and reads `size matches, sha256
+not checked (only the newest copy is hashed)`. Above the cap the newest row says
+the `sha256` was not checked, which is not a pass — `npm run db:restore-drill` is
+the command that verifies a large copy. The copies line counts only copies a
+manifest contradicts and names the rest separately, so `0 copies · nothing to
+check` is what an empty directory says. An encrypted copy is listed the same
+way: its manifest's size and `sha256` cover the file on disk, so the card
+compares the ciphertext and reads the age from the name. The restore drill
+writes `${DATA_DIR}/backup-drill.json` when `DATA_DIR` is set (or the path passed
+with `--status-file`), and the card shows that record's time, `ok`/`failed` and
+RTO/RPO. It says `none recorded` only when that file is absent or unreadable, so
+the card never shows a green it cannot prove.
+
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.

@@ -4,12 +4,25 @@ import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
+import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
 import { redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
+import type { CostReport } from './metrics/cost.js'
+
+/**
+ * #636: what a ledger row records about the price it was charged at. Absent
+ * means the legacy shape: a known USD row measured by the old single price.
+ */
+export interface UsageDetail {
+  currency?: string | null
+  model?: string | null
+  priceSnapshot?: string | null
+  known?: boolean
+}
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
 
@@ -19,6 +32,15 @@ import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantI
 const PAT_EXPIRY_BACKFILL_KEY = 'pat_expiry_backfilled'
 
 const require = createRequire(import.meta.url)
+
+// #636 review: the quota and the repository budgets are CNY figures computed as
+// `USD amount * USD_CNY_RATE`, so they may only read rows billed in USD. A row
+// priced in another currency stays in `costByCurrency`, which keeps the buckets
+// apart and never invents a rate between them; it is not folded into a USD
+// column here.
+function usdBilled(prefix = ''): string {
+  return `(${prefix}currency IS NULL OR ${prefix}currency = 'USD')`
+}
 
 interface Statement {
   run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint }
@@ -620,6 +642,18 @@ export interface JobEventRow {
   meta: string | null
 }
 
+export interface TaskRelationRow {
+  id: string
+  repo_id: string
+  source_job_id: string
+  target_job_id: string
+  kind: string
+  reason: string
+  evidence: string
+  created_by: string
+  created_at: string
+}
+
 export interface PostmortemRow {
   id: string
   job_id: string
@@ -1155,7 +1189,11 @@ CREATE TABLE IF NOT EXISTS quota_ledger (
   job_id TEXT,
   repo_id TEXT,
   cost_usd REAL NOT NULL,
-  meta TEXT
+  meta TEXT,
+  currency TEXT,
+  model TEXT,
+  price_snapshot TEXT,
+  cost_known INTEGER NOT NULL DEFAULT 1
 );
 CREATE INDEX IF NOT EXISTS quota_ledger_user_idx ON quota_ledger(user_id, at DESC);
 
@@ -1318,6 +1356,24 @@ CREATE TABLE IF NOT EXISTS job_events (
 CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id DESC);
 CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
 
+-- #639: an explicit relation between two tasks of one project. The row is a
+-- claim somebody made with a reason and evidence; nothing derives it from a
+-- title, so two similarly named tasks stay two tasks until a person links them.
+CREATE TABLE IF NOT EXISTS task_relations (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  source_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  target_job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  evidence TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE (source_job_id, target_job_id, kind)
+);
+CREATE INDEX IF NOT EXISTS task_relations_source_idx ON task_relations(source_job_id);
+CREATE INDEX IF NOT EXISTS task_relations_target_idx ON task_relations(target_job_id);
+
 -- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
 -- recurrence key. The job_id unique constraint is the idempotency guard: a
 -- replayed terminal transition cannot create a second write-up for the same job.
@@ -1331,6 +1387,14 @@ CREATE TABLE IF NOT EXISTS repo_releases (
   tag_object_sha TEXT,
   status TEXT NOT NULL,
   preflight_json TEXT,
+  run_id TEXT,
+  run_attempt INTEGER,
+  conclusion TEXT,
+  workflow_name TEXT,
+  draft_release_id TEXT,
+  draft_url TEXT,
+  external_release_id TEXT,
+  last_checked_at TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(repo_id, tag_name)
@@ -1784,8 +1848,31 @@ export interface ReleaseRow {
   tag_object_sha: string | null
   status: string
   preflight_json: string | null
+  run_id: string | null
+  run_attempt: number | null
+  conclusion: string | null
+  workflow_name: string | null
+  draft_release_id: string | null
+  draft_url: string | null
+  external_release_id: string | null
+  last_checked_at: string | null
   created_at: string
   updated_at: string
+}
+
+// #546: the workflow-run tracker writes only these fields. Every reconcile is a
+// full observation, so a value the current observation did not produce is
+// cleared instead of left behind from an earlier check.
+export interface ReleaseTrackingPatch {
+  status: string
+  runId: string | null
+  runAttempt: number | null
+  conclusion: string | null
+  workflowName: string | null
+  draftReleaseId: string | null
+  draftUrl: string | null
+  externalReleaseId: string | null
+  lastCheckedAt: string
 }
 
 export class Store {
@@ -1810,6 +1897,7 @@ export class Store {
     this.migrateArtifactColumns()
     this.migrateManagementColumns()
     this.migrateScheduleOccurrenceColumns()
+    this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -2001,6 +2089,26 @@ export class Store {
     }
   }
 
+  // #546 slice 3: tracking columns are added to the row the tag write already
+  // created. `status` existed at slice 1, so the tracker reuses it rather than
+  // adding a second state column; a fresh schema carries these from the start.
+  private migrateReleaseColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(repo_releases)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['run_id', 'TEXT'],
+      ['run_attempt', 'INTEGER'],
+      ['conclusion', 'TEXT'],
+      ['workflow_name', 'TEXT'],
+      ['draft_release_id', 'TEXT'],
+      ['draft_url', 'TEXT'],
+      ['external_release_id', 'TEXT'],
+      ['last_checked_at', 'TEXT'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE repo_releases ADD COLUMN ${name} ${type}`)
+    }
+  }
+
   private migrateColumns(): void {
     const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(users)').map((row) => row.name))
     const additions: Array<[string, string]> = [
@@ -2165,6 +2273,12 @@ export class Store {
     }
     const ledgerColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(quota_ledger)').map((row) => row.name))
     if (!ledgerColumns.has('repo_id')) this.run('ALTER TABLE quota_ledger ADD COLUMN repo_id TEXT')
+    // #636: a row now carries the currency and price snapshot it was charged at,
+    // and `cost_known` separates "costs nothing" from "cannot be priced".
+    if (!ledgerColumns.has('currency')) this.run('ALTER TABLE quota_ledger ADD COLUMN currency TEXT')
+    if (!ledgerColumns.has('model')) this.run('ALTER TABLE quota_ledger ADD COLUMN model TEXT')
+    if (!ledgerColumns.has('price_snapshot')) this.run('ALTER TABLE quota_ledger ADD COLUMN price_snapshot TEXT')
+    if (!ledgerColumns.has('cost_known')) this.run('ALTER TABLE quota_ledger ADD COLUMN cost_known INTEGER NOT NULL DEFAULT 1')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
     this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
   }
@@ -2586,6 +2700,88 @@ export class Store {
     )
   }
 
+  // #639: both ends must be jobs of the same repository. A relation that named a
+  // job in another project would join two tenants' work, so it is refused here
+  // rather than being written and filtered at read time.
+  createTaskRelation(input: {
+    repoId: string
+    sourceJobId: string
+    targetJobId: string
+    kind: string
+    reason: string
+    evidence: string
+    createdBy: string
+  }): { created: boolean; relation: TaskRelationRow } | { error: 'relation_same_job' | 'relation_target_missing' | 'relation_cross_project' } {
+    const source = this.getJob(input.sourceJobId)
+    const target = this.getJob(input.targetJobId)
+    if (source === undefined || target === undefined) return { error: 'relation_target_missing' }
+    if (source.id === target.id) return { error: 'relation_same_job' }
+    if (source.repo_id !== input.repoId || target.repo_id !== input.repoId) return { error: 'relation_cross_project' }
+    if (input.kind === '') return { error: 'relation_target_missing' }
+    const existing = this.get<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? AND target_job_id = ? AND kind = ?',
+      input.sourceJobId,
+      input.targetJobId,
+      input.kind,
+    )
+    if (existing !== undefined) return { created: false, relation: existing }
+    const relation: TaskRelationRow = {
+      id: `rel_${randomBytes(8).toString('hex')}`,
+      repo_id: input.repoId,
+      source_job_id: input.sourceJobId,
+      target_job_id: input.targetJobId,
+      kind: input.kind,
+      reason: input.reason,
+      evidence: input.evidence,
+      created_by: input.createdBy,
+      created_at: nowIso(),
+    }
+    // #639: the read above and this insert are not one step, so two submits of the
+    // same relation can both miss the read. `OR IGNORE` gives the loser the row the
+    // winner wrote instead of a raw constraint error at a route with no handler for
+    // one; `created` then reports which of the two this call was.
+    this.run(
+      'INSERT OR IGNORE INTO task_relations (id, repo_id, source_job_id, target_job_id, kind, reason, evidence, created_by, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      relation.id,
+      relation.repo_id,
+      relation.source_job_id,
+      relation.target_job_id,
+      relation.kind,
+      relation.reason,
+      relation.evidence,
+      relation.created_by,
+      relation.created_at,
+    )
+    const stored = this.get<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? AND target_job_id = ? AND kind = ?',
+      input.sourceJobId,
+      input.targetJobId,
+      input.kind,
+    )
+    return stored === undefined ? { created: false, relation } : { created: stored.id === relation.id, relation: stored }
+  }
+
+  // #639: a related task does not steal a running job's claim. It leaves one
+  // notice that job takes at its next checkpoint; taking it removes the row, so
+  // a second checkpoint cannot repeat the same interruption.
+  requestCoordination(jobId: string, detail: string): void {
+    this.setSetting(`coordination:${jobId}`, detail.slice(0, 500))
+  }
+
+  takeCoordination(jobId: string): string | undefined {
+    const value = this.getSetting(`coordination:${jobId}`)
+    if (value !== undefined) this.deleteSetting(`coordination:${jobId}`)
+    return value
+  }
+
+  listTaskRelations(jobId: string): TaskRelationRow[] {
+    return this.all<TaskRelationRow>(
+      'SELECT * FROM task_relations WHERE source_job_id = ? OR target_job_id = ? ORDER BY created_at ASC, id ASC',
+      jobId,
+      jobId,
+    )
+  }
+
   listJobEvents(jobId: string, limit = 200): JobEventRow[] {
     return this.all<JobEventRow>('SELECT * FROM job_events WHERE job_id = ? ORDER BY id DESC LIMIT ?', jobId, limit)
   }
@@ -2863,6 +3059,7 @@ export class Store {
   // in place, so `created_at` stays the first release's time.
   recordRelease(input: { repoId: string; userId: string; version: string; tagName: string; targetSha: string; tagObjectSha: string; previousTag: string | null; actor: string }): ReleaseRow | undefined {
     const at = nowIso()
+    const preflight = JSON.stringify({ previousTag: input.previousTag, actor: input.actor })
     try {
       this.run(
         `INSERT INTO repo_releases (id, repo_id, user_id, version, tag_name, target_sha, tag_object_sha, status, preflight_json, created_at, updated_at)
@@ -2874,7 +3071,7 @@ export class Store {
         input.tagName,
         input.targetSha,
         input.tagObjectSha,
-        JSON.stringify({ previousTag: input.previousTag, actor: input.actor }),
+        preflight,
         at,
         at,
       )
@@ -2886,10 +3083,15 @@ export class Store {
       const later = at > previous.updated_at
         ? at
         : Number.isFinite(parsed) ? new Date(parsed + 1).toISOString() : at
+      // #665: the row has to describe the action that produced the state it
+      // shows, so the re-tag carries the new tagger and the new preflight as
+      // well as the new SHAs. The first release keeps `created_at`.
       this.run(
-        `UPDATE repo_releases SET target_sha = ?, tag_object_sha = ?, status = 'tagged', updated_at = ? WHERE repo_id = ? AND tag_name = ?`,
+        `UPDATE repo_releases SET user_id = ?, target_sha = ?, tag_object_sha = ?, status = 'tagged', preflight_json = ?, updated_at = ? WHERE repo_id = ? AND tag_name = ?`,
+        input.userId,
         input.targetSha,
         input.tagObjectSha,
+        preflight,
         later,
         input.repoId,
         input.tagName,
@@ -2902,8 +3104,36 @@ export class Store {
     return this.get<ReleaseRow>('SELECT * FROM repo_releases WHERE repo_id = ? AND tag_name = ?', repoId, tagName)
   }
 
+  releaseById(id: string): ReleaseRow | undefined {
+    return this.get<ReleaseRow>('SELECT * FROM repo_releases WHERE id = ?', id)
+  }
+
   listReleasesForRepo(repoId: string, limit = 5): ReleaseRow[] {
     return this.all<ReleaseRow>('SELECT * FROM repo_releases WHERE repo_id = ? ORDER BY created_at DESC LIMIT ?', repoId, limit)
+  }
+
+  // #546: one reconcile replaces the whole observation. The row is keyed by its
+  // tag, so a repeated check cannot create a second draft pointer or a second
+  // external-release pointer for the same tag.
+  updateReleaseTracking(id: string, patch: ReleaseTrackingPatch): ReleaseRow | undefined {
+    this.run(
+      `UPDATE repo_releases
+          SET status = ?, run_id = ?, run_attempt = ?, conclusion = ?, workflow_name = ?,
+              draft_release_id = ?, draft_url = ?, external_release_id = ?, last_checked_at = ?, updated_at = ?
+        WHERE id = ?`,
+      patch.status,
+      patch.runId,
+      patch.runAttempt,
+      patch.conclusion,
+      patch.workflowName,
+      patch.draftReleaseId,
+      patch.draftUrl,
+      patch.externalReleaseId,
+      patch.lastCheckedAt,
+      nowIso(),
+      id,
+    )
+    return this.releaseById(id)
   }
 
   createPostmortemForJob(jobId: string): PostmortemRecord | undefined {
@@ -3571,7 +3801,7 @@ export class Store {
               SUM(q.cost_usd) AS total, COUNT(*) AS calls
          FROM quota_ledger q
          LEFT JOIN repos r ON r.id = q.repo_id
-        WHERE q.at >= ? AND q.repo_id IS NOT NULL
+        WHERE q.at >= ? AND q.repo_id IS NOT NULL AND q.cost_known = 1 AND ${usdBilled('q.')}
         GROUP BY q.repo_id
         ORDER BY total DESC
         LIMIT ?`,
@@ -3581,7 +3811,10 @@ export class Store {
   }
 
   modelCostMetrics(sinceIso: string, limit = 20): Array<{ model: string; costUsd: number; calls: number }> {
-    const rows = this.all<{ meta: string | null; cost_usd: number }>('SELECT meta, cost_usd FROM quota_ledger WHERE at >= ?', sinceIso)
+    // #636 review: an unpriced model has no USD figure, so the by-model table
+    // must not show it as a row of zero-cost calls next to the currency table
+    // that calls it unknown. Only priced USD rows are ranked here.
+    const rows = this.all<{ meta: string | null; cost_usd: number }>(`SELECT meta, cost_usd FROM quota_ledger WHERE at >= ? AND cost_known = 1 AND ${usdBilled()}`, sinceIso)
     const byModel = new Map<string, { costUsd: number; calls: number }>()
     for (const row of rows) {
       let model = 'unknown'
@@ -4428,7 +4661,16 @@ export class Store {
   // #232: the dashboard filters by repository, status and kind in SQL so the
   // count and the page agree, and so the filters compose with the pagination
   // offset instead of slicing a filtered array in memory.
-  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string }): { sql: string; params: unknown[] } {
+  // #639: one level is a half-open rank range, so a filter names P0..P3 rather
+  // than the storage integers and still matches rows written before the ladder.
+  private priorityClause(level: string, params: unknown[]): string[] {
+    if (level === '' || !isPriorityLevel(level)) return []
+    const bounds = PRIORITY_BOUNDS[level]
+    params.push(bounds.min, bounds.max)
+    return ['priority >= ?', 'priority < ?']
+  }
+
+  private jobsForUserWhere(userId: string, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): { sql: string; params: unknown[] } {
     const clauses = ['user_id = ?']
     const params: unknown[] = [userId]
     if (filter?.repo !== undefined && filter.repo !== '') {
@@ -4443,10 +4685,11 @@ export class Store {
       clauses.push('kind = ?')
       params.push(filter.kind)
     }
+    if (filter?.priority !== undefined) clauses.push(...this.priorityClause(filter.priority, params))
     return { sql: clauses.join(' AND '), params }
   }
 
-  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string }): JobRow[] {
+  listJobsPageForUser(userId: string, limit: number, offset: number, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): JobRow[] {
     const where = this.jobsForUserWhere(userId, filter)
     // #232: `created_at` is not unique — a batch of jobs seeded in the same
     // millisecond ties, and SQLite then has no stable order, so the same row can
@@ -4455,7 +4698,7 @@ export class Store {
     return this.all<JobRow>(`SELECT * FROM jobs WHERE ${where.sql} ORDER BY ${newestJobOrder('jobs')} LIMIT ? OFFSET ?`, ...where.params, limit, offset)
   }
 
-  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string }): number {
+  countJobsForUser(userId: string, filter?: { repo?: string; status?: string; kind?: string; priority?: string }): number {
     const where = this.jobsForUserWhere(userId, filter)
     return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM jobs WHERE ${where.sql}`, ...where.params)?.n ?? 0)
   }
@@ -4944,24 +5187,57 @@ export class Store {
     this.run("UPDATE api_tokens SET revoked_at = ? WHERE kind = 'job' AND (expires_at IS NOT NULL AND expires_at <= ?) AND revoked_at IS NULL", nowIso(), nowIso())
   }
 
-  recordUsage(userId: string, jobId: string | null, costUsd: number, meta: string | null = null, repoId: string | null = null): void {
+  recordUsage(userId: string, jobId: string | null, costUsd: number, meta: string | null = null, repoId: string | null = null, detail: UsageDetail | null = null): void {
+    const currency = detail?.currency ?? null
+    const known = detail === null || detail.known !== false
     this.transaction(() => {
-      this.run('INSERT INTO quota_ledger (at, user_id, job_id, repo_id, cost_usd, meta) VALUES (?, ?, ?, ?, ?, ?)', nowIso(), userId, jobId, repoId, costUsd, meta)
-      this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', costUsd, userId)
+      this.run(
+        'INSERT INTO quota_ledger (at, user_id, job_id, repo_id, cost_usd, meta, currency, model, price_snapshot, cost_known) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        nowIso(), userId, jobId, repoId, costUsd, meta, currency, detail?.model ?? null, detail?.priceSnapshot ?? null, known ? 1 : 0,
+      )
+      // An unknown row adds nothing to the spend it could not measure; it is
+      // counted separately instead of being read as a free call. A row priced in
+      // another currency is real spend, but this column is USD by definition (the
+      // CNY quota is `quota_used_usd * USD_CNY_RATE`); converting it here would
+      // invent a rate between the buckets, so `costByCurrency` reports it instead.
+      if (known && (currency === null || currency === 'USD')) {
+        this.run('UPDATE users SET quota_used_usd = quota_used_usd + ? WHERE id = ?', costUsd, userId)
+      }
     })
+  }
+
+  /** #636: per-currency spend and the count of requests that could not be priced. */
+  costByCurrency(sinceIso: string): CostReport {
+    // #702: a row with no currency and a row billed `'USD'` are the same currency,
+    // so the label has to be resolved before grouping. Grouping by the raw column
+    // and mapping NULL to USD afterwards returned two buckets that both read
+    // "USD", and an instance upgraded from the pre-#636 schema has NULL on every
+    // row it already had, so its first deploy showed two USD rows on the page.
+    // The unknown-currency semantics are untouched: only priced rows are grouped,
+    // and a currency other than USD or NULL keeps its own bucket.
+    const rows = this.all<{ currency: string; total: number | null; n: number }>(
+      "SELECT COALESCE(currency, 'USD') AS currency, SUM(cost_usd) AS total, COUNT(*) AS n FROM quota_ledger WHERE cost_known = 1 AND at >= ? GROUP BY COALESCE(currency, 'USD')",
+      sinceIso,
+    )
+    const buckets = rows
+      .map((row) => ({ currency: row.currency, amount: Number(row.total ?? 0), requests: Number(row.n) }))
+      .sort((a, b) => a.currency.localeCompare(b.currency))
+    const unknown = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE cost_known = 0 AND at >= ?', sinceIso)
+    const unknownRequests = Number(unknown?.n ?? 0)
+    return { buckets, unknownRequests, semantics: unknownRequests > 0 ? 'lower_bound' : 'exact' }
   }
 
   repoUsageSince(repoId: string, sinceIso: string): number {
     const row = this.get<{ total: number | null }>(
-      'SELECT SUM(q.cost_usd) AS total FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ?',
+      `SELECT SUM(q.cost_usd) AS total FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ? AND ${usdBilled('q.')}`,
       repoId, sinceIso,
     )
     return Number(row?.total ?? 0)
   }
 
   usageAttribution(sinceIso: string): { unattributedCount: number; unattributedUsd: number; attributedUsd: number } {
-    const unattributed = this.get<{ n: number; total: number | null }>("SELECT COUNT(*) AS n, SUM(cost_usd) AS total FROM quota_ledger WHERE repo_id IS NULL AND job_id IS NULL AND at >= ?", sinceIso)
-    const attributed = this.get<{ total: number | null }>("SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE (repo_id IS NOT NULL OR job_id IS NOT NULL) AND at >= ?", sinceIso)
+    const unattributed = this.get<{ n: number; total: number | null }>(`SELECT COUNT(*) AS n, SUM(cost_usd) AS total FROM quota_ledger WHERE repo_id IS NULL AND job_id IS NULL AND at >= ? AND ${usdBilled()}`, sinceIso)
+    const attributed = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE (repo_id IS NOT NULL OR job_id IS NOT NULL) AND at >= ? AND ${usdBilled()}`, sinceIso)
     return {
       unattributedCount: Number(unattributed?.n ?? 0),
       unattributedUsd: Number(unattributed?.total ?? 0),
@@ -4983,21 +5259,59 @@ export class Store {
   }
 
   usageTotal(userId: string): number {
-    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ?', userId)
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND ${usdBilled()}`, userId)
     return Number(row?.total ?? 0)
   }
 
   usageSince(userId: string, sinceIso: string): number {
-    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ? AND ${usdBilled()}`, userId, sinceIso)
     return Number(row?.total ?? 0)
   }
 
   usageCountForJob(jobId: string): number {
-    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id = ?', jobId)?.n ?? 0)
+    // #357 keys its refusal on "no recorded cost"; #636 means a row that priced
+    // the call. An unknown row is not evidence that the job spent nothing.
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id = ? AND cost_known = 1', jobId)?.n ?? 0)
+  }
+
+  unknownUsageCountForJob(jobId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id = ? AND cost_known = 0', jobId)?.n ?? 0)
+  }
+
+  // #636: a retry or a recovery is the same budget, not a fresh one. The chain is
+  // `retry_of` walked upwards, so a spend recorded on the original job still
+  // counts against the job that continues it.
+  private jobChain(jobId: string): string {
+    return `WITH RECURSIVE chain(id) AS (
+      SELECT id FROM jobs WHERE id = ?
+      UNION
+      SELECT j.retry_of FROM jobs j JOIN chain c ON j.id = c.id WHERE j.retry_of IS NOT NULL
+    )`
+  }
+
+  usageForJobChain(jobId: string): number {
+    // #636 review: the CNY job budget is `usd amount * USD_CNY_RATE`, so it sums
+    // USD-billed rows only; a row in another currency stays in `costByCurrency`.
+    const row = this.get<{ total: number | null }>(
+      `${this.jobChain(jobId)} SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id IN (SELECT id FROM chain) AND cost_known = 1 AND ${usdBilled()}`,
+      jobId,
+    )
+    return Number(row?.total ?? 0)
+  }
+
+  usageCountForJobChain(jobId: string): number {
+    // Every priced row counts here, whatever its currency: this answers "did the
+    // chain record a cost at all", which is what separates an unknown cost from a
+    // zero one. The sum above is the USD-only figure the CNY cap compares.
+    const row = this.get<{ n: number }>(
+      `${this.jobChain(jobId)} SELECT COUNT(*) AS n FROM quota_ledger WHERE job_id IN (SELECT id FROM chain) AND cost_known = 1`,
+      jobId,
+    )
+    return Number(row?.n ?? 0)
   }
 
   usageForJob(jobId: string): number {
-    const row = this.get<{ total: number | null }>('SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id = ?', jobId)
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE job_id = ? AND ${usdBilled()}`, jobId)
     return Number(row?.total ?? 0)
   }
 
@@ -5166,7 +5480,7 @@ export class Store {
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
   }
 
-  private jobFilter(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
+  private jobFilter(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }, limit: number, offset: number, count: boolean): { sql: string; params: Array<string | number> } {
     const clauses: string[] = []
     const params: Array<string | number> = []
     if (userIds !== null) {
@@ -5186,17 +5500,18 @@ export class Store {
       clauses.push('kind = ?')
       params.push(filters.kind)
     }
+    if (filters.priority !== undefined) clauses.push(...this.priorityClause(filters.priority, params))
     const where = clauses.length === 0 ? '' : ` WHERE ${clauses.join(' AND ')}`
     if (count) return { sql: `SELECT COUNT(*) AS n FROM jobs${where}`, params }
     return { sql: `SELECT * FROM jobs${where} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`, params: [...params, limit, offset] }
   }
 
-  searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }, limit: number, offset: number): JobRow[] {
+  searchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }, limit: number, offset: number): JobRow[] {
     const query = this.jobFilter(userIds, filters, limit, offset, false)
     return this.all<JobRow>(query.sql, ...query.params)
   }
 
-  countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string }): number {
+  countSearchJobs(userIds: string[] | null, filters: { q?: string; status?: string; kind?: string; priority?: string }): number {
     const query = this.jobFilter(userIds, filters, 0, 0, true)
     return Number(this.get<{ n: number }>(query.sql, ...query.params)?.n ?? 0)
   }

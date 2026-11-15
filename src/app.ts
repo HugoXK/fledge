@@ -8,7 +8,8 @@ import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
-import { createAnnotatedTag, releasePreflight } from './releases/release.js'
+import { createAnnotatedTag, parseVersion, releasePreflight } from './releases/release.js'
+import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
 import { isAdminRole, requireAdmin, requireApproved, requireSuperAdmin, requireViewer, Sessions, type Viewer } from './auth/session.js'
@@ -28,6 +29,8 @@ import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
 import { log } from './lib/log.js'
+import type { PriorityLevel } from './lib/priority.js'
+import { decisionKindLabel, isDecisionKind } from './lib/taskDecision.js'
 import fastifyRateLimit from '@fastify/rate-limit'
 import { rateLimitKey, RateLimiter } from './lib/rateLimit.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from './lib/secrets.js'
@@ -99,7 +102,7 @@ import { withDensity } from './views/layout.js'
 import { gatePage } from './views/gate.js'
 import { planHash, validateGatePlan } from './gates/plan.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
-import { memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
+import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
@@ -224,8 +227,20 @@ function queryTextOf(value: unknown): string | undefined {
 function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
   const query = (request.query as Record<string, unknown> | undefined) ?? {}
   return {
+    mode: queryTextOf(query.mode),
     cron: queryTextOf(query.cron),
     every: queryTextOf(query.every),
+    every_amount: queryTextOf(query.every_amount),
+    every_unit: queryTextOf(query.every_unit),
+    // #677: the page posts one clock per panel under `<mode>_time`, so no two
+    // panels can collide in one request; `time` stays for the documented API.
+    time: queryTextOf(query.time),
+    daily_time: queryTextOf(query.daily_time),
+    weekdays_time: queryTextOf(query.weekdays_time),
+    weekly_time: queryTextOf(query.weekly_time),
+    monthly_time: queryTextOf(query.monthly_time),
+    weekday: queryTextOf(query.weekday),
+    month_day: queryTextOf(query.month_day),
     timezone: queryTextOf(query.timezone),
     from: queryTextOf(query.from),
     start_at: queryTextOf(query.start_at),
@@ -1193,7 +1208,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #232: the job filters are read from the query on every request and applied
     // in SQL, so the URL, the count and the page always describe the same list.
     const jobFilter = parseJobFilters(
-      { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind') },
+      { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind'), priority: queryText(request, 'priority') },
       allRepos.map((repo) => repo.id),
     )
     const reposTotal = store.countReposForUser(viewer.user.id)
@@ -1214,26 +1229,61 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const firstJob = store.firstJobForUser(viewer.user.id)
     // #227: the checklist state is read from the database on this request, never
     // from a cookie, so a second tab or a fresh browser sees the same step.
+    // #734: the checklist describes the account, not the job table. `jobsTotal`
+    // carries the current filter for the table; the checklist must not read it.
+    const setupJobsTotal = store.countJobsForUser(viewer.user.id)
+    // #732: a provider row is not an own model until a repository selects it (or
+    // the legacy user-level model is set). The gateway and the bridge both read
+    // the repository selection, so the checklist must use the same answer.
+    const providerConfigured = store
+      .listModelProviders(viewer.user.id)
+      .some((provider) => store.listProviderModels(provider.id).length > 0)
+    const legacyOwnModel =
+      viewer.user.own_llm_base_url !== null &&
+      viewer.user.own_llm_base_url !== '' &&
+      viewer.user.own_llm_key_enc !== null
+    const setupQuota = quotaView(viewer.user, config)
+    const platformAvailable =
+      config.llm.baseUrl !== '' &&
+      config.llm.key !== '' &&
+      !setupQuota.exhausted
     const setup = {
       repos: reposTotal,
       roleChosen: allRepos.some((repo) => repo.repo_role !== null),
-      modelConfigured: store
-        .listModelProviders(viewer.user.id)
-        .some((provider) => store.listProviderModels(provider.id).length > 0),
+      providerConfigured,
+      modelConfigured:
+        legacyOwnModel ||
+        allRepos.some((repo) => store.listRepoModelSelection(repo.id).length > 0),
+      platformAvailable,
+      platformQuotaRemainingCny: setupQuota.remainingCny,
+      platformQuotaUnlimited: setupQuota.unlimited,
+      platformQuotaComfortCny: config.quota.comfortCny,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
-      jobs: jobsTotal,
+      jobs: setupJobsTotal,
       firstJobStatus: firstJob?.status ?? null,
       firstPrUrl: firstJob?.pr_url ?? null,
       repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
     }
     // #564: open work, an active job and a ready instance decide when a
     // repository runs again, and none of them is on RepoRow.
-    const nextRunFacts = allRepos.map((repo) => ({
-      repoId: repo.id,
-      openWork: store.listOpenWorkItems(repo.id).length > 0,
-      activeJob: store.activeJobForRepo(repo.id) !== undefined,
-      instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
-    }))
+    // #688: a repository that has saved a schedule row is answered by the planner,
+    // so its answer travels with the facts instead of being re-derived from the
+    // interval rule the card used to apply to every repository.
+    const nextRunFacts = allRepos.map((repo) => {
+      const scheduleRow = store.scheduleForRepo(repo.id)
+      const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
+      return {
+        repoId: repo.id,
+        openWork: store.listOpenWorkItems(repo.id).length > 0,
+        activeJob: store.activeJobForRepo(repo.id) !== undefined,
+        instanceReady: store.getRepoInstance(repo.id)?.status === 'ready',
+        ...(scheduleRow === undefined ? {} : {
+          scheduledNext: schedule === null
+            ? { kind: 'unreadable' as const, at: null }
+            : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
+        }),
+      }
+    })
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -1370,18 +1420,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         else error = result.reason
       }
     }
+    const mode = query.mode ?? (query.cron !== undefined ? 'custom' : query.every !== undefined ? 'interval' : 'daily')
     const page = schedulePage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       form: {
+        mode,
         cron: query.cron ?? '',
-        every: query.every ?? '',
+        everyAmount: query.every_amount ?? (query.every === undefined ? '15' : (query.every.replace(/[^0-9].*$/, '') || '15')),
+        everyUnit: query.every_unit ?? (query.every === undefined ? 'm' : (query.every.slice(-1) || 'm')),
+        // The mode's own field first: the page names each panel's clock after
+        // its mode, and `time` is the API's single name (#677).
+        time: query[`${mode}_time`] ?? query.time ?? '09:00',
+        weekday: query.weekday ?? '1',
+        monthDay: query.month_day ?? '1',
         timezone: query.timezone ?? '',
         startAt: query.start_at ?? '',
         endAt: query.end_at ?? '',
         from: query.from ?? '',
-        count: query.count ?? '',
+        count: query.count ?? '5',
       },
       preview,
       error,
@@ -1877,6 +1935,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         releaseRefused: queryText(request, 'refused'),
         releaseTagged: queryText(request, 'tagged'),
         releaseRetagged: queryText(request, 'retagged'),
+        releaseChecked: queryText(request, 'checked'),
       }),
     )
   })
@@ -1901,11 +1960,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (entry === undefined) {
         return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
       }
-      versions = store.listMemoryVersions(entry.id)
+      // A revision carries its own audience: the entry may have moved to a
+      // wider audience, but an old revision written for another role stays
+      // outside this reader's audience and is neither listed nor rendered.
+      versions = store.listMemoryVersions(entry.id).filter((row) => audienceVisible(row.audience, role))
       const rawRevision = queryText(request, 'rev')
       const wanted = rawRevision === undefined ? entry.revision : Number(rawRevision)
       const version = Number.isInteger(wanted) ? store.getMemoryVersion(entry.id, wanted) : undefined
-      if (version === undefined) {
+      if (version === undefined || !audienceVisible(version.audience, role)) {
         return htmlPage(reply, 404, memoryMissingPage({ config, locale, viewer: viewOf(viewer), repo }))
       }
       detail = { entry, version, historical: version.revision !== entry.revision }
@@ -1961,8 +2023,67 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const recorded = store.recordRelease({ repoId: repo.id, userId: viewer.user.id, version: plan.version, tagName: plan.tagName, targetSha: plan.targetSha, tagObjectSha: created.tagObjectSha, previousTag: plan.previousTag, actor: viewer.user.login })
     store.audit(viewer.user.id, 'release.tagged', `${repo.id}: ${plan.tagName}@${plan.targetSha}`)
     if (recorded === undefined) return reply.redirect(`${back}&refused=${encodeURIComponent(`tag ${plan.tagName} was created, but its release record could not be updated; Fledge moved nothing`)}`)
+    // The run may not exist yet; the first observation is still recorded, and
+    // the check route repeats it later. A failed check never turns a created tag
+    // into a refusal. The recorded draft pointer travels into the reconcile: on a
+    // re-tag the row still owns the Release it prepared, and without the pointer
+    // that Release would be misread as someone else's.
+    try {
+      const tracked = await reconcileRelease(client, {
+        owner,
+        name,
+        tagName: plan.tagName,
+        targetSha: plan.targetSha,
+        prerelease: plan.prerelease,
+        draftReleaseId: recorded.draft_release_id === null ? null : Number(recorded.draft_release_id),
+      })
+      store.updateReleaseTracking(recorded.id, trackingUpdate(tracked, {
+        draftReleaseId: recorded.draft_release_id,
+        draftUrl: recorded.draft_url,
+      }))
+    } catch (error) {
+      log.warn('release run check after tag failed', { repo: repo.id, tag: plan.tagName, error: String(error) })
+    }
     if (retagged) return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}&retagged=1`)
     return reply.redirect(`${back}&tagged=${encodeURIComponent(plan.tagName)}`)
+  })
+
+  // #546: the read/reconcile surface. It observes the tag's workflow run again
+  // and may prepare a draft Release; it never publishes, reruns, deletes or moves
+  // anything, and the owner's maintainer role is the precondition.
+  app.post('/repos/:id/releases/:releaseId/check', async (request, reply) => {
+    const params = request.params as Record<string, string>
+    const { viewer, repo } = ownedRepo(request, String(params.id), true)
+    const back = `/repos/${repo.id}?release=1`
+    if (repo.repo_role !== 'maintainer') {
+      return reply.redirect(`${back}&error=${encodeURIComponent('只有 maintainer 可以检查发布工作流。')}`)
+    }
+    const release = store.releaseById(String(params.releaseId))
+    if (release === undefined || release.repo_id !== repo.id) throw httpError(404, '发布记录不存在。', 'RELEASE_NOT_FOUND')
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    const client = new GithubClient(token, config.github.apiBase)
+    let result: Awaited<ReturnType<typeof reconcileRelease>>
+    try {
+      result = await reconcileRelease(client, {
+        owner,
+        name,
+        tagName: release.tag_name,
+        targetSha: release.target_sha,
+        prerelease: (parseVersion(release.version)?.prerelease.length ?? 0) > 0,
+        draftReleaseId: release.draft_release_id === null ? null : Number(release.draft_release_id),
+      })
+    } catch (error) {
+      log.warn('release run check failed', { repo: repo.id, tag: release.tag_name, error: String(error) })
+      return reply.redirect(`${back}&error=${encodeURIComponent('the workflow run could not be read from GitHub; no Release was created')}`)
+    }
+    store.updateReleaseTracking(release.id, trackingUpdate(result, {
+      draftReleaseId: release.draft_release_id,
+      draftUrl: release.draft_url,
+    }))
+    store.audit(viewer.user.id, 'release.checked', `${repo.id}: ${release.tag_name} ${result.status}`)
+    return reply.redirect(`${back}&checked=${encodeURIComponent(result.message)}`)
   })
 
   app.post('/repos/:id/memory', async (request, reply) => {
@@ -1973,6 +2094,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/memory?refused=${encodeURIComponent(parsed.refused)}`)
     }
     const input = parsed.value
+    // An entry outside the actor's audience is not a write target. Refuse it
+    // before the revision fence so a hidden key is not a revision oracle, and use
+    // the same refusal an update to a missing entry gives.
+    const current = store.getMemory(repo.id, input.key)
+    if (current !== undefined && !audienceVisible(current.audience, role)) {
+      return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
+    }
     const result = store.writeMemory({
       repoId: repo.id,
       key: input.key,
@@ -2522,6 +2650,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
       events: store.listJobEvents(job.id, 200),
+      relations: store.listTaskRelations(job.id),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       // #540: the cancel form carries the revision it rendered and a fresh key,
       // so a double submit replays the same receipt and a stale page conflicts.
@@ -2642,6 +2771,136 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const retried = commandJobId(outcome) ?? job.id
     return reply.redirect(`/repos/${repo.id}/jobs/${retried}?notice=${encodeURIComponent(t('已重新排队。', 'Queued again.'))}`)
+  })
+
+  // #639: a priority change is a claim about urgency, so the route hands the
+  // level, the reason and the evidence to one service method. The ladder is the
+  // closed P0..P3 set; the store moves a real change to the new level's tail and
+  // leaves a running job running.
+  app.post('/repos/:id/jobs/:jobId/priority', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.setPriority(job.id, {
+      level: String(body.level ?? '') as PriorityLevel,
+      reason: String(body.reason ?? ''),
+      evidence: String(body.evidence ?? ''),
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      // The refusal reaches the page as text, so it is written in the request
+      // locale here; the service names the code and the route owns the wording.
+      const refusal = result.code === 'PRIORITY_EVIDENCE_REQUIRED'
+        ? t(
+          'P0/P1 需要理由（至少 12 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。形容词不算证据。',
+          'P0/P1 need a reason (at least 12 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit. An adjective is not evidence.',
+        )
+        : result.code === 'PRIORITY_LEVEL_INVALID'
+          ? t('优先级别无效，请选 P0、P1、P2 或 P3。', 'That priority level is not valid; choose P0, P1, P2 or P3.')
+          : (result.error ?? t('优先级修改失败。', 'The priority change failed.'))
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}&code=${encodeURIComponent(result.code ?? '')}`)
+    }
+    const notice = result.changed === true
+      ? t(`优先级已改为 ${result.level}。`, `Priority is now ${result.level}.`)
+      : t('优先级没有变化。', 'The priority is unchanged.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
+  })
+
+  // #639: a relation is an explicit claim that two tasks are about one problem.
+  // The route refuses a target outside this repository and hands the claim
+  // standard to the service, so no title match can ever create one.
+  app.post('/repos/:id/jobs/:jobId/relations', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.relate({
+      repoId: repo.id,
+      sourceJobId: job.id,
+      targetJobId: String(body.target_job_id ?? '').trim(),
+      kind: body.kind,
+      reason: body.reason ?? '',
+      evidence: body.evidence ?? '',
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      const refusal = result.code === 'RELATION_EVIDENCE_REQUIRED'
+        ? t(
+          '关联需要理由（至少 8 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。',
+          'A relation needs a reason (at least 8 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit.',
+        )
+        : result.code === 'RELATION_KIND_INVALID'
+          ? t('关联类型无效，请选同一问题、相关或复发。', 'That relation kind is not valid; choose same problem, related or recurrence.')
+          : result.code === 'relation_cross_project'
+            ? t('只能关联同一仓库里的任务。', 'A relation can only join two tasks of the same repository.')
+            : result.code === 'relation_same_job'
+              ? t('任务不能和它自己建立关联。', 'A task cannot be related to itself.')
+              : t('目标任务不存在。', 'The target task does not exist.')
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}`)
+    }
+    const notice = result.created === true
+      ? t('已建立关联。', 'Relation saved.')
+      : t('关联已存在。', 'That relation already exists.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
+  })
+
+  // #639: the post-QA decision is one bounded write. The route accepts the four
+  // kinds, names the refusal in the request's locale, and leaves the claim
+  // standard and the repair to the service. A decision that needs no decision at
+  // all is not a route: the framework default is what the page preselects.
+  app.post('/repos/:id/jobs/:jobId/decision', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
+    }
+    const t = translator(request.locale ?? 'zh')
+    const body = form(request)
+    const result = await jobs.decideNextTask({
+      repoId: repo.id,
+      sourceJobId: job.id,
+      kind: body.kind,
+      existingTaskId: String(body.existing_task_id ?? '').trim(),
+      reason: body.reason ?? '',
+      evidence: body.evidence ?? '',
+      title: String(body.title ?? ''),
+      level: body.level,
+      actorUserId: viewer.user.id,
+    })
+    if (!result.ok) {
+      // The service names the code; the route owns the sentence, so it is
+      // written in the request's language rather than translated afterwards.
+      const refusal = result.code === 'DECISION_KIND_INVALID'
+        ? t('下一步决定无效，请选新任务、补充、相关或复发。', 'That next-step decision is not valid; choose a new task, a supplement, related or a recurrence.')
+        : result.code === 'DECISION_EVIDENCE_REQUIRED'
+          ? t('下一步决定需要理由（至少 8 字）和可核对的证据：链接、提交/工单 sha，或带单位的测量值。', 'A next-step decision needs a reason (at least 8 characters) and checkable evidence: a link, a commit/issue sha, or a measurement with a unit.')
+          : result.code === 'DECISION_TARGET_REQUIRED'
+            ? t('补充、相关或复发都要指出一个已有的任务。', 'To supplement, relate or recur, you must name an existing task.')
+            : result.code === 'relation_same_job'
+              ? t('任务不能和它自己建立关联。', 'A task cannot be related to itself.')
+              : result.code === 'relation_cross_project'
+                ? t('只能关联同一仓库里的任务。', 'A relation can only join two tasks of the same repository.')
+                : t('那个已有任务不存在，或新任务还没有标题。', 'That existing task does not exist, or the new task has no title.')
+      return reply.redirect(`${back}?error=${encodeURIComponent(refusal)}&code=${encodeURIComponent(result.code ?? '')}`)
+    }
+    const kind = isDecisionKind(result.kind) ? result.kind : 'new'
+    const label = decisionKindLabel(kind, t)
+    const repaired = result.repaired === true ? t('（“新任务”与已有任务 id 同时出现，已按相关处理一次。）', ' (a separate new task and an existing task id came together; it was repaired once into related.)') : ''
+    const notice = t(`已记为下一步：${label}。${repaired}`, `Recorded as the next step: ${label}.${repaired}`)
+    return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/recheck', async (request, reply) => {
@@ -3076,6 +3335,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!roleAllowed(repo.permission, role)) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('你的 GitHub 权限不允许选择这个角色。', 'Your GitHub permission does not allow this role.'))}#role`)
     }
+    // #718: this route writes the same `repo_role` column as the settings form,
+    // and demoting to developer clears `auto_merge` and `reviewer_enabled`. The
+    // role check above still answers first; the confirmation comes before the
+    // write. The limiter half of this route belongs to #708.
+    if (requireRecentAuth(request, reply, viewer, 'repo.role')) return reply
     store.updateRepo(repo.id, { repo_role: role, auto_merge: 0, reviewer_enabled: role === 'maintainer' ? repo.reviewer_enabled : 0, role_checked_at: nowIso() })
     store.audit(viewer.user.id, 'repo.role', `${repo.owner}/${repo.name} role=${role} previous=${repo.repo_role ?? 'none'}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(role === 'maintainer' ? t('已选择角色：Maintainer。', 'Role selected: Maintainer.') : t('已选择角色：Developer。', 'Role selected: Developer.'))}`)
@@ -3107,6 +3371,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!isValidBranchName(targetBranch)) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('目标分支格式不正确。')}#repo-settings`)
     }
+    // #524: the same POST writes the pre-merge policy, and the auto-merge gate
+    // above left that half reachable from a stale session. `require_protection`
+    // and `stage_mode` each switch off a check the merge path depends on, the
+    // path lists and the target branch decide what a merge may touch, and
+    // `repo_role` decides who may act. One gate for the set, so a single submit
+    // writes one audit row rather than one per field.
+    const policyNext: Array<[string, string | number | null, string | number]> = [
+      ['require_protection', repo.require_protection, body.requireProtection === '1' ? 1 : 0],
+      ['allow_paths', repo.allow_paths, (body.allowPaths ?? '').trim().slice(0, 2000)],
+      ['deny_paths', repo.deny_paths, (body.denyPaths ?? '').trim().slice(0, 2000)],
+      ['target_branch', repo.target_branch, targetBranch],
+      ['repo_role', currentRole ?? 'none', repoRole],
+      ['stage_mode', repo.stage_mode, parseStageMode(body.stageMode) ?? 'off'],
+    ]
+    const policyChanged = policyNext.filter(([, was, next]) => was !== next).map(([field]) => field)
+    if (policyChanged.length > 0 && requireRecentAuth(request, reply, viewer, 'repo.policy')) return reply
     if (targetBranch !== repo.target_branch) {
       try {
         const token = await repoGithubToken(repo, config, githubApp, store)
@@ -3139,6 +3419,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reviewer_enabled: canMaintain && repo.can_review === 1 && body.review === '1' ? 1 : 0,
       review_interval_minutes: reviewInterval,
     })
+    if (policyChanged.length > 0) {
+      store.audit(viewer.user.id, 'repo.policy', `${repo.owner}/${repo.name} ${policyChanged.join(',')} by @${viewer.user.login}`)
+    }
     const allowedModels = new Set(store.listUserProviderModels(viewer.user.id).map((model) => model.id))
     const requestedModels = [...new Set(formList(request, 'modelIds').filter((id) => allowedModels.has(id)))]
     const requestedDefault = (body.defaultModelId ?? '').trim()
@@ -3358,6 +3641,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const id = String((request.params as Record<string, string>).id)
     const provider = store.modelProviderById(id, viewer.user.id)
     if (provider === undefined) return reply.code(404).send({ error: '模型提供方不存在。' })
+    // #525: the delete removes configuration the owner may not have recorded,
+    // and the lookup above only proves the provider is theirs - a stolen cookie
+    // is still theirs. The actor's own scope keeps a refusal local to the owner.
+    if (requireRecentAuth(request, reply, viewer, 'model.provider.remove')) return reply
     store.deleteModelProvider(id, viewer.user.id)
     store.audit(viewer.user.id, 'model.provider.removed', `${id} ${provider.label}`)
     return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已删除。')}#model-providers`)
@@ -3550,6 +3837,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       daily: store.dailyMetrics(since),
       repoCosts: store.repoCostMetrics(since),
       modelCosts: store.modelCostMetrics(since),
+      currency: store.costByCurrency(since),
       alerts: store.alerts({ usdCny: config.quota.usdCny }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
@@ -3569,6 +3857,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (viewer.user.role === 'superadmin') return true
     return user.id === viewer.user.id || user.role === 'user'
   }
+
+  // The admin page owns the Users section; `/admin/users` is a link/bookmark
+  // from older empty states, not a page. Keep it admin-only and send it to the
+  // section instead of the generic 404.
+  app.get('/admin/users', async (request, reply) => {
+    const viewer = requireAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    return reply.redirect('/admin#users')
+  })
 
   app.get('/admin/users/:id', async (request, reply) => {
     const viewer = requireAdmin(request)
@@ -3643,7 +3940,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return Number.isFinite(n) && n >= 1 ? Math.min(Math.floor(n), Math.max(1, Math.ceil(total / perPage))) : 1
     }
     const auditFilters = { q, action, from, to: to === '' ? '' : (to.length === 10 ? `${to}T23:59:59.999Z` : to) }
-    const jobFilters = { q, status, kind }
+    const priority = (queryText(request, 'priority') ?? '').slice(0, 10)
+    const jobFilters = { q, status, kind, priority }
     const auditTotal = store.countSearchAudit(userIds, auditFilters)
     const jobsTotal = store.countSearchJobs(userIds, jobFilters)
     const auditPage = page('auditPage', auditTotal)
@@ -3656,7 +3954,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       jobs: store.searchJobs(userIds, jobFilters, perPage, (jobsPage - 1) * perPage),
       audit: store.searchAudit(userIds, auditFilters, perPage, (auditPage - 1) * perPage),
       usersById,
-      filters: { q, status, kind, action, from, to },
+      filters: { q, status, kind, priority, action, from, to },
       jobsPage,
       jobsTotal,
       auditPage, auditTotal,
@@ -3776,7 +4074,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = requireAdmin(request)
     if (viewer.preview === true) return reply.code(403).send({ error: 'preview' })
     const userIds = adminVisibleUserIds(viewer)
-    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30) }
+    const filters = { q: (queryText(request, 'q') ?? '').slice(0, 200), status: (queryText(request, 'status') ?? '').slice(0, 30), kind: (queryText(request, 'kind') ?? '').slice(0, 30), priority: (queryText(request, 'priority') ?? '').slice(0, 10) }
     const matched = store.countSearchJobs(userIds, filters)
     if (matched > EXPORT_ROW_CAP) return refuseLargeExport(request, reply, viewer, 'jobs', matched)
     const built = assembleCsv(
@@ -3786,7 +4084,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       (row) => [row.id, row.repo_id, row.user_id, row.status, row.kind, row.trigger, row.created_at, row.finished_at ?? '', row.pr_url ?? '', row.issue_url ?? '', row.cost_usd].map(csvCell).join(','),
     )
     store.audit(viewer.user.id, 'admin.jobs_export', exportTrailDetail({
-      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`],
+      filters: [filters.status === '' ? '' : `status=${filters.status}`, filters.kind === '' ? '' : `kind=${filters.kind}`, filters.priority === '' ? '' : `priority=${filters.priority}`],
       q: filters.q,
       rows: built.rows,
       scope: exportScope(userIds),
@@ -4022,9 +4320,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // #283: the platform emergency stop. `isAdminRole` on purpose, not
   // `requireAdmin`, and no `preview` rejection: the preview cookie is how the
   // admin panel degrades to read-only, and the one action that must still work in
-  // that state is stopping everything. The stop is a persisted `settings` row, so
-  // it survives a restart, and this route reports what the drain did rather than
-  // a bare "stopped".
+  // that state is stopping everything. The recency gate still applies in preview,
+  // because a read-only panel is exactly where a stale cookie must not act. The
+  // stop is a persisted `settings` row, so it survives a restart, and this route
+  // reports what the drain did rather than a bare "stopped".
   app.post('/admin/platform/stop', async (request, reply) => {
     // Same limiter and window as the other mutating form (`/approve/:token`), and
     // an HTML page rather than the JSON 429 the API routes send: this is a form
@@ -4032,6 +4331,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!loginLimiter.take(`platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以停止平台。', 'ADMIN_ONLY')
+    // #525: a stop drains the fleet and cancels work that a resume cannot bring
+    // back, so the admin session alone is not enough evidence of the person.
+    if (requireRecentAuth(request, reply, viewer, 'flybot.platform.stop')) return reply
     const t = translator(request.locale ?? 'zh')
     const reason = (form(request).reason ?? '').trim().slice(0, 200)
     const result = await jobs.stopPlatform({ id: viewer.user.id, login: viewer.user.login }, reason)
@@ -4157,8 +4459,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (user === undefined || user.id === viewer.user.id || user.role === 'superadmin') throw httpError(403, '不能修改这个账号。', 'ROLE_PROTECTED')
     const role = form(request).role
     if (role !== 'admin' && role !== 'user') throw httpError(400, '角色无效。', 'BAD_ROLE')
+    // #525: a promotion is privilege escalation, so a superadmin cookie on its
+    // own must not be enough. The 403 and 400 above still answer first.
+    if (requireRecentAuth(request, reply, viewer, 'admin.user.role')) return reply
     store.setUserRole(id, role)
-    store.audit(id, 'admin.role', `role=${role} by @${viewer.user.login}`)
+    store.audit(id, 'admin.role', `role=${user.role}->${role} by @${viewer.user.login}`)
     return reply.redirect(`/admin?notice=${encodeURIComponent(role === 'admin' ? '已设为管理员。' : '已设为用户。')}`)
   })
 

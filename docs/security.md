@@ -94,9 +94,23 @@ person at the keyboard is still the GitHub account behind it. Destructive writes
 therefore require a GitHub confirmation inside `RECENT_AUTH_MINUTES` (default 15),
 tracked as `sessions.recent_auth_at`:
 
-- Gated actions: repository delete, turning a repository's auto-merge on or off,
-  quota changes, API-token creation and revocation, admin approve/reject, and
-  stopping a FlyBot instance. Reads and normal job actions are unaffected.
+- Gated actions: repository delete, the repository settings POST, the repository
+  role POST, quota changes, API-token creation and revocation, admin
+  approve/reject, stopping a FlyBot instance, promoting a user's platform role,
+  stopping the platform, and deleting a model provider. The settings POST is
+  gated on either of two paths: turning a repository's auto-merge on or off,
+  audited as `repo.auto_merge`, and changing the pre-merge policy — branch
+  protection, the stage gate, the allowed and denied paths, the target branch and
+  the repository role, audited as `repo.policy`. The role POST writes that same
+  `repo_role` column and, on the way to developer, clears `auto_merge` and
+  `reviewer_enabled`, so it carries its own confirmation, audited as
+  `repo.role`. The rest of that form (enablement, budgets, reviewer preference,
+  model assignment) stays a preference save and is not gated. Reads and normal
+  job actions are unaffected. The last three were the remaining routes where the
+  effect is privilege-changing, fleet-wide or configuration-destroying, and each
+  now asks for the same confirmation before it acts.
+- A policy change that passes the gate is audited once as `repo.policy`, naming
+  the fields that moved, so one row says which weakening was attempted.
 - A session that has not re-authenticated (`recent_auth_at` is `NULL`, which is
   also every session that predates this control) is refused, audited as
   `recent_auth_required` with the action and path, and redirected through
@@ -106,9 +120,9 @@ tracked as `sessions.recent_auth_at`:
   came back and the action is submitted again.
 - Role checks still run first: a non-admin is refused with 403 before the
   recency check, and a fresh re-authentication does not grant a role.
-- The same handlers are rate-limited (60 attempts a minute per route and client
-  address) through `@fastify/rate-limit`, registered with `global: false` so the
-  ceiling is a property of the eight routes that name `config.rateLimit` and
+- The handlers that name `config.rateLimit` are rate-limited (60 attempts a
+  minute per route and client address) through `@fastify/rate-limit`, registered
+  with `global: false` so the ceiling is a property of those eight routes and
   nothing else. The key generator is `rateLimitKey` over the address
   `TRUST_PROXY` resolves, so a caller cannot mint a new bucket with a header or a
   form field, and a refused attempt answers the plugin's 429 before the handler —
@@ -565,6 +579,12 @@ optional data-policy URL and an allowed flag. The base URL and the data-policy
 URL reject credentials, and neither is written to a log or an audit row; the
 stored key is encrypted and never rendered.
 
+The region and data-policy fields on a provider are optional advanced
+metadata. The region is a label the owner assigns (`eu`, `us`, `cn`, …), not a
+data-residency guarantee or a certification; it only participates when a
+repository sets a region constraint. The data-policy link is recorded for review
+and audit and is never fetched. Empty means “not declared”.
+
 A repository may keep a provider allowlist and an optional region constraint.
 The allowlist names provider ids owned by the repository owner; an empty
 allowlist means no restriction in this version, and a region constraint matches
@@ -705,6 +725,11 @@ shared with the project or scoped to one role (`role:maintainer`,
 `role:developer`). The audience is resolved from the repository's chosen role,
 not from the account's permission: an administrator acting as a developer reads
 the developer view and an entry outside that audience is reported as absent, so
-a role boundary is not a list filter that a direct URL walks around. A writer may
-not author an entry for a role it cannot act as, and the store refuses a write
-whose `expected_revision` is stale instead of overwriting the current body.
+a role boundary is not a list filter that a direct URL walks around. A revision
+is read under its own audience, so an old revision written for another role is
+neither listed nor rendered even after the current entry moves to a wider one.
+A writer may not author an entry for a role it cannot act as, and a write aimed
+at an entry outside the actor's audience is refused as if the entry were absent,
+before the revision fence, so a hidden key is not a write target or a revision
+oracle. The store refuses a write whose `expected_revision` is stale instead of
+overwriting the current body.

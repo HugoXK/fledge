@@ -8,7 +8,7 @@ import { buildApp } from '../src/app.js'
 import { loadConfig } from '../src/config.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { DEFAULT_EXPECTED_HOURS, readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupStatus, type RestoreDrillStatus } from '../src/lib/backupStatus.js'
+import { DEFAULT_EXPECTED_HOURS, readBackupStatus, SHA256_MAX_BYTES, type BackupStatus } from '../src/lib/backupStatus.js'
 import { adminPage } from '../src/views/pages.js'
 import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
@@ -46,6 +46,26 @@ function writeCopy(dir: string, stamp: string, content: string, manifest: Manife
   writeFileSync(`${path}.json`, `${JSON.stringify(record, null, 2)}\n`)
 }
 
+// `scripts/backup.mjs` writes this name once a backup key is configured, and the
+// manifest beside it describes the ciphertext: its size and sha256 are the ones
+// the card has to compare, exactly as for a plaintext copy.
+function writeEncryptedCopy(dir: string, stamp: string, content: string): string {
+  const name = `fledge-${stamp}.db.enc`
+  const path = join(dir, name)
+  writeFileSync(path, content)
+  const record = {
+    copy: name,
+    createdAt: isoFromStamp(stamp),
+    size: Buffer.byteLength(content),
+    sha256: digest(content),
+    schemaVersion: 3,
+    tables: { jobs: 1 },
+    encryption: { format: 'fledge-backup', version: 1, kdf: 'raw', keyId: 'k_test', keyVersion: 1 },
+  }
+  writeFileSync(`${path}.json`, `${JSON.stringify(record, null, 2)}\n`)
+  return name
+}
+
 function makeBackupDir(): string {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-'))
   // The newest copy is in step with its manifest.
@@ -60,7 +80,7 @@ function makeBackupDir(): string {
   return dir
 }
 
-function renderAdmin(locale: 'en' | 'zh', backup: BackupStatus, drill: RestoreDrillStatus | null = null): string {
+function renderAdmin(locale: 'en' | 'zh', backup: BackupStatus): string {
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: `backup-${locale}`, status: 'approved', superadmin: true })
@@ -77,7 +97,6 @@ function renderAdmin(locale: 'en' | 'zh', backup: BackupStatus, drill: RestoreDr
       auditTotal: 0,
       perPage: 10,
       backup,
-      drill,
     })
   } finally {
     store.close()
@@ -171,7 +190,7 @@ test('a copy above the hashing cap is reported as not checked, never as a match'
   }
 })
 
-test('the copies summary counts contradictions and legacy manifests without listing every benign copy', () => {
+test('the copies summary counts contradictions only, and names the rest in their own words', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-summary-'))
   try {
     // Newest above the cap: its size agrees, its sha256 is never read.
@@ -197,20 +216,17 @@ test('the copies summary counts contradictions and legacy manifests without list
     assert.equal(status.differing, 0)
 
     const en = card(renderAdmin('en', status))
+    // #699 replaced the per-copy rows with one summary sentence: a copy whose
+    // sha256 was never read is summarised, not listed as a row, so the sentence
+    // carries every fact the rows used to.
     assert.match(en, /2 copies · no copy differs from its manifest · 1 without a manifest/)
     assert.doesNotMatch(en, /not matching the manifest/)
     assert.doesNotMatch(en, /all match their manifest/)
-    assert.doesNotMatch(en, /with sha256 not checked/)
-    // The newest copy's own row still says its sha256 was never read.
     assert.match(en, /not checked \(copy above 4 MiB\)/)
-    // The legacy copy is summarised, not repeated as a row.
-    assert.doesNotMatch(en, /fledge-2026-11-08T02-00-00-000Z\.db/)
 
     const zh = card(renderAdmin('zh', status))
     assert.match(zh, /2 个副本 · 没有副本与清单不符 · 1 个没有清单/)
     assert.doesNotMatch(zh, /都与清单相符/)
-    assert.doesNotMatch(zh, /未核对 sha256/)
-    assert.doesNotMatch(zh, /fledge-2026-11-08T02-00-00-000Z\.db/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }
@@ -229,7 +245,7 @@ test('a directory with no copy is refused by name, not shown as healthy', () => 
   }
 })
 
-test('the admin card shows the newest copy, the staleness, a summary and no restore or delete control', () => {
+test('the admin card shows the newest copy, the staleness, the older copy and no restore or delete control', () => {
   const dir = makeBackupDir()
   try {
     const status = readBackupStatus({ dir, now: NOW })
@@ -239,11 +255,8 @@ test('the admin card shows the newest copy, the staleness, a summary and no rest
     assert.match(en, /34 hours/)
     assert.match(en, /older than the expected 26 hours/)
     assert.match(en, /matches \(size and sha256\)/)
-    // Older copies are summarised, not listed one by one.
-    assert.match(en, /3 copies · no copy differs from its manifest · 1 without a manifest/)
-    assert.doesNotMatch(en, /size matches, sha256 not checked/)
-    assert.doesNotMatch(card(en), /fledge-2026-11-08T02-00-00-000Z\.db/)
-    assert.match(en, /Only copies that differ or cannot be read are listed/)
+    assert.match(en, /no copy differs from its manifest/)
+    assert.match(en, /1 without a manifest/)
     assert.match(en, /Restore drill/)
     assert.match(en, /none recorded/)
     assert.doesNotMatch(card(en), /<form|<button/)
@@ -254,54 +267,11 @@ test('the admin card shows the newest copy, the staleness, a summary and no rest
     assert.match(zh, /34 小时/)
     assert.match(zh, /预期的 26 小时/)
     assert.match(zh, /相符（大小与 sha256 一致）/)
-    assert.match(zh, /3 个副本 · 没有副本与清单不符 · 1 个没有清单/)
-    assert.doesNotMatch(zh, /大小相符，未核对 sha256/)
-    assert.match(zh, /只列出真正不符或无法读取的副本/)
     assert.match(zh, /恢复演练/)
     assert.match(zh, /没有记录/)
     assert.doesNotMatch(card(zh), /<form|<button/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('the restore drill row shows the last real run, not a fixed "none recorded"', () => {
-  const dir = makeBackupDir()
-  try {
-    const status = readBackupStatus({ dir, now: NOW })
-    const drill: RestoreDrillStatus = { at: '2026-11-12T03:41:19.000Z', ok: true, detail: 'RTO=0.029s RPO=30677.572s' }
-    const en = card(renderAdmin('en', status, drill))
-    assert.match(en, /Restore drill/)
-    assert.match(en, /ok/)
-    assert.match(en, /RTO=0\.029s/)
-    assert.doesNotMatch(en, /none recorded/)
-
-    const failed = card(renderAdmin('en', status, { at: '2026-11-12T03:41:19.000Z', ok: false, detail: null }))
-    assert.match(failed, /failed/)
-
-    const zh = card(renderAdmin('zh', status, drill))
-    assert.match(zh, /恢复演练/)
-    assert.match(zh, /成功/)
-    assert.match(zh, /RTO=0\.029s/)
-  } finally {
-    rmSync(dir, { recursive: true, force: true })
-  }
-})
-
-test('readRestoreDrill treats a missing or malformed record as no record', () => {
-  const root = mkdtempSync(join(tmpdir(), 'fledge-admin-drill-'))
-  try {
-    assert.equal(readRestoreDrill(join(root, 'backup-drill.json')), null)
-    writeFileSync(join(root, 'backup-drill.json'), '{"at":')
-    assert.equal(readRestoreDrill(join(root, 'backup-drill.json')), null)
-    writeFileSync(join(root, 'backup-drill.json'), '{"at":"2026-11-12T03:41:19.000Z","ok":true}')
-    assert.deepEqual(readRestoreDrill(join(root, 'backup-drill.json')), {
-      at: '2026-11-12T03:41:19.000Z',
-      ok: true,
-      detail: null,
-    })
-  } finally {
-    rmSync(root, { recursive: true, force: true })
   }
 })
 
@@ -385,6 +355,53 @@ test('BACKUP_DIR and BACKUP_EXPECTED_HOURS resolve where the writer resolves the
   }
 })
 
+test('an encrypted copy is the newest copy, so /admin does not deny the backup it just made', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-enc-'))
+  try {
+    const name = writeEncryptedCopy(dir, '2026-11-09T02-00-00-000Z', 'encrypted backup bytes\n')
+    const status = readBackupStatus({ dir, now: NOW })
+    assert.equal(status.present, true)
+    assert.equal(status.copies.length, 1)
+    assert.equal(status.newest?.name, name)
+    assert.equal(status.newest?.ageHours, 34)
+    // The manifest hashes the file on disk, which for an encrypted copy is the
+    // ciphertext: reading the newest copy still compares the bytes it recorded.
+    assert.equal(status.newest?.manifest, 'matches')
+    assert.equal(status.stale, true)
+
+    for (const locale of ['en', 'zh'] as const) {
+      const html = card(renderAdmin(locale, status))
+      assert.doesNotMatch(html, locale === 'en' ? /No backup copy recorded yet/ : /还没有记录备份副本/)
+      // The hint to write a copy is only for a directory that has none; an
+      // encrypted copy is a copy.
+      assert.doesNotMatch(html, locale === 'en' ? /the next copy appears here/ : /下一份副本会出现在这里/)
+      assert.match(html, /fledge-2026-11-09T02-00-00-000Z\.db\.enc/)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a stale plaintext copy does not hide the newer encrypted copy beside it', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-mixed-'))
+  try {
+    writeCopy(dir, '2026-11-08T02-00-00-000Z', 'plaintext backup bytes\n', {})
+    const encrypted = writeEncryptedCopy(dir, '2026-11-09T02-00-00-000Z', 'encrypted backup bytes\n')
+    const status = readBackupStatus({ dir, now: NOW })
+    assert.equal(status.copies.length, 2)
+    assert.equal(status.newest?.name, encrypted)
+    // The plaintext copy stays listed, but its name ending in `.db` no longer
+    // makes it the newest one.
+    assert.ok(status.copies.some((copy) => copy.name === 'fledge-2026-11-08T02-00-00-000Z.db'))
+    assert.equal(status.newest?.manifest, 'matches')
+    const en = card(renderAdmin('en', status))
+    assert.match(en, /2 copies/)
+    assert.doesNotMatch(en, /No backup copy recorded yet/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('encrypted copies are counted beside the plaintext copies', () => {
   const dir = mkdtempSync(join(tmpdir(), 'fledge-admin-backup-enc-'))
   try {
@@ -393,12 +410,15 @@ test('encrypted copies are counted beside the plaintext copies', () => {
     writeFileSync(join(dir, 'fledge-2026-11-07T02-00-00-000Z.db.enc'), '')
     writeFileSync(join(dir, 'fledge-2026-11-06T02-00-00-000Z.db.zst.enc'), '')
     const status = readBackupStatus({ dir, now: NOW })
+    // An encrypted copy is a copy the instance wrote, so it is listed beside the
+    // plaintext one; a `.zst.enc` has no manifest to inspect and is only counted.
+    assert.equal(status.copies.length, 3)
     assert.equal(status.encrypted, 3)
 
     const en = card(renderAdmin('en', status))
-    assert.match(en, /1 copy · 3 encrypted copies/)
+    assert.match(en, /3 copies · 3 encrypted copies/)
     const zh = card(renderAdmin('zh', status))
-    assert.match(zh, /1 个副本 · 3 个加密副本/)
+    assert.match(zh, /3 个副本 · 3 个加密副本/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

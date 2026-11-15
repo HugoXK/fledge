@@ -272,14 +272,64 @@ How it is selected:
   property, so the two colours are the palette's `--bg` values in
   `src/views/theme.ts`, and `test/theme.test.ts` keeps them equal to the
   stylesheet's `--bg`.
-- The control is three links at the end of `#main-nav`, one per choice, with the
-  current one marked `aria-current="true"`. Inside the compact header that
-  element is the panel, so the 360px row gains no child and cannot overflow
-  (#133); above 960px the links sit in the row, and between 961px and the sheet's
-  1180px content width the account's display name steps aside instead of the row
-  wrapping. Every choice keeps the 44px touch floor. Signed-out pages honour the
-  saved palette but do not show the control, because their header has no panel to
-  put it in.
+- The control is one 44px icon button in the header, not three text links
+  reading as `AutoLightDark`. Its `<summary>` shows the saved mode (auto/sun/moon
+  through `data-theme`) and opens a `<details>` menu with the three choices. Each
+  option is an icon plus a label and keeps the 44px touch floor; the saved choice
+  carries `aria-current="true"`. The menu is plain links, so it works without
+  JavaScript, and it is available signed-out because it no longer lives inside
+  the signed-in navigation panel. On a phone the popover is pinned to the viewport under the header,
+  so it cannot open past either edge whichever side the summary sits on; the
+  quota pill is the one item that may leave the 420px row, never a 44px target.
+
+### Provider metadata (提供方元数据)
+
+The provider add/edit form keeps the primary path to label, Base URL, API key and
+provider status. Region and data-policy URL are optional advanced metadata under
+an `Advanced` disclosure: the region is a label used only when a repository sets
+a region constraint, and the data-policy link is recorded for review, not
+fetched. Empty values mean the provider does not declare them.
+
+## Schedule builder (排期构建器)
+
+`/schedule` is a product surface, not an operator console. The primary path is a
+mode picker:
+
+- Every N minutes/hours (`interval`), Every day at a time (`daily`), Weekdays at
+  a time (`weekdays`), Weekly on a weekday (`weekly`), Monthly on a day
+  (`monthly`) and Advanced cron (`custom`).
+- Time uses a native `time` input; interval uses a number plus a unit select;
+  weekday and day-of-month are selects; the timezone is a select of common IANA
+  zones and the browser's zone is selected when script is available.
+- `from`, `start_at` and `end_at` live under an optional advanced disclosure. A
+  reader who only wants "every weekday at 09:30" never sees cron syntax or an
+  ISO offset.
+- Advanced cron remains available with the existing planner validation and the
+  same local/UTC/offset/skipped preview table.
+
+The server builds the planner input from `mode`, so the JSON preview and the page
+cannot disagree, and JavaScript only hides the groups that do not match the
+selected mode. With script off every group renders and the server still builds
+from the selected mode.
+
+### Admin modules (管理页工具入口)
+
+The admin page is titled **Admin console / 管理控制台**, not Approvals & quota.
+The opening paragraph names the role and the audit logging but carries no tool
+links. Product metrics, Webhook deliveries, Deployments, Audit and jobs and
+Preview trials are module tiles below the primary sections. A tile is one link
+with a title, a one-line purpose and an "Open" action; it keeps the 44px touch
+floor. Metrics and webhooks are rendered for superadmins only.
+
+### Section navigation (区块导航)
+
+The admin page orders its sections by the admin's work: Pending, Users, Jobs,
+Audit, Release, Backups. The release facts and release chain are one `Release`
+section. The sticky section nav is a tab row with a 2px underline on the current
+item, 44px targets and horizontal scrolling on narrow screens; it is not a row of
+pill buttons. An empty release chain is an expected state, and its operator
+command stays under a disclosure with a `<DATA_DIR>` placeholder instead of the
+real host path.
 
 ## Console states (控制台状态)
 

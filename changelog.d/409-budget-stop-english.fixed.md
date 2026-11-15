@@ -1,0 +1,1 @@
+A job stopped by its per-job budget now explains itself in the console's language: the job page banner and the in-app notification are translated instead of showing the Chinese sentence written by the job service. The Chinese console is unchanged, the job's state and the recorded cost are untouched, and the raw sentence stays readable under the page's technical details.

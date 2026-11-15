@@ -1,4 +1,5 @@
 import type { JobStatus } from '../db.js'
+import { PRIORITY_LEVELS, type PriorityLevel } from './priority.js'
 import type { JobKind } from '../jobs/runner.js'
 import type { Translate } from '../i18n.js'
 
@@ -21,25 +22,28 @@ export interface JobFilter {
   repo: string
   status: JobStatus | ''
   kind: string
+  priority: string
 }
 
 /** A value the account cannot use is dropped, never an error page. */
 export function parseJobFilters(
-  query: { repo?: string | undefined; status?: string | undefined; kind?: string | undefined },
+  query: { repo?: string | undefined; status?: string | undefined; kind?: string | undefined; priority?: string | undefined },
   repoIds: string[],
 ): JobFilter {
   const repo = (query.repo ?? '').trim()
   const status = (query.status ?? '').trim()
   const kind = (query.kind ?? '').trim()
+  const priority = (query.priority ?? '').trim()
   return {
     repo: repoIds.includes(repo) ? repo : '',
     status: JOB_FILTER_STATUSES.includes(status as JobStatus) ? (status as JobStatus) : '',
     kind: (JOB_FILTER_KINDS as string[]).includes(kind) ? kind : '',
+    priority: PRIORITY_LEVELS.includes(priority as PriorityLevel) ? priority : '',
   }
 }
 
 export function jobFilterIsActive(filter: JobFilter): boolean {
-  return filter.repo !== '' || filter.status !== '' || filter.kind !== ''
+  return filter.repo !== '' || filter.status !== '' || filter.kind !== '' || filter.priority !== ''
 }
 
 /** Only the values that are set, so a cleared filter leaves a clean URL. */
@@ -48,6 +52,7 @@ export function jobFilterParams(filter: JobFilter): Record<string, string> {
   if (filter.repo !== '') params.repo = filter.repo
   if (filter.status !== '') params.status = filter.status
   if (filter.kind !== '') params.kind = filter.kind
+  if (filter.priority !== '') params.priority = filter.priority
   return params
 }
 
@@ -90,5 +95,6 @@ export function jobFilterLabels(filter: JobFilter, repos: Array<{ id: string; la
   }
   if (filter.status !== '') labels.push(t(`状态：${statusFilterLabel(t, filter.status)}`, `Status: ${statusFilterLabel(t, filter.status)}`))
   if (filter.kind !== '') labels.push(t(`类型：${kindFilterLabel(t, filter.kind)}`, `Kind: ${kindFilterLabel(t, filter.kind)}`))
+  if (filter.priority !== '') labels.push(t(`优先级：${filter.priority}`, `Priority: ${filter.priority}`))
   return labels
 }

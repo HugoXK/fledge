@@ -1,10 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
+
+const CJK = /[\u3400-\u9fff]/
 import type { RepoRow } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
 import { sha256Hex } from '../src/lib/secrets.js'
 import { makeUser, MemoryMailer, testConfig } from './helpers.js'
+import { localizeMessage } from '../src/i18n.js'
 
 // #357: the per-job budget was an after-the-spend alert. The owner who sets a
 // budget expects it to stop spend, so the action is a repository setting with
@@ -64,6 +67,9 @@ test('pause stops a job at the next checkpoint once its recorded cost crosses th
     assert.equal(job?.status, 'paused', 'the pause action stops the job at the checkpoint')
     assert.match(String(job?.error), /JOB_BUDGET_PAUSED/, 'the job records why it stopped')
     assert.match(String(job?.error), /预算|budget/i, 'and records the observed cost against the budget')
+    // #409: the sentence is written by the job service, so it reaches an English
+    // console verbatim unless `localizeMessage` knows the sentence it wrote.
+    assert.equal(CJK.test(localizeMessage('en', String(job?.error)) ?? ''), false, `the English reason must not be the raw Chinese sentence: ${String(job?.error)}`)
 
     const audit = store.listAudit(50).find((row) => row.action === 'job.budget_paused')
     assert.ok(audit, 'the stop is audited')
@@ -86,6 +92,7 @@ test('cancel stops a job at the next checkpoint once its recorded cost crosses t
     const job = store.getJob(id)
     assert.equal(job?.status, 'cancelled')
     assert.match(String(job?.error), /JOB_BUDGET_CANCELLED/)
+    assert.equal(CJK.test(localizeMessage('en', String(job?.error)) ?? ''), false, `the English reason must not be the raw Chinese sentence: ${String(job?.error)}`)
     assert.ok(store.listAudit(50).some((row) => row.action === 'job.budget_cancelled'))
   } finally {
     store.close()

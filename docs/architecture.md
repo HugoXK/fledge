@@ -26,6 +26,22 @@
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
 its design tokens are documented in [docs/ui.md](ui.md).
 
+The console serves two surfaces with different jobs (#235). `/dashboard` is the
+owner's home: one next action, the first-run checklist, cost and status.
+`/console` is the operator workspace: every repository, the job queue, quota and
+the inbox. Both URLs are kept, neither is re-gated, and the boundary is recorded
+in [0020](decisions/0020-owner-and-operator-surfaces.md). On the repository page
+the settings card keeps the loop controls inline — goal, target branch, role,
+auto-iterate, enabled, discovery interval, reviewer, auto-merge, plan-first — and
+puts the operator policy in one closed
+`<details data-advanced="repo-settings">` inside the same form: allowed and
+forbidden paths, merge method, team stage gate, branch protection, the monthly
+and per-job budgets with spend, the available models and providers, and the
+per-bot model assignment. `<details>` still submits its inputs, so
+`POST /repos/:id/settings` and every authorization check behind it are unchanged;
+the per-bot model restart stays its own form and therefore outside the settings
+form.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
@@ -96,31 +112,59 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   step's state is read from the database on the request, so a cookie, a second
   browser or a cleared store cannot change which step is next. The pure state
   machine decides the single primary action; a step whose prerequisite is
-  missing states the reason instead of offering a control. Once a job exists the
-  checklist is replaced by a first-run summary whose outcome is the first job's
-  own status, read all-time (not a window-scoped count), in four shapes: the
+  missing states the reason instead of offering a control. The model-provider
+  step is optional while the platform model is configured
+  (`PLATFORM_LLM_BASE_URL` and `PLATFORM_LLM_KEY`) and the account's platform
+  quota is not exhausted: it reads as satisfied by the platform quota, keeps the
+  own-provider link as an optional upgrade, and does not block the instance or
+  the first job. Once the quota is exhausted or the platform model is not
+  configured, the same step becomes required again; the answer is derived from
+  the rows and config on every request, so no skip cookie or second store is
+  needed. The step is completed by a repository selection (or the legacy
+  user-level model), not by a provider row: a provider that no repository has
+  selected links to the repository picker instead of claiming the step is done.
+  The quota next action is shown only while no usable own model exists. The
+  model row prints the remaining balance. Below `PLATFORM_QUOTA_COMFORT_CNY`
+  (default 50) it warns that the balance may not cover the first run and
+  recommends an own model now (Settings → Model, or the repository picker when a
+  provider is already configured); at or above it it only names the balance and
+  keeps the own-model link as a later option. The checklist reads the account's
+  unfiltered job count, so a
+  `status`/`repo`/`kind`/`priority` filter on the recent-jobs table cannot bring
+  the checklist back after the first job. Once a job exists the checklist is
+  replaced by a first-run summary
+  whose outcome is the first job's own status, read all-time (not a
+  window-scoped count), in four shapes: the
   job's PR link when it opened one, "finished" with a link to Recent jobs when it
   succeeded without a PR, "running" while it is queued or running, and the retry
   path on the repository page when it failed.
 - **Next action** (`src/views/pages.ts`, `nextActionFor`): `/dashboard` opens
   with one server-derived action instead of a wall of equal cards. The order is
   the order a person would take them — an open question only they can answer, an
-  exhausted platform quota, the most urgent alert (stalled or slow job, stale
+  exhausted platform quota when no usable own model exists, the most urgent
+  alert (stalled or slow job, stale
   PR, invalid credential, repository budget), the account's newest failed job,
   the unfinished first-run step — and when none applies, an all-clear that names
   the known next scheduled automatic run (a repository the scheduler has never
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
   disagree with the sections below it.
-- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): both the all-clear card
-  and the repository page's next-run line call one function, which copies the
-  worker's due rule — `max(15, min(intervalMinutes, workCooldownMinutes))` after
-  the last run (`src/jobs/service.ts`, `workDue`) — instead of the discovery
+- **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): the all-clear card and
+  the repository page's next-run line print one answer per repository, and which
+  rule answers is decided by the repository, never by the surface. A repository
+  that has saved no schedule row is answered by the interval rule, which copies
+  the worker's due rule — `max(15, min(intervalMinutes, workCooldownMinutes))`
+  after the last run (`src/jobs/service.ts`, `workDue`) — instead of the discovery
   interval. It also answers why a run will not start now: a disabled repository, a
   FlyBot instance that is not ready, auto-iteration switched off, an active job,
-  no open work, or a repository the scheduler has never run. The dashboard route
-  passes open work, the active job and instance readiness per repository because
-  those live outside `RepoRow`; the two surfaces therefore print one string, and
+  no open work, or a repository the scheduler has never run. A repository that has
+  a schedule row is answered by the planner (`src/schedules/next.ts`, `nextTime`)
+  because that row owns its cadence; the dashboard route passes the instant with
+  the repository's facts and both surfaces render it through `plannedNextLine`, so
+  the card cannot fall back to the interval rule for a scheduled repository and
+  disagree with the page below it. The dashboard route passes open work, the
+  active job and instance readiness per repository because those live outside
+  `RepoRow`; the two surfaces therefore print one string, and
   the wording says "next run", never an estimate. The newest job is read on its own, not
   from the job-table slice: the table is paged and filtered, and `?jobsPage=2` or
   `?status=` must not change the sentence the page opens with. The first-run
@@ -168,7 +212,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   open. The toggle itself is hidden outside the phone band by a base rule, so
   the desktop header never shows a control whose panel does not exist there.
   Every destination the wide header lists is still rendered in the panel,
-  so a phone loses no route. Below 420px the row also drops the wordmark (the
+  so a phone loses no route. The theme control is one 44px icon summary in the
+  header, not a text group: its `<details>` menu carries the three choices, is
+  available signed-out, and on a phone is pinned under the header so it cannot
+  overflow either edge. Below 420px the row also drops the wordmark (the
   mark and its own `aria-label` stay) and tightens its padding and gaps: at a
   360px viewport with a classic 15px scrollbar the row has 301px of usable
   width, and the wordmark is the one child that can leave without taking a
@@ -180,6 +227,17 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   (`.fine-link`) and the class carries the floor. Text fields, selects and
   textareas are 16px below 641px, the size below which iOS zooms a focused
   field.
+- **Asset URLs carry a content version** (`src/lib/assetVersion.ts`): the host
+  serves `/assets/` with a four-hour freshness lifetime and the page sets no
+  cache directive of its own, so every asset URL is emitted as
+  `?v=<first 12 hex of the file's sha256>` — the four in `src/views/layout.ts`,
+  the six in `src/views/pages.ts` (`repoPage`, `teamPage`,
+  `applicationStatusPage`) and the two `rewriteWorkspaceHtml` injects into the
+  proxied workspace page. The digest is memoised per path and is the file's own
+  bytes, never the commit: `/healthz` withholds `config.build.commit` behind
+  `diagnosticsAccess` (#236, #466) and an asset URL is public. A deploy that
+  changes a file therefore changes its URL, so a browser cannot serve the old
+  copy inside the lifetime whatever header the host sends.
 - **Repository page tabs** (`src/views/pages.ts` `repoPage`, `public/repoTabs.js`):
   `/repos/:id` renders six sections — Overview, Delivery, Work, Team, Settings,
   Danger — behind a sticky subnav. The sections are a regroup of the cards the
@@ -286,6 +344,43 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   keeps the ticket. `0` marks a row written before the column existed, and it is
   backfilled in `created_at` order when the database opens, which is the order
   those rows were already ranked by. A running job is never preempted.
+- **Priority ladder**: `P0`–`P3` is the closed set a person sees; the integer
+  column stays the storage form the ticket orders by, so `P0` maps to `30`
+  (ongoing damage, credential exposure or an outage), `P1` to `20` (the core goal
+  is blocked), `P2` to `10` (ordinary work, the default) and `P3` to `0`
+  (non-core polish). Rows written before the ladder, and work-item priorities on
+  a 0–100 scale, read as the nearest level rather than as an invalid value.
+  Raising a job to `P0` or `P1` is a claim, so the save carries a reason and
+  evidence a second person can check — a link, a commit or ticket sha, or a
+  measurement with a unit; adjectives alone are refused. The no-op rule and the
+  tail-ticket rule above still decide where the row sits. The dashboard and the
+  admin job search filter by level (`P0`–`P3`), and the clause is a half-open
+  rank range, so a row written before the ladder still appears under the level
+  the console prints for it.
+- **Task relations are explicit**: `task_relations` joins two jobs of one
+  repository as `same_problem`, `related` or `recurrence`, with the reason and
+  the checkable evidence the claim rests on. Both ends must be jobs of the same
+  repository, so a relation cannot cross a project boundary, and a task cannot
+  be related to itself. A repeated save is one row. Nothing derives a relation
+  from a title or an embedding: similar tasks stay separate until a person links
+  them, and a relation never moves, merges or suppresses work. The decision record
+  for the ladder and the relation table is
+  `docs/decisions/0018-priority-ladder-and-relations.md`.
+- **One bounded next-task decision**: after a job is verified the follow-up is a
+  single decision — `new`, `supplement`, `related` or `recurrence` — carrying a
+  reason and checkable evidence. `new` creates one separate task, `supplement`
+  appends to an existing task without a second execution, and `related` /
+  `recurrence` create the task and the explicit relation that says why. `new`
+  aimed at an existing task is contradictory and is repaired once into
+  `related`. When the decision step is unavailable the framework default is a
+  separate task at `P2`. A related task whose target is still running leaves one
+  coordination notice, which that job takes at its next progress heartbeat that
+  carries a checkpoint, and only once — a heartbeat without a checkpoint is
+  progress, not a checkpoint, so it takes nothing. The running job keeps its
+  claim. The console offers the decision where a
+  `verify` or `review` run ends, at `POST /repos/:id/jobs/:jobId/decision`, and
+  preselects the framework default, so the undecided case is still one ordinary
+  `P2` task rather than an open-ended chain.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the
@@ -322,9 +417,15 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   interval that arrives with one is refused by name instead of being accepted and
   shown as if a zone applied. A preview stores nothing and creates no job. Each
   refusal is authored in both Chinese and English where the planner raises it,
-  from the request's locale, so the page alert and `GET /api/schedule/preview`
-  show the same reason in the reader's language rather than an English-only
-  sentence.
+  The console page leads with a human mode picker (#675): every N
+  minutes/hours, every day at a time, weekdays at a time, weekly on a weekday,
+  monthly on a day, and an advanced cron mode. `src/schedules/preview.ts` builds
+  the same `cron`/`every` planner input from those fields, so the page and the
+  JSON API agree, and a mode ignores stale legacy fields. Weekday and
+  day-of-month are selects; time is a native `time` input; the timezone is a
+  select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
+  is optional and lives under an advanced disclosure, so a reader who only wants
+  "weekdays at 09:30" never types cron or an ISO offset.
   Leases, misfire policies, layered budgets and the notification outbox are not
   built yet.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
@@ -373,7 +474,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
   last instant whose job succeeded. A value nobody recorded prints `unknown`: a
   schedule with no occurrence row has not run, and this slice has no delivery
-  outbox, so neither is a zero. `src/schedules/console.ts` is that view model. The
+  outbox, so neither is a zero. The eight facts render through `.schedule-facts`,
+  a two-column grid with muted labels that stacks to one column below 640px, so
+  the console does not fall back to the browser's default definition-list text.
+  `src/schedules/console.ts` is that view model. The
   repository page passes the planner's answer for a scheduled repository and keeps
   the legacy interval line only for one without a row, so the page prints one
   number instead of a second, weaker one; the comment that claimed the interval
@@ -478,8 +582,20 @@ revoke stays one click.
 - If the user has an own model configured, Fledge proxies to it and does **not**
   meter platform quota.
 - Otherwise it proxies to `PLATFORM_LLM_BASE_URL` with `PLATFORM_LLM_KEY`, reads
-  `x-litellm-response-cost` (or estimates from `usage`), and records the cost in
-  `quota_ledger` + `users.quota_used_usd`.
+  `x-litellm-response-cost` (or prices `usage` from that model's entry in
+  `PLATFORM_LLM_PRICE_TABLE`), and records the cost in `quota_ledger` +
+  `users.quota_used_usd`. The row carries the model, currency, the price snapshot
+  it was charged at and `cost_known`; a request that cannot be priced is stored
+  as `cost_known = 0` with a `request.cost_unknown` audit entry instead of a
+  zero cost, so spend stays a lower bound rather than a claim of "free" (#636).
+  `users.quota_used_usd`, `jobs.cost_usd` and the CNY budgets are USD columns:
+  only rows billed in USD reach them, and a row in another currency is reported
+  by `Store.costByCurrency()` in its own bucket instead of being converted. A
+  row with no currency is the pre-#636 legacy shape and is the USD bucket, not a
+  second one: the label is resolved before the grouping, so an upgraded instance
+  shows one `USD` row (#702).
+  `src/metrics/cost.ts` holds the price table, the cache-token rule and the
+  unknown-vs-zero decision; the gateway only reads its answer.
 - At zero it returns HTTP 402 with `code: FLEDGE_QUOTA_EXHAUSTED` and a settings
   link.
 - Streaming is passed through; `stream_options.include_usage` is added so the
@@ -519,6 +635,22 @@ also refreshed on the next job before dispatch. Iterate jobs go to the Chief,
 which must pass the job block to the Lead verbatim; review jobs go to the
 Reviewer only when the repository has enabled it. The Lead delegates to the
 member whose scope fits and posts the final callback exactly once.
+
+The admin page is ordered by the admin's work: Pending, Users, Jobs, Audit,
+Release and Backups. The release facts and the release chain share one `Release`
+section, and the section nav is a sticky underline tab row rather than a wall of
+pill links. An empty release chain says it is expected and keeps the operator
+command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
+path. The page owns the Users section at `/admin#users`; `/admin/users` is an
+admin-only redirect to that section for older links and bookmarks, while
+`/admin/users/:id` remains the read-only support view.
+
+The admin page is a hub, not an approvals-only page. Its primary sections are
+Pending, Users, Jobs, Audit, Release and Backups; Product metrics, Webhook
+deliveries, Deployments, Audit and jobs search and Preview trials are module
+tiles at the bottom. Metrics and webhooks remain superadmin-only; the other
+three are available to admins. The opening paragraph always names the role and
+the audit logging, and carries no tool links.
 
 ### Team console and live events
 
@@ -1189,15 +1321,15 @@ branch and event, the attempt and the run link, so a red default branch is
 visible where the other work is instead of only in GitHub.
 
 The intake also reads the failed job's log for a `queued` row. It lists the run's
-jobs (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, at most two pages of
-100), picks the first job whose conclusion is `failure` or `timed_out`, and reads
-that job's log (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`) through the
-repository's token. The log is capped at 8 MiB, and a redirect to a signed storage
-URL is followed without the GitHub token. The raw log is never stored or rendered:
-it goes through the single redactor and is reduced to a 4,000-character excerpt
-before it is written to `log_excerpt`. A token, GitHub or empty-log failure writes
-a redacted reason to `log_error` and keeps the intake row. An `ignored` row never
-spends a request on a log nobody will analyse.
+jobs (`GET /repos/{owner}/{repo}/actions/runs/{run_id}/jobs`, at most three pages
+of 100), picks the first job whose conclusion is `failure` or `timed_out`, and
+reads that job's log (`GET /repos/{owner}/{repo}/actions/jobs/{job_id}/logs`)
+through the repository's token. The log is capped at 8 MiB, and a redirect to a
+signed storage URL is followed without the GitHub token. The raw log is never
+stored or rendered: it goes through the single redactor and is reduced to a
+4,000-character excerpt before it is written to `log_excerpt`. A token, GitHub or
+empty-log failure writes a redacted reason to `log_error` and keeps the intake
+row. An `ignored` row never spends a request on a log nobody will analyse.
 
 The cited-line verifier (`src/actions/evidence.ts`) is the next building block:
 given the model's cited lines and the failed step's output it trims whitespace and
@@ -1335,7 +1467,10 @@ also assign a selected model to each DSH bot role; after the restart Fledge call
 model or the new default, so a bot cannot keep a stale provider reference.
 
 Provider metadata also carries a region tag, an optional data-policy URL and an
-allowed flag. A repository can set a provider allowlist and a required region;
+allowed flag. Region and data policy are optional advanced fields: the region is
+a label used only by a repository's region constraint, and the data-policy link
+is recorded for review rather than fetched.
+ A repository can set a provider allowlist and a required region;
 the gateway enforces both at candidate resolution, including the fallback loop,
 and refuses a disallowed model with a stable code before any upstream call. With
 a policy set, a call must name one of the repository's models: a call that omits
@@ -1354,7 +1489,12 @@ policy.
 The bridge's model proxy normally uses the per-repository instance token. While
 a job is running it uses that job's short-lived `flg_` token instead (the
 `/run` payload carries it), so the gateway can write `job_id` into
-`quota_ledger` and add `jobs.cost_usd`. The job page shows cost, attribution and
+`quota_ledger` and add `jobs.cost_usd`. A row that could not be priced is not a
+zero row for this purpose: `usageCountForJob` counts only `cost_known = 1`, so
+the per-job budget's unknown refusal (#357) still fires when every call a job
+made was unknown. Only USD-billed rows reach `jobs.cost_usd`, and a retry names
+the attempt it continues in `jobs.retry_of`, so the chain a job inherits is the
+sum of every attempt rather than a fresh budget. The job page shows cost, attribution and
 Team attribution is grounded in the DSH per-role call counts: the job page and the
 PR automation comment use only roles with actual calls, and a claimed role with
 zero calls is recorded as a `team_attribution_grounded` mismatch event.
@@ -1498,13 +1638,18 @@ The `/admin` card renders the snapshot the command writes to
 GitHub, and a missing or unparseable snapshot renders "no release chain is
 recorded" rather than an empty card. The snapshot carries the tag target and the
 Release URL as fields (`targetSha`, `releaseUrl`); the target is never re-read
-out of a link's detail text. The one live row is `This process`, which compares
-the version in `package.json` and the commit stamp this process booted with
-against that recorded tag target, so an operator can see at a glance whether the
-instance they are looking at is the release the chain names. A snapshot that
-claims `ok` with no links, or that contradicts its own problems, is refused as
-unparseable — a green header over an empty table is the one shape the card must
-never render.
+out of a link's detail text. The card renders the artifact links, omits links the
+snapshot marked `skipped` (a deleted release branch, no local image) and the
+stored `healthz` probe, and adds one live `Running instance` row. That row
+compares the version in `package.json` and the commit stamp this process booted
+with against the recorded tag target, so an operator can see at a glance whether
+the instance they are looking at is the release the chain names. The header says
+`released and running` only when every artifact link is ok and the live row is
+the tag target; otherwise it says `published; running differs` or `chain
+incomplete`. A published GitHub Release is therefore never labelled "not
+released" just because the host runs a local build. A snapshot that claims `ok`
+with no links, or that contradicts its own problems, is refused as unparseable —
+a green header over an empty table is the one shape the card must never render.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without
@@ -1601,7 +1746,7 @@ listing, and every row links to the page that already owns it.
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
 | `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (only `gateway` today) and `expires_at`; a PAT always carries an expiry |
-| `quota_ledger` | per-request cost records |
+| `quota_ledger` | per-request cost records: model, currency, price snapshot, `cost_known` (0 = could not be priced) |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
 | `postmortems` | one evidence-backed write-up per failed/stalled/cancelled job, with category, recurrence key, owner and preventive action |
 | `postmortem_recurrences` | one ledger row per recurrence key: count, first/last seen, affected repositories and the single escalation marker |
@@ -1801,7 +1946,7 @@ private self-hosted target. Errors name the host but never the secret or payload
 
 | Boundary | Control |
 |---|---|
-| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`). The bounce returns to the page the form was on with exactly one `notice` — the key is replaced, not appended, because a page that just came out of a save already carries one and a second key parses as an array that `queryText()` refuses |
+| Browser → Fledge | session cookie, CSRF token on every form, rate limits; destructive writes also need a GitHub re-authentication inside `RECENT_AUTH_MINUTES` (`sessions.recent_auth_at`, audited as `recent_auth_required`), and that includes both posts that write a repository's `repo_role` — the settings form and the role form, which also clears `auto_merge` and `reviewer_enabled` when it demotes to developer. The bounce returns to the page the form was on with exactly one `notice` — the key is replaced, not appended, because a page that just came out of a save already carries one and a second key parses as an array that `queryText()` refuses |
 | Fledge → GitHub | user's fine-grained token; platform OAuth only for identity |
 | Fledge → SMTP | credentials in env, never logged |
 | FlyBot bridge → Fledge | job callback secret; credential URL; job token |
@@ -1849,12 +1994,17 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   passes. An identical write is a no-op and creates no revision.
 - **Reads are exact.** A read names a revision and returns that body, its
   `sha256` digest and whether it is historical. Nothing is served from a cache
-  and no read returns "the latest" when a revision was asked for.
+  and no read returns "the latest" when a revision was asked for. A revision is
+  read under its own audience, never the current entry's, so a historical
+  revision written for another role is neither listed nor rendered after the
+  entry moves to a wider audience.
 - **Audience is a role, not a permission.** An entry is `project` or
   `role:<maintainer|developer>`. The reader's role is the repository's own chosen
   role, so an administrator acting as a developer reads the developer view, and
   an entry outside the audience is reported as absent (404) rather than listed.
-  A writer may not author an entry for a role it cannot act as.
+  A writer may not author an entry for a role it cannot act as, and a write aimed
+  at an entry outside the actor's audience is refused as absent before the
+  revision fence, leaving the row untouched.
 - **The page is reachable.** The repository page's memory card links to
   `/repos/:id/memory`; the page is not an orphan that only a typed URL opens.
 - **Sources are shown.** An exact-revision read lists that revision's `sources`
@@ -1949,9 +2099,11 @@ The page is the only surface a maintainer reads, so every outcome lands there:
 `?release=1&refused=<reason>` renders the refusal (with the suggested version)
 above the form, and `?release=1&tagged=<tag>` confirms the tag that was created.
 A name that already has a `repo_releases` row is a re-tag: the row is updated in
-place to the new `target_sha` and `tag_object_sha` (keeping its `created_at`),
-`status` stays `tagged`, `updated_at` moves forward, the audit appends a new
-`release.tagged` row, and `?release=1&tagged=<tag>&retagged=1` renders the
+place to the new `target_sha`, `tag_object_sha`, `user_id` and preflight (the
+previous tag and the actor of this tag), keeping its `created_at`, so the row
+describes the action that produced the state it shows rather than the first
+tagger. `status` stays `tagged`, `updated_at` moves forward, the audit appends a
+new `release.tagged` row, and `?release=1&tagged=<tag>&retagged=1` renders the
 re-tag wording instead of the created-tag banner or a refusal. A refusal from
 the ref write that is not a 422 reports only `the tag reference was refused by
 GitHub (HTTP <status>); nothing was moved or deleted`; the upstream body text is
@@ -1959,7 +2111,47 @@ never quoted. A 422 keeps its own `tag v1.2.3 already exists; nothing was moved 
 deleted` sentence, so the race and the generic refusal do not merge.
 
 `repo_releases` records one row per created tag (`UNIQUE(repo_id, tag_name)`), with
-the tag object SHA, the target commit, the previous tag and the actor, so the
-workflow tracking and draft-release slices (#546's steps 3-7) can build on the
-record instead of re-running the preflight. `release_sources` from the issue is
-deliberately not created yet: it belongs to the notes slice.
+the tag object SHA, the target commit, the previous tag and the actor. The
+workflow-run slice adds its observation to that same row (additive columns, no
+second table): `run_id`, `run_attempt`, `status`, `conclusion`, `workflow_name`,
+`draft_release_id`, `draft_url`, `external_release_id` and `last_checked_at`.
+`release_sources` from the issue is deliberately not created yet: it belongs to
+the notes slice.
+
+## Following the release workflow and preparing a draft
+
+`src/releases/tracking.ts` observes the workflow a tag fires and stops at a draft
+Release — a human still edits and publishes it. The reconcile is bounded: three
+pages of runs (`GET /actions/runs?branch=<tag>`, so another workflow's traffic
+cannot push the tag's run out of the window), three pages of jobs
+(`GET /actions/runs/{id}/jobs`), and no history crawl. The selected run must match
+twice: its head is the tag commit, and its path is the release workflow
+(`.github/workflows/release.yml` or `.yaml`). Neither match is a preference with a
+fallback — a tag whose release workflow has not appeared yet is `run_missing`,
+because a draft body that says the release workflow succeeded has to be true.
+Among the runs that do match, the newest run and highest attempt win.
+
+A draft is prepared only when the run is completed with conclusion `success` and
+every job is `success`, `neutral` or `skipped`. An in-progress run or job keeps
+the row at `running`; a `failure`, `cancelled`, `timed_out`, `startup_failure`,
+`action_required` or `stale` run, or one failed job under a green run, records
+`run_failed` and creates nothing. Fledge never reruns the workflow.
+
+Before the run is read, `GET /releases/tags/{tag}` answers whether the repository
+already has a Release for this tag. The id this row recorded is its own: still a
+draft is `draft_exists`, and once the human published it the same id is
+`draft_published` — the pointer and the page link are kept either way, because
+publishing is the documented end state. Any other Release is `external_release`:
+the row stores its id and no second Release is created. A Release that appears
+between the read and the write is caught as a 422 on `POST /releases`, re-read by
+tag, and recorded as external instead of retried. `POST /releases` is fixed to
+`draft: true` in the client, so this path cannot publish.
+
+The first observation happens once after a successful tag write and is recorded
+even when no run exists yet (`run_missing`); a failed observation is logged and
+never turns the created tag into a refusal. The maintainer repeats it from the
+repository page with `POST /repos/:id/releases/:releaseId/check` (owner only,
+CSRF, maintainer role), which re-reads the run, writes the tracking columns and
+audits `release.checked`. The page shows the status, run id, conclusion, draft
+link or external marker, and the check button. Nothing in this slice publishes a
+Release, deletes or moves a tag, or starts a workflow.

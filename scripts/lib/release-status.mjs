@@ -172,6 +172,33 @@ function imageLink(links, version, image) {
   links.push(ok('image', `${tag} @ ${digest}`))
 }
 
+// The one link the API cannot answer: the image this host is about to run. The
+// operator reads it locally (`docker image inspect`) and passes it in, so the
+// check stays read-only and shells out to nothing. Absent means "not compared",
+// which is skipped rather than red; unreadable, or readable and different from
+// the attested digest, is red.
+function localLink(links, localImageDigest, image) {
+  const local = text(localImageDigest)
+  if (local === '') {
+    links.push(link('local', 'skipped', 'no local image digest was given, so the image this host would start was not compared'))
+    return
+  }
+  if (!DIGEST.test(local)) {
+    bad(links, 'local', 'mismatch', `the local image digest "${local}" is not a sha256 digest`)
+    return
+  }
+  const attested = text(image?.digest)
+  if (!DIGEST.test(attested)) {
+    bad(links, 'local', 'missing', `the release names no image digest to compare with the local ${local}`)
+    return
+  }
+  if (local !== attested) {
+    bad(links, 'local', 'mismatch', `the local image ${local} is not the attested digest ${attested}`)
+    return
+  }
+  links.push(ok('local', `the local image is the attested digest ${local}`))
+}
+
 function sbomLink(links, version, sbom) {
   const name = text(sbom?.name)
   if (sbom === null || sbom === undefined || sbom.present !== true || name === '') {
@@ -267,12 +294,16 @@ export function evaluateReleaseStatus(input = {}) {
   const releaseUrl = text(input?.release?.url)
   const targetSha = SHA.test(tagTarget) ? tagTarget : ''
   const url = /^https?:\/\//.test(releaseUrl) ? releaseUrl : ''
+  // The digested image the host will run, read locally by the caller. It is kept
+  // as a field of the status so a written snapshot can carry it into the boot
+  // check, which has no network and no docker.
+  const localImageDigest = text(input?.localImageDigest)
 
   // A chain for a version nobody named cannot be judged; saying so is better
   // than judging it green against an empty string.
   if (!VERSION.test(version)) {
     const detail = `"${version}" is not an X.Y.Z version`
-    return { schema: 1, version, checkedAt, baseUrl, ok: false, links: [link('version', 'mismatch', detail)], problems: [`version: ${detail}`], targetSha: '', releaseUrl: '' }
+    return { schema: 1, version, checkedAt, baseUrl, ok: false, links: [link('version', 'mismatch', detail)], problems: [`version: ${detail}`], targetSha: '', releaseUrl: '', localImageDigest }
   }
 
   const links = []
@@ -282,11 +313,12 @@ export function evaluateReleaseStatus(input = {}) {
   pullLink(links, version, input?.pull ?? null, input?.branch ?? null)
   tagLink(links, version, input?.tag ?? null, input?.pull ?? null)
   imageLink(links, version, input?.image ?? null)
+  localLink(links, localImageDigest, input?.image ?? null)
   sbomLink(links, version, input?.sbom ?? null)
   attestationLink(links, version, input?.attestation ?? null, input?.image ?? null)
   releaseLink(links, version, input?.release ?? null)
   healthzLink(links, version, packageVersion, baseUrl, input?.healthz ?? null, input?.tag ?? null)
 
   const problems = links.filter((entry) => entry.state === 'missing' || entry.state === 'mismatch').map((entry) => `${entry.id}: ${entry.detail}`)
-  return { schema: 1, version, checkedAt, baseUrl, ok: problems.length === 0, links, problems, targetSha, releaseUrl: url }
+  return { schema: 1, version, checkedAt, baseUrl, ok: problems.length === 0, links, problems, targetSha, releaseUrl: url, localImageDigest }
 }
