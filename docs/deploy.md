@@ -565,6 +565,8 @@ renders, `deploy/nginx.check.conf`, declares `pid <tmp>/nginx.pid;` before
 and an unprivileged runner cannot open nginx's compiled-in `/run/nginx.pid`; the
 result is a failed step and a red `ci-ok` (#795). When nginx is not installed on
 the runner the step writes a gap to the job summary instead of passing silently.
+With nginx installed, `bash scripts/check-nginx-config.sh` runs the same check
+locally and prints the parse output.
 
 The app trusts only the hops named in `TRUST_PROXY`, never every hop.
 `$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually

@@ -43,10 +43,13 @@ sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#"
 # path this user can open (#795).
 sed -e "s#__PID__#$tmp/nginx.pid#" -e "s#__SITE__#$tmp/site.conf#" "$wrapper" > "$tmp/nginx.conf"
 
-if nginx -t -q -c "$tmp/nginx.conf" -p "$tmp"; then
+# Capture the parse output and replay it on stdout: the workflow tees stdout to
+# the job summary, so the reason a red run is red is in the log as well (#799).
+if parse_output="$(nginx -t -q -c "$tmp/nginx.conf" -p "$tmp" 2>&1)"; then
   echo 'nginx: deploy/nginx.conf.example parsed'
   exit 0
 fi
 
+echo "$parse_output"
 echo 'nginx: deploy/nginx.conf.example failed `nginx -t`'
 exit 1

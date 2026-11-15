@@ -101,6 +101,12 @@ test('the generated wrapper declares its own pid before events{}', () => {
   assert.ok(events !== -1, 'the wrapper must still open the events{} context')
   assert.ok(config.indexOf(pidLine) < events, 'the pid directive must come before events{}')
 
+  // The other two unprivileged-runner defaults: the compile-time error log and
+  // the http-level access log, both under /var/log/nginx. Either one fails the
+  // parse with `Permission denied` (#799).
+  assert.match(config, /^error_log stderr;$/m, 'the wrapper must send the error log to stderr, not /var/log/nginx')
+  assert.match(config, /^    access_log off;$/m, 'http{} must disable the default access log before including the example')
+
   const example = readFileSync(site, 'utf8')
   assert.match(example, /^  listen 443 ssl http2;$/m, 'deploy/nginx.conf.example must keep the public listen')
   assert.match(

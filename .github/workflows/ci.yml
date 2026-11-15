@@ -661,12 +661,15 @@ jobs:
         # the compiled-in /run/nginx.pid is not writable by the runner and that
         # failed this job on main (#795). test/nginxCheck.test.ts drives that
         # script with a stub nginx and inspects the rendered file.
+        #
+        # The script's output is teed rather than redirected: a red step has to
+        # say why in the log, and `$GITHUB_STEP_SUMMARY` is not the log (#799).
         shell: bash
         run: |
           set -uo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           status=0
-          if ! bash scripts/check-nginx-config.sh >> "$summary" 2>&1; then
+          if ! bash scripts/check-nginx-config.sh 2>&1 | tee -a "$summary"; then
             status=1
           fi
           if command -v systemd-analyze >/dev/null 2>&1; then
