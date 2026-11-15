@@ -1662,7 +1662,11 @@ every `status = rejected`, `role = user` account whose `trial.expired` row is at
 least `TRIAL_PURGE_GRACE_HOURS` (default 72) old, with counts of its
 repositories, jobs, instances and GitHub installations; the phase re-reads those
 counts immediately before deleting, because usage can arrive between the two
-reads. A used account is skipped and audited as `trial.purge_skipped` with the
+reads. A hand run started with `--login` applies that login to this phase too:
+its candidates are only the named account's, so it writes no `trial.purged` and
+no `trial.purge_skipped` for anyone else, and it prints that scope before either
+phase runs. The hourly service run carries no login and still covers every
+candidate. A used account is skipped and audited as `trial.purge_skipped` with the
 blocking resource and its count; an unused one goes to `Store.purgeUserRows(id)`,
 the single delete path that #691's superadmin deletion also calls (it decides no
 eligibility — the caller asserts the account is dead). That function is one
