@@ -96,7 +96,10 @@ defect.
   the first job. Once the quota is exhausted or the platform model is not
   configured, the same step becomes required again; the answer is derived from
   the rows and config on every request, so no skip cookie or second store is
-  needed. Once a job exists the checklist is replaced by a first-run summary
+  needed. The checklist reads the account's unfiltered job count, so a
+  `status`/`repo`/`kind`/`priority` filter on the recent-jobs table cannot bring
+  the checklist back after the first job. Once a job exists the checklist is
+  replaced by a first-run summary
   whose outcome is the first job's own status, read all-time (not a
   window-scoped count), in four shapes: the
   job's PR link when it opened one, "finished" with a link to Recent jobs when it

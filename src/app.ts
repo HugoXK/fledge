@@ -1229,6 +1229,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const firstJob = store.firstJobForUser(viewer.user.id)
     // #227: the checklist state is read from the database on this request, never
     // from a cookie, so a second tab or a fresh browser sees the same step.
+    // #734: the checklist describes the account, not the job table. `jobsTotal`
+    // carries the current filter for the table; the checklist must not read it.
+    const setupJobsTotal = store.countJobsForUser(viewer.user.id)
     const platformAvailable =
       config.llm.baseUrl !== '' &&
       config.llm.key !== '' &&
@@ -1241,7 +1244,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         .some((provider) => store.listProviderModels(provider.id).length > 0),
       platformAvailable,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
-      jobs: jobsTotal,
+      jobs: setupJobsTotal,
       firstJobStatus: firstJob?.status ?? null,
       firstPrUrl: firstJob?.pr_url ?? null,
       repoHref: allRepos[0] === undefined ? null : `/repos/${allRepos[0].id}`,
