@@ -1675,6 +1675,22 @@ those rows (`Store.recentPurgeAudits`) and renders the reason, the operator, the
 row total and the per-currency spend — the aggregate never folds buckets, because
 `cost_usd` is in each row's own currency.
 
+The superadmin deletion (#691) sits on the same delete path. `GET
+/admin/users/:id/delete` is a read-only preview: it counts the account's
+repositories, jobs (all, running and queued), FlyBot instances, API tokens and
+GitHub installations and names the backup window, and it writes no audit row.
+`POST /admin/users/:id/delete` is superadmin-only, CSRF-guarded,
+`destructiveLimit`-rated and re-authenticated with
+`requireRecentAuth(..., 'admin.user.delete')`; it refuses self-deletion, the last
+superadmin and a login that is not the exact GitHub login. Its teardown order is
+cancel jobs, stop and remove instances, revoke tokens, then
+`Store.purgeUserRows(id, { reason: 'admin.deleted', operator: 'superadmin',
+action: 'admin.user.deleted' })`. Every step is idempotent, so a failure
+(recorded as `admin.user.delete_failed` with the step name only) leaves the
+account visible and the same confirm retries. The user page's danger zone links
+to the preview; `adminDeleteUserPage` renders both languages, the counts, the
+backup warning and the blocked state.
+
 ### The job page's change story
 
 The job page answers "did it pass", and a maintainer's first question is "what
