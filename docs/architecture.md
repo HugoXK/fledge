@@ -1869,6 +1869,7 @@ listing, and every row links to the page that already owns it.
 | `repo_members` | per-repository `maintainer`/`developer`/`viewer` rows with a revocation time (#541) |
 | `scoped_grants` | explicit capability grants with source, evidence, expiry, revocation and revision (#541) |
 | `identity_migrations` | one report row per identity backfill version (#541) |
+| `security_findings` | one row per `rule + path + line` a job reported, with `open`/`fixed`/`dismissed`/`regressed`, the job that dismissed it and the written reason or evidence; absence from a later report never moves a row (#379) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
 ## Deployment records

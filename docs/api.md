@@ -559,7 +559,10 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
     "checks": "CI green",
     "files": 3,
     "risk": "low",
-    "rollback": "revert the commit"
+    "rollback": "revert the commit",
+    "findings": [
+      { "rule": "js/path-injection", "path": "src/app.ts", "line": 120 }
+    ]
   },
   "checkpoint": "implemented the parser; next: add the rejection test"
 }
@@ -579,7 +582,13 @@ progress heartbeat: it updates `summary`, `checkpoint` and optionally `branch`,
 into the goal when a failed job is retried. A `plan` job writes the plan to
 `summary` and must not create a branch, issue or PR; the super admin can execute it
 later as an iterate job. `evidence` is stored structurally and shown on the job
-detail page; the Fledge automation comment stays compact. With
+detail page; the Fledge automation comment stays compact. `evidence.findings` is
+the security-finding report: up to 100 `{ rule, path, line, state? }` entries,
+with `rule` at most 120 characters, `path` at most 200, a positive integer
+`line` and `state` one of `open`/`dismissed`. An entry that breaks any of that,
+or repeats an id, is dropped and counted in `evidence.findingsDropped`; the
+ledger keeps one row per id and is described in
+[security.md](security.md#security-finding-ledger-379). With
 `repos.stage_mode = 'enforced'`, an iterate callback must also include `scope`,
 `acceptance`, `testRed`, `testGreen` and Dev/Test attribution, and a review
 callback must include a Reviewer and `reviewScore`; otherwise the job fails with

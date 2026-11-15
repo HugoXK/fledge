@@ -1436,6 +1436,26 @@ CREATE TABLE IF NOT EXISTS repo_rule_overrides (
   PRIMARY KEY (repo_id, path)
 );
 
+-- #379: the per-repository security-finding ledger. The id is rule + path +
+-- line, so a finding that comes back is the same row. Only an operator decision
+-- may write 'dismissed' or 'fixed', and the CHECK below refuses either without
+-- the written reason (a dismissal) or evidence (a fix) it rests on; the report
+-- path can only move a row to open/regressed.
+CREATE TABLE IF NOT EXISTS security_findings (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('open', 'dismissed', 'fixed', 'regressed')),
+  first_seen_job TEXT NOT NULL,
+  last_seen_job TEXT NOT NULL,
+  reason TEXT,
+  dismissed_in_job TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, id),
+  CHECK (state NOT IN ('dismissed', 'fixed') OR (reason IS NOT NULL AND trim(reason) != ''))
+);
+CREATE INDEX IF NOT EXISTS security_findings_repo_idx ON security_findings(repo_id, state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS security_findings_job_idx ON security_findings(last_seen_job);
+
 -- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
 -- recurrence key. The job_id unique constraint is the idempotency guard: a
 -- replayed terminal transition cannot create a second write-up for the same job.
@@ -1936,6 +1956,31 @@ export interface ReleaseTrackingPatch {
   draftUrl: string | null
   externalReleaseId: string | null
   lastCheckedAt: string
+}
+
+// #379: one row per reported finding id, per repository. `first_seen_job` and
+// `last_seen_job` are job ids kept as text, not foreign keys: the ledger is the
+// record of what a job reported, and it must outlive the job row if one is ever
+// pruned. `state` is checked by the table, and a decision state requires the
+// written reason it rests on.
+export interface SecurityFindingRow {
+  repo_id: string
+  id: string
+  state: string
+  first_seen_job: string
+  last_seen_job: string
+  reason: string | null
+  dismissed_in_job: string | null
+  updated_at: string
+}
+
+export interface SecurityFindingWrite {
+  id: string
+  state: string
+  firstSeenJob: string
+  lastSeenJob: string
+  reason: string | null
+  dismissedInJob: string | null
 }
 
 export class Store {
@@ -4814,6 +4859,77 @@ export class Store {
 
   getJobContextFile(jobId: string, path: string): JobContextFileRow | undefined {
     return this.get<JobContextFileRow>('SELECT * FROM job_context_files WHERE job_id = ? AND path = ?', jobId, path)
+  }
+
+  // #379: the ledger write is one transaction per report, so a report that names
+  // several findings is recorded whole or not at all. The state machine that
+  // decides each row lives in src/lib/securityFindings.ts; this method stores
+  // the decision it returns.
+  writeSecurityFindings(repoId: string, rows: SecurityFindingWrite[]): void {
+    if (rows.length === 0) return
+    const updatedAt = nowIso()
+    this.transaction(() => {
+      for (const row of rows) {
+        this.run(
+          `INSERT INTO security_findings (repo_id, id, state, first_seen_job, last_seen_job, reason, dismissed_in_job, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(repo_id, id) DO UPDATE SET
+             state = excluded.state,
+             last_seen_job = excluded.last_seen_job,
+             reason = excluded.reason,
+             dismissed_in_job = excluded.dismissed_in_job,
+             updated_at = excluded.updated_at`,
+          repoId,
+          row.id,
+          row.state,
+          row.firstSeenJob,
+          row.lastSeenJob,
+          row.reason,
+          row.dismissedInJob,
+          updatedAt,
+        )
+      }
+    })
+  }
+
+  getSecurityFinding(repoId: string, id: string): SecurityFindingRow | undefined {
+    return this.get<SecurityFindingRow>('SELECT * FROM security_findings WHERE repo_id = ? AND id = ?', repoId, id)
+  }
+
+  //: Newest first, so the page lists the findings a maintainer is most likely
+  //: to act on before the older ones.
+  listSecurityFindings(repoId: string): SecurityFindingRow[] {
+    return this.all<SecurityFindingRow>('SELECT * FROM security_findings WHERE repo_id = ? ORDER BY updated_at DESC, id ASC', repoId)
+  }
+
+  //: The job page shows the findings whose last report was this job. One table
+  //: keeps the ledger from recording a second, per-job link table; the page
+  //: says "last reported by this job" rather than claiming the full history.
+  listSecurityFindingsForJob(jobId: string): SecurityFindingRow[] {
+    return this.all<SecurityFindingRow>('SELECT * FROM security_findings WHERE last_seen_job = ? ORDER BY id ASC', jobId)
+  }
+
+  //: The only write that may set `dismissed` or `fixed`. A blank reason is
+  //: refused here as well as at the route, so a caller that forgets the check
+  //: cannot put the ledger into a state that reads as verified without evidence.
+  setSecurityFindingState(repoId: string, id: string, state: 'dismissed' | 'fixed', reason: string): boolean {
+    const clean = reason.trim().slice(0, 500)
+    if (clean === '') return false
+    const row = this.getSecurityFinding(repoId, id)
+    if (row === undefined) return false
+    // `dismissed_in_job` names the job the finding was last seen in when the
+    // operator decided, which is what the regression line reads back.
+    const dismissedInJob = state === 'dismissed' ? row.last_seen_job : row.dismissed_in_job
+    this.run(
+      'UPDATE security_findings SET state = ?, reason = ?, dismissed_in_job = ?, updated_at = ? WHERE repo_id = ? AND id = ?',
+      state,
+      clean,
+      dismissedInJob,
+      nowIso(),
+      repoId,
+      id,
+    )
+    return true
   }
 
   listRepoRuleOverrides(repoId: string): RepoRuleOverrideRow[] {

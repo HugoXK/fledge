@@ -2112,6 +2112,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         queued: store.listQueuedJobs(),
         prJobs: store.listPrJobsForRepo(repo.id, 10),
         workItems,
+        // #379: the repository page lists every state the ledger can hold. These
+        // are the ids jobs reported, not GitHub's alert store.
+        securityFindings: store.listSecurityFindings(repo.id),
         commands,
         // #359: the page names the deadline and the way out, so an ignored plan
         // is a visible decision with a date rather than a silent wait.
@@ -3022,6 +3025,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repoLabels,
       events: store.listJobEvents(job.id, 200),
       relations: store.listTaskRelations(job.id),
+      // #379: the findings whose last report was this job, so the page can name
+      // where a dismissed finding was last seen when it came back.
+      findings: store.listSecurityFindingsForJob(job.id),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       // #540: the cancel form carries the revision it rendered and a fresh key,
       // so a double submit replays the same receipt and a stale page conflicts.
@@ -3462,6 +3468,42 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     ].filter((part) => part !== '')
     const message = `已合并 ${result.merged.length} 个 PR${skipParts.length === 0 ? '' : `，${skipParts.join('，')}`}`
     return reply.redirect(`/repos/${repo.id}?${result.merged.length > 0 ? 'notice' : 'error'}=${encodeURIComponent(message)}#delivery`)
+  })
+
+  // #379: the two operator decisions a reported finding can receive. Both need a
+  // written reason, refused here and again by the store: a dismissal with no
+  // reason would read as a silent accept, and a fix with no evidence is exactly
+  // the claim the ledger exists to keep honest.
+  // #379: the two written decisions on a finding. Both are maintainer-only and
+  // both refuse a blank reason/evidence in the route *and* in the store, because
+  // a row that reads as dismissed or fixed with nothing behind it is exactly the
+  // silent-accept this ledger exists to prevent.
+  app.post('/repos/:id/security-findings/:findingId/dismiss', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const t = translator(request.locale ?? 'zh')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('只有 maintainer 可以处理安全发现。', 'Only a maintainer can act on a security finding.'))}#security`)
+    const finding = String((request.params as Record<string, string>).findingId)
+    const reason = (form(request).reason ?? '').trim().slice(0, 500)
+    if (reason === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('忽略一条安全发现需要写明理由。', 'Dismissing a security finding needs a written reason.'))}#security`)
+    if (!store.setSecurityFindingState(repo.id, finding, 'dismissed', reason)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('这条安全发现不存在。', 'That security finding does not exist.'))}#security`)
+    }
+    store.audit(viewer.user.id, 'security_finding.dismissed', `${repo.id}: ${finding}`.slice(0, 600))
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('已忽略这条安全发现；如果它再次出现，会记为回归。', 'Dismissed. If the same id appears again it is recorded as a regression.'))}#security`)
+  })
+
+  app.post('/repos/:id/security-findings/:findingId/fix', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const t = translator(request.locale ?? 'zh')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('只有 maintainer 可以处理安全发现。', 'Only a maintainer can act on a security finding.'))}#security`)
+    const finding = String((request.params as Record<string, string>).findingId)
+    const evidence = (form(request).evidence ?? '').trim().slice(0, 500)
+    if (evidence === '') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('标记已修复需要写明证据（提交、链接或测量值）。', 'Marking a finding fixed needs evidence: a commit, a link or a measurement.'))}#security`)
+    if (!store.setSecurityFindingState(repo.id, finding, 'fixed', evidence)) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('这条安全发现不存在。', 'That security finding does not exist.'))}#security`)
+    }
+    store.audit(viewer.user.id, 'security_finding.fixed', `${repo.id}: ${finding}`.slice(0, 600))
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(t('已记录修复证据；如果同一个 id 再次出现，会记为回归。', 'Fix evidence recorded. If the same id appears again it is recorded as a regression.'))}#security`)
   })
 
   app.post('/repos/:id/work/:workItemId/scope', async (request, reply) => {
