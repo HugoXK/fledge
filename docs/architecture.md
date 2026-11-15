@@ -88,9 +88,17 @@ defect.
   step's state is read from the database on the request, so a cookie, a second
   browser or a cleared store cannot change which step is next. The pure state
   machine decides the single primary action; a step whose prerequisite is
-  missing states the reason instead of offering a control. Once a job exists the
-  checklist is replaced by a first-run summary whose outcome is the first job's
-  own status, read all-time (not a window-scoped count), in four shapes: the
+  missing states the reason instead of offering a control. The model-provider
+  step is optional while the platform model is configured
+  (`PLATFORM_LLM_BASE_URL` and `PLATFORM_LLM_KEY`) and the account's platform
+  quota is not exhausted: it reads as satisfied by the platform quota, keeps the
+  own-provider link as an optional upgrade, and does not block the instance or
+  the first job. Once the quota is exhausted or the platform model is not
+  configured, the same step becomes required again; the answer is derived from
+  the rows and config on every request, so no skip cookie or second store is
+  needed. Once a job exists the checklist is replaced by a first-run summary
+  whose outcome is the first job's own status, read all-time (not a
+  window-scoped count), in four shapes: the
   job's PR link when it opened one, "finished" with a link to Recent jobs when it
   succeeded without a PR, "running" while it is queued or running, and the retry
   path on the repository page when it failed.

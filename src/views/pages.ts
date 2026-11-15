@@ -660,15 +660,19 @@ function setupSection(setup: SetupState | undefined, t: Translate, primaryElsewh
       const current = checklist.next?.key === step.key
       const mark = step.done ? '✓' : String(index + 1)
       const status = step.done
-        ? `<span class="setup-done">${escapeHtml(t('已完成', 'Done'))}</span>`
+        ? `<span class="setup-done">${escapeHtml(step.note ?? t('已完成', 'Done'))}</span>`
         : step.blocked === null
           ? ''
           : `<span class="setup-blocked">${escapeHtml(step.blocked)}</span>`
       // #230: when the next-action block already renders this step's button,
       // the checklist is the detail of that action and must not repeat it.
+      // An optional completed step still offers its upgrade link (add an own
+      // model), because platform quota already satisfies the step.
       const action = current && step.blocked === null && !primaryElsewhere
         ? `<a class="btn btn-small" data-setup-primary href="${escapeHtml(step.action.href)}">${escapeHtml(step.action.label)}</a>`
-        : ''
+        : step.optional === true && step.done
+          ? `<a class="link" href="${escapeHtml(step.action.href)}">${escapeHtml(step.action.label)}</a>`
+          : ''
       return `<li class="setup-step${step.done ? ' is-done' : ''}${current ? ' is-current' : ''}" data-setup-step="${step.key}"${current ? ' aria-current="step"' : ''}>
         <span class="setup-mark" aria-hidden="true">${mark}</span>
         <div class="setup-main"><strong>${escapeHtml(step.title)}</strong>${status}</div>
