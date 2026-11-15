@@ -751,18 +751,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     reply: FastifyReply,
     viewer: Viewer,
     action: string,
+    backOverride?: string,
   ): boolean => {
     if (recentAuthFresh(viewer)) return false
     const path = request.url.split('?')[0] ?? ''
     store.audit(viewer.user.id, 'recent_auth_required', `${action} ${path}`)
-    const referer = String(request.headers.referer ?? '')
-    let back = referer.startsWith('/') ? referer : ''
-    if (back === '' && referer !== '') {
-      try {
-        const url = new URL(referer)
-        back = `${url.pathname}${url.search}`
-      } catch {
-        back = ''
+    let back = backOverride ?? ''
+    if (back === '') {
+      const referer = String(request.headers.referer ?? '')
+      back = referer.startsWith('/') ? referer : ''
+      if (back === '' && referer !== '') {
+        try {
+          const url = new URL(referer)
+          back = `${url.pathname}${url.search}`
+        } catch {
+          back = ''
+        }
       }
     }
     const t = translator(request.locale ?? 'zh')
@@ -2099,6 +2103,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         config,
         locale: request.locale ?? 'zh',
         viewer: viewOf(viewer),
+        recentAuthAt: viewer.recentAuthAt,
         repo,
         releases: store.listReleasesForRepo(repo.id),
         instance,
@@ -3897,7 +3902,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (requireRecentAuth(request, reply, viewer, 'repo.delete')) return reply
+    if (requireRecentAuth(request, reply, viewer, 'repo.delete', `/repos/${repo.id}#danger`)) return reply
     const confirmName = (form(request).confirmName ?? '').trim()
     if (confirmName !== repo.name && confirmName !== `${repo.owner}/${repo.name}`) {
       return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('请输入仓库名确认删除。')}#danger`)

@@ -295,7 +295,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   opens the section that holds it — so a reader without the script still gets
   the whole page. The bar sticks at `var(--header-h)` and scrolls horizontally
   in the phone band; the tab is a 44px `--touch` target and the current tab
-  paints with `--accent-strong`, the one interactive accent.
+  paints with `--accent-strong`, the one interactive accent. The Danger section
+  also carries the recent-auth preflight: a stale `recent_auth_at` renders a
+  **Confirm with GitHub** link whose return target is `/repos/:id#danger`; the
+  stale POST refusal uses the same anchor, so the form is on screen after
+  re-authentication instead of the page top.
 - **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
   `repo`, `status` and `kind` as GET parameters and applies them in SQL, so the
   count, the page and the pagination links describe the same list; a value the

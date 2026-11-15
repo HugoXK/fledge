@@ -1,0 +1,1 @@
+The repository danger zone now explains the fresh GitHub confirmation required before deleting a connection and returns to the danger section after re-authentication, instead of appearing to do nothing when the session's confirmation has expired.

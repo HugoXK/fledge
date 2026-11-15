@@ -120,6 +120,10 @@ tracked as `sessions.recent_auth_at`:
   came back and the action is submitted again.
 - Role checks still run first: a non-admin is refused with 403 before the
   recency check, and a fresh re-authentication does not grant a role.
+- The repository danger zone shows the requirement before the delete form: a
+  stale session gets a **Confirm with GitHub** link whose `next` returns to
+  `/repos/<id>#danger` with the refreshed notice. The stale POST refusal also
+  targets `#danger`, so the returning form is on screen instead of the page top.
 - The handlers that name `config.rateLimit` are rate-limited (60 attempts a
   minute per route and client address) through `@fastify/rate-limit`, registered
   with `global: false` so the ceiling is a property of those eight routes and
