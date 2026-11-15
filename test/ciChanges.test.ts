@@ -348,7 +348,9 @@ test('the classify step delegates the diff and keeps the every-gate fallback for
   // checkout holds the pull request's commits; the diff itself is still delegated
   // so the fetch-before-fallback rule stays testable.
   assert.match(step, /node base\/scripts\/ci-changes\.mjs --repo \. --git-base/, 'the classify step must delegate the diff so the fetch-before-fallback rule is testable')
-  assert.match(step, /\*\) node base\/scripts\/ci-changes\.mjs --all; node base\/scripts\/gate-integrity\.mjs --all; exit 0 ;;/, 'a push or schedule still verifies the whole tree')
+  // #640: the gate-integrity helper tests the base tree for the file, so the pull
+  // request that introduces it still classifies; a push or schedule runs both.
+  assert.match(step, /\*\) node base\/scripts\/ci-changes\.mjs --all; gate_integrity --all; exit 0 ;;/, 'a push or schedule still verifies the whole tree')
   assert.doesNotMatch(step, /git diff/, 'the untestable shell diff is what fell through to --all; it must not come back')
 })
 

@@ -85,11 +85,23 @@ jobs:
           GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: |
           set -euo pipefail
+          # #640: the pull request that introduces `scripts/gate-integrity.mjs`
+          # runs this job with a base branch that predates the file. The test is
+          # against the base tree, so a diff cannot decide whether the summary
+          # runs; without the file there is no summary to write, and the merge
+          # still needs its T3 PASS.
+          gate_integrity() {
+            if [ -f base/scripts/gate-integrity.mjs ]; then
+              node base/scripts/gate-integrity.mjs "$@"
+            else
+              echo "::notice::gate-integrity is not on the base branch yet; this change introduces it"
+            fi
+          }
           ref=""
           case "$EVENT" in
             pull_request) base="$PR_BASE"; head="$PR_HEAD"; ref="$PR_BASE_REF" ;;
             merge_group) base="$GROUP_BASE"; head="$GROUP_HEAD"; ref="$GROUP_BASE_REF" ;;
-            *) node base/scripts/ci-changes.mjs --all; node base/scripts/gate-integrity.mjs --all; exit 0 ;;
+            *) node base/scripts/ci-changes.mjs --all; gate_integrity --all; exit 0 ;;
           esac
           # #752: a branch cut before the latest `main` names a base commit that
           # this checkout does not carry, so the two-commit diff could not be
@@ -101,7 +113,7 @@ jobs:
           node base/scripts/ci-changes.mjs --repo . --git-base "$base" --git-head "$head" --base-ref "$ref"
           # #640: the reviewer must see that the gate is inside the diff this gate
           # judges; an unreadable diff fails closed instead of reporting a clean one.
-          node base/scripts/gate-integrity.mjs --repo . --git-base "$base" --git-head "$head" --base-ref "$ref"
+          gate_integrity --repo . --git-base "$base" --git-head "$head" --base-ref "$ref"
 
   lint:
     name: lint

@@ -62,6 +62,19 @@ test('the change classifier reads the head diff while the classifier code comes 
   assert.ok(block.includes('base/scripts/ci-changes.mjs'), 'the classifier itself comes from base')
 })
 
+test('the gate-integrity call is guarded against the base tree, so the pull request that introduces it still runs the job', () => {
+  const block = jobBlock(ci, 'changes')
+  assert.ok(block.includes('[ -f base/scripts/gate-integrity.mjs ]'), 'the guard must test the base copy of the evaluator')
+  assert.ok(
+    !block.includes('[ -f scripts/gate-integrity.mjs ]'),
+    'a guard on the head copy would let the pull request decide whether the summary runs',
+  )
+  for (const call of ['gate_integrity --all', 'gate_integrity --repo . --git-base']) {
+    assert.ok(block.includes(call), `the changes job must call ${call}`)
+  }
+  assert.ok(!block.includes('node base/scripts/gate-integrity.mjs --repo .'), 'the only invocation is the guarded helper')
+})
+
 function run(script: string, needsPath: string) {
   return spawnSync(process.execPath, [script, '--needs', needsPath], { encoding: 'utf8' })
 }

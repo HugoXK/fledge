@@ -365,8 +365,12 @@ pull request that could widen either would grade its own work.
 The `changes` job also runs `scripts/gate-integrity.mjs`, which writes every
 gate file in the diff into the job summary. It fails closed when the diff cannot
 be read: a summary that says "no gate file" over an unreadable diff would be a
-blind gate, not a clean one. Nothing about the merge requirement changes — a
-diff that edits the gate is still T3 and still needs a PASS at the tip.
+blind gate, not a clean one. The step runs it only when the base tree has the
+file (`[ -f base/scripts/gate-integrity.mjs ]`), because the pull request that
+introduces the summary runs against a base branch that predates it; the test is
+on the base path, so a diff cannot decide whether the summary runs. Nothing
+about the merge requirement changes — a diff that edits the gate is still T3 and
+still needs a PASS at the tip.
 
 What this does not move: for a `pull_request` event GitHub fetches the workflow
 YAML itself from the pull request, so a job's own `run:` lines are, by
