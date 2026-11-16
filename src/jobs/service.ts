@@ -54,7 +54,7 @@ import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, re
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
+import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
@@ -1175,7 +1175,9 @@ export class Jobs {
           return (await active.issueIsClosed(ref.owner, ref.name, ref.number)) ? 'closed' : 'open'
         }
         const pull = await active.getPullRequest(ref.owner, ref.name, ref.number)
-        return pull.merged ? 'merged' : 'open'
+        // #788: closed-without-merge is `closed`, not `open`; the mapping lives
+        // in continuity.ts so the test and the reader cannot disagree.
+        return carryOverPullState(pull)
       },
     }
   }
@@ -1287,13 +1289,14 @@ export class Jobs {
     // #365: a scheduled or follow-up run may only carry what is still live, so
     // the block is built with one live read per linked line. Nothing about the
     // block changes when a line names no issue or PR.
-    const carryOver = trigger === 'schedule' || trigger === 'followup'
-      ? (await buildCarryOver({
+    const carryOverBlock = trigger === 'schedule' || trigger === 'followup'
+      ? await buildCarryOver({
         recent: this.store.listJobsForRepo(repo.id, 3),
         openWork: this.store.listOpenWorkItems(repo.id),
         read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
-      })).text
-      : ''
+      })
+      : null
+    const carryOver = carryOverBlock?.text ?? ''
     // #366 slice 1: exactly one data line, and only when a previous run exists.
     // The line is placed before the goal is capped: appending it after the cap
     // would let a goal that is already near 4000 characters swallow it silently,
@@ -1401,7 +1404,11 @@ export class Jobs {
       }
       throw error
     }
-    if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
+    if (continuityUsed && carryOverBlock !== null) {
+      // #788: the observation is a fact about the run, so it is stored with the
+      // row instead of being re-derived from the goal text on the page.
+      this.store.updateJob(job.id, { continuity_used: 1, carry_over_json: JSON.stringify(carryOverBlock.report) })
+    }
     if (temporal !== undefined) {
       job.temporal_json = JSON.stringify(temporal)
       this.store.updateJob(job.id, { temporal_json: job.temporal_json })
@@ -1474,15 +1481,15 @@ export class Jobs {
     // line this job writes — here, in the runner, in the side effects — carries
     // the same value under `trace`, so one search returns the whole job.
     const jobLog = log.with({ trace: job.id })
+    let attemptEpoch = 0
     try {
       // Mark the job running before dispatch: the bridge may send its first
       // heartbeat as soon as the agent is up, and a queued row may not accept one.
-      this.store.updateJob(job.id, {
-        status: 'running',
-        started_at: nowIso(),
-        lease_owner: 'inline',
-        lease_until: addMinutes(5),
-      })
+      // #247: the attempt row commits with that transition, so a crash from here
+      // on has a dispatch record the stale sweep can close as `reaped`.
+      const attempt = this.store.startJobAttempt(job.id, 'inline', 5 * 60_000)
+      if (attempt === undefined) return { ok: false, job: this.store.getJob(job.id), error: '任务已被派发或结束' }
+      attemptEpoch = attempt.epoch
       this.startLeaseHeartbeat(job.id, 'inline', 5 * 60_000)
       observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
       this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
@@ -1515,10 +1522,15 @@ export class Jobs {
         // runner was dispatching, so report whatever state it ended in.
         const current = this.store.getJob(job.id)
         if (current !== undefined && (current.status === 'succeeded' || current.status === 'running')) return { ok: true, job: current }
+        // #247: a report from a lease that was reaped mid-dispatch is recorded on
+        // the attempt it lost instead of being applied to whatever owns the row now.
+        this.store.refuseJobAttempt(job.id, attemptEpoch, `late running report from inline: job is ${current?.status ?? 'gone'}`)
         return { ok: false, job: current, error: current?.error ?? '任务失败' }
       }
-      this.finish(job.id, { status: result.status === 'succeeded' ? 'succeeded' : 'failed', branch: result.branch, prUrl: result.prUrl, issueUrl: result.issueUrl, reviewScore: result.reviewScore, summary: result.summary, error: result.error }, revoke)
-      return { ok: result.status === 'succeeded', job: this.store.getJob(job.id), ...(result.status === 'failed' ? { error: result.error ?? '任务失败' } : {}) }
+      const finished = this.finish(job.id, { status: result.status === 'succeeded' ? 'succeeded' : 'failed', branch: result.branch, prUrl: result.prUrl, issueUrl: result.issueUrl, reviewScore: result.reviewScore, summary: result.summary, error: result.error }, revoke, null, null, null, { worker: 'inline', epoch: attemptEpoch })
+      // #247: a refused report (the lease was reaped mid-dispatch) is not a
+      // success, even when the worker claimed one.
+      return { ok: finished && result.status === 'succeeded', job: this.store.getJob(job.id), ...(result.status === 'failed' || !finished ? { error: result.error ?? this.store.getJob(job.id)?.error ?? '任务失败' } : {}) }
     } catch (error) {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
@@ -1527,13 +1539,21 @@ export class Jobs {
       // retried twice as if the instance had been down. The refusal has its own
       // code; only a failure that names neither keeps the bridge category.
       const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
-      this.store.updateJob(job.id, { status: 'failed', error: redact(message).slice(0, 1000), error_code: startCode, finished_at: nowIso() })
-      this.store.releaseJobLease(job.id)
-      this.clearLeaseHeartbeat(job.id)
-      if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
-      else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
-      this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
+      // #247: the job and its attempt fail in one guarded transaction, so a
+      // worker whose lease was already reaped cannot rewrite the row. A refusal
+      // is recorded on the attempt it lost; a lost transition must not release a
+      // lease a newer dispatch now holds.
+      const startFailed = this.store.failJobAttempt(job.id, attemptEpoch, redact(message).slice(0, 1000), startCode)
+      if (startFailed) {
+        this.clearLeaseHeartbeat(job.id)
+        if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
+        else this.store.updateRepo(repo.id, { last_status: 'failed' })
+        this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
+        this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
+      } else {
+        this.store.refuseJobAttempt(job.id, attemptEpoch, `late failure report from inline: ${message}`.slice(0, 300))
+        jobLog.warn('late dispatch failure refused', { error: message })
+      }
       jobLog.error('job start failed', { error: message })
       return { ok: false, job: this.store.getJob(job.id), error: message, code: 'RUNNER_ERROR' }
     }
@@ -1606,10 +1626,15 @@ export class Jobs {
 
   // Returns whether this call moved the row to a terminal state. Callers that
   // perform side effects must only do so when it returns true.
-  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string; errorCode?: FailureCode }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null): boolean {
+  private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string; errorCode?: FailureCode }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null, owner: { worker: string; epoch: number } | null = null, reap = false): boolean {
     const job = this.store.getJob(jobId)
     if (job === undefined) return false
-    if (job.status !== 'queued' && job.status !== 'running') return false
+    if (job.status !== 'queued' && job.status !== 'running') {
+      // #247: a report from a dispatch worker whose lease was already reaped is
+      // refused and recorded on the attempt it lost; the reaper's outcome stands.
+      if (owner !== null) this.store.refuseJobAttempt(jobId, owner.epoch, `late ${result.status} report from ${owner.worker}: job is ${job.status}`)
+      return false
+    }
     const branch = result.branch ?? job.branch
     // undefined means "not reported, keep the column"; null means "reported but
     // unplaceable, store no link" (a rejected callback URL must not linger).
@@ -1623,6 +1648,7 @@ export class Jobs {
     const error = redact(result.error ?? job.error ?? '').slice(0, 2000)
     // The guarded transition is the idempotency key: a lost update means another
     // delivery already finalised the job and must own the side effects.
+    const epoch = owner?.epoch ?? job.lease_epoch
     const claimed = this.store.claimJobTerminal(jobId, result.status, fingerprint, {
       branch,
       pr_url: prUrl,
@@ -1634,8 +1660,19 @@ export class Jobs {
       error,
       error_code: result.errorCode ?? job.error_code ?? null,
       finished_at: nowIso(),
+    }, {
+      // #247: the attempt is finalised in the same transaction as the job, and
+      // its epoch is the fence. A reaper writes `reaped`, never a guessed result.
+      epoch,
+      outcome: reap ? 'reaped' : result.status === 'succeeded' ? 'succeeded' : 'failed',
+      error: reap ? error : null,
     })
-    if (!claimed) return false
+    if (!claimed) {
+      // #247: the guarded transition lost on the epoch fence, so this report is
+      // from an attempt that was taken over. Record the refusal where it belongs.
+      if (owner !== null) this.store.refuseJobAttempt(jobId, owner.epoch, `lease epoch ${String(owner.epoch)} lost: job is ${this.store.getJob(jobId)?.status ?? 'gone'}`)
+      return false
+    }
     // #379: the finding ledger is written inside the guarded transition, so a
     // replayed callback never reaches this line and the counts it produces are
     // the ones the ledger stored. The transition has already committed, so a
@@ -4136,12 +4173,9 @@ export class Jobs {
       if (!loaded.ok) return fail(loaded.error)
       rules = loaded.rules
     }
-    this.store.updateJob(job.id, {
-      status: 'running',
-      started_at: nowIso(),
-      lease_owner: worker,
-      lease_until: addMinutes(5),
-    })
+    // #247: the attempt row and the running transition are one commit.
+    const attempt = this.store.startJobAttempt(job.id, worker, 5 * 60_000)
+    if (attempt === undefined) return
     this.startLeaseHeartbeat(job.id, worker, 5 * 60_000)
     observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
     this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
@@ -4186,7 +4220,14 @@ export class Jobs {
         ...(rules === undefined ? {} : { rules }),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
-      if (result.status === 'running') return
+      if (result.status === 'running') {
+        // #247: a report from a reaped lease is recorded on the attempt it lost.
+        const current = this.store.getJob(job.id)
+        if (current !== undefined && current.status === 'failed') {
+          this.store.refuseJobAttempt(job.id, attempt.epoch, `late running report from ${worker}: job is ${current.status}`)
+        }
+        return
+      }
       this.finish(job.id, {
         status: result.status === 'succeeded' ? 'succeeded' : 'failed',
         branch: result.branch,
@@ -4195,18 +4236,22 @@ export class Jobs {
         reviewScore: result.reviewScore,
         summary: result.summary,
         error: result.error,
-      }, revoke)
+      }, revoke, null, null, null, { worker, epoch: attempt.epoch })
     } catch (error) {
       revoke()
       const message = String(error instanceof Error ? error.message : error)
       const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
-      this.store.updateJob(job.id, { status: 'failed', error: redact(message).slice(0, 1000), error_code: startCode, finished_at: nowIso() })
-      this.store.releaseJobLease(job.id)
-      this.clearLeaseHeartbeat(job.id)
-      if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
-      else this.store.updateRepo(repo.id, { last_status: 'failed' })
-      this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
-      this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
+      const startFailed = this.store.failJobAttempt(job.id, attempt.epoch, redact(message).slice(0, 1000), startCode)
+      if (startFailed) {
+        this.clearLeaseHeartbeat(job.id)
+        if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
+        else this.store.updateRepo(repo.id, { last_status: 'failed' })
+        this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
+        this.store.audit(user.id, 'job.failed', `${job.id}: ${redact(message).slice(0, 300)}`)
+      } else {
+        this.store.refuseJobAttempt(job.id, attempt.epoch, `late failure report from ${worker}: ${message}`.slice(0, 300))
+        jobLog.warn('late queued dispatch failure refused', { error: message })
+      }
       jobLog.error('queued job start failed', { error: message })
     }
   }
@@ -4287,7 +4332,7 @@ export class Jobs {
           ? '任务失败：实例里的会话在派发后没有发起任何模型调用（供应商额度或限流拒绝了这次调用）。'
           : `任务停滞：超过 ${this.config.runner.stallMinutes} 分钟没有心跳。`,
         errorCode: noModelCall ? 'PROVIDER_CALL_NEVER_STARTED' : 'JOB_STALLED',
-      }, revoke)
+      }, revoke, null, null, null, null, true)
     }
     const staleBefore = addMinutes(-this.config.runner.timeoutMinutes)
     const queuedStaleBefore = this.config.runner.queueDispatch ? addMinutes(-this.config.runner.timeoutMinutes) : addMinutes(-10)
@@ -4297,7 +4342,7 @@ export class Jobs {
         const row = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
-      this.finish(job.id, { status: 'failed', error: job.status === 'queued' ? '任务排队超时未启动' : '任务超时未回报', errorCode: 'JOB_TIMEOUT' }, revoke)
+      this.finish(job.id, { status: 'failed', error: job.status === 'queued' ? '任务排队超时未启动' : '任务超时未回报', errorCode: 'JOB_TIMEOUT' }, revoke, null, null, null, null, true)
     }
     for (const job of this.store.expiredLeaseJobs(nowIso())) {
       if (handled.has(job.id)) continue
@@ -4307,7 +4352,7 @@ export class Jobs {
         if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
       }
       incCounter('fledge_lease_expired_total', { kind: job.kind }, 1, 'Jobs whose worker lease expired')
-      this.finish(job.id, { status: 'failed', error: '任务租约过期：worker 未续约。', errorCode: 'JOB_LEASE_EXPIRED' }, revoke)
+      this.finish(job.id, { status: 'failed', error: '任务租约过期：worker 未续约。', errorCode: 'JOB_LEASE_EXPIRED' }, revoke, null, null, null, null, true)
     }
     this.store.deleteExpiredJobTokens()
     if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {
@@ -4396,6 +4441,16 @@ export class Jobs {
             misfire: scheduleRow.misfire === 'once' ? 'once' : 'skip',
             graceMs: scheduleRow.grace_ms,
           })
+      // #544 slice 9: a paused schedule is decided, not run. The instant and its
+      // passed-over neighbours become skipped rows with reason `paused` and the
+      // cursor still moves, so the window a maintainer paused is readable
+      // afterwards and resuming does not make up a backlog. The branch sits
+      // before every other reason, because "somebody paused this" outranks the
+      // budget or an active job as the explanation for the instant.
+      if (plan !== null && scheduleRow !== undefined && scheduleRow.status === 'paused') {
+        this.skipScheduledOccurrence(repo, plan, 'paused')
+        continue
+      }
       if (plan !== null && plan.dueAt === null) {
         // #544 slice 5: a window whose only outcome is "too late" still has rows
         // to record. Only a decision with nothing to say — no run and no skipped

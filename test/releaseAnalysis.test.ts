@@ -406,11 +406,11 @@ test('the analysis route refuses a green run without minting a token', async () 
   await built.close()
 })
 
-// The column is additive on purpose: a database written by the 45 build has
+// The column is additive on purpose: a database written by the 46 build has
 // release rows and no analysis, and an upgrade must keep those rows readable
 // rather than requiring a fresh database. This is the migration half of the
-// schema bump, tested at a real 45 file.
-test('a database written at schema 45 gains the analysis column and keeps its release rows', async () => {
+// schema bump, tested at a real 46 file.
+test('a database written at schema 46 gains the analysis column and keeps its release rows', async () => {
   const { mkdtempSync, rmSync } = await import('node:fs')
   const { tmpdir } = await import('node:os')
   const { join } = await import('node:path')
@@ -423,15 +423,15 @@ test('a database written at schema 45 gains the analysis column and keeps its re
     const created = store.recordRelease({ repoId: repo.id, userId: user.id, version: 'v1.0.0', tagName: 'v1.0.0', targetSha: 'a'.repeat(40), tagObjectSha: 'e'.repeat(40), previousTag: null, actor: 'analysis-migrate' })
     if (created === undefined) throw new Error('the release row must exist for this test')
     const release = created
-    // The 45 shape predates the column: dropping it is how this file becomes a
+    // The 46 shape predates the column: dropping it is how this file becomes a
     // database the previous release wrote.
     store.db.exec('ALTER TABLE repo_releases DROP COLUMN analysis_json')
-    store.db.exec('PRAGMA user_version = 45;')
+    store.db.exec('PRAGMA user_version = 46;')
     store.close()
 
     const upgraded = new Store(path)
     const version = upgraded.get<{ user_version: number }>('PRAGMA user_version')?.user_version
-    assert.equal(version, 46)
+    assert.equal(version, 47)
     const columns = upgraded.all<{ name: string }>('PRAGMA table_info(repo_releases)').map((row) => row.name)
     assert.ok(columns.includes('analysis_json'), 'the upgrade adds the column')
     const kept = upgraded.releaseById(release.id)
