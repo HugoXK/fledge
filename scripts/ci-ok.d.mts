@@ -8,7 +8,9 @@ export interface JobResult {
 export interface EvaluateOptions {
   required?: string[]
   skippable?: Record<string, string[]>
+  skipWhen?: Record<string, string>
   eventName?: string
+  changes?: Record<string, boolean | string>
 }
 
 export interface Evaluation {

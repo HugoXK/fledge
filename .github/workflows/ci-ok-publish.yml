@@ -1,0 +1,76 @@
+name: CI verdict
+
+# #855: the check that gates a merge has to be defined by the default branch.
+#
+# A `pull_request` workflow runs the YAML from the pull request's own tree, so
+# the aggregate job inside `ci.yml` — its `run:` line included — is text the
+# change under test wrote. The base-tree checkouts from #640 moved the scripts,
+# not the workflow that calls them.
+#
+# GitHub always loads a `workflow_run` workflow from the default branch. This
+# one reads the finished `CI` run's job results, evaluates them with the default
+# branch's required list and classifier, and publishes the `ci-ok` check run
+# itself. The in-run aggregate inside `ci.yml` keeps publishing `ci-ok` for one
+# step, because on the pull request that adds this file there would otherwise be
+# no `ci-ok` at all and the change could never merge. Every check run at the head
+# sha counts, so the head's green cannot retire this red one; a follow-up renames
+# the in-run job to `ci-ok-head`, leaving one producer.
+
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+
+concurrency:
+  # One verdict per head, and a later run must not be cancelled by this one:
+  # `scripts/ci-ok-run.mjs` skips a `cancelled` CI run because the run that
+  # replaced it owns the verdict. The group serialises the two publishers of
+  # one head so the check runs are created in completion order.
+  group: ci-ok-publish-${{ github.event.workflow_run.head_sha }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish ci-ok
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The git data under test: the head commit the finished run judged,
+          # with the history the base classifier diffs against. Nothing in this
+          # tree executes — every command below runs a path under `base/`.
+          ref: ${{ github.event.workflow_run.head_sha }}
+          fetch-depth: 0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The gate itself, from the same branch as this workflow file.
+          ref: ${{ github.event.repository.default_branch }}
+          path: base
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # The same evidence line the in-run aggregate prints, moved to the file
+      # that now decides: a reviewer can name the evaluator the verdict came
+      # from instead of inferring it from the trigger.
+      - name: Name the evaluator that decides this verdict
+        run: |
+          set -euo pipefail
+          echo "scripts/ci-ok-run.mjs from the default branch: blob $(git -C base rev-parse HEAD:scripts/ci-ok-run.mjs)"
+          echo "scripts/ci-ok.mjs from the default branch: blob $(git -C base rev-parse HEAD:scripts/ci-ok.mjs)"
+      - name: Publish the ci-ok check run for the finished run
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_EVENT_PATH: ${{ github.event_path }}
+        run: node base/scripts/ci-ok-run.mjs --repo .

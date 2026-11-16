@@ -1,0 +1,48 @@
+// Types for the out-of-run aggregate (#855). The publisher workflow reads a
+// finished `CI` run's job list and publishes the `ci-ok` check run itself, so
+// the suite needs the pure half to assert what a head cannot do.
+export interface FinishedJob {
+  name?: string
+  status?: string
+  conclusion?: string | null
+}
+
+export interface JobResult {
+  result: string
+}
+
+export interface AggregateVerdict {
+  needs: Record<string, JobResult>
+  lines: string[]
+  problems: string[]
+  ok: boolean
+}
+
+export interface AggregateInput {
+  jobs: FinishedJob[]
+  eventName?: string
+  changes?: Record<string, boolean | string>
+  required?: string[]
+}
+
+export interface CheckRunPayload {
+  name: string
+  head_sha: string
+  status: string
+  conclusion: string
+  output: { title: string; summary: string }
+}
+
+export declare const REQUIRED_CHECK: string
+export declare const HEAD_AGGREGATE_JOB: string
+export declare function jobKey(name: string, required?: string[]): string | null
+export declare function needsFromJobs(jobs: FinishedJob[], required?: string[]): Record<string, JobResult>
+export declare function verdict(input: AggregateInput): AggregateVerdict
+export declare function shouldPublish(run: { conclusion?: string | null } | null): boolean
+export declare function checkRunPayload(input: {
+  headSha: string
+  result: AggregateVerdict
+  runId: number
+  runUrl?: string
+  required?: string[]
+}): CheckRunPayload
