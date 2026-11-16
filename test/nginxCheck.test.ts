@@ -128,10 +128,97 @@ test('a config nginx rejects fails the deploy-check step', () => {
   assert.match(run.stdout, /nginx: deploy\/nginx\.conf\.example failed `nginx -t`/)
 })
 
+test('a runner without nginx fails the check instead of passing silently', () => {
+  // #882: this branch used to print a gap and exit 0, so a broken sample merged
+  // behind a green `deploy-check`. An empty PATH proves the branch the check
+  // takes when no nginx is reachable; the job installs one, so this is a failure.
+  // `/bin/bash` by absolute path: the empty PATH is the point of the test, and
+  // resolving `bash` through it would fail the spawn instead of the check.
+  const result = spawnSync('/bin/bash', [script], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env, PATH: '/nonexistent-882' },
+  })
+  const stdout = result.stdout ?? ''
+  assert.equal(result.status, 1, 'a missing nginx must exit non-zero so deploy-check, and ci-ok, go red')
+  assert.match(stdout, /nginx is not installed/, 'the failure must say nginx is missing, not that a check was skipped')
+  assert.doesNotMatch(stdout, /was not syntax-checked|\(gap\)/, 'a missing tool must not come back as a recorded gap')
+})
+
+/** Run the whole sample contract with a stub `nginx` first on PATH. */
+function runContract(body: string): { status: number | null; stdout: string; stderr: string } {
+  const dir = mkdtempSync(join(tmpdir(), 'deploy-samples-'))
+  try {
+    const bin = join(dir, 'nginx')
+    writeFileSync(bin, body)
+    chmodSync(bin, 0o755)
+    const result = spawnSync('bash', [join(root, 'scripts/check-deploy-samples.sh')], {
+      cwd: root,
+      encoding: 'utf8',
+      // `STUB_OK` dumps the config it was handed; give it somewhere to write.
+      env: { ...process.env, PATH: `${dir}:${process.env.PATH ?? ''}`, NGINX_DUMP: join(dir, 'dump.conf') },
+    })
+    return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+// A stub that accepts every config: the contract must catch it with its negative
+// proof, because "nginx accepted the sample" is only evidence when the same
+// invocation can reject a broken one.
+const STUB_ACCEPTS_ALL = STUB_OK
+
+// A stub that accepts the sample and rejects the copy carrying the marker the
+// contract appends: the shape of a real nginx, without needing one installed.
+const STUB_REJECTS_MARKED = `#!/usr/bin/env bash
+set -euo pipefail
+config=""
+previous=""
+for argument in "$@"; do
+  if [ "$previous" = "-c" ]; then config="$argument"; fi
+  previous="$argument"
+done
+if [ -z "$config" ]; then echo 'stub nginx: no -c argument' >&2; exit 2; fi
+while IFS= read -r included; do
+  if grep -q 'bogus_882_self_check' "$included"; then
+    echo 'nginx: [emerg] unknown directive "bogus_882_self_check"' >&2
+    exit 1
+  fi
+done < <(sed -n 's/^[[:space:]]*include[[:space:]]\\+\\(\\/[^;]*\\);$/\\1/p' "$config")
+exit 0
+`
+
+test('the negative proof fails a checker that accepts every sample', () => {
+  const run = runContract(STUB_ACCEPTS_ALL)
+  assert.equal(run.status, 1, 'a check that accepts a broken sample must fail the gate (#882)')
+  assert.match(run.stdout, /ACCEPTED a deliberately broken sample/, 'the failure must name the broken sample it accepted')
+})
+
+test('the contract passes only when the same invocation rejects the broken sample', () => {
+  const run = runContract(STUB_REJECTS_MARKED)
+  assert.equal(run.status, 0, `the contract must pass with a discriminating nginx; stderr: ${run.stderr}`)
+  assert.match(run.stdout, /nginx: real parse/, 'the summary must say the sample was really parsed')
+  assert.match(run.stdout, /nginx: negative proof/, 'the summary must say the rejection was proven')
+})
+
+test('deploy-check installs nginx and runs the whole sample contract', () => {
+  const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
+  const block = jobBlock(workflow, 'deploy-check')
+  // #882: the real parse needs a real binary, and the job used to treat its
+  // absence as a recordable note. Installing it is the gate's input now.
+  assert.match(block, /apt-get install[^\n]*nginx/, 'deploy-check must install nginx so the parse is real')
+  assert.match(block, /bash scripts\/check-deploy-samples\.sh/, 'the job must call the contract script that the suite drives')
+  assert.doesNotMatch(block, /\bgap\b/i, 'no branch of the job may keep a gap and stay green')
+  assert.doesNotMatch(block, /advisory/i, 'the systemd half is a gate, not advice')
+})
+
 test('deploy-check runs the checked-in wrapper instead of building one inline', () => {
   const workflow = readFileSync(join(root, '.github/workflows/ci.yml'), 'utf8')
   const block = jobBlock(workflow, 'deploy-check')
-  assert.match(block, /bash scripts\/check-nginx-config\.sh/, 'deploy-check must call the script that the suite drives')
+  assert.match(block, /bash scripts\/check-deploy-samples\.sh/, 'deploy-check must call the contract script')
+  const contract = readFileSync(join(root, 'scripts/check-deploy-samples.sh'), 'utf8')
+  assert.match(contract, /scripts\/check-nginx-config\.sh/, 'the contract script must run the nginx check the suite drives')
   assert.doesNotMatch(block, /echo 'events \{\}'/, 'the wrapper must not be assembled inline in the workflow again')
   assert.doesNotMatch(block, /\bnginx -t\b/, 'the nginx invocation must live in the script so the suite can see the config')
 })

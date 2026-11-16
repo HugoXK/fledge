@@ -143,7 +143,16 @@ test('the deploy job starts only on a deploy flag, runs the syntax checks, and c
   assert.match(deploy, /node --check deploy\/cloudflare-email-worker\.js/, 'the worker must be parsed, not trusted to review')
   assert.match(deploy, /promtool"\s+check rules deploy\/prometheus\/fledge-alerts\.yml/, 'the alert rules must be checked by promtool')
   assert.match(deploy, /PROMTOOL_SHA256: [0-9a-f]{64}/, 'the promtool archive must be checksum-pinned, not a floating download')
-  assert.match(deploy, /systemd-analyze verify deploy\/fledge\.service/, 'the systemd sample must be offered to systemd-analyze')
+  // #882: the job installs the binary its check needs and runs one contract
+  // script. The advisory `systemd-analyze verify` call is gone: it was absent on
+  // runners and its verdict was never a gate.
+  assert.match(deploy, /apt-get install[^\n]*nginx/, 'the nginx check must run a real binary the job installs')
+  assert.match(
+    deploy,
+    /bash scripts\/check-deploy-samples\.sh/,
+    'the sample contract (parse, negative proof, static systemd) must be one script the suite drives',
+  )
+  assert.doesNotMatch(deploy, /systemd-analyze verify/, 'the systemd half must be a gate that runs everywhere')
 
   const changes = jobBlock(workflow, 'changes')
   assert.match(changes, /deploy: \$\{\{ steps\.classify\.outputs\.deploy \}\}/, 'the changes job must publish the deploy flag')
