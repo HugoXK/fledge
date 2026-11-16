@@ -31,9 +31,10 @@ import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
-import { carryOverHeaderFromGoal, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
+import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromGoal, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
+import { reviewMergeCard, reviewMergeState, type PullTip } from './reviewMerge.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
 import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
@@ -1428,6 +1429,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   })
   const scheduledNext = input.scheduledNext
   const nextRunText = scheduledNext === undefined ? nextRunLine(nextRunState, t) : plannedNextLine(scheduledNext, t)
+  // #802: the header called this interval "Auto every", which reads as the work
+  // cadence. It is not: work starts from ready items after the short cooldown
+  // (`workDue`), while discovery is gated on this interval and floors it at an
+  // hour (`discoverDue`, `MIN_DISCOVERY_INTERVAL_MINUTES`). Printing the stored
+  // number would let a legacy 30-minute row claim a cadence discovery never runs
+  // at, so the pill prints the interval discovery actually uses.
+  const discoveryIntervalMinutes = Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes)
   const instanceTeam = instance === undefined ? null : parseTeam(instance.team_json)
   const instanceReady = instance?.status === 'ready' && instanceTeam !== null
   const flybotAvailable = config.flybot.instanceImage !== ''
@@ -1505,7 +1513,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`}</p>
         <div class="repo-status-strip">
           <span class="repo-status"><span class="fine">${escapeHtml(t('自动迭代', 'Automatic work'))}</span><b>${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))}</b></span>
-          <span class="repo-status"><span class="fine">${escapeHtml(t('自动间隔', 'Auto every'))}</span><b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b></span>
+          <span class="repo-status"><span class="fine">${escapeHtml(t('发现间隔', 'Discovery every'))}</span><b>${escapeHtml(intervalLabel(discoveryIntervalMinutes, t))}</b></span>
           <span class="repo-status"><span class="fine">${escapeHtml(t('下次约', 'Next'))}</span><span data-next-run data-next-source="${escapeHtml(scheduledNext === undefined ? 'interval' : 'schedule')}">${escapeHtml(nextRunText)}</span></span>
           <a class="repo-status" href="/repos/${escapeHtml(repo.id)}/schedule">${escapeHtml(t('排期控制台', 'Schedule console'))}</a>
           <span class="repo-status"><span class="fine">FlyBot</span>${flybotAvailable ? (instance === undefined ? escapeHtml(t('未创建', 'not created')) : badge(t, instance.status)) : escapeHtml(t('未启用', 'not enabled'))}</span>
@@ -1686,7 +1694,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         const number = /\/pull\/(\d+)/.exec(job.pr_url ?? '')?.[1] ?? ''
         const readiness = mergeReadiness(job)
         const reasons = readiness.reasons.slice(0, 2).join(' · ')
-        return `<tr><td data-label="PR"><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}</td><td data-label="${escapeHtml(t('核实', 'Verified'))}">${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td data-label="${escapeHtml(t('审核分', 'Review'))}">${job.review_score === null ? '—' : job.review_score}</td><td data-label="${escapeHtml(t('成本', 'Cost'))}">${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td data-label="${escapeHtml(t('创建', 'Created'))}">${escapeHtml(humanTimeShort(job.created_at))}</td><td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form>${repo.repo_role === 'maintainer' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}${commandHidden(commands[`merge:${job.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('合并', 'Merge'))}</button></form>` : ''}</div></td></tr>`
+        return `<tr><td data-label="PR"><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}</td><td data-label="${escapeHtml(t('核实', 'Verified'))}">${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td data-label="${escapeHtml(t('审核分', 'Review'))}">${job.review_score === null ? '—' : job.review_score}</td><td data-label="${escapeHtml(t('成本', 'Cost'))}">${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td data-label="${escapeHtml(t('创建', 'Created'))}">${escapeHtml(humanTimeShort(job.created_at))}</td><td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form><a class="link" href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}#review-merge">${escapeHtml(t('审查并合并', 'Review and merge'))}</a></div></td></tr>`
       }).join('')
   if (repo.auto_merge === 0 && prJobs.length >= 3) {
     pageMessages.push({
@@ -1696,7 +1704,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     })
   }
   const deliveryCard = `<section class="card"><h2>${escapeHtml(t('待处理 PR', 'Pull requests to decide'))}</h2>
-    <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection.'))}</p>
+    <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。每个 PR 的合并在它自己的任务页『审查 → 合并』卡片里，只有那一个合并控件。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection. Each pull request is merged from the one review → merge card on its own job page.'))}</p>
     ${repo.repo_role === 'maintainer' && prJobs.length > 0 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : ''}
     <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('核实', 'Verified'))}</th><th>${escapeHtml(t('审核分', 'Review'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th><th>${escapeHtml(t('创建', 'Created'))}</th><th></th></tr></thead><tbody>${prRows}</tbody></table></div></section>`
   const lifecycleItems: string[] = []
@@ -3157,6 +3165,13 @@ export function jobPage(input: {
   strategy?: JobStrategyView
   // #540: the revision this render saw and the key a double submit replays.
   // Absent on surfaces that cannot write (the admin support view).
+  // #264: the merge command the review/merge card sends. Absent on a read-only
+  // surface, which then renders the state without a control.
+  merge?: { revision: number; idempotencyKey: string }
+  // #264: the pull request's current tip, from the same cached read the change
+  // story uses. Without it the card says it could not read the tip instead of
+  // assuming the stored verdict still covers it.
+  pullTip?: PullTip | null
   cancel?: { revision: number; idempotencyKey: string }
   pause?: { revision: number; idempotencyKey: string }
   execute?: { revision: number; idempotencyKey: string }
@@ -3512,6 +3527,28 @@ export function jobPage(input: {
     ${relationForm}
   </section>`
 
+  // #264: one card answers review -> merge at the top of the page, before the
+  // evidence cards, so the action is reachable without scrolling past them.
+  const mergeState = reviewMergeState({
+    job,
+    role: repo.repo_role ?? '',
+    verification,
+    guard: pathGuard,
+    adversarial,
+    tip: supportMode ? null : input.pullTip ?? null,
+  })
+  const reviewMerge = supportMode || mergeState.kind === 'none'
+    ? ''
+    : reviewMergeCard({
+        t,
+        viewer,
+        repoId: repo.id,
+        jobId: job.id,
+        prUrl: job.pr_url,
+        state: mergeState,
+        ...(input.merge === undefined ? {} : { merge: input.merge }),
+      })
+
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -3532,6 +3569,7 @@ export function jobPage(input: {
     </div>
     ${queueBlock}
   </section>
+  ${reviewMerge}
   ${priorityCard}
   ${relationsCard}
   ${decisionCard}

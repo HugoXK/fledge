@@ -29,6 +29,9 @@ const TAB_LABELS: Record<(typeof SECTIONS)[number], string> = {
 // has a role, and its own test covers that branch.
 const KEPT_IDS = ['inbox', 'chief', 'chief-thread', 'board', 'jobs', 'repo-settings', 'connection', 'goal-settings']
 
+// #264: the per-PR merge form moved to the job page's review/merge card (same
+// `task.merge` route), so this page's action inventory no longer carries it. The
+// row keeps a link to that card and the batches it owned before are unchanged.
 const FORM_ACTIONS = [
   '/auth/logout',
   // The global feedback dialog lives in the layout, so every page carries it.
@@ -36,7 +39,6 @@ const FORM_ACTIONS = [
   '/repos/:id/delete',
   '/repos/:id/delivery/merge-clean',
   '/repos/:id/disable',
-  '/repos/:id/jobs/job_nav/merge',
   '/repos/:id/jobs/job_nav/recheck',
   '/repos/:id/plan',
   '/repos/:id/refresh',

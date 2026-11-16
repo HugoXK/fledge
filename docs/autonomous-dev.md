@@ -180,7 +180,7 @@ and what `scripts/issue-hash.mjs` prints, so a verdict writer records from the
 same function instead of trimming by hand. The Lead recomputes it with
 
 ```sh
-node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold
+node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold | stale-anchor
 node scripts/issue-hash.mjs --issue <N>   # raw <hash> / trimmed <hash> for a verdict line
 ```
 
@@ -191,6 +191,21 @@ anyone other than the policy's `requiredPass` is not a PASS at all. A `hold`
 line (exit 7) means the card is approved but not claimable: `hold` replaces
 `ok` and nothing else, so a held card with `changes` still reports `changes`,
 and a held card with no verdict still reports `no-pass`.
+
+A `stale-anchor` line (exit 8) is the other question the gate answers: a card
+can be approved at the live body and still cite a `path:line` that does not
+exist at the sha the body names. The gate reads the tree at that sha — the first
+full 40-hex outside a fence, or `main` when the body pins nothing — and refuses
+`ok` when a cited path is absent (`found=missing-path`) or a cited line is past
+the file's last line (`found=last-line-<n>`), where the last line is the `\n`
+segments minus the trailing empty one. It replaces `ok` and nothing else, so a
+stale PASS, a CHANGES, a `hold` and a missing PASS all keep their own line and
+gain one stderr note per unresolved citation (at most five). Two things it
+deliberately does not do: a bare name that matches several paths is a note and
+never a verdict, and a citation inside a fenced block or on a line that declares
+the file new is not scanned. It cannot tell that a real line now holds a
+different function — the premise stays a human catch, as `docs/autonomous-dev.md`
+already says of the review itself.
 
 Known limit, stated rather than papered over: a byte-for-byte revert back to the
 PASSed text **does** revive the PASS, because the gate compares the live body

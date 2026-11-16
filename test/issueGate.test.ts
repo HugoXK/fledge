@@ -40,6 +40,14 @@ interface Fixture {
   rawBodyChunks?: Buffer[]
   // Split comments into pages of this size and emit Link: rel="next" between them.
   pageSize?: number
+  // #590: the tree and the readable files at the sha the body pins. `extraPaths`
+  // adds paths with no content, which is how the ambiguous-suffix case is built.
+  files?: Record<string, string>
+  extraPaths?: string[]
+  // When set, only this ref is served the files and every other ref gets an
+  // empty tree, so a gate that judges at `main` instead of the pin is caught
+  // rather than accidentally right.
+  pin?: string
 }
 
 interface Result {
@@ -77,6 +85,33 @@ async function runGate(fixture: Fixture): Promise<Result> {
         headers.link = `<${server.url}/repos/o/r/issues/76/comments?per_page=${pageSize}&page=${page + 1}>; rel="next"`
       }
       response.writeHead(200, headers)
+      response.end(payload)
+      return
+    }
+    // #590: the anchor check reads one tree per ref and one blob per path. The
+    // ref is what makes the case testable: with `fixture.pin` set, only that ref
+    // carries the files, so judging at `main` cannot pass by accident.
+    const served = (ref: string) => fixture.pin === undefined || ref === fixture.pin
+    const treeMatch = /^\/repos\/o\/r\/git\/trees\/([^/]+)$/.exec(url.pathname)
+    if (treeMatch !== null && fixture.files !== undefined) {
+      const ref = decodeURIComponent(treeMatch[1] ?? '')
+      const paths = served(ref) ? [...Object.keys(fixture.files), ...(fixture.extraPaths ?? [])] : []
+      const payload = JSON.stringify({ sha: ref, truncated: false, tree: paths.map((path) => ({ path, type: 'blob', mode: '100644' })) })
+      response.writeHead(200, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) })
+      response.end(payload)
+      return
+    }
+    const contentsMatch = /^\/repos\/o\/r\/contents\/(.+)$/.exec(url.pathname)
+    if (contentsMatch !== null && fixture.files !== undefined) {
+      const path = decodeURIComponent(contentsMatch[1] ?? '')
+      const text = served(url.searchParams.get('ref') ?? '') ? fixture.files[path] : undefined
+      if (text === undefined) {
+        response.writeHead(404, { 'content-type': 'application/json' })
+        response.end(JSON.stringify({ message: 'not found' }))
+        return
+      }
+      const payload = JSON.stringify({ type: 'file', encoding: 'base64', content: Buffer.from(text, 'utf8').toString('base64') })
+      response.writeHead(200, { 'content-type': 'application/json', 'content-length': String(Buffer.byteLength(payload)) })
       response.end(payload)
       return
     }
@@ -377,4 +412,133 @@ test('the gate and the recording tool share one hash definition', () => {
   const recorder = readFileSync(new URL('../scripts/issue-hash.mjs', import.meta.url), 'utf8')
   assert.match(recorder, /from '\.\/lib\/issue-body-hash\.mjs'/, 'the recording side calls the same comparator')
   assert.doesNotMatch(recorder, /createHash/, 'the recording side must not compute its own hash')
+})
+
+// --- #590: a citation must resolve at the sha the body names ---------------
+//
+// The hash gate answers one question: is the live body the body a PASS named?
+// It never reads the tree, so a card whose citation already points past the end
+// of a file, or at a file that no longer exists, still reaches `ok` and sends a
+// Dev to a line that is not there. These cases drive the real script against the
+// fake API: one tree read per ref, one blob read per cited path.
+
+const PIN = '151bd637084212df6dc8f4e865b6f0a6a9ba53af'
+const OTHER_PIN = '50d7beef7dba12d028bb6e76441f66e6dd38890a'
+
+function lines(count: number): string {
+  return `${Array.from({ length: count }, (_unused, index) => `line ${String(index + 1)}`).join('\n')}\n`
+}
+
+function cited(citation: string, pin = PIN): string {
+  return `Written-by: Fledge Platform Product\n\nThe defect is at \`main\` \`${pin}\`:\n\n- ${citation}\n`
+}
+
+test('a range that runs past the last line is a stale anchor, not ok', async () => {
+  const body = cited('`src/gateway/notifier.ts:13-30` is the poll loop.')
+  const hash = bodyHash(body)
+
+  const result = await runGate({
+    body,
+    files: { 'src/gateway/notifier.ts': lines(29) },
+    comments: [verdictComment({ kind: 'PASS', hash, login: 'HugoXK-bot' })],
+  })
+
+  assert.equal(result.code, 8)
+  assert.equal(result.stdout, `issue-gate: stale-anchor #76 ${hash} ref=src/gateway/notifier.ts:13-30 found=last-line-29\n`)
+  assert.match(result.stderr, /stale anchor src\/gateway\/notifier\.ts:13-30, last line 29/)
+})
+
+// The off-by-one trap: a file that ends with a newline has 29 lines, not 30, so
+// an implementation that counts the trailing empty segment misses case 1 and
+// refuses this correct citation.
+test('a range that ends exactly on the last line is accepted', async () => {
+  const body = cited('`src/gateway/notifier.ts:13-29` is the poll loop.')
+
+  const result = await runGate({
+    body,
+    files: { 'src/gateway/notifier.ts': lines(29) },
+    comments: [verdictComment({ kind: 'PASS', hash: bodyHash(body), login: 'HugoXK-bot' })],
+  })
+
+  assert.equal(result.code, 0)
+  assert.equal(result.stdout, `issue-gate: ok #76 ${bodyHash(body)}\n`)
+})
+
+test('a path the tree does not hold is a stale anchor', async () => {
+  const body = cited('`src/gateway/flusher.ts:3` decides when to flush.')
+  const hash = bodyHash(body)
+
+  const result = await runGate({
+    body,
+    files: { 'src/gateway/notifier.ts': lines(30) },
+    comments: [verdictComment({ kind: 'PASS', hash, login: 'HugoXK-bot' })],
+  })
+
+  assert.equal(result.code, 8)
+  assert.equal(result.stdout, `issue-gate: stale-anchor #76 ${hash} ref=src/gateway/flusher.ts:3 found=missing-path\n`)
+  assert.match(result.stderr, /no such path at 151bd637/)
+})
+
+// #671's shape: a bare file name matches two paths. Guessing which one the card
+// meant is how a gate cries wolf, so it is a note and never a verdict.
+test('a bare name with two matches is a note, never a refusal', async () => {
+  const body = cited('`app.ts:5` builds the route table.')
+
+  const result = await runGate({
+    body,
+    files: { 'src/app.ts': lines(20), 'src/repos/app.ts': lines(20) },
+    comments: [verdictComment({ kind: 'PASS', hash: bodyHash(body), login: 'HugoXK-bot' })],
+  })
+
+  assert.equal(result.code, 0)
+  assert.equal(result.stdout, `issue-gate: ok #76 ${bodyHash(body)}\n`)
+  assert.match(result.stderr, /ambiguous anchor app\.ts:5 \(2 candidates: src\/app\.ts, src\/repos\/app\.ts\)/)
+})
+
+// #469's shape: the card is correct at the sha it pins, and judging it at live
+// `main` would refuse a card that is not wrong. Only the pinned ref serves the
+// file here, so a gate that reads `main` cannot pass this by accident.
+test('the citation is judged at the sha the body pins, not at live main', async () => {
+  const body = cited('`src/gateway/notifier.ts:29` is the last line.', OTHER_PIN)
+  const hash = bodyHash(body)
+
+  const result = await runGate({
+    body,
+    files: { 'src/gateway/notifier.ts': lines(29) },
+    pin: OTHER_PIN,
+    comments: [verdictComment({ kind: 'PASS', hash, login: 'HugoXK-bot' })],
+  })
+
+  assert.equal(result.code, 0)
+  assert.equal(result.stdout, `issue-gate: ok #76 ${hash}\n`)
+  assert.doesNotMatch(result.stderr, /stale anchor/)
+})
+
+// A refusal for a hash reason keeps its own line and gains the note: the person
+// about to edit the body sees both facts in one run.
+test('a stale citation is noted beside a refusal, not instead of it', async () => {
+  const body = cited('`src/gateway/notifier.ts:40` is past the end.')
+
+  const result = await runGate({ body, files: { 'src/gateway/notifier.ts': lines(29) }, comments: [] })
+
+  assert.equal(result.code, 2)
+  assert.equal(result.stdout, 'issue-gate: no-pass #76\n')
+  assert.match(result.stderr, /stale anchor src\/gateway\/notifier\.ts:40, last line 29/)
+})
+
+// Documentation is not a citation: a command quoted in a fenced block, and a
+// path the same line declares new, are both skipped. Both citations below would
+// be stale if they were scanned, so exit 0 is the discriminator.
+test('a citation in a fenced block or on a line that adds the file is not judged', async () => {
+  const body = `Written-by: Fledge Platform Product\n\nAt \`main\` \`${PIN}\` the gate runs:\n\n\`\`\`\nnode scripts/issue-gate.mjs --issue 590   # see src/gateway/flusher.ts:99\n\`\`\`\n\nThis adds \`src/gateway/flusher.ts:99\`.\n`
+
+  const result = await runGate({
+    body,
+    files: { 'src/app.ts': lines(10) },
+    comments: [verdictComment({ kind: 'PASS', hash: bodyHash(body), login: 'HugoXK-bot' })],
+  })
+
+  assert.equal(result.code, 0)
+  assert.equal(result.stdout, `issue-gate: ok #76 ${bodyHash(body)}\n`)
+  assert.doesNotMatch(result.stderr, /stale anchor/)
 })

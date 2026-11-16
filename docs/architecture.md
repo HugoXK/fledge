@@ -265,6 +265,17 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   and Apply would land on a hidden table. A failed job whose message the
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
+- **The header names the cadence it prints** (`src/views/pages.ts`, repository
+  header): the interval pill reads "Discovery every" / 发现间隔 — the word the
+  Add-repository and settings forms already use — and prints
+  `max(60, interval_minutes)`, the floor `discoverDue` applies
+  (`MIN_DISCOVERY_INTERVAL_MINUTES`), so a 30-minute legacy row cannot advertise
+  a cadence discovery never runs at. It used to read "Auto every" beside the
+  automatic-work switch and read as the work interval; work starts from ready
+  items after the short cooldown (`workDue`), and a repository with a saved
+  schedule row is still answered by that row in the pill to its right
+  (`data-next-source="schedule"`). "Automatic work" stays its own on/off answer,
+  so enabling work never requires choosing an interval.
 - **Queue position** (`src/lib/queueRank.ts`, `rankQueued`): a queued job shows
   its place in the queue with the length (`#3/7`) and the priority it competes
   on, computed with the claimer's two keys only — `priority DESC, created_at ASC`
@@ -1786,10 +1797,10 @@ the current state.
 ### Pull-request delivery
 
 Each repository page has a delivery list of iterate jobs with open pull requests,
-with review score, cost, age and a maintainer one-click merge. Merging re-checks
-the PR state, checks, commit status, reviews and branch protection through the
-same path as auto-merge, updates the linked work item and marks the job's PR
-state. A webhook updates the PR state when a PR is merged or closed. A bulk
+with review score, cost and age; each row links to the job page's review → merge
+card (below), which holds the one per-PR merge control. Merging re-checks the PR
+state, checks, commit status, reviews and branch protection through the same path
+as auto-merge, updates the linked work item and marks the job's PR state. A webhook updates the PR state when a PR is merged or closed. A bulk
 action re-checks and merges all clean PRs, skipping blocked ones. When at least
 three PRs are waiting and auto-merge is off, the page suggests enabling it.
 
@@ -1977,6 +1988,31 @@ body does not carry renders `not stated` and is never filled from another
 section. A read that fails — 404, no token, a capped list — leaves the page at
 200 and names the unavailable fact instead, because a page that 500s on a read
 it did not need is worse than no block.
+
+### Review and merge as one action
+
+The job page opens with one card that answers a single question: what is the next
+step on this pull request. `src/views/reviewMerge.ts` derives it from facts the
+page already has — the job row, the repository role, the stored
+`verification_json` and `path_guard_json`, the newest independent-review record,
+and the pull request's current tip — and names exactly one state: `merge`,
+`review`, `stale`, `checks`, `fix`, `moved-base`, `blocked`, `waiting` or `done`.
+Each state carries one action: the `task.merge` command, the `recheck` that
+records a fresh verdict, or a link to where the fix happens.
+
+The rule that matters is the stale verdict. `verification_json.sha` names the
+commit a verdict covers, and the tip comes from the same cached pull-request read
+the change story makes, so a verdict recorded before a new commit was pushed is
+reported as `stale` instead of being read as green. The card also mirrors the
+merge gate's own answers — GitHub's `behind` (base moved), `dirty` (conflict),
+`blocked`, pending and failing checks, the path guard, an unacknowledged rule
+change, changes-requested reviews, the role, and the independent review's risk —
+so a state it calls ready is not one the merge path refuses on those grounds. It
+adds no merge call and no second verdict vocabulary; the policy stays in
+`tryMerge`, and the repository's own settings stay with #885.
+
+The repository page's delivery list links to this card rather than rendering a
+second merge control; the bulk "merge all clean PRs" action is unchanged.
 
 ### Email notifications
 
