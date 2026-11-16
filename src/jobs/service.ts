@@ -50,7 +50,7 @@ import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, re
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader } from './continuity.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
@@ -1328,7 +1328,7 @@ export class Jobs {
     }
   }
 
-  private syncWorkItemForJob(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl: string | null; issueUrl: string | null; summary?: string }): void {
+  private syncWorkItemForJob(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl: string | null; issueUrl: string | null }): void {
     const existing = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
     if (existing !== undefined) {
       const prState = result.prUrl === null ? existing.pr_state : 'open'
@@ -1349,20 +1349,7 @@ export class Jobs {
       })
       return
     }
-    if (job.kind === 'discover') {
-      const promotion = promoteDiscoveredIssue(this.store, this.config, {
-        repoId: job.repo_id,
-        userId: job.user_id,
-        issueUrl: result.issueUrl,
-        title: result.summary ?? '',
-      })
-      this.store.audit(
-        job.user_id,
-        promotion.status === 'promoted' ? 'job.discovery_promoted' : 'job.discovery_promotion_skipped',
-        `${job.id}: ${promotion.status}${promotion.workItemId === undefined ? '' : ` ${promotion.workItemId}`}`,
-      )
-      return
-    }
+    if (job.kind === 'discover') return
     if (result.status !== 'succeeded' || (result.prUrl === null && result.issueUrl === null)) return
     const title = (result.prUrl ?? result.issueUrl ?? job.goal).slice(0, 160)
     this.store.createWorkItem({
@@ -1378,6 +1365,32 @@ export class Jobs {
       jobId: job.id,
       prState: result.prUrl === null ? null : 'open',
     })
+  }
+
+  // #803: one work item for a successful discovery whose result is a concrete
+  // issue. `DISCOVERY_PR_FORBIDDEN` finishes the run `failed`, so the status
+  // guard also covers the run that broke discovery's issue-only contract.
+  private settleDiscoveryPromotion(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; issueUrl: string | null; summary: string }, outputKind: OutputKind): void {
+    if (result.status !== 'succeeded') {
+      this.store.audit(job.user_id, 'job.discovery_promotion_skipped', `${job.id}: not-succeeded:${result.status}`)
+      return
+    }
+    if (outputKind === 'meta') {
+      this.store.audit(job.user_id, 'job.discovery_promotion_skipped', `${job.id}: meta-issue`)
+      return
+    }
+    const promotion = promoteDiscoveredIssue(this.store, this.config, {
+      repoId: job.repo_id,
+      userId: job.user_id,
+      issueUrl: result.issueUrl,
+      title: result.summary,
+      priority: job.priority,
+    })
+    this.store.audit(
+      job.user_id,
+      promotion.status === 'promoted' ? 'job.discovery_promoted' : 'job.discovery_promotion_skipped',
+      `${job.id}: ${promotion.status}${promotion.workItemId === undefined ? '' : ` ${promotion.workItemId}`}`,
+    )
   }
 
   // Returns whether this call moved the row to a terminal state. Callers that
@@ -1437,11 +1450,15 @@ export class Jobs {
     const started = Date.parse(job.started_at ?? job.created_at)
     const ended = Date.parse(nowIso())
     if (Number.isFinite(started) && Number.isFinite(ended)) observeHistogram('fledge_job_seconds', Math.max(0, (ended - started) / 1000), { kind: job.kind, status: result.status }, 'Job duration')
-    this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl, summary })
+    this.syncWorkItemForJob(job, { status: result.status, prUrl, issueUrl })
     const finalJob = this.store.getJob(jobId) ?? job
     const digest = buildRunDigest(finalJob, { status: result.status, summary, issueUrl, prUrl })
     this.store.updateJob(jobId, { continuity_json: JSON.stringify(digest), output_kind: digest.output_kind })
     incCounter('fledge_job_output_total', { kind: job.kind, output: digest.output_kind }, 1, 'Scheduled output classification')
+    // #803: promotion runs on the classification, not before it. A result the
+    // digest calls a backlog report must not spend a cap slot or audit a
+    // promotion, and a run that did not succeed must not promote at all.
+    if (job.kind === 'discover') this.settleDiscoveryPromotion(finalJob, { status: result.status, issueUrl, summary }, digest.output_kind)
     if (digest.output_kind === 'meta') {
       incCounter('fledge_meta_issue_total', { kind: job.kind }, 1, 'Inventory/meta issues rejected by classification')
       // Close the tracking row so the next scheduled run does not follow up a

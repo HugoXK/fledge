@@ -2564,6 +2564,83 @@ test('a discover callback leaves the backlog unchanged when promotion is off', a
   }
 })
 
+// #803 asks for a work item only after a *successful* discovery, and #513 makes
+// a branch or pull request a failure of discovery's issue-only contract. So a
+// failed run must not promote its issue, whatever issue URL it carries.
+test('a failed discover callback carrying an issue URL creates no work item', async () => {
+  const config = testConfig({ autoPromoteDiscovery: true, autoPromoteDiscoveryDailyCap: 3 })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-failed-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_failed', userId: user.id, owner: 'o', name: 'failed', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/failed', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-failed-secret'
+    store.createJob({ id: 'job_discover_failed', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_failed', { status: 'running', started_at: new Date().toISOString() })
+    const issueUrl = 'https://github.com/o/failed/issues/11'
+    const result = await jobs.handleCallback('job_discover_failed', secret, { status: 'failed', issueUrl, summary: 'gave up without a concrete issue' })
+    assert.equal(result.ok, true)
+    assert.equal(store.getJob('job_discover_failed')?.status, 'failed')
+    assert.equal(store.findWorkItemByIssueUrl(repo.id, issueUrl), undefined)
+    assert.equal(store.listWorkItems(repo.id).length, 0)
+    assert.ok(!store.listAudit().some((entry) => entry.action === 'job.discovery_promoted'))
+    const skipped = store.listAudit().find((entry) => entry.action === 'job.discovery_promotion_skipped')
+    assert.ok(skipped !== undefined)
+    assert.ok(String(skipped.detail).includes('not-succeeded'))
+  } finally {
+    store.close()
+  }
+})
+
+test('the forbidden-PR discovery failure does not promote its issue', async () => {
+  const config = testConfig({ autoPromoteDiscovery: true, autoPromoteDiscoveryDailyCap: 3 })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-forbidden-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_forbidden', userId: user.id, owner: 'o', name: 'forbidden', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/forbidden', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-forbidden-secret'
+    store.createJob({ id: 'job_discover_forbidden', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_forbidden', { status: 'running', started_at: new Date().toISOString() })
+    const issueUrl = 'https://github.com/o/forbidden/issues/12'
+    const result = await jobs.handleCallback('job_discover_forbidden', secret, { status: 'succeeded', branch: 'flybot/x', prUrl: 'https://github.com/o/forbidden/pull/1', issueUrl, summary: 'opened a PR by mistake' })
+    assert.equal(result.status, 422)
+    assert.equal(store.getJob('job_discover_forbidden')?.status, 'failed')
+    assert.equal(store.findWorkItemByIssueUrl(repo.id, issueUrl), undefined)
+    assert.equal(store.listWorkItems(repo.id).length, 0)
+    assert.ok(!store.listAudit().some((entry) => entry.action === 'job.discovery_promoted'))
+  } finally {
+    store.close()
+  }
+})
+
+// The digest classification closes a backlog-report result one block later, so
+// promoting it first spent a cap slot and audited a promotion that was undone.
+test('a discovery result classified as a backlog report does not promote', async () => {
+  const config = testConfig({ autoPromoteDiscovery: true, autoPromoteDiscoveryDailyCap: 3 })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'discover-meta-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_discover_meta', userId: user.id, owner: 'o', name: 'meta', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', upstreamHtmlUrl: 'https://github.com/o/meta', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const secret = 'discover-meta-secret'
+    store.createJob({ id: 'job_discover_meta', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'discover', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'discover' })
+    store.updateJob('job_discover_meta', { status: 'running', started_at: new Date().toISOString() })
+    const issueUrl = 'https://github.com/o/meta/issues/13'
+    const result = await jobs.handleCallback('job_discover_meta', secret, { status: 'succeeded', issueUrl, summary: 'inventory of the backlog' })
+    assert.equal(result.ok, true)
+    assert.equal(store.getJob('job_discover_meta')?.output_kind, 'meta')
+    assert.equal(store.findWorkItemByIssueUrl(repo.id, issueUrl), undefined)
+    assert.equal(store.listWorkItems(repo.id).length, 0)
+    assert.ok(!store.listAudit().some((entry) => entry.action === 'job.discovery_promoted'))
+    const skipped = store.listAudit().find((entry) => entry.action === 'job.discovery_promotion_skipped')
+    assert.ok(skipped !== undefined)
+    assert.ok(String(skipped.detail).includes('meta-issue'))
+  } finally {
+    store.close()
+  }
+})
+
 test('the scheduler idles with no work and starts once a work item appears', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

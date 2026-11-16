@@ -1,1 +1,1 @@
-Discovery can now promote a successful discovered issue into one proposed work item when AUTO_PROMOTE_DISCOVERY is enabled; promotions are deduplicated by issue URL, capped per UTC day and never create a branch or pull request. The default remains off.
+Discovery can now promote a successful discovered issue into one proposed work item when AUTO_PROMOTE_DISCOVERY is enabled; a failed run or a backlog-report result is never promoted, promotions are deduplicated by issue URL, capped per repository per UTC day and never create a branch or pull request. The default remains off.
