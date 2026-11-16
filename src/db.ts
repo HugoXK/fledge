@@ -7,6 +7,7 @@ import { nowIso } from './lib/time.js'
 import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { canonicalSections, strategyHash } from './strategy/bundle.js'
+import { currentStrategySections } from './strategy/sources.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
 import { redact } from './lib/secrets.js'
@@ -496,6 +497,13 @@ export interface JobRow {
   callback_secret_enc: string | null
   platform_token_enc: string | null
   last_callback_at: string | null
+  // #433 slice 2: the strategy the job was created under. The section map is
+  // stored beside the hash because a job can run a strategy that was never
+  // frozen, and a diff between two jobs must not depend on a bundle row that may
+  // not exist. `strategy_version` is NULL for exactly that case.
+  strategy_hash: string | null
+  strategy_version: number | null
+  strategy_json: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -1343,6 +1351,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   lease_until TEXT,
   callback_secret_enc TEXT,
   platform_token_enc TEXT,
+  strategy_hash TEXT,
+  strategy_version INTEGER,
+  strategy_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -2814,6 +2825,12 @@ export class Store {
     if (!jobColumns.has('callback_secret_enc')) this.run('ALTER TABLE jobs ADD COLUMN callback_secret_enc TEXT')
     if (!jobColumns.has('platform_token_enc')) this.run('ALTER TABLE jobs ADD COLUMN platform_token_enc TEXT')
     if (!jobColumns.has('error_code')) this.run('ALTER TABLE jobs ADD COLUMN error_code TEXT')
+    // #433 slice 2: additive on purpose. Every row that predates the strategy
+    // bundle reads back as "no strategy recorded", which is true, and the job
+    // page says so instead of inventing one.
+    if (!jobColumns.has('strategy_hash')) this.run('ALTER TABLE jobs ADD COLUMN strategy_hash TEXT')
+    if (!jobColumns.has('strategy_version')) this.run('ALTER TABLE jobs ADD COLUMN strategy_version INTEGER')
+    if (!jobColumns.has('strategy_json')) this.run('ALTER TABLE jobs ADD COLUMN strategy_json TEXT')
     // #359: additive on purpose; every existing row backfills as NULL, which is
     // exactly "no recorded reason", so no close that happened earlier is read as
     // a plan expiry.
@@ -5920,11 +5937,23 @@ export class Store {
   }
 
   createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+    // #433 slice 2: the job records the strategy it was created under, from the
+    // same sources the strategy page reads, so the page a maintainer opens and
+    // the strategy a job names cannot disagree. An unfrozen strategy keeps its
+    // hash and no version; a strategy whose sources name a frozen section is not
+    // a strategy the page would accept, so the job records none rather than a
+    // hash that was never valid.
+    const strategyRepo = this.getRepo(input.repoId)
+    const assembled = strategyRepo === undefined ? null : currentStrategySections(this, { id: strategyRepo.id, goal: strategyRepo.goal })
+    const strategy = assembled !== null && assembled.ok ? assembled : null
+    const strategyVersion = strategy === null
+      ? null
+      : (this.get<{ version: number }>('SELECT version FROM strategy_bundles WHERE repo_id = ? AND hash = ?', input.repoId, strategy.hash)?.version ?? null)
     // The ticket is taken inside the insert, so two jobs created at the same
     // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -5932,6 +5961,9 @@ export class Store {
       input.goal,
       input.callbackHash,
       input.platformTokenHash,
+      strategy?.hash ?? null,
+      strategyVersion,
+      strategy === null ? null : JSON.stringify(strategy.sections),
       input.kind ?? 'iterate',
       input.workType ?? 'iterate',
       input.baseBranch ?? null,
@@ -6208,6 +6240,23 @@ export class Store {
 
   listJobsForRepo(repoId: string, limit = 20): JobRow[] {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', repoId, limit)
+  }
+
+  // #433 slice 2: the run this job's strategy is compared with. It is the newest
+  // earlier row of the same repository that recorded a strategy, so a job created
+  // before the columns existed is skipped rather than reported as "no change".
+  // `rowid` is the insert order, which is what "previous job" means here; a
+  // backdated `created_at` on an imported row must not reorder that.
+  previousStrategyJob(repoId: string, jobId: string): JobRow | undefined {
+    return this.get<JobRow>(
+      `SELECT * FROM jobs
+       WHERE repo_id = ? AND id != ? AND strategy_hash IS NOT NULL
+         AND rowid < (SELECT rowid FROM jobs WHERE id = ?)
+       ORDER BY rowid DESC LIMIT 1`,
+      repoId,
+      jobId,
+      jobId,
+    )
   }
 
   // #366: the base SHA of the newest finished job that recorded one. A window
