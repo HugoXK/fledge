@@ -60,6 +60,8 @@ export interface PullRequestInfo {
   mergeableState: string
   draft: boolean
   merged: boolean
+  // #540 slice 6: a reconciled merge records the commit GitHub actually made.
+  mergeCommitSha?: string
   changedFiles: number
   // #373: the body is what the agent already wrote about the change. The job
   // page shows it; nothing here interprets it.
@@ -600,6 +602,7 @@ export class GithubClient {
       mergeable_state: string
       draft: boolean
       merged: boolean
+      merge_commit_sha?: string | null
       changed_files?: number
       body?: string | null
     }>(
@@ -618,6 +621,7 @@ export class GithubClient {
       mergeableState: pr.mergeable_state,
       draft: pr.draft,
       merged: pr.merged,
+      ...(typeof pr.merge_commit_sha === 'string' ? { mergeCommitSha: pr.merge_commit_sha } : {}),
       changedFiles: Number(pr.changed_files ?? 0),
       body: typeof pr.body === 'string' ? pr.body : '',
     }
