@@ -2,12 +2,13 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { makeUser } from './helpers.js'
-import {
-  ANALYSIS_TOKEN_PERMISSIONS,
-  analyzeReleaseRun,
-  mintAnalysisToken,
-  type ReleaseAnalysisJob,
-} from '../src/releases/analysis.js'
+import type { ReleaseAnalysisJob } from '../src/releases/analysis.js'
+
+// The module under test is loaded inside each test that needs it. A static
+// import makes a missing or broken module fail the whole file, which hides the
+// route's own behaviour from a red run; loading it per test keeps the route
+// test able to fail the way a maintainer would see it.
+const analysisModule = () => import('../src/releases/analysis.js')
 
 // #546 slice 4: the optional run analysis. These tests pin the properties the
 // issue asks for, not the shape of the implementation: a read-only token that is
@@ -71,6 +72,8 @@ function failedJob(id = 7, name = 'release') {
 }
 
 test('the analysis token is least-privilege and always revoked after the read', async () => {
+  const { ANALYSIS_TOKEN_PERMISSIONS, analyzeReleaseRun, mintAnalysisToken } = await analysisModule()
+
   const minted: Minted = { token: '', revoked: 0 }
   const seen: Array<Record<string, 'read'>> = []
   const repo = { installation_id: 11 }
@@ -106,6 +109,8 @@ test('the analysis token is least-privilege and always revoked after the read', 
 })
 
 test('a token is revoked even when the log read throws, and the refusal carries no log text', async () => {
+  const { analyzeReleaseRun } = await analysisModule()
+
   const minted: Minted = { token: '', revoked: 0 }
   const fake = jobsClient({ jobs: [failedJob()], onLog: () => { throw new Error('GitHub answered 502 for the log') } })
   const result = await analyzeReleaseRun({
@@ -123,6 +128,8 @@ test('a token is revoked even when the log read throws, and the refusal carries 
 })
 
 test('a running or green run is refused before any token is minted', async () => {
+  const { analyzeReleaseRun } = await analysisModule()
+
   let minted = 0
   for (const run of [
     { id: RUN_ID, attempt: ATTEMPT, status: 'in_progress', conclusion: null },
@@ -146,6 +153,8 @@ test('a running or green run is refused before any token is minted', async () =>
 })
 
 test('the excerpt is redacted before it is cut, keeps its exact line range, and never carries a fragment', async () => {
+  const { analyzeReleaseRun } = await analysisModule()
+
   const before = Array.from({ length: 60 }, (_, index) => `line ${String(index + 1)} ordinary output`)
   const secretLine = `token ${SECRET} leaked by a step`
   const lines = [...before, secretLine, 'Error: the release step failed', '##[error] exit code 1']
@@ -171,6 +180,8 @@ test('the excerpt is redacted before it is cut, keeps its exact line range, and 
 })
 
 test('only failed jobs are analysed, and at most the two newest', async () => {
+  const { analyzeReleaseRun } = await analysisModule()
+
   const minted: Minted = { token: '', revoked: 0 }
   const jobs = [
     { id: 1, name: 'build', status: 'completed', conclusion: 'success', htmlUrl: 'https://github.com/acme/widget/actions/runs/4242/job/1' },
