@@ -252,3 +252,61 @@ test('#637 a second mention at the same head records on the job instead of start
     await h.close()
   }
 })
+
+test('#637 a superseding mention that admission refuses leaves the queued job in place', async () => {
+  const h = await harness()
+  try {
+    await h.deliver('@fledge please review', { association: 'MEMBER', commentId: 215 })
+    const [queued] = h.store.listJobsForRepo(h.repoId, 20)
+    assert.ok(queued !== undefined)
+    // A queued job has not run, so a newer mention may replace it. (The fake
+    // runner reports a started job as running, so this one is put back in the
+    // queue where a supersede is even possible.)
+    h.store.updateJob(queued.id, { status: 'queued' })
+    // Admission refuses a replacement for reasons that are not about the slot. If
+    // the queued row were retired before the replacement existed, the person would
+    // have been told nothing started while the old mention was already gone.
+    h.store.updateRepo(h.repoId, { enabled: 0 })
+    await h.deliver('@fledge please review the new head', { association: 'MEMBER', commentId: 216, headSha: 'ffff000011112222333344445555666677778888' })
+    const after = h.store.listJobsForRepo(h.repoId, 20)
+    assert.equal(after.length, 1, 'a refused replacement adds no job')
+    assert.equal(after[0]?.status, 'queued', 'the queued job is restored, not lost, or the person was told nothing started')
+    assert.equal(after[0]?.error_code ?? null, null, 'a restored job carries no terminal code')
+    assert.equal(after[0]?.error ?? null, null)
+    assert.equal(h.store.listJobEvents(after[0]!.id).some((event) => event.kind === 'job.superseded'), false, 'no supersede event without a replacement')
+    const audits = h.store.listAudit(100)
+    assert.equal(audits.filter((row) => row.action === 'trigger.mention_superseded').length, 0, 'no supersede audit row without a replacement')
+    assert.equal(audits.filter((row) => row.action === 'trigger.mention_restored').length, 1, 'one restore row records that the queued mention still holds the slot')
+  } finally {
+    await h.close()
+  }
+})
+
+test('#637 a parked mention survives a platform stop and starts after resume', async () => {
+  const h = await harness()
+  try {
+    const repo = h.store.getRepo(h.repoId)
+    assert.ok(repo !== undefined)
+    const actor = { id: repo.user_id, login: 'mention-user' }
+    await h.deliver('@fledge please review', { association: 'MEMBER', commentId: 217 })
+    // The running job holds the slot, so the newest mention parks rather than
+    // interrupting it.
+    await h.deliver('@fledge please review the new head', { association: 'MEMBER', commentId: 218, headSha: 'ffff000011112222333344445555666677778888' })
+    const key = `pending_mention:${h.repoId}`
+    assert.ok(h.store.getSetting(key) !== undefined, 'the newer mention parks while the first job runs')
+    await h.built.jobs.stopPlatform(actor, 'drill')
+    await h.built.jobs.releaseAllPendingMentions()
+    // A platform stop is not a decision about the mention, and the thread already
+    // promised it would run: the slot keeps it rather than dropping it.
+    assert.ok(h.store.getSetting(key) !== undefined, 'a stopped platform keeps the parked mention instead of silently dropping it')
+    await h.built.jobs.resumePlatform(actor)
+    await h.built.jobs.releaseAllPendingMentions()
+    assert.equal(h.store.getSetting(key), undefined, 'the parked mention is consumed once it starts')
+    const started = h.store.listJobsForRepo(h.repoId, 20).filter((job) => job.status !== 'cancelled')
+    assert.equal(started.length, 2, 'the parked mention starts a job of its own after resume')
+    const parked = started.find((job) => job.id !== started[0]!.id)
+    assert.equal(parked?.kind, 'review')
+  } finally {
+    await h.close()
+  }
+})

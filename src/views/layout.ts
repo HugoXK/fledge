@@ -8,6 +8,8 @@ import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import type { Density } from './density.js'
 import { themeMeta, type Theme } from './theme.js'
 
+export const FLEDGE_GITHUB_URL = 'https://github.com/HugoXK/fledge'
+
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
 }
@@ -266,7 +268,8 @@ export function layout(options: LayoutOptions): string {
       <a href="${escapeHtml(withSlash(config.services.docs))}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
       <a href="${escapeHtml(config.services.portal)}" target="_blank" rel="noreferrer">Portal</a>
       <a href="${escapeHtml(withSlash(config.services.status))}" target="_blank" rel="noreferrer">${escapeHtml(t('平台状态', 'Status'))}</a>
-      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="/settings#feedback">${escapeHtml(t('反馈', 'Feedback'))}</a>
+      <a href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer">★ ${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}</a>
     </nav>
   </footer>`
   return `<!doctype html>

@@ -2920,21 +2920,41 @@ export class Jobs {
       return { ok: true, action: 'park', jobId: decision.jobId }
     }
     if (decision.action === 'supersede') {
-      this.supersedeQueuedMention(repo, decision.jobId, input)
+      // The queued row is retired only once the replacement is admitted. `enqueue`
+      // refuses for reasons that have nothing to do with the slot (a role change,
+      // a full queue, a budget), and on that path the person was told a newer
+      // mention replaced the old one — so the old one must still be there to run.
+      const previous = this.store.getJob(decision.jobId)
+      this.retireQueuedMention(repo, decision.jobId, input)
       const started = await this.startMentionJob(repo, input.target, identity, input.commentId, input.actor)
-      if (!started.ok || started.action !== 'start') return started
+      if (!started.ok || started.action !== 'start') {
+        if (previous !== undefined) {
+          this.store.updateJob(previous.id, { status: 'queued', error: null, error_code: null, finished_at: null })
+          this.store.audit(repo.user_id, 'trigger.mention_restored', `${input.commentId} ${previous.id} ${started.ok ? 'unknown' : started.code}`)
+        }
+        return started
+      }
+      this.recordQueuedMentionSuperseded(repo, previous, input)
       return { ok: true, action: 'supersede', jobId: started.jobId, kind: started.kind }
     }
     return await this.startMentionJob(repo, input.target, identity, input.commentId, input.actor)
   }
 
-  private supersedeQueuedMention(repo: RepoRow, jobId: string, input: MentionRequest): void {
-    // The queued job has not run yet, so it ends here. It is a status of its own
-    // rather than a cancellation: nothing failed and nobody stopped it — a newer
-    // trigger took the slot before it ran, and the row should say so.
+  // Step one of a supersede: take the slot without writing history yet. A status
+  // write is reversible; a timeline event and an audit row are not, so they wait
+  // for the replacement to be admitted.
+  private retireQueuedMention(_repo: RepoRow, jobId: string, _input: MentionRequest): void {
+    // The queued job has not run yet, so it may end here. It is a status of its
+    // own rather than a cancellation: nothing failed and nobody stopped it — a
+    // newer trigger took the slot before it ran, and the row should say so.
     this.store.updateJob(jobId, { status: 'superseded', error: '被更新的 mention 取代', error_code: 'MENTION_SUPERSEDED', finished_at: nowIso() })
-    this.store.recordJobEvent({ jobId, repoId: repo.id, userId: repo.user_id, kind: 'job.superseded', meta: `mention ${input.commentId}` })
-    this.store.audit(repo.user_id, 'trigger.mention_superseded', `${input.commentId} ${jobId} -> ${mentionIdentity(input.target)}`)
+  }
+
+  // Step two, once the replacement exists: the queued row really did give way.
+  private recordQueuedMentionSuperseded(repo: RepoRow, previous: JobRow | undefined, input: MentionRequest): void {
+    if (previous === undefined) return
+    this.store.recordJobEvent({ jobId: previous.id, repoId: repo.id, userId: repo.user_id, kind: 'job.superseded', meta: `mention ${input.commentId}` })
+    this.store.audit(repo.user_id, 'trigger.mention_superseded', `${input.commentId} ${previous.id} -> ${mentionIdentity(input.target)}`)
   }
 
   private async startMentionJob(repo: RepoRow, target: MentionTarget, identity: string, commentId: string, actor: string): Promise<MentionResult> {
@@ -2983,9 +3003,22 @@ export class Jobs {
       this.store.deleteSetting(key)
       return
     }
-    this.store.deleteSetting(key)
     const result = await this.mention(repo, parked)
-    if (!result.ok) log.warn('pending mention not started', { repo: repoId, code: result.code, error: result.error })
+    if (!result.ok) {
+      // A refusal is not always a decision about the mention. A stopped platform,
+      // a full queue, a disabled repository or an exhausted budget all clear
+      // themselves, and the thread already promised the person that this mention
+      // runs when the slot frees — so the slot keeps the mention unless the
+      // target itself refused it.
+      if (result.code === 'MENTION_DRAFT' || result.code === 'MENTION_CLOSED') {
+        log.info('pending mention dropped', { repo: repoId, code: result.code })
+      } else {
+        this.store.setSetting(key, raw)
+        log.warn('pending mention kept', { repo: repoId, code: result.code, error: result.error })
+      }
+    } else {
+      this.store.deleteSetting(key)
+    }
   }
 
   // Public so the release pass and a test can drive it the same way.

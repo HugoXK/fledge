@@ -4,10 +4,11 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 
 // The contract of issue #80, as a structural test: the file may carry no stored
-// secret, no file-level permissions block, no pull-request or release command and
-// no local tag command, and the tag write exists only as the two API calls. Every
-// assertion here fails on the pre-#80 file, where `RELEASE_TOKEN` gated the run,
-// the permissions block was file-level, and the tag came from
+// secret, no file-level permissions block, no pull-request creation or release
+// command and no local tag command. Auto-merge is the one deliberate exception:
+// it is enabled only on the mechanical release PR with a pinned head commit.
+// Every assertion here fails on the pre-#80 file, where `RELEASE_TOKEN` gated the
+// run, the permissions block was file-level, and the tag came from
 // `git tag`/`git push origin "$TAG"`.
 
 const daily = readFileSync('.github/workflows/daily-release.yml', 'utf8')
@@ -160,13 +161,17 @@ test('only the trigger can let a run push, and a manual dry run never does', () 
   assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.trigger\.outputs\.plan == 'true' && steps\.opener\.outputs\.ready == 'true' \}\}/)
 })
 
-test('the file never creates, merges or releases a pull request with gh, and never creates a tag with a git command', () => {
-  for (const forbidden of ['gh pr create', 'gh pr merge', 'gh release', 'git tag', 'git push origin "$TAG"', 'git push --tags', '--admin']) {
+test('the file never creates or releases a pull request with gh, and auto-merge is pinned to the mechanical PR', () => {
+  for (const forbidden of ['gh pr create', 'gh release', 'git tag', 'git push origin "$TAG"', 'git push --tags', '--admin']) {
     assert.equal(daily.includes(forbidden), false, `"${forbidden}" must not appear`)
   }
   const pushes = [...daily.matchAll(/git push /g)]
   assert.equal(pushes.length, 1, 'exactly one git push, of the release branch')
   assert.ok(daily.includes('git push origin "$BRANCH"'), 'that push is the release branch')
+  assert.match(daily, /gh pr merge "\$PR" --auto --squash --match-head-commit "\$PUSHED"/, 'auto-merge names the PR and pins its head commit')
+  const step = between('      - name: Enable auto-merge on the release pull request', '      - name: Comment on #80')
+  assert.match(step, /steps\.open\.outputs\.state == 'opened' \|\| steps\.open\.outputs\.state == 'reused'/)
+  assert.doesNotMatch(step, /--admin/)
 })
 
 test('the tag write is the two API calls on the merge commit and nothing else', () => {

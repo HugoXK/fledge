@@ -109,6 +109,31 @@ header, not a section — so at the top of that page nothing has passed and
 `#release`, the first chip, is marked. That fallback is the accepted state, not a
 defect.
 
+`/settings` also carries a Feedback card and an About card. The feedback form
+posts to `/feedback`, stores a `feedback` row and mails the address in
+`FEEDBACK_EMAIL` (falling back to `ADMIN_EMAIL`); the About card and the footer
+link to the public GitHub repository with a Star call-to-action. An unexpected
+HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
+is rendered; the page shows the data scope, requires the consent checkbox, then
+offers one POST to `/errors/:ref/report`, which claims the row atomically and
+mails the same address. The error row keeps only method, pathname, status, error
+name, redacted message, redacted stack, version, commit, the signed-in login and
+the consent version/time — never the query, body, headers, cookies or a token.
+Both routes carry a route-level limiter, and a 4xx never offers the report button.
+
+The feedback lifecycle is one triage row per ref (`feedback_triage`) plus
+`feedback_events`. New reports are sent to the server FlyBot's Lead through a
+connected repo (`FLEDGE_LEAD_REPO_ID`) or a direct bridge; the packet carries a
+per-ref signed token, not the raw stack. The Lead reads and writes through
+`GET`/`POST /api/feedback/:ref` and `/triage`; the read response carries a
+sanitized issue draft, every transition appends an event, and the signed-in
+reporter sees in-app/mail updates plus a Settings history row. Delivery is a
+bounded outbox: a failure is retried with backoff up to five attempts and the
+row records the last error/next attempt; a delivered row is never resent. A `fixed_version` at or
+below the running `VERSION` sends the fixed notice once; the startup scan then
+marks the record `released` and sends the “now live” notice once. Fledge never
+creates the public issue: the Lead does, sanitized, and records its URL.
+
 The dashboard's Repositories card owns the full content row; its Add repository
 button sits in the card header and opens a native `<dialog>` with the GitHub App
 and fine-grained token options. `#add-repo` remains the deep link used by the
@@ -306,9 +331,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   opens the section that holds it — so a reader without the script still gets
   the whole page. The bar sticks at `var(--header-h)` and scrolls horizontally
   in the phone band; the tab is a 44px `--touch` target and the current tab
-  paints with `--accent-strong`, the one interactive accent. The Danger section
-  also carries the recent-auth preflight: a stale `recent_auth_at` renders a
-  **Confirm with GitHub** link whose return target is `/repos/:id#danger`; the
+  paints with `--accent-strong`, the one interactive accent. Above the tabs, the
+  header separates the title and target branch, a status strip (automatic work,
+  discovery interval, next run, schedule console, FlyBot, GitHub credential) and
+  a facts line (upstream/fork, permission, role, reviewer); the run/plan/review
+  actions stay in the header and every existing anchor is unchanged. The Danger
+  section also carries the recent-auth preflight: a stale `recent_auth_at` renders
+  a **Confirm with GitHub** link whose return target is `/repos/:id#danger`; the
   stale POST refusal uses the same anchor, so the form is on screen after
   re-authentication instead of the page top.
 - **Dashboard job filters** (`src/lib/jobFilters.ts`): `/dashboard` accepts
@@ -319,13 +348,18 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   rebuilds that URL keeps the state it is not changing: the 7/30-day window,
   both "Clear filters" links and both pagers read the keys from one helper, so
   the filter survives a window switch and a page click, and the window survives
-  a filter and a clear. The admin search page (`/admin/search`) builds its two
-  job filters from those same `JOB_FILTER_STATUSES` and `JOB_FILTER_KINDS` lists
-  and the same label helpers, so every kind a job can have is selectable there
-  and both locales read the console's words rather than the stored code; the
-  option values stay the codes, so the query, the totals and the CSV export are
-  unchanged. A second hand-written list in a view is how `scope` and `verify`
-  went missing from a form once already.
+  a filter and a clear. The admin search page (`/admin/search`) uses one toolbar
+  with a `Jobs` / `Audit` switch (`view=jobs|audit`): the active tab owns the
+  only filter form, so there is one Query field and paging or export cannot drop
+  the other tab's unrelated keys. The job fields still come from
+  `JOB_FILTER_STATUSES` and `JOB_FILTER_KINDS` and the same label helpers, so
+  every kind a job can have is selectable there and both locales read the
+  console's words rather than the stored code; option values stay the codes, so
+  the query, totals and CSV export are unchanged. Audit details render
+  `key=value` pairs as chips, link `job_*`, `repo_*` and `usr_*` ids to their
+  pages, and collapse long free text behind a details control instead of
+  truncating one raw line. A second hand-written list in a view is how `scope`
+  and `verify` went missing from a form once already.
 - **Admin CSV exports**: both `/admin/export/jobs.csv` and
   `/admin/export/audit.csv` write one `admin.jobs_export` / `admin.audit_export`
   row once the body is known — `filters=` echoes the allow-listed codes and ISO
@@ -843,12 +877,13 @@ becomes a card whose cells carry their column name in a `data-label` attribute
 behind a horizontal scroll on a phone, and a new column must emit `data-label`
 in `jobRows` to stay readable there. The rest of the data tables reuse the same
 block through one class, `table-cards`: the `/admin` users and audit tables, the
-dashboard repository table, the repository page's delivery, board and work-item
-tables, and the support view's repository and job tables. Adding the class and a
+dashboard repository table, the repository page's delivery and work-item tables,
+and the support view's repository and job tables. Adding the class and a
 `data-label` per cell is the whole change; a table must not grow a second card
-mechanism. The delivery board is the one exception, `table-cards table-cards-head`:
-its header row is the stage filter, so it stays in the flow and reflows as a
-wrapping row of links above the cards instead of disappearing. Above 640px the scroller is also bounded vertically
+mechanism. The delivery board is a compact summary of state links with counts
+and shares, not a carded table; it wraps above the work-item list and each state
+link filters the list. A share needs a denominator: with no work items at all
+each state shows `—` rather than a confident `0%`. Above 640px the scroller is also bounded vertically
 (`100dvh` minus `--header-h` and `--space-7`, and minus the repository
 subnav's `--subnav-h` on a repository page) and its `thead th` is sticky on an
 opaque `--panel`, so column names stay above the rows they label; the two rules
@@ -874,9 +909,8 @@ attribute states, the meta shapes, the 44px control and the two palette tokens
 the sticky header and the account pill used to hardcode. Signed-out pages honour
 the saved palette but render no control: the chooser rides inside `#main-nav`, so
 below 961px the compact header's panel carries it and the phone row gains no
-child. Between 641px and 960px a wide table (the
-delivery board is 952px wide at 768) can still be wider than its `.table-scroll`
-box, so that band draws an always-present classic scrollbar — an explicit track
+child. Between 641px and 960px a wide data table can still be wider than its
+`.table-scroll` box, so that band draws an always-present classic scrollbar — an explicit track
 plus `scrollbar-width`/`scrollbar-color` for Firefox — instead of relying on a
 thumb that is 1.5:1 on the panel. The band has its own
 `(min-width: 641px) and (max-width: 960px)` block in `public/app.css`; the cards
@@ -929,7 +963,7 @@ timeline as the token to search, and it is the `job_events.job_id` of that job,
 so one search returns the whole job. Pass-level lines (a scheduler pass, the
 shutdown check) have no job in scope and deliberately carry no `trace`.
 
-The repository page adds a compact delivery board grouped by work-item state; each state header links to a filtered work-item list (`?workState=`). The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
+The repository page adds a compact delivery board grouped by work-item state; each state tile links to a filtered work-item list (`?workState=`) and shows its share of the total, or `—` while the board has no items and there is nothing to divide by. The work-item rows keep their actions behind one disclosure, and the create form is a header button and dialog. The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
 user's own delivery metrics: jobs, success rate, PRs, merged PRs, cost, open
 work items and the last job. `/admin/metrics` shows the global window with the
 product funnel, delivery efficiency (success and merge rate, median job and
@@ -1565,11 +1599,22 @@ one-issue-one-branch-one-PR rule. `Jobs.mention` decides, and the rule itself is
 A mention is identified by `(target kind, target number, head sha)`. The same
 target at the same head never opens a second job: while one is queued or running
 the mention is recorded as a `job.mention_recorded` event on that job. A newer
-mention supersedes a **queued** job — the queued row ends `superseded`, and one
-`trigger.mention_superseded` row names both — because that job has not run. A
+mention supersedes a **queued** job, because that job has not run — but only once
+the replacement is admitted. The queued row is retired first, then the
+replacement is enqueued, and only then do the `job.superseded` event and the one
+`trigger.mention_superseded` row name both. Admission can still refuse for
+reasons that have nothing to do with the slot (a full queue, a budget, a
+disabled repository); on that path the row returns to `queued` and one
+`trigger.mention_restored` row records that nobody was left without a job. A
 **running** job is never interrupted: the mention is recorded on it and parks in
-`pending_mention:<repo>`, and the newest parked mention starts when the slot
-frees. A draft pull request or a closed target writes `trigger.mention_ignored`;
+`pending_mention:<repo>`, and the newest parked mention starts after the running
+job finishes. The park keeps its place across a platform stop, a full queue or an
+exhausted budget — those clear themselves and the thread already promised the
+mention would run — so only the target itself refusing (a draft pull request, a
+closed issue) drops it. A parked mention is replayed exactly as recorded: its
+comment id, actor and head SHA are the ones captured when it parked, and it is
+not re-read from GitHub when the slot frees. A draft pull request or a closed
+target writes `trigger.mention_ignored`;
 a target the installation cannot read writes one `trigger.mention_refused` row
 and starts nothing. Every accepted trigger writes `trigger.mention` with the
 comment id, the head SHA, the actor and the outcome (`started`, `recorded`,
@@ -1610,6 +1655,13 @@ repository is disabled, FlyBot is stopped or the token is invalid, and disables
 Run/Plan/Review until the state is fixed. A danger zone offers stop scheduling,
 stop FlyBot and delete; deletion requires typing the repository name and removes
 the Fledge connection, instance, jobs and tokens without touching GitHub.
+
+The FlyBot instance card maps transport failures to a short reason (`Bridge
+unreachable`, `Bridge returned 502`, `Container is not running`, `Model endpoint
+unreachable`) and keeps the raw error in a technical disclosure. The page-level
+message uses the same reason, never a bare `TypeError: fetch failed`, and the
+card shows the last health-check time and the Start/Stop/Reinitialize action for
+the current state.
 
 ### Pull-request delivery
 
@@ -1912,6 +1964,12 @@ inside the header card, so no new `.card[id]` is added and the section-nav
 contract is unchanged. The user table keeps its fields and POST routes but
 folds quota, role, private-model and approve/reject controls behind a `Manage`
 details control, so the default row is a summary rather than a stack of forms.
+The mechanical release pull request is opted into GitHub auto-merge after it is
+opened or reused; `ci-ok`, `review-gate` and `pr-lint` still decide when it may
+squash, and `--match-head-commit` pins the tip. The release card also renders a
+compact `plan → merge → publish` timeline from the snapshot's `plan.plannedAt`,
+`pull.mergedAt` and `release.publishedAt`, so a late release can be attributed to
+the scheduler, the checks or the merge wait.
 ### Backup surface
 
 The other half of "your data is safe" is a fact the operator can see without

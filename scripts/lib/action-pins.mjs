@@ -7,12 +7,70 @@
 // secrets without a commit here, a review, or a diff anyone can see. The trailing
 // comment is required because it is what makes a re-pin a one-line, reviewable
 // edit (`@<sha> # v4.4.0`) instead of an opaque sha swap nobody can check.
+//
+// Gate 1a, #650: a pin stops a tag from moving; it says nothing about who wrote
+// the action. A pull request can add any third-party action pinned to any commit
+// it likes, and that commit runs with this repository's token. So the second
+// half of the rule is a list: only the actions this project has reviewed are
+// allowed, and the list is data in the tree (`ALLOWLIST_FILE`) so widening it is
+// a reviewed one-line diff instead of something a pull request grants itself.
 import { readdirSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
+import { fileURLToPath } from 'node:url'
 
 const USES_LINE = /^(\s*(?:-\s*)?uses:\s*)(\S+)(.*)$/
 const PINNED = /^[^\s@]+@[0-9a-f]{40}$/
 const TAG_COMMENT = /(^|\s)#\s*\S+/
+
+// The list lives with the other machine-read policy files. `owner/repo` only:
+// a wildcard would re-open exactly the hole the list closes, so `actions/*` is
+// rejected as malformed rather than read as "any action under that owner".
+export const ALLOWLIST_FILE = '.github/agent/action-allowlist.json'
+const ACTION_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
+
+// Resolved from this file, never from the working directory: the checker runs
+// from the base checkout, so the list it reads is the one already reviewed on
+// the base branch. A pull request therefore cannot widen the list for itself in
+// the same commit that uses a new action — the entry has to land first.
+export function defaultAllowlistPath() {
+  return resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', ALLOWLIST_FILE)
+}
+
+// Throws on a malformed file instead of returning an empty list: a gate that
+// silently allows everything when its data is unreadable is worse than no gate.
+export function readAllowlist(path = defaultAllowlistPath()) {
+  let parsed
+  try {
+    parsed = JSON.parse(readFileSync(path, 'utf8'))
+  } catch (error) {
+    throw new Error(`${path}: the allowlist must be a JSON file (${error.message})`)
+  }
+  const list = parsed?.allowed_actions
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error(`${path}: allowed_actions must be a non-empty array of owner/repo names`)
+  }
+  for (const entry of list) {
+    if (typeof entry !== 'string' || !ACTION_REPOSITORY.test(entry)) {
+      throw new Error(`${path}: ${JSON.stringify(entry)} is not an exact owner/repo name (wildcards are not allowed)`)
+    }
+  }
+  const duplicates = list.filter((entry, index) => list.indexOf(entry) !== index)
+  if (duplicates.length > 0) {
+    throw new Error(`${path}: ${duplicates.join(', ')} appears more than once`)
+  }
+  return list
+}
+
+// `github/codeql-action/init@<sha>` belongs to `github/codeql-action`: the
+// allowlist names repositories, and a sub-path is part of the repository it
+// lives in rather than a separate entry someone could forget to classify.
+export function repositoryOf(value) {
+  const at = value.indexOf('@')
+  const path = at === -1 ? value : value.slice(0, at)
+  const segments = path.split('/')
+  if (segments.length < 2) return path
+  return `${segments[0]}/${segments[1]}`
+}
 
 // A local action (`./path`) is a file in this repository and is reviewed like
 // any other file; a `docker://` reference is pinned by digest at the call site
@@ -35,7 +93,11 @@ function referenceOf(line) {
 
 // Returns one finding per `uses:` that is not a full-sha pin with a tag comment.
 // `file` is carried through so a caller scanning a tree can name the file.
-export function checkWorkflow(text, file) {
+// `allowlist` is the reviewed `owner/repo` list; omitting it skips gate 1a, which
+// the CLI never does — it always passes what it read, so a caller that forgets
+// the list cannot make the gate look green.
+export function checkWorkflow(text, file, allowlist) {
+  const allow = allowlist === undefined ? null : new Set(allowlist.map((entry) => entry.toLowerCase()))
   const findings = []
   const lines = text.split(/\r?\n/)
   for (let index = 0; index < lines.length; index += 1) {
@@ -48,6 +110,11 @@ export function checkWorkflow(text, file) {
     if (!TAG_COMMENT.test(` ${reference.rest}`)) {
       findings.push({ file, line: index + 1, value: reference.value, problem: 'missing-tag-comment' })
     }
+    // Checked even when the reference is otherwise malformed, so a workflow that
+    // adds an unreviewed action is told about the action as well as the pin.
+    if (allow !== null && !allow.has(repositoryOf(reference.value).toLowerCase())) {
+      findings.push({ file, line: index + 1, value: reference.value, problem: 'not-allowed' })
+    }
   }
   return findings
 }
@@ -55,7 +122,7 @@ export function checkWorkflow(text, file) {
 // Scans every *.yml / *.yaml directly under `dir`. `checked` counts the action
 // references in scope, so a run that found nothing to check cannot look the same
 // as a run where everything passed.
-export function scanWorkflows(dir) {
+export function scanWorkflows(dir, allowlist) {
   const findings = []
   const files = []
   let checked = 0
@@ -64,7 +131,7 @@ export function scanWorkflows(dir) {
     const file = join(dir, entry.name)
     files.push(file)
     const text = readFileSync(file, 'utf8')
-    findings.push(...checkWorkflow(text, file))
+    findings.push(...checkWorkflow(text, file, allowlist))
     for (const line of text.split(/\r?\n/)) {
       const reference = referenceOf(line)
       if (reference !== null && !outOfScope(reference.value)) checked += 1

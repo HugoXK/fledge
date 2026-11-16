@@ -72,6 +72,8 @@ export interface Config {
     transport: MailTransport
     from: string
     adminEmail: string
+    /** #786: feedback and error reports; empty falls back to ADMIN_EMAIL. */
+    feedbackEmail: string
     /** #353: how long one repository's failure mail stays coalesced, in minutes. */
     jobEmailCooldownMinutes: number
     smtp: {
@@ -95,6 +97,16 @@ export interface Config {
     usdCny: number
     /** Below this remaining balance the first-run checklist recommends an own model. */
     comfortCny: number
+  }
+  // #814: the server-deployed FlyBot's Fledge Lead. `leadRepoId` uses a repo
+  // Fledge already manages; the bridge trio targets an externally managed
+  // instance. `publicRepo` is the sanitized issue target the Lead may write to.
+  feedback: {
+    leadRepoId: string
+    leadBridgeUrl: string
+    leadBridgeToken: string
+    leadSessionId: string
+    publicRepo: string
   }
   runner: {
     mode: RunnerMode
@@ -336,6 +348,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',
       from: text('MAIL_FROM', 'no-reply@example.com'),
       adminEmail: text('ADMIN_EMAIL', 'admin@example.com'),
+      feedbackEmail: text('FEEDBACK_EMAIL', '') || text('ADMIN_EMAIL', 'admin@example.com'),
       // #353: the window that keeps a failing repository from mailing once per run.
       jobEmailCooldownMinutes: Math.max(0, number('JOB_EMAIL_COOLDOWN_MINUTES', 60)),
       smtp: {
@@ -357,6 +370,13 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       initialCny: number('INITIAL_QUOTA_CNY', 1),
       usdCny: number('USD_CNY_RATE', 7.2),
       comfortCny: number('PLATFORM_QUOTA_COMFORT_CNY', 50),
+    },
+    feedback: {
+      leadRepoId: text('FLEDGE_LEAD_REPO_ID'),
+      leadBridgeUrl: text('FLEDGE_LEAD_BRIDGE_URL').replace(/\/$/, ''),
+      leadBridgeToken: text('FLEDGE_LEAD_BRIDGE_TOKEN'),
+      leadSessionId: text('FLEDGE_LEAD_SESSION_ID'),
+      publicRepo: text('FEEDBACK_PUBLIC_REPO', 'HugoXK/fledge'),
     },
     runner: {
       mode: (text('RUNNER_MODE', 'mock') as RunnerMode) || 'mock',
