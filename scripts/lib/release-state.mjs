@@ -30,11 +30,26 @@ export function checkRunsOf(value) {
 
 // The newest run by id, not the first in the list: `first` read the oldest run of
 // that name, which after a re-run is a stale conclusion.
-export function latestConclusion(value, name) {
+//
+// The id and the status travel with the conclusion because the release drive has
+// to tell "not finished yet" from "red" (#864): a conclusion of `missing` on a
+// run that is still `in_progress` is a re-read, while a `failure` is a block.
+// The run id is what makes that distinction checkable after the fact.
+export function latestRun(value, name) {
   const runs = checkRunsOf(value).filter((run) => String(run?.name ?? '') === name)
-  if (runs.length === 0) return 'missing'
+  if (runs.length === 0) return { id: 0, status: '', conclusion: 'missing' }
   const newest = runs.reduce((best, run) => (Number(run?.id ?? 0) >= Number(best?.id ?? 0) ? run : best))
-  return String(newest?.conclusion ?? 'missing')
+  const conclusion = typeof newest?.conclusion === 'string' && newest.conclusion !== '' ? newest.conclusion : 'missing'
+  const id = Number(newest?.id ?? 0)
+  return {
+    id: Number.isSafeInteger(id) && id > 0 ? id : 0,
+    status: String(newest?.status ?? ''),
+    conclusion,
+  }
+}
+
+export function latestConclusion(value, name) {
+  return latestRun(value, name).conclusion
 }
 
 function mergedAt(pr) {
@@ -88,6 +103,9 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
     })
     .filter((entry) => entry !== null)
     .filter((entry) => !pullRequestHeads.has(entry.branch) && !tagNames.includes(entry.tag))
+  // One read of the check-runs answer, shared by the summary line and the drive's
+  // wait decision, so the two can never disagree about which run they mean.
+  const ciOkRun = latestRun(checks, 'ci-ok')
   return {
     lastTag: String(lastTag ?? ''),
     lastTagCommittedAt: String(lastTagCommittedAt ?? ''),
@@ -95,7 +113,8 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
     fragments: Number(fragments ?? 0),
     tags: Array.isArray(tags) ? tags.map(String) : [],
     dryRun: dryRun === true || dryRun === 'true',
-    ciOk: latestConclusion(checks, 'ci-ok'),
+    ciOk: ciOkRun.conclusion,
+    ciOkRun,
     openPr: candidate,
     openPrRejected: rejected === null
       ? null

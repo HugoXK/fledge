@@ -12,6 +12,8 @@
 //                  branch is the same action with a different reason: it names
 //                  the branch and its sha, and the workflow turns it red (#333).
 //   tag            a merged release PR has no tag yet: tag its squash commit
+//   wait-ci        the rule is met but `ci-ok` on main has not concluded yet: the
+//                  caller re-reads it on a bounded schedule and decides again
 //   none           no release tonight; the counts go to the summary
 //
 // A dry run mutates nothing: `workflow_dispatch` defaults `dry_run: true`, so a
@@ -39,6 +41,15 @@ function isMechanicalReleasePr(openReleasePr) {
   }
   const identity = mechanicalRelease({ branch: openReleasePr?.branch, title: openReleasePr?.title, files: files.map((file) => String(file)) })
   return identity.mechanical ? { ok: true, reason: identity.reason, version: identity.version } : { ok: false, reason: identity.reason }
+}
+
+// A conclusion that means "not decided yet", never "red": a queued or running
+// check run answers `null` for its conclusion, and `latestRun` reports that — and
+// "no run of this name at all" — as `missing`.
+const NOT_CONCLUDED = new Set(['missing', 'unknown', 'pending', ''])
+
+function ciNotConcluded(conclusion) {
+  return NOT_CONCLUDED.has(conclusion)
 }
 
 function failingChecks(checks) {
@@ -155,21 +166,54 @@ function decide(state) {
   if (plan?.shouldRelease !== true) {
     return { action: 'none', reason: `the rule is not met: ${String(plan?.reason ?? 'no plan')}` }
   }
-  if (ciOk !== 'success') {
-    return { action: 'none', reason: `the latest ci-ok on main is ${String(ciOk === undefined || ciOk === null ? 'unknown' : ciOk)}` }
+
+  // Rule 4: only a green `ci-ok` releases. What is *not* green is two facts, not
+  // one (#864): a run that has not concluded yet is `missing` — CI was still
+  // running when the check-runs request was made — while `failure` is a red tip.
+  // Folding the first into `none` is how the 0.3.7 slot was refused; it comes
+  // back as `wait-ci`, and the caller re-reads on a bounded schedule.
+  const conclusion = String(ciOk ?? 'unknown')
+  const run = state?.ciOkRun ?? {}
+  const runId = Number(run?.id ?? 0)
+  const runNote = Number.isSafeInteger(runId) && runId > 0
+    ? ` (run ${String(runId)}${typeof run?.status === 'string' && run.status !== '' ? `, ${run.status}` : ''})`
+    : ' (no ci-ok run found)'
+  if (ciNotConcluded(conclusion)) {
+    return {
+      action: 'wait-ci',
+      reason: `the latest ci-ok on main is ${conclusion === '' ? 'missing' : conclusion}${runNote}: CI has not concluded yet, so the release waits and re-reads`,
+      ciOkRunId: runId,
+    }
+  }
+  if (conclusion !== 'success') {
+    return {
+      action: 'none',
+      reason: `the latest ci-ok on main is ${conclusion}${runNote}: a concluded failure blocks the release`,
+      ciOkRunId: runId,
+    }
   }
   return { action: 'open-pr', reason: 'the rule is met: open the mechanical release PR', version: String(plan?.nextVersion ?? '') }
 }
 
 // A dry run reports, it does not act. `workflow_dispatch` defaults `dry_run` to
 // true, so this is the default path for a manual dispatch: returning `enqueue`
-// or `tag` from it would set auto-merge or publish on the first click.
+// or `tag` from it would set auto-merge or publish on the first click. A dry run
+// does not wait either: sitting on a runner for ten minutes to report a fact it
+// already holds would only delay the summary.
 const MUTATING = new Set(['open-pr', 'enqueue', 'tag'])
 
 export function decideDrive(state) {
   const decision = decide(state)
   const dryRun = state?.dryRun === true || state?.dryRun === 'true'
   if (!dryRun) return decision
+  if (decision.action === 'wait-ci') {
+    return {
+      action: 'none',
+      reason: `dry run: would have waited for ci-ok — ${String(decision.reason)}`,
+      dryRun: true,
+      wouldHave: 'wait-ci',
+    }
+  }
   if (MUTATING.has(String(decision.action))) {
     return {
       action: 'none',
@@ -183,4 +227,51 @@ export function decideDrive(state) {
     }
   }
   return { ...decision, dryRun: true }
+}
+
+// The bound on the re-read (#864): three reads in all — the first is the one the
+// workflow's collect step already made — five minutes apart, so the decide step
+// sleeps at most ten minutes of a twenty-minute slot. A reader that is injected
+// and a wait that is injected keep the loop testable without a clock, which is
+// how the `missing -> success` transition is asserted rather than approximated.
+export const CI_OK_READS = 3
+export const CI_OK_INTERVAL_MS = 5 * 60 * 1000
+
+/**
+ * Decide, and when the only thing missing is a conclusion for `ci-ok`, wait and
+ * read it again until the bound. Only `wait-ci` re-reads: a `failure` is a
+ * decision, and no amount of waiting changes a red tip.
+ *
+ * `readCiOk` answers the same shape the state carries (`{ ciOk, ciOkRun }`), so
+ * the caller decides where the answer comes from — the checks API in the
+ * workflow, a fixture in the suite.
+ */
+export async function decideWithCiRetry({ state, decide = decideDrive, readCiOk, wait, attempts = CI_OK_READS, intervalMs = CI_OK_INTERVAL_MS }) {
+  if (typeof readCiOk !== 'function') throw new TypeError('decideWithCiRetry needs readCiOk()')
+  if (typeof wait !== 'function') throw new TypeError('decideWithCiRetry needs wait(ms)')
+  const total = Number.isSafeInteger(attempts) && attempts > 0 ? attempts : CI_OK_READS
+  const paused = Number.isFinite(intervalMs) && intervalMs >= 0 ? intervalMs : CI_OK_INTERVAL_MS
+  let current = state
+  let reads = 1
+  let decision = decide(current)
+  while (decision.action === 'wait-ci' && reads < total) {
+    await wait(paused)
+    const observed = await readCiOk()
+    reads += 1
+    current = { ...current, ciOk: String(observed?.ciOk ?? 'missing'), ...(observed?.ciOkRun === undefined ? {} : { ciOkRun: observed.ciOkRun }) }
+    decision = decide(current)
+  }
+  if (decision.action !== 'wait-ci') return { ...decision, ciOkReads: reads, ciOkWaitedMs: paused * (reads - 1) }
+  // The bound is a conclusion too: name what the last read saw and how many
+  // reads produced it, so an operator can tell "CI never finished" from "the
+  // reader never looked" without opening the run.
+  const minutes = Math.round((paused * (total - 1)) / 60_000)
+  const lastRunId = Number(current?.ciOkRun?.id ?? 0)
+  const lastNote = Number.isSafeInteger(lastRunId) && lastRunId > 0 ? ` (run ${String(lastRunId)})` : ''
+  return {
+    action: 'none',
+    reason: `the latest ci-ok on main is still ${String(current?.ciOk ?? 'missing')}${lastNote} after ${String(total)} reads over ${String(minutes)} minutes, so no release this slot`,
+    ciOkReads: reads,
+    ciOkWaitedMs: paused * (reads - 1),
+  }
 }
