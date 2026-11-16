@@ -590,9 +590,11 @@ test('a follow-up carries the reviewer’s instruction, and two different reques
   }
 })
 
-test('two requests parked behind a review job are both released', async () => {
-  // The parked key was also built from `reason` alone, so the second request on
-  // one commit overwrote the first in `pending_followup:` before any job existed.
+test('two different updates parked behind a review job become one follow-up carrying both', async () => {
+  // #637: the parked key carried the request's fingerprint, so two updates that
+  // arrived before the first model call parked as two rows and later became two
+  // jobs. One review is one running task: the second update merges into the
+  // parked request and the release pass queues one job that carries both.
   const config = testConfig()
   const store = new Store(':memory:')
   const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
@@ -603,36 +605,27 @@ test('two requests parked behind a review job are both released', async () => {
     const reviewJob = store.createJob({ id: 'job_review_active', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'review the PR', callbackHash: 'cb-review', platformTokenHash: '', kind: 'review' })
     store.updateJob(reviewJob.id, { status: 'running' })
     const prUrl = 'https://github.com/o/p/pull/11'
-    const first = await jobs.followUp(repo, { prUrl, branch: 'fledge/p', reason: 'review requested changes', headSha: 'fff', instruction: 'First request.' })
-    const second = await jobs.followUp(repo, { prUrl, branch: 'fledge/p', reason: 'review requested changes', headSha: 'fff', instruction: 'Second request.' })
+    const first = await jobs.followUp(repo, { prUrl, branch: 'fledge/p', reason: 'review requested changes', headSha: 'fff', instruction: 'First request.', trigger: { kind: 'review', commentId: '301' } })
+    const second = await jobs.followUp(repo, { prUrl, branch: 'fledge/p', reason: 'mention', headSha: 'fff', instruction: 'Second request.', trigger: { kind: 'mention', commentId: '302', actor: 'alice' } })
     assert.equal(first.code, 'JOB_ACTIVE')
     assert.equal(second.code, 'JOB_ACTIVE')
     const parked = store.listSettings(`pending_followup:${repo.id}:`)
-    assert.equal(parked.length, 2, 'two requests park as two entries, not one overwritten')
+    assert.equal(parked.length, 1, 'two updates in flight become one parked request')
+    const merged = JSON.parse(parked[0]?.value ?? '{}') as { requests?: Array<{ instruction?: string; trigger?: { actor?: string; commentId?: string } }> }
+    assert.deepEqual((merged.requests ?? []).map((request) => request.instruction), ['First request.', 'Second request.'], 'the merged request carries both triggers')
+    assert.equal(merged.requests?.[1]?.trigger?.actor, 'alice', 'the merged request keeps who sent the second trigger')
 
-    // Finishing the review job runs the release pass, which turns a parked
-    // request into a queued follow-up. One repository may only have one active
-    // job, so the second request has to stay parked for now — but it must not be
-    // lost, which is what the overwrite did. The pass walks the settings by key,
-    // and the key carries the request's fingerprint, so the order is not the
-    // arrival order: this asserts that neither request is dropped, not which one
-    // goes first.
+    // Finishing the review runs the release pass, which queues ONE follow-up
+    // carrying both requests: two jobs for one review is the defect.
     const followUpGoals = (): string[] => store.listJobsPageForUser(user.id, 50, 0)
       .filter((job) => job.trigger === 'followup')
       .map((job) => job.goal)
     store.updateJob(reviewJob.id, { status: 'succeeded' })
     await jobs.tick()
-    assert.equal(followUpGoals().length, 1, 'one parked request is queued')
+    assert.equal(followUpGoals().length, 1, 'one merged update becomes one job, not two')
     const queued = followUpGoals()[0] ?? ''
-    const released = queued.includes('First request.') ? 'First request.' : 'Second request.'
-    const stillParked = released === 'First request.' ? 'Second request.' : 'First request.'
-    assert.ok(queued.includes(`Reviewer asked: ${released}`), 'the queued follow-up keeps its own reviewer instruction')
-    assert.equal(store.listSettings(`pending_followup:${repo.id}:`).length, 1, 'the other request stays parked while the repository has an active job')
-    const active = store.listJobsPageForUser(user.id, 50, 0).find((job) => job.trigger === 'followup')
-    assert.ok(active !== undefined)
-    store.updateJob(active.id, { status: 'failed' })
-    await jobs.tick()
-    assert.ok(followUpGoals().some((goal) => goal.includes(`Reviewer asked: ${stillParked}`)), 'the other request is queued once the first finishes')
+    assert.match(queued, /First request\./, 'the queued follow-up carries the first request')
+    assert.match(queued, /Second request\./, 'the queued follow-up carries the second request')
     assert.equal(store.listSettings(`pending_followup:${repo.id}:`).length, 0, 'nothing stays parked after the release pass')
   } finally {
     store.close()

@@ -43,6 +43,7 @@ import {
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
+import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
 import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
@@ -207,6 +208,107 @@ function progressSummary(value: unknown): string | undefined {
 // into a duplicate, and overwrote the first parked request with the second.
 function followUpFingerprint(reason: string, instruction: string | undefined): string {
   return createHash('sha256').update(`${reason}\n${instruction ?? ''}`).digest('hex').slice(0, 16)
+}
+
+// #637: a trigger is the update that asked for the review. It travels with the
+// request so a merged park can say who asked, not just what was asked.
+export interface FollowUpTrigger {
+  kind: string
+  commentId?: string
+  actor?: string
+}
+
+export interface FollowUpRequest {
+  prUrl: string
+  branch: string
+  baseBranch?: string
+  reason: string
+  headSha: string
+  instruction?: string
+  trigger?: FollowUpTrigger
+}
+
+// #637: one mention, as the webhook read it. The target is what decides the kind
+// of job, and `commentId` is what makes two deliveries of the same comment one
+// trigger rather than two.
+export interface MentionRequest {
+  target: MentionTarget
+  commentId: string
+  actor: string
+}
+
+export type MentionResult =
+  | { ok: true; action: 'start'; jobId: string; kind: 'review' | 'iterate' }
+  // Superseded: the queued job ended and this one started in its place.
+  | { ok: true; action: 'supersede'; jobId: string; kind: 'review' | 'iterate' }
+  | { ok: true; action: 'record'; jobId: string }
+  | { ok: true; action: 'park'; jobId: string }
+  | { ok: false; action: 'refuse' | 'start'; code: string; error: string }
+
+interface ParkedFollowUpRequest {
+  reason: string
+  instruction?: string
+  trigger?: FollowUpTrigger
+}
+
+// One pull request at one head has ONE parked request, whatever arrived while the
+// review was running: the second update merges into the first, and the release
+// pass then queues one job carrying both. Keying the park by the request's
+// fingerprint turned two updates into two rows and later two jobs.
+// #637: the identity a mention job was started for, so a second mention with the
+// same identity is recognised without reading the job's goal.
+function mentionJobKey(jobId: string): string {
+  return `mention_job:${jobId}`.slice(0, 300)
+}
+
+// One parked mention per repository: the newest one is what starts next, so a
+// second mention replaces the first instead of queueing behind it.
+function pendingMentionKey(repoId: string): string {
+  return `pending_mention:${repoId}`.slice(0, 300)
+}
+
+function pendingFollowUpKey(repoId: string, prUrl: string, headSha: string): string {
+  return `pending_followup:${repoId}:${prUrl}:${headSha}`.slice(0, 300)
+}
+
+function mergeParkedFollowUp(existingJson: string | undefined, input: FollowUpRequest): string {
+  const requests: ParkedFollowUpRequest[] = []
+  if (existingJson !== undefined) {
+    try {
+      const parsed = JSON.parse(existingJson) as Partial<ParkedFollowUpRequest> & { requests?: ParkedFollowUpRequest[] }
+      if (Array.isArray(parsed.requests)) {
+        for (const request of parsed.requests) requests.push({ reason: request.reason, ...(request.instruction === undefined ? {} : { instruction: request.instruction }), ...(request.trigger === undefined ? {} : { trigger: request.trigger }) })
+      } else if (typeof parsed.reason === 'string') {
+        requests.push({ reason: parsed.reason, ...(parsed.instruction === undefined ? {} : { instruction: parsed.instruction }), ...(parsed.trigger === undefined ? {} : { trigger: parsed.trigger }) })
+      }
+    } catch {
+      // A corrupt parked row is replaced by the request in hand: losing the
+      // trigger that is arriving is worse than losing a row nobody can read.
+    }
+  }
+  const incoming: ParkedFollowUpRequest = {
+    reason: input.reason,
+    ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
+    ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
+  }
+  const duplicate = requests.some((request) =>
+    request.reason === incoming.reason &&
+    (request.instruction ?? '') === (incoming.instruction ?? '') &&
+    (request.trigger?.commentId ?? '') === (incoming.trigger?.commentId ?? ''))
+  if (!duplicate) requests.push(incoming)
+  const reasons = [...new Set(requests.map((request) => request.reason))]
+  const instructions = requests.flatMap((request) => (request.instruction === undefined || request.instruction === '' ? [] : [request.instruction]))
+  const merged = {
+    prUrl: input.prUrl,
+    branch: input.branch,
+    ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
+    reason: reasons.join(', '),
+    headSha: input.headSha,
+    ...(instructions.length === 0 ? {} : { instruction: instructions.join(' — also: ') }),
+    ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
+    requests,
+  }
+  return JSON.stringify(merged)
 }
 
 export interface ReviewFollowUp {
@@ -2537,7 +2639,7 @@ export class Jobs {
     const prefix = `pending_followup:${repoId}:`
     for (const row of this.store.listSettings(prefix)) {
       this.store.deleteSetting(row.key)
-      let input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }
+      let input: FollowUpRequest
       try {
         input = JSON.parse(row.value) as typeof input
       } catch {
@@ -2746,7 +2848,7 @@ export class Jobs {
     }
   }
 
-  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }): Promise<FollowUpResult> {
+  async followUp(repo: RepoRow, input: FollowUpRequest): Promise<FollowUpResult> {
     const baseBranch = input.baseBranch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
     if (!isValidBranchName(input.branch) || input.branch === baseBranch || input.branch === repo.upstream_default_branch || input.branch === repo.default_branch) {
       return { ok: false, error: 'follow-up 分支不能是目标分支。', code: 'BRANCH_INVALID' }
@@ -2759,8 +2861,8 @@ export class Jobs {
     const activeJob = this.store.activeJobForRepo(repo.id)
     if (activeJob !== undefined) {
       if (activeJob.kind === 'review') {
-        const pendingKey = `pending_followup:${repo.id}:${fingerprint}:${input.prUrl}:${input.headSha}`.slice(0, 300)
-        this.store.setSetting(pendingKey, JSON.stringify(input))
+        const pendingKey = pendingFollowUpKey(repo.id, input.prUrl, input.headSha)
+        this.store.setSetting(pendingKey, mergeParkedFollowUp(this.store.getSetting(pendingKey), input))
         return { ok: false, error: '审核结束后会自动跟进', code: 'JOB_ACTIVE' }
       }
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
@@ -2779,6 +2881,154 @@ export class Jobs {
     const result = await this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl, baseBranch: input.baseBranch })
     if (!result.ok) this.store.deleteSetting(key)
     return result
+  }
+
+  // #637: a mention is the third way a job starts, beside the scheduler and the
+  // command surface. The rule lives in `lib/mentionGovernance.ts`; this method is
+  // only what the rule needs read from the store and what it writes back.
+  async mention(repo: RepoRow, input: MentionRequest): Promise<MentionResult> {
+    const identity = mentionIdentity(input.target)
+    const active = this.store.activeJobForRepo(repo.id)
+    const facts = active === undefined
+      ? undefined
+      : { id: active.id, status: active.status as 'queued' | 'running', mention: this.store.getSetting(mentionJobKey(active.id)) ?? null }
+    const decision = decideMention(input.target, facts)
+    if (decision.action === 'refuse') {
+      this.store.audit(repo.user_id, 'trigger.mention_ignored', `${input.commentId} ${identity} ${decision.reason}`)
+      return {
+        ok: false,
+        action: 'refuse',
+        code: decision.reason === 'draft' ? 'MENTION_DRAFT' : 'MENTION_CLOSED',
+        error: decision.reason === 'draft' ? '草稿 PR 不会启动任务。' : '已关闭的目标不会启动任务。',
+      }
+    }
+    if (decision.action === 'record') {
+      // The same target at the same head, while a job holds it: no second job, one
+      // event on the job that has it. This is the case a reply-to-yourself loop
+      // and a repeated trigger both land in.
+      this.store.recordJobEvent({ jobId: decision.jobId, repoId: repo.id, userId: repo.user_id, kind: 'job.mention_recorded', meta: `${input.commentId} ${identity} actor=${input.actor}` })
+      this.store.audit(repo.user_id, 'trigger.mention', `${input.commentId} ${identity} actor=${input.actor} outcome=recorded job=${decision.jobId}`)
+      return { ok: true, action: 'record', jobId: decision.jobId }
+    }
+    if (decision.action === 'park') {
+      // A running job is never interrupted: it finishes, then the newest mention
+      // is started. The slot holds one mention, replaced, because two mentions on
+      // the same target are one follow-up — the later one.
+      this.store.recordJobEvent({ jobId: decision.jobId, repoId: repo.id, userId: repo.user_id, kind: 'job.mention_recorded', meta: `${input.commentId} ${identity} actor=${input.actor}` })
+      this.store.setSetting(pendingMentionKey(repo.id), JSON.stringify({ target: input.target, commentId: input.commentId, actor: input.actor }))
+      this.store.audit(repo.user_id, 'trigger.mention', `${input.commentId} ${identity} actor=${input.actor} outcome=parked job=${decision.jobId}`)
+      return { ok: true, action: 'park', jobId: decision.jobId }
+    }
+    if (decision.action === 'supersede') {
+      // The queued row is retired only once the replacement is admitted. `enqueue`
+      // refuses for reasons that have nothing to do with the slot (a role change,
+      // a full queue, a budget), and on that path the person was told a newer
+      // mention replaced the old one — so the old one must still be there to run.
+      const previous = this.store.getJob(decision.jobId)
+      this.retireQueuedMention(repo, decision.jobId, input)
+      const started = await this.startMentionJob(repo, input.target, identity, input.commentId, input.actor)
+      if (!started.ok || started.action !== 'start') {
+        if (previous !== undefined) {
+          this.store.updateJob(previous.id, { status: 'queued', error: null, error_code: null, finished_at: null })
+          this.store.audit(repo.user_id, 'trigger.mention_restored', `${input.commentId} ${previous.id} ${started.ok ? 'unknown' : started.code}`)
+        }
+        return started
+      }
+      this.recordQueuedMentionSuperseded(repo, previous, input)
+      return { ok: true, action: 'supersede', jobId: started.jobId, kind: started.kind }
+    }
+    return await this.startMentionJob(repo, input.target, identity, input.commentId, input.actor)
+  }
+
+  // Step one of a supersede: take the slot without writing history yet. A status
+  // write is reversible; a timeline event and an audit row are not, so they wait
+  // for the replacement to be admitted.
+  private retireQueuedMention(_repo: RepoRow, jobId: string, _input: MentionRequest): void {
+    // The queued job has not run yet, so it may end here. It is a status of its
+    // own rather than a cancellation: nothing failed and nobody stopped it — a
+    // newer trigger took the slot before it ran, and the row should say so.
+    this.store.updateJob(jobId, { status: 'superseded', error: '被更新的 mention 取代', error_code: 'MENTION_SUPERSEDED', finished_at: nowIso() })
+  }
+
+  // Step two, once the replacement exists: the queued row really did give way.
+  private recordQueuedMentionSuperseded(repo: RepoRow, previous: JobRow | undefined, input: MentionRequest): void {
+    if (previous === undefined) return
+    this.store.recordJobEvent({ jobId: previous.id, repoId: repo.id, userId: repo.user_id, kind: 'job.superseded', meta: `mention ${input.commentId}` })
+    this.store.audit(repo.user_id, 'trigger.mention_superseded', `${input.commentId} ${previous.id} -> ${mentionIdentity(input.target)}`)
+  }
+
+  private async startMentionJob(repo: RepoRow, target: MentionTarget, identity: string, commentId: string, actor: string): Promise<MentionResult> {
+    const kind = mentionJobKind(target)
+    const goal = target.kind === 'pull_request'
+      ? [
+        `Review the pull request ${target.url} at ${target.headSha} because a trusted comment mentioned the bot.`,
+        'Read the diff and the checks at that head and comment on the pull request with what you find.',
+        'Do not write to the branch, do not push, and do not open another pull request.',
+      ].join('\n')
+      : [
+        `Follow up on the issue ${target.url} because a trusted comment mentioned the bot.`,
+        'Open at most one branch and one pull request for this issue, under the one-issue-one-branch-one-PR rule, and report the branch and PR URL.',
+        'If no change is warranted, report why and create nothing.',
+      ].join('\n')
+    const result = await this.enqueue(repo, 'followup', goal, kind, target.kind === 'pull_request'
+      ? { branch: target.branch ?? '', prUrl: target.url, ...(target.baseBranch === undefined ? {} : { baseBranch: target.baseBranch }) }
+      : {})
+    if (!result.ok || result.job === undefined) {
+      this.store.audit(repo.user_id, 'trigger.mention_refused', `${identity} ${result.code ?? 'unknown'}`)
+      return { ok: false, action: 'start', code: result.code ?? 'MENTION_REFUSED', error: result.error ?? '任务没有启动。' }
+    }
+    if (target.kind === 'issue') this.store.updateJob(result.job.id, { issue_url: target.url })
+    this.store.setSetting(mentionJobKey(result.job.id), identity)
+    this.store.audit(repo.user_id, 'trigger.mention', `${commentId} ${identity} actor=${actor} outcome=started job=${result.job.id} kind=${kind}`)
+    return { ok: true, action: 'start', jobId: result.job.id, kind }
+  }
+
+  // The parked mention starts when the repository's slot frees, whichever job
+  // ended. Called from the release pass and when a job finishes.
+  private async releasePendingMention(repoId: string): Promise<void> {
+    const key = pendingMentionKey(repoId)
+    const raw = this.store.getSetting(key)
+    if (raw === undefined) return
+    const repo = this.store.getRepo(repoId)
+    if (repo === undefined) {
+      this.store.deleteSetting(key)
+      return
+    }
+    // A job still holding the slot keeps the slot; the next pass reads it again.
+    if (this.store.activeJobForRepo(repoId) !== undefined) return
+    let parked: { target: MentionTarget; commentId: string; actor: string }
+    try {
+      parked = JSON.parse(raw) as typeof parked
+    } catch {
+      this.store.deleteSetting(key)
+      return
+    }
+    const result = await this.mention(repo, parked)
+    if (!result.ok) {
+      // A refusal is not always a decision about the mention. A stopped platform,
+      // a full queue, a disabled repository or an exhausted budget all clear
+      // themselves, and the thread already promised the person that this mention
+      // runs when the slot frees — so the slot keeps the mention unless the
+      // target itself refused it.
+      if (result.code === 'MENTION_DRAFT' || result.code === 'MENTION_CLOSED') {
+        log.info('pending mention dropped', { repo: repoId, code: result.code })
+      } else {
+        this.store.setSetting(key, raw)
+        log.warn('pending mention kept', { repo: repoId, code: result.code, error: result.error })
+      }
+    } else {
+      this.store.deleteSetting(key)
+    }
+  }
+
+  // Public so the release pass and a test can drive it the same way.
+  async releaseAllPendingMentions(): Promise<void> {
+    const repoIds = new Set<string>()
+    for (const row of this.store.listSettings('pending_mention:')) {
+      const repoId = row.key.split(':')[1]
+      if (repoId !== undefined && repoId !== '') repoIds.add(repoId)
+    }
+    for (const repoId of repoIds) await this.releasePendingMention(repoId)
   }
 
   async notifyOpsAlerts(): Promise<number> {
@@ -3244,6 +3494,7 @@ export class Jobs {
     if (status === 'succeeded' && followUps.length > 0) {
       await this.queueReviewFollowUps(job, followUps)
       await this.releasePendingFollowups(job.repo_id)
+      await this.releasePendingMention(job.repo_id)
     }
     if (status === 'succeeded' && job.kind === 'triage' && triage !== null) {
       // The board is the record, and its first row is what the scheduler can pick
@@ -3315,8 +3566,11 @@ export class Jobs {
         // a review job.
         ...(follow.instruction === undefined ? {} : { instruction: follow.instruction }),
       }
-      const key = `pending_followup:${repo.id}:${job.id}:${index}`.slice(0, 300)
-      this.store.setSetting(key, JSON.stringify(input))
+      // #637: a follow-up the review itself asked for parks in the same slot as
+      // an update that arrived mid-review, keyed by pull request and head, so the
+      // release pass queues one job carrying both instead of two jobs.
+      const key = pendingFollowUpKey(repo.id, input.prUrl, headSha)
+      this.store.setSetting(key, mergeParkedFollowUp(this.store.getSetting(key), input))
       index += 1
     }
   }
@@ -3691,6 +3945,7 @@ export class Jobs {
     const sweptLeases = this.store.sweepScheduleLeases()
     if (sweptLeases.freed > 0) log.info('schedule leases expired', { freed: sweptLeases.freed })
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
+    await this.releaseAllPendingMentions().catch((error) => log.warn('pending mention recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))

@@ -37,6 +37,12 @@ export interface Config {
   // #708: the per-class windows mutating routes take. A route names its class;
   // the numbers live here so a deployment tightens a limit without a rebuild.
   rateLimit: RateLimitBudgets
+  // #637: the comment names that count as a trigger. `@<name>` in an issue or
+  // pull request comment starts a review; a deployment renames or adds names
+  // here rather than in code, and an empty list disables the trigger.
+  triggers: {
+    mentions: string[]
+  }
   // #540: how far the console adapters go for commands added after slice 1.
   // `off` (the default) is the route that existed before the contract.
   managementService: ManagementServiceMode
@@ -311,6 +317,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         max: Math.max(1, number('RATE_LIMIT_EXPENSIVE_MAX', DEFAULT_RATE_LIMIT_BUDGETS.expensive.max)),
         windowMs: Math.max(1_000, number('RATE_LIMIT_EXPENSIVE_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.expensive.windowMs)),
       },
+    },
+    triggers: {
+      mentions: text('FLEDGE_MENTION_NAMES', 'fledge')
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name !== ''),
     },
     managementService: parseManagementService(text('MANAGEMENT_SERVICE', 'off')),
     tokenEncryptionKey: encryptionKey,
