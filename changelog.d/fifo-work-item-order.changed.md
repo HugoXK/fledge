@@ -1,0 +1,1 @@
+The work board and the scheduled work selection now share one FIFO order: at equal priority the oldest work item is first. A recently edited item can no longer jump ahead of an older one that has been waiting, so the backlog is drained in the order it arrived.

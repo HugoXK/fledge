@@ -312,6 +312,28 @@ test('work items persist, update and are found by issue or PR', () => {
   }
 })
 
+test('work items are ordered by priority, then oldest first', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'fifo-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_fifo', userId: user.id, owner: 'o', name: 'fifo', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createWorkItem({ id: 'work_old_low', repoId: repo.id, userId: user.id, title: 'old low', priority: 0 })
+    store.createWorkItem({ id: 'work_old_high', repoId: repo.id, userId: user.id, title: 'old high', priority: 30 })
+    store.createWorkItem({ id: 'work_new_high', repoId: repo.id, userId: user.id, title: 'new high', priority: 30 })
+    store.db.exec("UPDATE work_items SET created_at = '2026-01-01T00:00:00.000Z', updated_at = '2026-01-01T00:00:00.000Z' WHERE id = 'work_old_low'")
+    store.db.exec("UPDATE work_items SET created_at = '2026-01-02T00:00:00.000Z', updated_at = '2026-01-02T00:00:00.000Z' WHERE id = 'work_old_high'")
+    store.db.exec("UPDATE work_items SET created_at = '2026-01-03T00:00:00.000Z', updated_at = '2026-01-03T00:00:00.000Z' WHERE id = 'work_new_high'")
+
+    assert.deepEqual(store.listWorkItems(repo.id).map((item) => item.id), ['work_old_high', 'work_new_high', 'work_old_low'])
+    // A recent edit must not move an old item behind a newer one at the same
+    // priority; the scheduler reads this list and must keep the FIFO order.
+    store.updateWorkItem('work_old_high', { title: 'old high, edited now' })
+    assert.deepEqual(store.listOpenWorkItems(repo.id).map((item) => item.id), ['work_old_high', 'work_new_high', 'work_old_low'])
+  } finally {
+    store.close()
+  }
+})
+
 test('usage and job tokens carry the repository for cost attribution', () => {
   const store = new Store(':memory:')
   try {
