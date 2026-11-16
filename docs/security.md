@@ -644,11 +644,22 @@ It does not revoke the old token. A secrets file that is not valid JSON is
 reported by position only — never with a fragment of its contents, which would
 put the token in a log.
 
-**The old value is dead only when one and the same run proves it.** Run
-`GET /user` with the old value and `GET /user` with the new value inside a single
-run: `401` for the old and `200` for the new is the only pair that counts. A lone
-`401` is not evidence — a proxy, a rate limit or a typo produces one too — so any
-other outcome is **INCONCLUSIVE** and must be re-run, not recorded as done.
+**The old value is dead only when one and the same run proves it.** The script
+runs `GET /user` with the old value and with the new value inside a single run
+and acts on that pair; `401` for the old and `200` for the new is the only pair
+that counts. A lone `401` is not evidence — a proxy, a rate limit or a typo
+produces one too — so any other outcome is **INCONCLUSIVE** and must be re-run,
+not recorded as done. The script reports that pair as:
+
+| code | meaning |
+|---|---|
+| `0` | proven: the old value answered `401`, the new one `200`, and this run's timestamped backup was removed |
+| `1` | nothing proven: bad input, a new token whose `user.login` is not `EXPECTED_LOGIN` (default `HugoXK`), or an `INCONCLUSIVE` pair; the backup stays |
+| `2` | the old value still answers `200`; the new value is written and the backup stays, because it holds a token that still works |
+
+A refused account writes nothing at all, so the secrets file is unchanged. The
+rotation itself — minting the new PAT and revoking the old one — stays an owner
+action on the host that holds the secrets file.
 
 Exit codes of `npm run secret:scan`, the tool this section documents:
 
