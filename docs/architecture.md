@@ -823,6 +823,19 @@ path. The page owns the Users section at `/admin#users`; `/admin/users` is an
 admin-only redirect to that section for older links and bookmarks, while
 `/admin/users/:id` remains the read-only support view.
 
+For a superadmin, the Release card also carries the one-click preview
+(`src/lib/releaseDispatch.ts`): the current `main`, latest tag, commit/fix/
+feature/fragment counts, computed next version, `ci-ok`, any open release PR and
+the exact reason the action is blocked. `POST /admin/release` requires superadmin,
+CSRF, a recent GitHub re-authentication, the destructive rate-limit class and an
+audit row; it re-reads the preview and then dispatches the existing
+`daily-release.yml` with `dry_run=false`. It never creates a tag, merges a pull
+request or deploys a host. The server-side `RELEASE_DISPATCH_TOKEN` is repo-scoped
+and never rendered or logged; an empty value disables the action instead of
+failing the page. Release remains separate from deploy: production may already
+run `main`, and the next infra update installs the version-bump commit after the
+release PR merges.
+
 The admin page is a hub, not an approvals-only page. Its primary sections are
 Pending, Users, Jobs, Audit, Release and Backups; Product metrics, Webhook
 deliveries, Deployments, Audit and jobs search and Preview trials are module
