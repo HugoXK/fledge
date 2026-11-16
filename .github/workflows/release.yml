@@ -146,13 +146,40 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            echo "published=true" >> "$GITHUB_OUTPUT"
-            echo "${RELEASE_TAG} already has a GitHub Release; nothing is built or published" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "published=false" >> "$GITHUB_OUTPUT"
-            echo "${RELEASE_TAG} has no GitHub Release yet; publishing" >> "$GITHUB_STEP_SUMMARY"
-          fi
+          # #909: `gh` exits non-zero for "not found" and for "forbidden", a
+          # server error or a dead network alike, and the exit status cannot tell
+          # them apart. Reading every failure as "no release yet" is what let a
+          # 403 republish the tag's image, so the answer is classified by the one
+          # tested rule in scripts/lib/release-lookup.mjs: present, absent (404
+          # only), or unreadable — and an unreadable read stops the run before a
+          # single write.
+          status=0
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            >/dev/null 2> "${RUNNER_TEMP}/release-lookup.err" || status=$?
+          STATE="$(STATUS="$status" node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            import { classifyReleaseLookup } from "./scripts/lib/release-lookup.mjs"
+            const result = classifyReleaseLookup({
+              status: Number(process.env.STATUS),
+              stderr: readFileSync(`${process.env.RUNNER_TEMP}/release-lookup.err`, "utf8"),
+            })
+            console.error(`release lookup: ${result.state} — ${result.reason}`)
+            process.stdout.write(result.state)
+          ')"
+          case "$STATE" in
+            present)
+              echo "published=true" >> "$GITHUB_OUTPUT"
+              echo "${RELEASE_TAG} already has a GitHub Release; nothing is built or published" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            absent)
+              echo "published=false" >> "$GITHUB_OUTPUT"
+              echo "${RELEASE_TAG} has no GitHub Release yet; publishing" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::could not read the GitHub Release state for ${RELEASE_TAG}; refusing to publish"
+              exit 1
+              ;;
+          esac
 
       # #183: stamp the image so /healthz on the published tag names the commit
       # it was cut from. The tag checkout is not necessarily github.sha, so the
@@ -231,14 +258,33 @@ jobs:
             echo "Attestation: ${DIGEST}"
           } >> /tmp/release-notes.md
 
-      - name: Create or update the GitHub release
+      - name: Create the GitHub release
         if: ${{ steps.guard.outputs.published != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
-          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file /tmp/release-notes.md
-          else
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file /tmp/release-notes.md
+          set -euo pipefail
+          # #909: this step creates the release or stops; it never edits a
+          # release it did not create. A release that appeared between the guard
+          # and here names an image this run did not push, so rewriting its notes
+          # would leave the body naming the previous digest — the refusal is the
+          # point, and the answer goes through the same tested rule.
+          status=0
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+            >/dev/null 2> "${RUNNER_TEMP}/release-write.err" || status=$?
+          STATE="$(STATUS="$status" node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            import { classifyReleaseLookup } from "./scripts/lib/release-lookup.mjs"
+            const result = classifyReleaseLookup({
+              status: Number(process.env.STATUS),
+              stderr: readFileSync(`${process.env.RUNNER_TEMP}/release-write.err`, "utf8"),
+            })
+            console.error(`release write lookup: ${result.state} — ${result.reason}`)
+            process.stdout.write(result.state)
+          ')"
+          if [ "$STATE" != "absent" ]; then
+            echo "::error::${RELEASE_TAG} gained a GitHub Release while this run was publishing (${STATE}); refusing to rewrite it"
+            exit 1
           fi
+          gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file /tmp/release-notes.md
