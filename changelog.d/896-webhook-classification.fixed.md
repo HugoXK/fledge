@@ -1,0 +1,1 @@
+A webhook send that may have reached the destination is now classified `unknown` even when Undici puts the socket code on `error.cause`, so it is not resent automatically; a transient resolver failure is retried instead of being marked `blocked` permanently.

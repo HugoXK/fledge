@@ -450,7 +450,9 @@ changed address is not mailed the old copy. A queued webhook row stores no URL:
 the configured `NOTIFY_WEBHOOK_URL` is read at send time under the same safety
 rule as a live send (https or allowlisted host, no credentials in the URL, no
 private or reserved address, bounded redirects), and a refused destination is
-`blocked` rather than retried. The admin outbox page renders transport, state,
+`blocked` rather than retried. A resolution failure (the resolver throws or
+returns no address) is transient and stays `retry`; only the policy checks
+(scheme, credentials, allowlist, private or reserved address) are `blocked`. The admin outbox page renders transport, state,
 attempt count, last error and delivery time with the address masked; it never
 renders the mail or webhook body. A delivered row is kept for 30 days, `dead`
 and `blocked` rows for 90, and `unknown` for 365 because it is the only state

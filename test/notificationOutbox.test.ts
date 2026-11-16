@@ -222,7 +222,7 @@ test('the webhook transport maps a status to sent, retry or dead, and a timeout 
   assert.equal((await blocked.send(row('off'))).state, 'blocked')
 })
 
-test('a webhook that fails DNS is retried, but a private destination is blocked', async () => {
+test('a fetch-level network error is retried, but a private destination is blocked', async () => {
   const config = testConfig({ notifyWebhookUrl: 'https://hooks.example.com/fledge' })
   const resolve = async () => [{ address: '203.0.113.10', family: 4 }]
   const dns = webhookTransport(config, {
@@ -234,6 +234,46 @@ test('a webhook that fails DNS is retried, but a private destination is blocked'
   const privateTransport = webhookTransport(config, { resolve: async () => [{ address: '10.0.0.1', family: 4 }] })
   const refused = await privateTransport.send(row('private'))
   assert.equal(refused.state, 'blocked', 'a refused destination is not retried forever')
+})
+
+test('a reset on the fetch cause is unknown and is not claimed on the next pass', async () => {
+  const config = testConfig({ notifyWebhookUrl: 'https://hooks.example.com/fledge' })
+  const resolve = async () => [{ address: '203.0.113.10', family: 4 }]
+  const transport = webhookTransport(config, {
+    resolve,
+    fetch: async () => { throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } }) },
+  })
+  assert.equal((await transport.send(row('cause-reset'))).state, 'unknown')
+
+  const h = harness('cause-reset')
+  try {
+    enqueue(h.store, 'webhook:cause-reset')
+    const first = await deliverOutbox(h.store, {
+      email: { send: async () => ({ state: 'sent' }) },
+      webhook: transport,
+    }, { now: T0, leaseMs: OUTBOX_LEASE_MS })
+    assert.equal(first.unknown, 1)
+
+    const second = await deliverOutbox(h.store, {
+      email: { send: async () => ({ state: 'sent' }) },
+      webhook: { send: async () => { throw new Error('must not be called') } },
+    }, { now: T0 + 60_000, leaseMs: OUTBOX_LEASE_MS })
+    assert.equal(second.claimed, 0)
+  } finally {
+    h.store.close()
+  }
+})
+
+test('a webhook resolver failure is retryable, while a private destination stays blocked', async () => {
+  const config = testConfig({ notifyWebhookUrl: 'https://hooks.example.com/fledge' })
+  const retry = webhookTransport(config, {
+    resolve: async () => { throw new Error('getaddrinfo EAI_AGAIN') },
+    fetch: async () => new Response('', { status: 200 }),
+  })
+  assert.equal((await retry.send(row('resolver-fail'))).state, 'retry')
+
+  const blocked = webhookTransport(config, { resolve: async () => [{ address: '10.0.0.1', family: 4 }] })
+  assert.equal((await blocked.send(row('resolver-private'))).state, 'blocked')
 })
 
 // Rule the whole slice turns on: a timeout is not a failure to send, it is a
