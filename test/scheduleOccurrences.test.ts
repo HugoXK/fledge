@@ -56,11 +56,11 @@ function audits(store: Store, action: string): string[] {
 
 // -- the table -------------------------------------------------------------
 
-test('the occurrence table is part of the schema at user_version 43', () => {
+test('the occurrence table is part of the schema at user_version 44', () => {
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')
-    assert.equal(Number(version?.user_version), 43, 'the Lead delivery columns move the refusal boundary from 42 to 43')
+    assert.equal(Number(version?.user_version), 44, 'the notification outbox moves the refusal boundary from 43 to 44')
 
     const table = store.get<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schedule_occurrences'")
     assert.equal(table?.name, 'schedule_occurrences')

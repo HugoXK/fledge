@@ -76,7 +76,7 @@ test('the admin page is a module hub, not an Approvals & quota link bar', async 
     assert.doesNotMatch(ownerPage.body, /Approvals &amp; quota|Approvals & quota/)
     for (const [href, label] of [
       ['/admin/metrics', 'Product metrics'],
-      ['/admin/webhooks', 'Webhook deliveries'],
+      ['/admin/webhooks', 'Inbound webhook deliveries'],
       ['/admin/deployments', 'Deployments and drift'],
       ['/admin/search', 'Audit and jobs'],
       ['/admin/trials', 'Preview trials'],
@@ -84,6 +84,13 @@ test('the admin page is a module hub, not an Approvals & quota link bar', async 
       assert.match(ownerPage.body, new RegExp(`<a class="admin-module" href="${href}">[\\s\\S]*?${label}`), `${label} must be a module tile`)
     }
     assert.match(ownerPage.body, /class="admin-modules"/)
+    // #544 slice 7 review: /admin/webhooks lists inbound GitHub deliveries, so
+    // its tile must not describe the outbound notification outbox beside it.
+    assert.doesNotMatch(ownerPage.body, /Outbound notification delivery/)
+    const ownerZh = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${ownerSession.cookie}; fledge_lang=zh` } })
+    assert.equal(ownerZh.statusCode, 200)
+    assert.match(ownerZh.body, /入站 Webhook 投递/)
+    assert.doesNotMatch(ownerZh.body, /出站通知投递状态/)
 
     const adminPage = await built.app.inject({ method: 'GET', url: '/admin', headers: { cookie: `${adminSession.cookie}; fledge_lang=en` } })
     assert.equal(adminPage.statusCode, 200)

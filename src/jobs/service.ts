@@ -1,12 +1,13 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
 import type { JobRow, RepoRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
-import type { Mailer } from '../email/mailer.js'
+import type { Mailer, MailMessage } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
 import { dailyDigestEmail, jobAttentionEmail, jobFailedEmail, jobSucceededEmail, type DigestInput } from '../email/templates.js'
 import { notifyEmail, replyAddressFor } from '../email/recipient.js'
-import { sendNotificationWebhook } from '../lib/webhook.js'
+import { deliverOutbox, OUTBOX_LEASE_MS } from '../notifications/outbox.js'
+import { emailTransport, webhookTransport } from '../notifications/transports.js'
 import { log } from '../lib/log.js'
 import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
@@ -1061,7 +1062,7 @@ export class Jobs {
     const message = error instanceof Error ? error.message : String(error)
     this.store.audit(repo.user_id, 'repo.credential_invalid', `${repo.owner}/${repo.name}: ${redact(message).slice(0, 200)}`)
     this.store.notify(repo.user_id, 'job', `${repo.owner}/${repo.name} 的 GitHub token 权限不足，自动迭代已暂停；请重新授权后手动开启。`)
-    void sendNotificationWebhook(this.config, 'repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: redact(message).slice(0, 300) })
+    this.queueWebhook('repo.credential_invalid', { text: `${repo.owner}/${repo.name}: GitHub token is invalid`, repoId: repo.id, error: redact(message).slice(0, 300) }, `repo.credential_invalid:${repo.id}:${nowIso()}`)
   }
 
   /**
@@ -1594,7 +1595,7 @@ export class Jobs {
       // #353: a success has no retry behind it, so its mail is decided here; a
       // failure waits for the retry decision below.
       if (result.status === 'succeeded') void this.sendJobEmail(job, result)
-      void sendNotificationWebhook(this.config, `job.${result.status}`, {
+      this.queueWebhook(`job.${result.status}`, {
         text: `${job.kind} job ${job.id} ${result.status}`,
         jobId: job.id,
         repoId: job.repo_id,
@@ -1605,7 +1606,7 @@ export class Jobs {
         issueUrl: issueUrl,
         summary: redact(result.summary ?? job.summary ?? ''),
         error: redact(result.error ?? job.error ?? ''),
-      })
+      }, `job.${job.id}:${result.status}:webhook`)
     }
     const repo = this.store.getRepo(job.repo_id)
     if (repo !== undefined && repo.job_budget_cny > 0) {
@@ -1711,13 +1712,13 @@ export class Jobs {
       const record = this.store.createPostmortemForJob(jobId)
       if (record?.escalated !== true) return
       this.store.audit(record.postmortem.user_id, 'postmortem.recurrence_escalated', `${record.recurrence.recurrence_key}: ${record.recurrence.count}`)
-      void sendNotificationWebhook(this.config, 'postmortem.recurring', {
+      this.queueWebhook('postmortem.recurring', {
         text: `recurring ${record.postmortem.category} failure ${record.recurrence.recurrence_key} seen ${record.recurrence.count} times`,
         repoId: record.postmortem.repo_id,
         jobId,
         recurrenceKey: record.recurrence.recurrence_key,
         count: record.recurrence.count,
-      })
+      }, `postmortem.recurring:${record.postmortem.repo_id}:${record.recurrence.recurrence_key}:${record.recurrence.count}`)
     } catch (error) {
       log.warn('postmortem write failed', { trace: jobId, error: String(error) })
       // #666: a postmortem that was not written is a repair job, not a no-op, so
@@ -1844,7 +1845,7 @@ export class Jobs {
     this.store.setSetting(key, nowIso())
     this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。`)
     this.store.audit(job.user_id, 'ops.repeated_failures', `${label}: 3 consecutive failures`)
-    void sendNotificationWebhook(this.config, 'repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id })
+    this.queueWebhook('repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id }, `repo.repeated_failures:${job.repo_id}:${job.id}`)
   }
 
   private async refreshRepoAccess(repo: RepoRow): Promise<RepoRow | undefined> {
@@ -2645,7 +2646,7 @@ export class Jobs {
   // webhook call; the settings keys above are what make the pass idempotent.
   private notifyPlan(job: JobRow, message: string, code: string): void {
     this.store.notify(job.user_id, 'job', message, code)
-    void sendNotificationWebhook(this.config, code, { text: message, repoId: job.repo_id, jobId: job.id })
+    this.queueWebhook(code, { text: message, repoId: job.repo_id, jobId: job.id }, `${code}:${job.id}`)
   }
 
   private async releaseAllPendingFollowups(): Promise<void> {
@@ -3080,20 +3081,67 @@ export class Jobs {
       this.store.event('ops_alert_notified', { userId: user.id, repoId: alert.repoId ?? null, jobId: alert.jobId ?? null, meta: `${alert.kind}:${alert.level}` })
       this.store.setSetting(key, nowIso())
       sent += 1
-      void sendNotificationWebhook(this.config, 'ops.alert', {
+      this.queueWebhook('ops.alert', {
         text: alert.message,
         kind: alert.kind,
         level: alert.level,
         repoId: alert.repoId ?? null,
         jobId: alert.jobId ?? null,
         prUrl: alert.prUrl ?? null,
-      })
+      }, `ops.alert:${key}`)
     }
     for (const row of this.store.listSettings('ops_alert_notified:')) {
       if (!current.has(row.key)) this.store.deleteSetting(row.key)
     }
     setGauge('fledge_ops_alerts_open', alerts.length, {}, 'Open operational alerts')
     return sent
+  }
+
+  // #544 slice 7: a notification is queued, not sent inline. The key names the
+  // logical event, so a replayed callback or a second tick keeps one row instead
+  // of sending twice. With no webhook configured there is no destination to
+  // record, which is the same no-op the old fire-and-forget call had.
+  private queueWebhook(event: string, payload: Record<string, unknown>, key: string): void {
+    if (this.config.notifyWebhookUrl === '') return
+    try {
+      this.store.enqueueNotification({
+        transport: 'webhook',
+        destination: 'webhook',
+        payload: { event, ...payload },
+        idempotencyKey: key,
+      })
+    } catch (error) {
+      log.warn('notification enqueue failed', { transport: 'webhook', event, error: String(error) })
+    }
+  }
+
+  private queueEmail(userId: string, message: Omit<MailMessage, 'to'>, key: string): void {
+    const user = this.store.userById(userId)
+    try {
+      this.store.enqueueNotification({
+        transport: 'email',
+        destination: user === undefined ? '' : notifyEmail(user),
+        userId,
+        payload: message,
+        idempotencyKey: key,
+      })
+    } catch (error) {
+      log.warn('notification enqueue failed', { transport: 'email', error: String(error) })
+    }
+  }
+
+  // One pass: sweep lapsed leases into `unknown`, then attempt the due rows.
+  // The destination is re-read by the transports, so a revoked account or a
+  // switched-off webhook blocks instead of receiving stale content.
+  private async deliverNotifications(): Promise<void> {
+    const result = await deliverOutbox(this.store, {
+      email: emailTransport(this.store, this.mailer),
+      webhook: webhookTransport(this.config),
+    }, { leaseMs: OUTBOX_LEASE_MS })
+    if (result.claimed > 0) log.info('notification outbox pass', { ...result })
+    for (const row of this.store.countNotificationsByState()) {
+      setGauge('fledge_notification_outbox', row.count, { status: row.state }, 'Queued or delivered notifications by state')
+    }
   }
 
   private async notifyQuestions(): Promise<void> {
@@ -3117,31 +3165,24 @@ export class Jobs {
           if (this.store.getSetting(key) !== undefined) continue
           this.store.setSetting(key, nowIso())
           this.store.notify(user.id, 'job', `${repo.owner}/${repo.name} 团队提问：${question.question}`)
-          void sendNotificationWebhook(this.config, 'question', {
+          this.queueWebhook('question', {
             text: `${repo.owner}/${repo.name}: ${question.question}`,
             repoId: repo.id,
             jobId: job.id,
             question: question.question,
             detail: question.detail,
             options: question.options,
-          })
+          }, `question:${question.sessionId}:${question.id}:webhook`)
           if (user.email_job_updates !== 1) continue
           const email = notifyEmail(user)
           if (email === '') continue
-          try {
-            await this.mailer.send({
-              to: email,
-              ...jobAttentionEmail(user, {
-                repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
-                question: question.question,
-                detail: question.detail,
-                options: question.options,
-                teamUrl: `${this.config.baseUrl}/repos/${repo.id}#inbox`,
-              }),
-            })
-          } catch (error) {
-            log.warn('question email failed', { trace: job.id, error: String(error) })
-          }
+          this.queueEmail(user.id, jobAttentionEmail(user, {
+            repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
+            question: question.question,
+            detail: question.detail,
+            options: question.options,
+            teamUrl: `${this.config.baseUrl}/repos/${repo.id}#inbox`,
+          }), `question:${question.sessionId}:${question.id}:email`)
         }
       }
     } finally {
@@ -3273,8 +3314,8 @@ export class Jobs {
           replyAddress = replyAddressFor(this.config.mail.from, token)
           digest.replyAddress = replyAddress
         }
-        await this.mailer.send({ to: email, ...dailyDigestEmail(user, digest), ...(replyAddress === undefined ? {} : { replyTo: replyAddress }) })
-        log.info('daily digest sent', { user: user.login, date: clock.date })
+        this.queueEmail(user.id, { ...dailyDigestEmail(user, digest), ...(replyAddress === undefined ? {} : { replyTo: replyAddress }) }, `digest:${user.id}:${clock.date}`)
+        log.info('daily digest queued', { user: user.login, date: clock.date })
       } catch (error) {
         this.store.deleteSetting(key)
         if (replyKey !== undefined) this.store.deleteSetting(replyKey)
@@ -3983,6 +4024,10 @@ export class Jobs {
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
     await this.notifyOpsAlerts().catch((error) => log.warn('ops alert pass failed', { error: String(error) }))
     await this.maybeSendDigests().catch((error) => log.warn('daily digest pass failed', { error: String(error) }))
+    // #544 slice 7: the passes above queue notifications instead of sending
+    // them inline, so this is the one place that touches a transport. It runs
+    // after them, so a digest queued in this tick is still attempted in it.
+    await this.deliverNotifications().catch((error) => log.warn('notification delivery pass failed', { error: String(error) }))
     if (this.config.runner.queueDispatch) {
       await this.dispatchQueued().catch((error) => log.warn('queue dispatch failed', { error: String(error) }))
     }

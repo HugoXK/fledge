@@ -29,6 +29,9 @@ Core series:
   `fledge_auto_merge_candidates`, `fledge_ops_alerts_open`
 - `fledge_retries_total{kind}`, `fledge_merges_total{result}`,
   `fledge_path_guard_blocked_total`, `fledge_verification_failed_total`
+- `fledge_notification_outbox{status}` — queued or delivered notifications by
+  outbox state; a state with no rows is absent, so an empty panel means "none",
+  not "zero delivered".
 - `fledge_github_requests_total{method,status}`,
   `fledge_github_request_seconds`
 - `fledge_bridge_requests_total{status}`, `fledge_bridge_request_seconds`

@@ -87,6 +87,7 @@ import {
   adminTrialsPage,
   adminSearchPage,
   adminWebhooksPage,
+  adminNotificationsPage,
   adminDeploymentsPage,
   approvalPage,
   dashboardPage,
@@ -4988,6 +4989,49 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     } catch (error) {
       return reply.redirect('/admin/webhooks?error=' + encodeURIComponent(`重试失败：${String(error).slice(0, 200)}`))
     }
+  })
+
+  // #544 slice 7: the notification outbox. Read-only apart from the one human
+  // action the state machine has: an explicit resend, which reuses the row's
+  // idempotency key and is audited. It is superadmin-only like the webhook page
+  // because a resend can duplicate a delivery.
+  app.get('/admin/notifications', async (request, reply) => {
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const state = (queryText(request, 'state') ?? '').slice(0, 20)
+    const transport = (queryText(request, 'transport') ?? '').slice(0, 20)
+    const perPage = 25
+    const total = store.countNotificationOutbox({ state, transport })
+    const pages = Math.max(1, Math.ceil(total / perPage))
+    const page = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'page')) || 1)), pages)
+    return reply.type('text/html').send(adminNotificationsPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      rows: store.listNotificationOutbox({ state, transport }, perPage, (page - 1) * perPage),
+      counts: store.countNotificationsByState(),
+      filters: { state, transport },
+      page,
+      pages,
+      total,
+      notice: request.flash?.notice?.text,
+      error: request.flash?.error?.text,
+    }))
+  })
+
+  app.post('/admin/notifications/:id/resend', async (request, reply) => {
+    if (!apiLimiter.take(`admin-notification-resend:${rateLimitKey(request)}`)) return reply.code(429).send({ error: 'too many requests' })
+    const viewer = approvedCsrfGuard(request)
+    if (viewer.user.role !== 'superadmin') throw httpError(403, '仅超级管理员可重发。', 'SUPERADMIN_ONLY')
+    const id = String((request.params as Record<string, string>).id)
+    const row = store.getNotificationOutbox(id)
+    if (row === undefined) throw httpError(404, '通知不存在。', 'NOTIFICATION_NOT_FOUND')
+    const resent = store.resendNotification(id)
+    if (!resent.requeued) {
+      return reply.redirect('/admin/notifications?error=' + encodeURIComponent(row.state === 'sent' ? '已送达的通知不能重发。' : '这条通知正在发送，不能重发。'))
+    }
+    store.audit(viewer.user.id, 'notification.resend', `${id}: ${resent.row.transport}/${resent.row.state} attempts=${resent.row.attempts}`)
+    return reply.redirect('/admin/notifications?notice=' + encodeURIComponent('通知已重新排队；重发使用同一幂等键，可能产生重复。'))
   })
 
   app.get('/admin', async (request, reply) => {
