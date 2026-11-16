@@ -980,10 +980,25 @@ dependency carries a harmless `postinstall` marker, and fails if the marker is
 written. Dropping the flag therefore fails the suite instead of silently
 restoring script execution.
 
+`release.yml` is the one workflow that holds `contents: write`, `packages:
+write`, `id-token: write` and `attestations: write` at the same time, so it is
+covered completely rather than one job at a time (#861). Its `build` job checks
+the tag out with `persist-credentials: false` and installs with `npm ci
+--ignore-scripts`, so a dependency lifecycle script has no token in `.git/config`
+to read and no writable scope behind it; the lockfile's only install scripts are
+`esbuild`, whose binary arrives as an optional platform package, and `fsevents`,
+which is macOS-only, so the suite builds without either. The job that holds the
+publish scopes installs nothing at all: `release` checks nothing out, runs no
+package manager, and only loads the image `build` uploaded, pushes it, attests
+the digest it pushed and writes the release. `test/releaseWorkflow.test.ts` reads
+those three properties from the workflow file, so removing `--ignore-scripts`,
+dropping `persist-credentials: false`, or moving an install back into `release`
+fails the suite.
+
 The remaining `npm ci` calls (`typecheck`, `test`, `coverage`, `build`, `audit`,
-`visual`, `release.yml` and both Docker stages) still run scripts and move one
-job at a time, each on its own measured run. A dependency that genuinely needs a
-script gets a narrow, documented exception — never a blanket re-enable.
+`visual` and both Docker stages) still run scripts and move one job at a time,
+each on its own measured run. A dependency that genuinely needs a script gets a
+narrow, documented exception — never a blanket re-enable.
 Playwright's browser install stays an explicit step
 (`npx playwright install --with-deps chromium`), so it is unaffected.
 

@@ -173,11 +173,17 @@ test('release.yml verifies provenance before it builds, using this module', () =
   assert.equal(/--method POST|-X POST/.test(release), false)
 })
 
-test('the release job declares the pull-requests scope the provenance read needs', () => {
-  const job = release.slice(release.indexOf('\n  release:\n'))
-  assert.match(job, /^ {6}pull-requests: read$/m, 'the release job must be able to read the pull request behind the tag')
-  assert.match(job, /^ {6}contents: write$/m, 'the publish scopes must not be dropped while adding one')
-  assert.match(job, /^ {6}packages: write$/m)
+test('the build job declares the pull-requests scope the provenance read needs', () => {
+  // #861 split the release run in two: the read-only `build` job keeps the
+  // checkout and runs the provenance read, and the writing `release` job never
+  // checks anything out. The read therefore keeps its scope here, and the write
+  // scopes stay on the job that publishes.
+  const build = release.slice(release.indexOf('\n  build:\n'), release.indexOf('\n  release:\n'))
+  assert.match(build, /^ {6}pull-requests: read$/m, 'the build job must be able to read the pull request behind the tag')
+  assert.match(build, /^ {6}contents: read$/m, 'the provenance read needs no write scope of its own')
+  const publish = release.slice(release.indexOf('\n  release:\n'))
+  assert.match(publish, /^ {6}contents: write$/m, 'the publish scopes must not be dropped while adding one')
+  assert.match(publish, /^ {6}packages: write$/m)
 })
 
 test('the provenance step runs before the image is built', () => {

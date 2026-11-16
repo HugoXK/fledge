@@ -9,8 +9,8 @@ on:
         description: Release tag, for example v0.2.4
         required: true
 
-# Read-only at workflow scope; the publish job declares what it needs. A
-# job-level block replaces this set, so the release scopes are repeated there.
+# Read-only at workflow scope; each job declares what it needs. A job-level
+# block replaces this set, so the scopes are repeated where they are needed.
 permissions:
   contents: read
 
@@ -21,38 +21,47 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  release:
-    name: release ${{ inputs.tag || github.ref_name }}
+  # #861: the build halves the run. This job installs the dependencies, runs the
+  # suite and builds the image, and it holds no write scope and no OIDC identity,
+  # so a dependency lifecycle script that runs here has a read-only token and no
+  # attestation power. The checkout keeps no credential either. What it produces
+  # — the image and the release notes — is handed to `release` as artifacts, so
+  # the job that can write never installs anything.
+  build:
+    name: build ${{ inputs.tag || github.ref_name }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
+    # `contents: read` is the workflow set repeated; `pull-requests: read` is the
+    # one API read #648 makes to find the merged release pull request behind the
+    # tag. No write scope and no `id-token` may be added here: the release job
+    # owns those, and it runs none of the dependency code.
+    permissions:
+      contents: read
+      pull-requests: read
     # A step-level env is not visible to `with:` expressions. The SBOM step names
     # its image and artifact from `env.RELEASE_TAG`, so the tag has to be job-level.
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-    # `contents: write` and `packages: write` are the publish scopes this job had
-    # inherited from the workflow; they are repeated here because a job-level
-    # block replaces the workflow set instead of merging with it, and dropping
-    # one fails at tag time rather than in CI. `id-token` and `attestations` are
-    # the two the provenance record signs and stores with. `pull-requests: read`
-    # is #648: the tag's provenance is the merged release pull request behind its
-    # commit, and reading that pull request is the only API call the check makes.
-    permissions:
-      contents: write
-      packages: write
-      pull-requests: read
-      id-token: write
-      attestations: write
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
+          # #861: without this the automatic token stays in `.git/config`, and
+          # every dependency install script below can read it. The repository is
+          # public, so the later `git fetch origin main` still works anonymously.
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
           cache: npm
 
-      - run: npm ci
+      # #861: no dependency lifecycle script runs in this workflow at all. The
+      # lockfile carries two packages with an install script — `esbuild`, whose
+      # binary is an optional platform package, and `fsevents`, which is
+      # macOS-only — and the suite builds and runs without either script, so
+      # there is no allowlist to document.
+      - run: npm ci --ignore-scripts
       - run: npm run check
       - name: Verify the changelog section
         env:
@@ -137,6 +146,80 @@ jobs:
             --build-arg "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
             -t "${IMAGE}:${RELEASE_TAG}" .
 
+      # #861: the image crosses the job boundary as a file, so the job that
+      # pushes it never runs a build either. `docker load` restores the same
+      # layers, so the digest the release job pushes is the digest this build
+      # produced.
+      - name: Save the built image for the release job
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          docker save "${IMAGE}:${RELEASE_TAG}" | gzip -1 > image.tar.gz
+
+      - name: Upload the built image
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-image
+          path: image.tar.gz
+          if-no-files-found: error
+          retention-days: 1
+          # The tarball is already compressed; compressing it again costs minutes.
+          compression-level: 0
+
+      - name: Upload the release notes
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-notes
+          path: /tmp/release-notes.md
+          if-no-files-found: error
+          retention-days: 1
+
+  # #861: the write half. It installs nothing, checks out nothing and runs no
+  # repository code — it loads the image the build job produced, pushes it,
+  # attests it and writes the release. A dependency's install script cannot
+  # reach these scopes because no install happens here.
+  release:
+    name: release ${{ inputs.tag || github.ref_name }}
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    # `contents: write` and `packages: write` are the publish scopes; `id-token`
+    # and `attestations` are the two the provenance record signs and stores with.
+    permissions:
+      contents: write
+      packages: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - name: Download the built image
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-image
+
+      - name: Download the release notes
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-notes
+
+      # GHCR rejects an uppercase owner, and the value is also used by the
+      # steps whose inputs cannot run a shell: derive it once, lowercase, and
+      # every later step reads the same string.
+      - name: Derive the image reference
+        env:
+          REPO: ${{ github.repository }}
+        run: echo "IMAGE=ghcr.io/${REPO,,}" >> "$GITHUB_ENV"
+
+      - name: Load the built image
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gunzip -c image.tar.gz | docker load
+          docker image inspect "${IMAGE}:${RELEASE_TAG}" > /dev/null
+
       # The digest is the identity the attestation signs. `docker push` prints
       # layer progress, so the repo digest is read back from the image metadata
       # after the push; without it the provenance step silently has nothing to
@@ -194,7 +277,7 @@ jobs:
             echo "Image: ${IMAGE}:${RELEASE_TAG}@${DIGEST}"
             echo "SBOM: fledge-sbom-${RELEASE_TAG}"
             echo "Attestation: ${DIGEST}"
-          } >> /tmp/release-notes.md
+          } >> release-notes.md
 
       - name: Create or update the GitHub release
         env:
@@ -202,7 +285,7 @@ jobs:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
-            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file /tmp/release-notes.md
+            gh release edit "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.md
           else
-            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file /tmp/release-notes.md
+            gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file release-notes.md
           fi

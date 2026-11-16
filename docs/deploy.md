@@ -1056,6 +1056,18 @@ written by the daily release job through the Git data API
 (`POST /git/tags` + `POST /git/refs`) once the mechanical release pull request is
 merged, so a tag on `main` is evidence of a released version, not of a rollout.
 
+`release.yml` runs in two jobs (#861). `build` holds `contents: read` and
+`pull-requests: read` only: it checks the tag out with `persist-credentials:
+false`, installs with `npm ci --ignore-scripts`, runs the suite, verifies the
+changelog, version and tag provenance, builds the image and uploads it with the
+release notes as artifacts. `release` is the only job with `contents: write`,
+`packages: write`, `id-token: write` and `attestations: write`; it checks nothing
+out, installs nothing, loads the uploaded image, pushes it under the release tag,
+reads the repo digest back, attests that digest, appends the digest/SBOM/attestation
+lines to the release notes and creates or updates the GitHub release. Because
+both halves work on the same saved image, the digest `release` pushes and signs
+is the digest `build` produced.
+
 ## 9. Monitoring
 
 - `GET /healthz` for liveness — unauthenticated, always `200`, and never gated.
