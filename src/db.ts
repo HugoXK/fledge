@@ -57,6 +57,12 @@ interface Database {
 
 const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => Database }
 
+// The schema version this build writes. Exported because the previous-release
+// restore check (#652) has to prove a fixture written by an older build still
+// migrates to exactly this number, and a literal in two places would let the
+// check and the migration disagree.
+export const SCHEMA_VERSION = 43
+
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
 export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted'
@@ -2266,9 +2272,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 43) {
+    if (previousVersion > SCHEMA_VERSION) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (43)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (${String(SCHEMA_VERSION)})`)
     }
     this.db.exec(SCHEMA)
     this.migrateFeedbackTriageColumns()
@@ -2293,7 +2299,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 43)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, SCHEMA_VERSION)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
