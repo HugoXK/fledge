@@ -10,6 +10,16 @@ import { themeMeta, type Theme } from './theme.js'
 
 export const FLEDGE_GITHUB_URL = 'https://github.com/HugoXK/fledge'
 
+// The star is drawn, not typed: the old `★` glyph rendered at a different size
+// and weight in every browser and sat outside the text baseline. One inline
+// line-star is shared by the footer and the About card, so the two links cannot
+// drift.
+const STAR_ICON = '<svg class="star-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17.1l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>'
+
+export function starIcon(): string {
+  return STAR_ICON
+}
+
 export function escapeHtml(value: unknown): string {
   return String(value ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
 }
@@ -269,7 +279,7 @@ export function layout(options: LayoutOptions): string {
       <a href="${escapeHtml(config.services.portal)}" target="_blank" rel="noreferrer">Portal</a>
       <a href="${escapeHtml(withSlash(config.services.status))}" target="_blank" rel="noreferrer">${escapeHtml(t('平台状态', 'Status'))}</a>
       <a href="/settings#feedback">${escapeHtml(t('反馈', 'Feedback'))}</a>
-      <a href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer">★ ${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}</a>
+      <a class="star-link" href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer" title="${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}" aria-label="${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}">${starIcon()}<span>${escapeHtml(t('加星', 'Star'))}</span></a>
     </nav>
   </footer>`
   return `<!doctype html>

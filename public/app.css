@@ -405,6 +405,12 @@ p { margin: 0 0 12px; }
 .foot-links { display: flex; gap: 16px; flex-wrap: wrap; }
 .foot a { color: var(--muted-2); }
 .foot a:hover { color: var(--accent); text-decoration: none; }
+/* The star is an inline line icon, not a text glyph. The footer keeps the
+   compact label and the full sentence in title/aria; the About card keeps the
+   full label on the existing button. */
+.star-link { gap: 6px; }
+.star-link .star-icon, .star-btn .star-icon { color: var(--muted-2); transition: color 0.15s ease, transform 0.15s ease; }
+.star-link:hover .star-icon, .star-btn:hover .star-icon { color: var(--warn); transform: rotate(-12deg) scale(1.1); }
 
 .hero { display: grid; grid-template-columns: minmax(0, 1.08fr) minmax(360px, 0.92fr); gap: 44px 56px; align-items: start; padding: 76px 0 56px; }
 .hero-copy { grid-column: 1; grid-row: 1; max-width: 720px; }
