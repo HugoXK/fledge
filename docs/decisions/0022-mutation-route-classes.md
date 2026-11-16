@@ -87,9 +87,13 @@ different thing; being ordinary says they take no **class** budget.
 **Classification is not enforcement.** A green sweep says every mutating route
 has a class; it does not say every class has a budget. Read the table as policy
 and `limits.take(...)` as what is paced today — they are compared in a later
-slice. Counted from this tree: 13 of the 31 destructive routes and 4 of the 49
-expensive routes carry a budget, so 18 destructive and 45 expensive routes are
-classified and unpaced. That includes the gate routes main added while this
+slice. Counted from this tree: 13 of the 31 destructive routes and 4 of the 51
+expensive routes carry a budget, so 18 destructive and 47 expensive routes are
+classified and unpaced. The three feedback routes `#797` added are in the table
+for the same reason the gate routes are: `POST /feedback` and
+`POST /errors/:ref/report` deliver the packet to the Lead bot, which spends a
+model turn on it, so they are `expensive` and unpaced; the triage callback only
+writes triage state and mails the reporter, so it is `ordinary`. That includes the gate routes main added while this
 branch was open — applying a confirmed session writes a branch and opens one
 pull request, so `POST /repos/:id/gate/sessions/:sessionId/create` is
 `expensive`, and like the rest of the list it stays unpaced. The workspace
