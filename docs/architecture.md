@@ -865,17 +865,26 @@ DSH token never reaches the browser.
 ### GitHub App onboarding and webhooks
 
 The optional GitHub App removes the PAT from the common path. Fledge generates a
-short-lived App JWT (with a clock-skew correction from GitHub's `Date` header,
-the same measurement reported by `/readyz` as `clock.skewSeconds` and by
-`/metrics` as `fledge_clock_skew_seconds`; a failed measurement reports
-`null` and no series at all rather than a zero that would read as aligned),
-exchanges it for an installation token, lists the installation repositories and
-stores only `repos.installation_id`; `repoGithubToken()` prefers a user OAuth token authorized with `repo` scope for human attribution and otherwise uses a fresh installation
+short-lived App JWT, exchanges it for an installation token, lists the
+installation repositories and stores only `repos.installation_id`; `repoGithubToken()` prefers a user OAuth token authorized with `repo` scope for human attribution and otherwise uses a fresh installation
 token when that column is set and falls back to the encrypted PAT otherwise. The
 installation callback binds the installation to the logged-in user (verified
 through the user's OAuth token or an individual account match). GitHub webhooks
 are verified with `X-Hub-Signature-256` before parsing; verified events are
 recorded in `events` for the follow-up loop. PAT onboarding stays available.
+
+The JWT corrects `iat`/`exp` for the process clock's offset from GitHub's `Date`
+header — the same measurement `/readyz` reports as `clock.skewSeconds` +
+`clock.state` and `/metrics` as `fledge_clock_skew_seconds`. The offset is used,
+not only surfaced (#758): a reading is `ok` for 15 minutes and inside 120 seconds,
+`fail` above 120 seconds, and `unknown` when nothing was measured inside the
+window. While it is `fail`, `/readyz` answers 503 and `Jobs.enqueue` refuses with
+`CLOCK_SKEW` before any job row is written, so no run stores a time from a clock
+nobody can trust; the JWT signs only in `ok` and otherwise raises
+`CLOCK_SKEW_EXCEEDED` (`fail`) or `CLOCK_SKEW_UNVERIFIED` (`unknown`) instead of
+signing from a stale or zero correction. A failed measurement reports `null` and
+no series rather than a zero that would read as aligned, and it never replaces
+the last reading that really was measured.
 
 ### Inbound email replies
 

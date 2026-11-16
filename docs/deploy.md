@@ -1083,6 +1083,28 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   minutes. Fix the host clock (`timedatectl set-ntp true`, or start the container
   with a host that keeps time); Fledge reports the drift and never rewrites a
   stored timestamp to hide it.
+
+  The measured offset is used, not only shown. `clock.state` says what the last
+  measurement means, and `clock.thresholdSeconds` carries the number it is
+  compared against — `CLOCK_SKEW_FAIL_SECONDS` in `src/repos/app.ts`, which must
+  stay equal to the `120` in `deploy/prometheus/fledge-alerts.yml`:
+
+  | `clock.state` | meaning | `/readyz` |
+  |---|---|---|
+  | `not-configured` | no GitHub App on this deployment, so nothing is measured | `200` |
+  | `ok` | measured at most 15 minutes ago and within 120 s | `200` |
+  | `unknown` | never measured, or the last reading is older than 15 minutes | `200` |
+  | `fail` | the last measurement is outside 120 s | **`503`, `ok:false`** |
+
+  In `fail` the platform refuses to start work: `Jobs.enqueue` answers
+  `CLOCK_SKEW` (counted as `fledge_admission_rejected_total{reason="clock_skew"}`)
+  before any job row is written, and the console banner names the measured
+  seconds. App JWTs are signed only in `ok`; `fail` raises `CLOCK_SKEW_EXCEEDED`
+  and `unknown` raises `CLOCK_SKEW_UNVERIFIED` instead of signing with a stale or
+  zero correction. A GitHub outage therefore stops App calls after at most 15
+  minutes rather than serving a signature nobody re-measured. Fix the clock, then
+  confirm `/readyz` is `200` again — the next measurement (at most five minutes
+  after a `fail`) clears it.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
 - Disk: SQLite WAL files and logs.

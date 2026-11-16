@@ -204,6 +204,8 @@ export const ENQUEUE_REFUSAL_CODES = [
   'RUNNER_ERROR',
   'RULES_UNAVAILABLE',
   'RULES_INVALID',
+  // #758 slice 2: the platform clock is outside the threshold, so no job starts.
+  'CLOCK_SKEW',
 ] as const
 
 export type EnqueueRefusalCode = (typeof ENQUEUE_REFUSAL_CODES)[number]
@@ -262,6 +264,10 @@ export const REFUSAL_SENTENCES: Record<EnqueueRefusalCode, [string, string]> = {
   // the file that crossed the limit and the byte count the maintainer can act on.
   RULES_UNAVAILABLE: ['无法读取这个仓库的规则或技能，任务没有开始。', "This repository's rules or skills could not be read, so the job did not start."],
   RULES_INVALID: ['这个仓库的规则或技能不合法：{detail}。', 'The repository rules or skills are invalid: {detail}.'],
+  // #758 slice 2: the refusal carries the measured seconds, because "the clock is
+  // wrong" without the number sends the reader to the wrong machine. The
+  // threshold rides on `clockState()` and in docs/deploy.md, not in this sentence.
+  CLOCK_SKEW: ['平台时钟与 GitHub 相差 {detail} 秒，超过 120 秒上限，任务没有开始。', 'The platform clock is {detail} seconds from GitHub time, above the 120-second threshold, so the job did not start.'],
 }
 
 const BRANCH_EMPTY: [string, string] = ['目标分支不存在或不可访问。', 'The target branch does not exist, or this account cannot read it.']

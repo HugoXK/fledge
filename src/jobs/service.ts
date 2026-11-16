@@ -1155,6 +1155,23 @@ export class Jobs {
     // implying this one repository is disabled, and it is checked in the admission
     // path itself: a due repository reaches `enqueue` without a route.
     if (this.platformStop() !== null) return { ok: false, error: '平台已紧急停止，暂不接受新任务。', code: 'PLATFORM_PAUSED' }
+    // #758 slice 2: a clock the last measurement puts outside the threshold must
+    // not start work that stores or schedules time. It sits after the platform
+    // stop (which outranks everything) and before the work-type gates, and it is
+    // here rather than on the routes because every trigger — manual, scheduled,
+    // follow-up, review, discovery — funnels through `enqueue`. Nothing is
+    // written: the refusal is before any job row, so no row carries a time from a
+    // clock nobody can trust.
+    const clock = this.githubApp.clockState()
+    if (clock.state === 'fail') {
+      incCounter('fledge_admission_rejected_total', { reason: 'clock_skew' }, 1, 'Queue admission rejections')
+      return {
+        ok: false,
+        error: `平台时钟与 GitHub 相差 ${String(clock.skewSeconds)} 秒，超过 ${String(clock.thresholdSeconds)} 秒上限，任务没有开始。`,
+        code: 'CLOCK_SKEW',
+        detail: String(clock.skewSeconds),
+      }
+    }
     // #390: the work type is resolved before the gates, and an unknown one is
     // refused. A default here would run work under a contract nobody declared.
     const workType = resolveWorkType(options.workType ?? workTypeForKind(kind))
