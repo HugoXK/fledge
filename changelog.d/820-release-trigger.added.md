@@ -1,1 +1,0 @@
-The daily release slot can now be triggered from a reliable external scheduler at 14:30Z via `scripts/trigger-release.mjs`, with the GitHub schedule kept as a fallback and `release-trigger` still preventing a double release.

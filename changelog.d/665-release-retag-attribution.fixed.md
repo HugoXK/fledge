@@ -1,1 +1,0 @@
-A release row that is rewritten by a re-tag now records the user and the preflight of the re-tag, so the record names the person who moved the tag instead of the first tagger; the original `created_at` is kept.

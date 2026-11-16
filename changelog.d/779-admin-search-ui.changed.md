@@ -1,1 +1,0 @@
-`/admin/search` now uses one filter toolbar with `Jobs` / `Audit` tabs, one Query field, a primary Search action and a secondary export with the active count. Audit rows show human action labels once, render `key=value` details as chips, link job/repository/user ids, and collapse long errors instead of printing one truncated raw line.

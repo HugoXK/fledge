@@ -1,1 +1,0 @@
-The GitHub PAT rotation no longer takes the token on the command line or in the environment: it reads it from a 0600 file with --token-file, or from stdin with --token-file -, so the value stays out of shell history, `ps` and child processes. A secrets file that is not valid JSON is now reported by position only, so a parse failure cannot print a token fragment into a log.

@@ -1,1 +1,0 @@
-The dashboard's Repositories card now uses the full content row; Add repository is a header button that opens a native dialog with the GitHub App and fine-grained token options. `#add-repo` remains a working deep link, and the form still renders inline when JavaScript is unavailable.

@@ -1,1 +1,0 @@
-The mechanical daily release pull request now opts into GitHub auto-merge after it is opened or reused, so it squashes once ci-ok, review-gate and pr-lint are green instead of waiting for a manual merge; the release card also shows the plan → merge → publish timeline.
