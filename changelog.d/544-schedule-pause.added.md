@@ -1,0 +1,1 @@
+A schedule on a repository can now be paused and resumed from its console. While it is paused the worker records each instant that passes as skipped with reason paused instead of running it, so the window is visible afterwards and resuming starts from the next instant rather than replaying a backlog. Pausing and resuming are maintainer actions and are audited.

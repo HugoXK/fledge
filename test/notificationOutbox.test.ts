@@ -42,11 +42,11 @@ function row(id: string): NotificationOutboxRow {
   return { id, payload_json: JSON.stringify({ event: 'ops.alert', text: 'disk almost full' }) } as NotificationOutboxRow
 }
 
-test('the outbox table and its state machine exist at user_version 45', () => {
+test('the outbox table and its state machine exist at user_version 47', () => {
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')
-    assert.equal(Number(version?.user_version), 45, 'the retired provider model moves the refusal boundary from 44 to 45')
+    assert.equal(Number(version?.user_version), 47, 'job attempts move the refusal boundary to 46 and the release run analysis to 47')
     const columns = store.all<{ name: string }>('PRAGMA table_info(notification_outbox)').map((column) => column.name)
     for (const column of ['transport', 'destination', 'payload_json', 'idempotency_key', 'state', 'attempts', 'next_attempt_at', 'lease_token', 'lease_expires_at', 'last_error', 'sent_at']) {
       assert.equal(columns.includes(column), true, `notification_outbox must have ${column}`)

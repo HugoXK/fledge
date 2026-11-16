@@ -12,6 +12,7 @@ import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } f
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
 import { readReleaseReadiness } from './releases/readiness.js'
+import { AnalysisTokenUnavailable, analyzeReleaseRun, mintAnalysisToken, releaseAnalysisJson } from './releases/analysis.js'
 import { currentStrategySections } from './strategy/sources.js'
 import { parseStrategySections, strategyRefusal } from './strategy/bundle.js'
 import { strategyPage, type JobStrategyView } from './views/strategy.js'
@@ -52,7 +53,7 @@ import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
 import { decodeFlash, encodeFlash, FLASH_COOKIE, readRedirectMessage } from './lib/flash.js'
-import { normalizeInterval } from './lib/intervals.js'
+import { DISCOVERY_INTERVALS, REVIEW_INTERVALS, intervalSubmissionAccepted, normalizeInterval } from './lib/intervals.js'
 import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
@@ -65,6 +66,7 @@ import { untrustedAuditDetail, untrustedIssueGoal, untrustedMeta, type Untrusted
 import { scanUntrusted, UNTRUSTED_EVENT_KIND } from './lib/firewall.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
+import { automationHealth } from './jobs/automationHealth.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import {
   deploymentFromRow,
@@ -1474,7 +1476,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const windowDays = queryText(request, 'window') === '30' ? 30 : 7
     const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
     const personal = store.personalMetrics(viewer.user.id, since)
-    const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny })
+    const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' })
     const perPage = 10
     const allRepos = store.listRepos(viewer.user.id)
     // #232: the job filters are read from the query on every request and applied
@@ -1604,10 +1606,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         team: store.teamMetrics(since),
         repoCosts: store.repoCostMetrics(since),
         modelCosts: store.modelCostMetrics(since),
-        alerts: store.alerts({ usdCny: config.quota.usdCny }),
+        alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }),
       }
     }
-    return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny }) }
+    return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }) }
   })
 
   // #392: the first token-authenticated read route. It sits outside the session
@@ -1800,6 +1802,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
       ...(queryText(request, 'ran') === undefined ? {} : { notice: t('已立即开始一次运行。', 'One run has started now.') }),
       ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
+      ...(queryText(request, 'paused') === undefined ? {} : { notice: t('排期已暂停：期间走过的时刻记为 skipped，不会补跑。', 'The schedule is paused: instants that pass are recorded as skipped and are not made up.') }),
+      ...(queryText(request, 'resumed') === undefined ? {} : { notice: t('排期已恢复，从下一个时刻开始运行。', 'The schedule is resumed and runs from the next instant.') }),
       ...(refused === undefined ? {} : { error: refused }),
     }))
   })
@@ -1883,6 +1887,44 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
     }
     return reply.redirect(`${back}?ran=${encodeURIComponent(result.jobId ?? '')}`)
+  })
+
+  // #544 slice 9: pausing is a decision about the schedule, not an edit of it, so
+  // it has its own route and its own audit action. Both are maintainer-only:
+  // stopping or restarting the cadence a repository agreed to is a
+  // settings-level act, while a viewer may still read the console. Pausing an
+  // already paused schedule writes nothing the second time, so a double submit
+  // does not move the instant the paused window started.
+  app.post('/repos/:id/schedule/pause', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
+    const back = `/repos/${repo.id}/schedule`
+    const t = translator(request.locale ?? 'zh')
+    const existing = store.scheduleForRepo(repo.id)
+    if (existing === undefined) {
+      return reply.redirect(`${back}?refused=${encodeURIComponent(t('这个仓库还没有排期。', 'This repository has no schedule yet.'))}`)
+    }
+    const row = store.setScheduleStatus(repo.id, 'paused', Date.now())
+    if (row !== undefined && existing.status !== 'paused') {
+      store.audit(viewer.user.id, 'schedule.pause', `${repo.id}: ${existing.kind} ${existing.expression ?? `${String(existing.every_ms)}ms`}`)
+    }
+    return reply.redirect(`${back}?paused=1`)
+  })
+
+  // Resuming is the same write in the other direction; it does not create an
+  // occurrence or move the cursor, so a resume cannot itself cause a run.
+  app.post('/repos/:id/schedule/resume', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
+    const back = `/repos/${repo.id}/schedule`
+    const t = translator(request.locale ?? 'zh')
+    const existing = store.scheduleForRepo(repo.id)
+    if (existing === undefined) {
+      return reply.redirect(`${back}?refused=${encodeURIComponent(t('这个仓库还没有排期。', 'This repository has no schedule yet.'))}`)
+    }
+    const row = store.setScheduleStatus(repo.id, 'active', Date.now())
+    if (row !== undefined && existing.status === 'paused') {
+      store.audit(viewer.user.id, 'schedule.resume', `${repo.id}: ${existing.kind} ${existing.expression ?? `${String(existing.every_ms)}ms`}`)
+    }
+    return reply.redirect(`${back}?resumed=1`)
   })
 
   // Deleting the row hands the repository back to its legacy interval; it does
@@ -2374,6 +2416,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal,
         notice: request.flash?.notice?.text,
         error: request.flash?.error?.text,
+        // #471: the refusal names the field it refused; the value rides the
+        // existing redirect and is read only beside an error, so a hand-typed
+        // `?field=` with no refusal marks nothing.
+        errorField: request.flash?.error === undefined ? undefined : queryText(request, 'field'),
         // #546: the release form is on this page, so its outcome has to land here
         // too — a refusal the maintainer cannot see reads as a click that did
         // nothing, and a success that is not confirmed is indistinguishable from
@@ -2716,6 +2762,61 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(viewer.user.id, 'release.checked', `${repo.id}: ${release.tag_name} ${result.status}`)
     return reply.redirect(`${back}&checked=${encodeURIComponent(result.message)}`)
+  })
+
+  // #546 slice 4: the optional run analysis. A maintainer asks for the failed
+  // logs of the run this release recorded. The read runs on a read-only
+  // installation token that is revoked when it ends, the excerpt is redacted
+  // before it is cut, and the result is stored beside the tracking fields: this
+  // route never publishes, never reruns and never changes a release state.
+  app.post('/repos/:id/releases/:releaseId/analyze', async (request, reply) => {
+    const params = request.params as Record<string, string>
+    const { viewer, repo } = ownedRepo(request, String(params.id), true)
+    const back = `/repos/${repo.id}?release=1`
+    if (repo.repo_role !== 'maintainer') {
+      return reply.redirect(`${back}&error=${encodeURIComponent('只有 maintainer 可以分析发布运行。')}`)
+    }
+    const release = store.releaseById(String(params.releaseId))
+    if (release === undefined || release.repo_id !== repo.id) throw httpError(404, '发布记录不存在。', 'RELEASE_NOT_FOUND')
+    if (release.run_id === null) {
+      return reply.redirect(`${back}&error=${encodeURIComponent('这条发布记录还没有对应的工作流运行，先点“检查工作流”。')}`)
+    }
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    // #546 review finding 1: the mint belongs to the module, not to the route.
+    // A row whose recorded run is green or still running is refused by
+    // analyzeReleaseRun before it asks for a credential; minting here would spend
+    // a read-only token on every such POST and expire it unused. The module calls
+    // this only after its own check, and the one refusal that comes back through
+    // the call is the installation refusal, which is a sentence on the page.
+    let result: Awaited<ReturnType<typeof analyzeReleaseRun>>
+    try {
+      result = await analyzeReleaseRun({
+        owner,
+        name,
+        run: {
+          id: Number(release.run_id),
+          attempt: release.run_attempt ?? 1,
+          // The row keeps the conclusion, not the run's live status: a null
+          // conclusion is a run that has not finished, which the analysis refuses.
+          status: release.conclusion === null ? 'in_progress' : 'completed',
+          conclusion: release.conclusion,
+        },
+        mint: () => mintAnalysisToken({ installation_id: repo.installation_id, name }, githubApp),
+        client: (token) => new GithubClient(token, config.github.apiBase),
+      })
+    } catch (error) {
+      if (error instanceof AnalysisTokenUnavailable) return reply.redirect(`${back}&error=${encodeURIComponent(error.message)}`)
+      throw error
+    }
+    if (!result.ok) {
+      store.audit(viewer.user.id, 'release.analysis_refused', `${repo.id}: ${release.tag_name} ${result.code}`)
+      return reply.redirect(`${back}&error=${encodeURIComponent(result.message)}`)
+    }
+    store.updateReleaseAnalysis(release.id, releaseAnalysisJson(result, new Date().toISOString()))
+    store.audit(viewer.user.id, 'release.analyzed', `${repo.id}: ${release.tag_name} run ${release.run_id} jobs=${String(result.jobs.length)}`)
+    const revoked = result.tokenRevoked ? '' : '; the read-only token could not be revoked and is recorded as such'
+    return reply.redirect(`${back}&notice=${encodeURIComponent(`run ${release.run_id}: ${String(result.jobs.length)} failed job(s) analysed${revoked}`)}`)
   })
 
   app.post('/repos/:id/memory', async (request, reply) => {
@@ -4317,6 +4418,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
     const t = translator(request.locale ?? 'zh')
+    // #471: a cadence is a choice, not a number to clamp. The `<select>` cannot
+    // produce a value outside its options, so this refusal is only reachable from
+    // a crafted POST — but it still names the field, because the page marks and
+    // focuses the control the sentence is about. The value the form itself carried
+    // is accepted, so a legacy row the reader did not touch stays savable.
+    const refuseField = (field: string): FastifyReply =>
+      reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('设置没有保存。', 'The settings were not saved.'))}&field=${encodeURIComponent(field)}&code=INVALID_FIELD#repo-settings`)
+    if (!intervalSubmissionAccepted(body.interval, DISCOVERY_INTERVALS, Math.max(60, repo.interval_minutes))) return refuseField('interval')
+    if (!intervalSubmissionAccepted(body.reviewInterval, REVIEW_INTERVALS, normalizeInterval(repo.review_interval_minutes))) return refuseField('reviewInterval')
     const currentRole = parseRepoRole(repo.repo_role)
     const requestedRole = parseRepoRole(body.repoRole)
     const repoRole = requestedRole ?? currentRole
@@ -5038,9 +5148,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repoCosts: store.repoCostMetrics(since),
       modelCosts: store.modelCostMetrics(since),
       currency: store.costByCurrency(since),
-      alerts: store.alerts({ usdCny: config.quota.usdCny }),
+      alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
+      automation: automationHealth(),
       since,
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,

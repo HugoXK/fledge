@@ -149,6 +149,8 @@ export interface Config {
   }
   ops: {
     alertCooldownMinutes: number
+    /** #807: how long ready work may wait for a dispatch before the alert fires. */
+    automationIdleAlertMinutes: number
   }
   tokens: {
     /** Default lifetime of a new personal `flg_` token, in days. */
@@ -536,6 +538,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     ops: {
       alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),
+      automationIdleAlertMinutes: Math.max(1, number('AUTOMATION_IDLE_ALERT_MINUTES', 30)),
     },
     tokens: {
       patExpiryDays: Math.max(1, number('PAT_EXPIRY_DAYS', DEFAULT_PAT_EXPIRY_DAYS)),

@@ -81,6 +81,24 @@ form errors on other pages. `test/flash.test.ts` pins the cookie shape, its caps
 rewrite; `test/oneShotNotice.test.ts` pins redirect → cookie → first page →
 reload.
 
+A refusal that belongs to one field goes one step further (#471). The redirect
+carries the field key beside the sentence — `?error=…&field=interval` — and
+`readRedirectMessage` strips the sentence into the flash while leaving `field` in
+the `Location`, because the key is not a message. The page reads it only while an
+error is in flight, so a hand-typed `?field=` marks nothing, and
+`repoPage` renders the detail with `fieldErrorHtml`/`fieldErrorAttrs` in
+`src/views/pages.ts`: the message sits under its control, the control carries
+`aria-invalid="true"` and an `aria-describedby` that names the message element,
+and the first invalid control the form does not disable takes `autofocus` plus a
+`data-field-error-focus` hook that `public/app.js` focuses on `load` — a disabled
+control cannot take focus, so it is marked but never claimed as the landing. The
+banner keeps only the summary, so the sentence a reader hears once is not
+repeated.
+Server validation stays authoritative: the refusal is reachable only by a
+crafted POST, and a stored cadence the form still carries is accepted so a legacy
+row does not become unsavable. `test/inlineValidation.test.ts` pins the refusal,
+the marking, the single sentence and the legacy-row path.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,
@@ -265,6 +283,17 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   and Apply would land on a hidden table. A failed job whose message the
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
+- **The header names the cadence it prints** (`src/views/pages.ts`, repository
+  header): the interval pill reads "Discovery every" / 发现间隔 — the word the
+  Add-repository and settings forms already use — and prints
+  `max(60, interval_minutes)`, the floor `discoverDue` applies
+  (`MIN_DISCOVERY_INTERVAL_MINUTES`), so a 30-minute legacy row cannot advertise
+  a cadence discovery never runs at. It used to read "Auto every" beside the
+  automatic-work switch and read as the work interval; work starts from ready
+  items after the short cooldown (`workDue`), and a repository with a saved
+  schedule row is still answered by that row in the pill to its right
+  (`data-next-source="schedule"`). "Automatic work" stays its own on/off answer,
+  so enabling work never requires choosing an interval.
 - **Queue position** (`src/lib/queueRank.ts`, `rankQueued`): a queued job shows
   its place in the queue with the length (`#3/7`) and the priority it competes
   on, computed with the claimer's two keys only — `priority DESC, created_at ASC`
@@ -422,8 +451,16 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   (`callback_secret_enc`, `platform_token_enc`) and lets the tick's worker loop
   claim and dispatch the job. A running job renews its five-minute lease every
   minute, and the tick reaper fails a job whose worker stops renewing instead of
-  waiting for the 90-minute job timeout. Queue admission rejects a new job when
-  the global or per-user cap is reached. A partial unique index
+  waiting for the 90-minute job timeout. Each dispatch also records one
+  `job_attempts` row (worker, attempt number, lease epoch, dispatch id, status,
+  error, timestamps) in the same transaction that marks the job running; the
+  job's `lease_epoch` is the fence, so a worker whose lease was taken over
+  cannot finalise the attempt it lost — its late report is refused and recorded
+  on that attempt's row. The three recovery sweeps (stall, timeout, expired
+  lease) close the attempt as `reaped`, a terminal outcome that is visible
+  instead of a silent reset to `queued`, and a retry continues the chain as
+  attempt N+1 with `retry_of` pointing at the attempt it continues. Queue
+  admission rejects a new job when the global or per-user cap is reached. A partial unique index
   (`jobs_one_active_per_repo`) makes the one-active-job-per-repository rule a
   database invariant, not only a read-time check; a database written before the
   index existed is deduped when it opens — keep a running job (else the oldest
@@ -433,7 +470,8 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   same transaction (a legal `in_progress -> triaged` edge in
   `WORK_ITEM_TRANSITIONS`) and its audit row names the item id, because the item
   would otherwise stay `in_progress` behind a job that can never finish. The
-  lease and queue columns are schema version 34.
+  lease and queue columns are schema version 34; `jobs.lease_epoch` and the
+  `job_attempts` table are schema version 46.
 - **Queue tickets**: every job carries a `queue_seq` taken inside its insert, so
   two jobs created at the same instant cannot be handed the same one, and the
   queue is ordered by priority, then `queue_seq`, then `id` — never by a clock
@@ -1386,7 +1424,15 @@ request — so a closed issue or a merged pull request is dropped from the block
 and counted instead of being carried into the next run. The block states what it
 did in its header, `carry-over: 1 used, 1 dropped (closed/merged)`, with an
 `, N unverified` segment when a read failed; a failed read keeps its line rather
-than dropping it silently, and the job page shows the same header line.
+than dropping it silently, and the job page shows the same header line. Since
+#788 each carried line also states the observation it rests on, `observed
+07:12Z open`, from the read that line already spent — a failed read says
+`observed unverified` and claims no time — and the per-link `{state,
+observedAt}` is stored with the job in `jobs.carry_over_json`, so the page reads
+the observation back instead of re-deriving it. A pull request that was closed
+without merging is `closed`, not `open`, so the header's `(closed/merged)` is
+true as written; a job row written before that column says the observation was
+not recorded rather than borrowing a time.
 
 The goal also carries one **temporal delta** line (#366), built by
 `summariseDelta()` in `src/lib/temporal.ts` from two reads plus the commit
@@ -2280,8 +2326,9 @@ queued ──► running ──► succeeded
   answer is refused, and only that retry resumes the work (#381).
 - The repo records `last_run_at` and `last_status`; a scheduled job is skipped if
   another job for the repo is active. `jobs.continuity_json` stores the run
-  digest, `jobs.output_kind` its classification and `jobs.continuity_used`
-  whether the carry-over block was injected.
+  digest, `jobs.output_kind` its classification, `jobs.continuity_used` whether
+  the carry-over block was injected and `jobs.carry_over_json` the block's
+  counts and its per-link observation.
 
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
@@ -2868,6 +2915,36 @@ disagree about what the release contains. A stored value that is missing or
 malformed renders no sources rather than an error — the draft Release is the
 record of what shipped, the column is its explanation.
 
+## The failed run analysis is read-only (#546 slice 4)
+
+`POST /repos/:id/releases/:releaseId/analyze` reads the failed jobs of the run the
+release row recorded. It is a maintainer action with an explicit button, and it is
+the only place Fledge reads a workflow log for a release. The credential is the
+point: `GithubApp.ephemeralToken` mints an installation token with exactly
+`actions: read` outside the token cache and narrowed to the one repository named in
+the mint body, the read uses it, and `GithubApp.revokeToken` revokes it with
+`DELETE /installation/token` in the same call's `finally`. `actions: read` is what
+`/actions/runs/{id}/jobs` and `/actions/jobs/{id}/logs` need; a token with
+`contents: read` could also read the source of every repository in the installation,
+which a log read cannot justify. A repository whose token is a user OAuth token is
+refused with `ANALYSIS_READ_ONLY_TOKEN` rather than widened, because a user token
+cannot be narrowed. A revocation that fails is stored with the result rather than
+swallowed.
+
+`src/releases/analysis.ts` keeps the excerpt honest: the whole log is redacted
+before any slice, so a secret split by a truncation cannot survive as a fragment,
+and the bounded tail records the exact 1-based lines it kept (`lineStart`,
+`lineEnd`, `totalLines`) plus the job's `html_url`. At most two failed jobs are
+read per analysis. The route hands the mint to the module as a callback, so the
+order is the module's: a run that is still going or concluded anything but a
+failure is refused before a token is minted, and a POST against a green or running
+row spends no credential at all. The result is written to `analysis_json` on
+`repo_releases` (schema 47), which is beside `status`, `conclusion` and the draft
+pointer and never inside them: an analysis cannot turn a failure into a success,
+create a Release or rerun a workflow. The repository page renders each excerpt with
+its line range and the job link, and a stored value that is missing or malformed
+renders no analysis rather than an error.
+
 ## The strategy bundle (#433 slice 1)
 
 A repository's development strategy is one artifact, not a set of settings spread
@@ -2944,3 +3021,24 @@ settles the row so the replay answers the same refusal.
 The recurrence cursor (`last_occurrence_at`) is not touched: "run this now" must
 not move when the schedule next fires. `schedule_occurrences.command_key` is
 null on every row the tick wrote, which is why the unique index is partial.
+
+## A paused schedule is decided, not run (#544)
+
+A schedule carries a state — `active` or `paused` — in `schedules.status`, with
+the instant of the last pause in `paused_at`. Only a maintainer's button writes
+it (`POST /repos/:id/schedule/pause` and `.../resume`, audited as
+`schedule.pause` / `schedule.resume`); saving the schedule form never changes it,
+so editing an expression cannot quietly switch a paused schedule back on.
+
+A paused schedule is still planned. The tick runs `planTick` as usual and then
+records the decision as `skipped` with reason `paused`, in the same
+`recordScheduleDecisions` transaction that moves the cursor — the pause window is
+readable afterwards instead of vanishing, and because the cursor keeps moving a
+resume does not make up a backlog or dispatch once per missed instant. The
+paused branch sits before the budget, active-job and idle reasons, because
+"somebody paused this" is the honest explanation for the instant.
+
+`run-now` stays available while paused: a person pressing the button is an
+explicit command, not the cadence, and it settles under its own command key.
+Resuming does not create an occurrence or move the cursor either, so the only
+thing it changes is whether the next instant dispatches.

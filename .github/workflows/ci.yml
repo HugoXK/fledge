@@ -736,12 +736,21 @@ jobs:
           echo "${PROMTOOL_SHA256}  ${archive}" | sha256sum -c -
           tar xzf "$archive" -C /tmp "prometheus-${PROMTOOL_VERSION}.linux-amd64/promtool"
           "/tmp/prometheus-${PROMTOOL_VERSION}.linux-amd64/promtool" check rules deploy/prometheus/fledge-alerts.yml
-      - name: Best-effort nginx and systemd checks
-        # nginx and systemd-analyze are not guaranteed on the runner. When they
-        # are absent the gap is written to the job summary; when they are present
-        # the nginx example is parsed against generated certificates and a
-        # failure is a failure, while systemd-analyze stays advisory because its
-        # output includes the runner's own unrelated units.
+      - name: Install nginx
+        # #882: the sample is parsed by a real nginx, so the binary is the gate's
+        # input rather than an optional extra. This job used to write a missing
+        # binary down and stay green, which let a broken sample merge; a failure
+        # to install is now a red `deploy-check` like any other.
+        run: |
+          set -euo pipefail
+          sudo DEBIAN_FRONTEND=noninteractive apt-get update -qq
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y -qq nginx
+          nginx -v
+      - name: Real nginx parse and static systemd check
+        # #882: one script owns the contract — the real parse, a negative proof
+        # that the same invocation rejects a deliberately broken sample, and the
+        # static unit parse — so the behaviour is pinned by the suite instead of
+        # living in this file. Its output names each check real or static.
         #
         # The wrapper, the generated certificates and the parse itself live in
         # scripts/check-nginx-config.sh: it renders deploy/nginx.check.conf,
@@ -757,18 +766,8 @@ jobs:
           set -uo pipefail
           summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
           status=0
-          if ! bash scripts/check-nginx-config.sh 2>&1 | tee -a "$summary"; then
+          if ! bash scripts/check-deploy-samples.sh 2>&1 | tee -a "$summary"; then
             status=1
-          fi
-          if command -v systemd-analyze >/dev/null 2>&1; then
-            if systemd-analyze verify deploy/fledge.service > /tmp/systemd-verify.txt 2>&1; then
-              echo 'systemd: deploy/fledge.service parsed' >> "$summary"
-            else
-              echo 'systemd: `systemd-analyze verify` reported problems (advisory, not a gate):' >> "$summary"
-              sed -n '1,20p' /tmp/systemd-verify.txt >> "$summary"
-            fi
-          else
-            echo 'systemd: systemd-analyze is not on this runner — deploy/fledge.service was not verified (gap).' >> "$summary"
           fi
           exit "$status"
 

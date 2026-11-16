@@ -5,12 +5,28 @@ export const MAX_INTERVAL_MINUTES = 43_200
 
 export const ITERATION_INTERVALS = [15, 30, 60, 120, 180, 360, 720, 1440, 2880, 4320, 10_080, 20_160, 43_200]
 export const REVIEW_INTERVALS = [360, 720, 1440, 2880, 4320, 10_080, 20_160, 43_200]
+// #802: discovery reads its interval at a 60-minute floor, so the offered set is
+// the same list the form shows rather than the full iteration list.
+export const DISCOVERY_INTERVALS = ITERATION_INTERVALS.filter((value) => value >= 60)
 
 export function normalizeInterval(value: unknown, fallback = 1440): number {
   if (value === undefined || value === null || String(value).trim() === '') return fallback
   const parsed = Number(value)
   if (!Number.isFinite(parsed)) return fallback
   return Math.min(MAX_INTERVAL_MINUTES, Math.max(MIN_INTERVAL_MINUTES, Math.round(parsed)))
+}
+
+// #471: a cadence is a choice, not a number to clamp. A submission is accepted
+// only when the form offered it, or when it is the value this row already
+// carries — a legacy row whose stored cadence is not in the offered list renders
+// as its own option, and saving that untouched form must not be refused. An
+// absent field keeps today's behaviour: the stored value survives untouched.
+export function intervalSubmissionAccepted(value: unknown, offered: readonly number[], carried: number): boolean {
+  const raw = value === undefined || value === null ? '' : String(value).trim()
+  if (raw === '') return true
+  const parsed = Number(raw)
+  if (!Number.isInteger(parsed)) return false
+  return offered.includes(parsed) || parsed === carried
 }
 
 export function intervalLabel(minutes: number, t: Translate): string {

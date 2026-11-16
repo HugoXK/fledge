@@ -8,6 +8,7 @@ import { Jobs } from '../src/jobs/service.js'
 import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
+import { metricsSnapshot } from '../src/lib/metrics.js'
 import { REVIEW_INSTRUCTION_MAX, REVIEW_INSTRUCTION_LABEL } from '../src/lib/followUpInstruction.js'
 import { nextTime } from '../src/schedules/next.js'
 import { scheduleFromRow } from '../src/schedules/tick.js'
@@ -1302,6 +1303,79 @@ test('a running job with no heartbeat is failed as stalled', async () => {
   }
 })
 
+test('a repository the dispatcher refuses is reported with its reason, not as idle', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const blocked = (reason: string): number =>
+      metricsSnapshot().counters
+        .filter((entry) => entry.name === 'fledge_automation_blocked_total' && entry.labels.reason === reason)
+        .reduce((sum, entry) => sum + entry.value, 0)
+    const idleAlerts = (): number =>
+      store.alerts({ usdCny: 1, automationIdleMinutes: 30 })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length
+
+    const user = makeUser(store, { login: 'refused-user', status: 'pending' })
+    const repo = store.createRepo({ id: 'repo_refused', userId: user.id, owner: 'o', name: 'refused', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.createWorkItem({ id: 'work_refused', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
+    store.db.exec("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused'")
+    assert.equal(idleAlerts(), 0)
+
+    // The dispatcher names the approval it waits for instead of starting a job.
+    const before = blocked('user_not_ready')
+    await jobs.tick()
+    assert.equal(blocked('user_not_ready'), before + 1)
+    assert.equal(store.listJobsForRepo(repo.id).length, 0)
+    // The alert side reads the same decision: an unapproved user is not idle.
+    assert.equal(idleAlerts(), 0)
+
+    // Approving the user makes the same repository idle, so the silence above
+    // was the refusal and not a broken alert.
+    store.setUserStatus(user.id, 'approved', 'test')
+    assert.equal(idleAlerts(), 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('a repository whose bridge instance is not up is reported as instance_not_ready, not idle', async () => {
+  const base = testConfig()
+  const config = testConfig({ flybot: { ...base.flybot, instanceImage: 'image' } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const blocked = (reason: string): number =>
+      metricsSnapshot().counters
+        .filter((entry) => entry.name === 'fledge_automation_blocked_total' && entry.labels.reason === reason)
+        .reduce((sum, entry) => sum + entry.value, 0)
+    const idleAlerts = (): number =>
+      store.alerts({ usdCny: 1, automationIdleMinutes: 30, instancesManaged: true })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length
+
+    const user = makeUser(store, { login: 'refused-instance-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_refused_instance', userId: user.id, owner: 'o', name: 'starting', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/starting', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image', status: 'starting',
+      chief_session: null, team_json: null, bridge_token_enc: null, bridge_pid: null, log_pid: null, last_error: null,
+      created_at: '2026-11-16T09:00:00.000Z', updated_at: '2026-11-16T09:00:00.000Z', last_health_at: null,
+    })
+    store.createWorkItem({ id: 'work_refused_instance', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
+    store.db.exec("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused_instance'")
+
+    const before = blocked('instance_not_ready')
+    await jobs.tick()
+    assert.equal(blocked('instance_not_ready'), before + 1)
+    assert.equal(store.listJobsForRepo(repo.id).length, 0)
+    assert.equal(idleAlerts(), 0)
+
+    store.updateRepoInstance(repo.id, { status: 'ready' })
+    assert.equal(idleAlerts(), 1)
+  } finally {
+    store.close()
+  }
+})
+
 test('three consecutive failures pause auto-iterate', async () => {
   const store = new Store(':memory:')
   const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
@@ -2095,7 +2169,10 @@ test('scheduled jobs carry the previous run and open work, and classify meta out
     const goal = contexts[0]?.goal ?? ''
     assert.match(goal, /\[Carry-over/)
     assert.match(goal, /created issue #1/)
-    assert.match(goal, /work_open state=triaged/)
+    // #788: the line states the live state the read observed, and the row's own
+    // state is not presented as it.
+    assert.match(goal, /work_open observed \d{2}:\d{2}Z open/)
+    assert.doesNotMatch(goal, /work_open state=/)
     assert.equal(store.getJob(result.job!.id)?.continuity_used, 1)
 
     // The invariant allows one active job per repository, so the carried-over job
@@ -2356,7 +2433,8 @@ test('carry-over is bounded, names the open work and is explicitly data', async 
   assert.match(text, /not a new goal/)
   assert.match(text, /Recent runs:/)
   assert.match(text, /Open work:/)
-  assert.match(text, /work_1 state=pr_ready/)
+  assert.match(text, /work_1 priority=0/)
+  assert.doesNotMatch(text, /work_1 state=/)
   assert.match(text, /https:\/\/x\/pr\/3/)
 })
 
@@ -3423,5 +3501,163 @@ test('a goal near the length cap still carries the temporal line', async () => {
   } finally {
     store.close()
     await github.close()
+  }
+})
+
+// #247: the attempt is the unit a worker owns. These cover the two crash
+// boundaries the card names and the fence that stops a taken-over worker from
+// writing over the attempt it lost.
+
+test('a dispatch attempt reaped after the bridge accepted is terminal, and its late success is refused', async () => {
+  const bridge = await startFakeServer(async (request, response) => {
+    await readBody(request)
+    json(response, 200, { ok: true })
+  })
+  const config = testConfig()
+  const store = new Store(':memory:')
+  let accepted!: () => void
+  const bridgeAccepted = new Promise<void>((resolve) => { accepted = resolve })
+  let release!: () => void
+  const runnerReleased = new Promise<void>((resolve) => { release = resolve })
+  // The fake runner stands in for the bridge client: the dispatch is accepted
+  // only once the bridge has answered, and the worker then dies silently.
+  const runner: Runner = {
+    name: 'capture',
+    async run() {
+      await fetch(bridge.url, { method: 'POST', body: '{}' })
+      accepted()
+      await runnerReleased
+      return { status: 'succeeded', summary: 'late success' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'attempt-crash', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_attempt_crash', userId: user.id, owner: 'o', name: 'attempt-crash', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const dispatched = jobs.enqueue(repo, 'manual')
+    const neverDispatched = setTimeout(() => { throw new Error('the bridge was never dispatched') }, 5_000)
+    neverDispatched.unref()
+    await bridgeAccepted
+    clearTimeout(neverDispatched)
+
+    const job = store.get<JobRow>('SELECT * FROM jobs WHERE repo_id = ?', repo.id)!
+    const running = store.jobAttempts(job.id)
+    assert.equal(running.length, 1)
+    assert.equal(running[0]!.status, 'running')
+    assert.equal(running[0]!.worker, 'inline')
+    assert.equal(running[0]!.attempt, 1)
+    assert.equal(running[0]!.lease_epoch, 1)
+    assert.ok(running[0]!.dispatch_id.startsWith(`${job.id}:`))
+
+    // The worker stops renewing: its five-minute lease lapses and the tick's
+    // stale-running recovery reaps the job.
+    store.updateJob(job.id, { lease_until: '2000-01-01T00:00:00.000Z' })
+    await jobs.tick()
+
+    const reaped = store.jobAttempts(job.id)
+    assert.equal(reaped.length, 1, 'the work item keeps exactly one attempt row')
+    assert.equal(reaped[0]!.status, 'reaped')
+    assert.match(reaped[0]!.error ?? '', /租约/)
+    assert.notEqual(reaped[0]!.finished_at, null)
+    assert.equal(store.getJob(job.id)?.status, 'failed')
+    assert.equal(store.getJob(job.id)?.error_code, 'JOB_LEASE_EXPIRED')
+    assert.equal(store.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status = 'queued'", repo.id).length, 0, 'a reap must not reset the job to queued')
+
+    // The crashed worker comes back and reports a success for the attempt it lost.
+    release()
+    const result = await dispatched
+    assert.equal(result.ok, false)
+
+    const after = store.jobAttempts(job.id)
+    assert.equal(after.length, 1, 'the late report adds no second attempt row')
+    assert.equal(after[0]!.status, 'reaped', 'a late success must not rewrite the reaped outcome')
+    assert.notEqual(after[0]!.refused_at, null, 'the late report is recorded on the attempt it lost')
+    assert.match(after[0]!.refused_reason ?? '', /late/i)
+    assert.equal(store.getJob(job.id)?.status, 'failed')
+  } finally {
+    release()
+    store.close()
+    await bridge.close()
+  }
+})
+
+test('a dispatch that dies before the bridge accepts leaves one terminal failed attempt', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { throw new Error('bridge refused the dispatch') } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'attempt-refused', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_attempt_refused', userId: user.id, owner: 'o', name: 'attempt-refused', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const result = await jobs.enqueue(repo, 'manual')
+    assert.equal(result.ok, false)
+
+    const job = store.get<JobRow>('SELECT * FROM jobs WHERE repo_id = ?', repo.id)!
+    const attempts = store.jobAttempts(job.id)
+    assert.equal(attempts.length, 1)
+    assert.equal(attempts[0]!.status, 'failed')
+    assert.match(attempts[0]!.error ?? '', /bridge refused the dispatch/)
+    assert.notEqual(attempts[0]!.finished_at, null)
+    assert.equal(job.status, 'failed')
+    assert.equal(job.error_code, 'BRIDGE_ERROR')
+    assert.equal(job.lease_owner, null)
+  } finally {
+    store.close()
+  }
+})
+
+test('a superseded lease epoch cannot finalise an attempt, and a re-dispatch carries attempt N+1', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'attempt-fence', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_fence')
+    store.createJob({ id: 'job_fence', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h', platformTokenHash: '' })
+
+    const first = store.startJobAttempt('job_fence', 'worker-a', 60_000)!
+    assert.equal(first.attempt, 1)
+    assert.equal(first.epoch, 1)
+    // The lease lapses and the reaper records the attempt as a terminal outcome.
+    assert.equal(store.claimJobTerminal('job_fence', 'failed', null, { error: '任务租约过期：worker 未续约。', error_code: 'JOB_LEASE_EXPIRED' }, { epoch: first.epoch, outcome: 'reaped', error: '任务租约过期：worker 未续约。' }), true)
+
+    // A re-dispatch of the same row starts attempt 2 and links it to the reaped row.
+    store.updateJob('job_fence', { status: 'queued' })
+    const second = store.startJobAttempt('job_fence', 'worker-b', 60_000)!
+    assert.equal(second.attempt, 2)
+    assert.equal(second.epoch, 2)
+    const rows = store.jobAttempts('job_fence')
+    assert.equal(rows.length, 2)
+    assert.equal(rows[1]!.retry_of, rows[0]!.id)
+
+    // The worker whose epoch was taken over cannot write a success for its attempt.
+    assert.equal(store.claimJobTerminal('job_fence', 'succeeded', null, { summary: 'late' }, { epoch: first.epoch, outcome: 'succeeded' }), false)
+    assert.equal(store.getJob('job_fence')?.status, 'running')
+    assert.equal(store.refuseJobAttempt('job_fence', first.epoch, 'late success from a lost lease'), true)
+    const finalRows = store.jobAttempts('job_fence')
+    assert.notEqual(finalRows[0]!.refused_at, null)
+    assert.equal(finalRows[1]!.status, 'running')
+  } finally {
+    store.close()
+  }
+})
+
+test('a retried job records attempt N+1 and links it to the attempt it continues', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'attempt-retry', status: 'approved' })
+    const repo = queueRepoFor(store, user.id, 'repo_attempt_retry')
+    store.createJob({ id: 'job_attempt_source', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h', platformTokenHash: '' })
+    const source = store.startJobAttempt('job_attempt_source', 'worker-a', 60_000)!
+    assert.equal(store.claimJobTerminal('job_attempt_source', 'failed', null, { error: 'task crashed', error_code: 'JOB_LEASE_EXPIRED' }, { epoch: source.epoch, outcome: 'reaped', error: 'task crashed' }), true)
+
+    store.createJob({ id: 'job_attempt_retry', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'h', platformTokenHash: '', retryOf: 'job_attempt_source' })
+    const next = store.startJobAttempt('job_attempt_retry', 'worker-b', 60_000)!
+    assert.equal(next.attempt, 2)
+
+    const rows = store.jobAttempts('job_attempt_retry')
+    assert.equal(rows.length, 1)
+    assert.equal(rows[0]!.attempt, 2)
+    assert.equal(rows[0]!.retry_of, source.id)
+  } finally {
+    store.close()
   }
 })

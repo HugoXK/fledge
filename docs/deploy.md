@@ -602,10 +602,13 @@ tracked here as host scripts under `deploy/`:
 
 `fledge-deploy-tag.sh` fetches tags, takes the newest `vX.Y.Z`, and deploys only
 when that version is newer than the running `package.json`. It uses a detached
-tag worktree, builds, stops/starts the configured service, checks `/healthz`
-reports that version, and restores the previous `dist` and build identity if
-the build or health check fails. It never runs `git push`, `--admin`, a merge or
-a rollback to an older tag. On success it invokes the verifier.
+tag worktree, builds, stops/starts the configured service, gates the rollout on
+the release it built (below), and restores the previous release — `dist`,
+`public/`, `package.json` and `.build-identity` — when the source copy, the build
+or the rollout check fails. A refused rollout leaves the host on the release it
+was running, and the next tick retries the same tag instead of reading the new
+version and exiting as already deployed. It never runs `git push`, `--admin`, a
+merge or a rollback to an older tag. On success it invokes the verifier.
 
 `fledge-verify-release.sh` reads `GITHUB_TOKEN` from the environment or the
 `GITHUB_TOKEN` entry in `FLEDGE_SECRETS_FILE` (default
@@ -619,6 +622,96 @@ Both scripts accept `FLEDGE_APP_DIR`, `FLEDGE_SOURCE_DIR`, `FLEDGE_DATA_DIR`,
 `FLEDGE_SECRETS_FILE` and `FLEDGE_REPOSITORY` overrides. They hold a `flock`
 so two cron ticks cannot overlap, and the deploy script exits without changing
 anything when production is already at the newest tag or ahead of it.
+
+### Gate a rollout on the release it claims
+
+A version string is not a rollout. On 2026-11-14 production answered
+`/healthz` and the footer as `0.3.2` while `/assets/app.css` was 59,354 bytes —
+matching no tag (`0.3.2` 51,920, `0.3.3` 60,777, `0.3.4` 63,758, `0.3.5` 64,182)
+— and the page had no `data-density` the running layout renders. The process, the
+page and the asset directory were three different releases, and the deploy
+script's only test was `"version":"X.Y.Z"` in `/healthz`.
+
+`scripts/rollout-check.mjs` answers that with six links and exits non-zero when
+any of them disagrees. `METRICS_TOKEN` is needed for the `commit` half of
+`/healthz`; the deploy script reads it from the app `.env`, the same credential
+`/metrics` uses.
+
+```sh
+# the automatic path: the deploy script runs this after the restart, before it
+# writes deployed-tag, and rolls the previous dist back when it exits non-zero.
+METRICS_TOKEN=… node scripts/rollout-check.mjs --version 0.3.5 \
+  --commit <40-hex tag commit> --base-url http://127.0.0.1:8095 \
+  --release-dir /home/xuke/work/fledge-deploy-src --public-dir /home/xuke/work/fledge/public
+```
+
+`--release-dir` is the tag worktree the deploy built from, so the expected
+`app.css` bytes come from the release artifact and never from the running tree —
+the running tree is the thing that gets replaced by hand. When that worktree is
+gone, pass the recorded hash instead:
+`--expect-css-sha256 <64-hex>` (from the deploy log's `rollout-check: ok …` line,
+or `sha256sum public/app.css` on a fresh `git worktree add` of the tag).
+
+Output of a rollout that serves its release — this is the line the deploy log
+keeps:
+
+```
+rollout-check: ok v0.3.5 commit 2f55afd54cf4b68066dadf54efaf814bd7af0d29 app.css 1a2b3c4d5e6f
+healthz version  ok        served 0.3.5, expected 0.3.5
+healthz commit   ok        served 2f55afd54cf4b68066dadf54efaf814bd7af0d29, expected 2f55afd54cf4b68066dadf54efaf814bd7af0d29
+footer version   ok        served v0.3.5, expected v0.3.5
+served asset     ok        served 1a2b3c4d5e6f7a8b (64182 bytes), expected 1a2b3c4d5e6f7a8b
+page asset       ok        page versions 1a2b3c4d5e6f, bytes hash to 1a2b3c4d5e6f
+public tree      ok        10 file(s) match the release
+```
+
+The drill the acceptance asks for is one deliberate skip: build the target but
+do not restart the service, then run the check by hand. It must refuse, and the
+process keeps answering the old version:
+
+```
+$ METRICS_TOKEN=… node scripts/rollout-check.mjs --version 0.3.5 \
+    --commit <tag commit> --base-url http://127.0.0.1:8095 --release-dir <tag worktree>
+rollout-check: refused — 1 link(s) disagree with v0.3.5 (<tag commit>)
+healthz version  mismatch  served 0.3.2, expected 0.3.5
+…
+$ echo $?
+1
+```
+
+The check opens no file: the report is stdout, and keeping it is the caller's
+redirection. `--json > rollout.json` writes the same report `--write` used to,
+with the shell owning the path — and `--write` is refused (exit `2`) rather than
+silently dropped, so an old command line cannot lose the record.
+
+Exit codes are the same shape as `verify-release.mjs`, so one habit covers both:
+
+| Exit | Meaning | Action |
+|---|---|---|
+| `0` | every link agrees with the target | the rollout is the release; nothing to do |
+| `1` | a link disagrees — the running process, the page, the served bytes or `public/` is another release | fix the cause named in the rows; the deploy script restores the previous release (`dist`, `public/`, `package.json`, `.build-identity`) and restarts it, so production stays on the old release rather than on a half-swapped tree, and the next tick retries the same tag |
+| `2` | the command could not read its input (no release artifact, no `--version`, unreadable fixture, HTTP failure) | never a green verdict: correct the input and re-run |
+
+What the gate does **not** cover, so nobody reads it as more than it is:
+
+- It runs after the restart, because that is when there is a process to ask. The
+  gate's guarantee is that a rollout which fails it is rolled back and never
+  recorded in `deployed-tag`; a deploy that swaps files and skips the restart
+  entirely is caught by `healthz version` before anything is recorded.
+- A refusal restores the whole release, not just `dist/`. The old process serves
+  `public/` and reports the version in `package.json` at startup, so those go back
+  with the build and the identity; restoring `dist/` alone would restart the old
+  build under the new release's name and leave the version check at the top of
+  the script on the target version, so the refusal would never be retried.
+- The `public tree` link compares the release with the tree this deploy just
+  copied into place, so it catches a partial copy but cannot see a web server
+  rooted somewhere else; `served asset` and `page asset` are the links that prove
+  what is actually served.
+- It does not hash `dist/`. The running build is identified by the commit in
+  `/healthz`, which comes from `.build-identity` written beside it; `dist/` has
+  its own manifest for CI (`scripts/dist-manifest.mjs`).
+- It never writes, reloads nginx, or restarts anything itself: the deploy script
+  owns the restart, and the owner owns running the deploy.
 
 ### Required before start
 
@@ -787,15 +880,30 @@ server {
 ```
 
 CI syntax-checks the example on every diff that touches `deploy/`: `deploy-check`
-runs `scripts/check-nginx-config.sh`, which renders the example with generated
-certificates and loopback listens and parses it with `nginx`. The wrapper it
-renders, `deploy/nginx.check.conf`, declares `pid <tmp>/nginx.pid;` before
-`events {}` because `nginx -t` opens the pid path while it initialises the cycle,
-and an unprivileged runner cannot open nginx's compiled-in `/run/nginx.pid`; the
-result is a failed step and a red `ci-ok` (#795). When nginx is not installed on
-the runner the step writes a gap to the job summary instead of passing silently.
-With nginx installed, `bash scripts/check-nginx-config.sh` runs the same check
-locally and prints the parse output.
+installs nginx, then runs `scripts/check-deploy-samples.sh`, which renders the
+example with generated certificates and loopback listens and parses it with a
+real `nginx -t`. The wrapper it renders, `deploy/nginx.check.conf`, declares
+`pid <tmp>/nginx.pid;` before `events {}` because `nginx -t` opens the pid path
+while it initialises the cycle, and an unprivileged runner cannot open nginx's
+compiled-in `/run/nginx.pid`; the result is a failed step and a red `ci-ok`
+(#795). A runner without nginx is a failed step rather than a recorded gap
+(#882): the install is the check's input, so its absence cannot be green.
+
+The contract script also proves the check can fail. It appends an unknown
+directive to a copy of the example and expects `nginx -t` to reject it, so an
+invocation that accepts everything fails the job instead of passing it, and the
+job summary says each check was real (`nginx: real`, `nginx: real negative
+proof`). Locally, `bash scripts/check-deploy-samples.sh` runs the whole contract
+and prints one line per check; `bash scripts/check-nginx-config.sh` is the nginx
+half on its own.
+
+The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
+chosen over `systemd-analyze verify` because that binary is absent on a GitHub
+runner and its output names the runner's unrelated units. It reads the sections,
+the directive shape, duplicate keys — which systemd resolves silently to the last
+value — and the keys that must name an absolute path, and it rejects a copy of
+`deploy/fledge.service` with `ExecStart` removed. The job summary and the script's
+own line call it `static`, so a static parse is never read as a live systemd run.
 
 The app trusts only the hops named in `TRUST_PROXY`, never every hop.
 `$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually

@@ -44,6 +44,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/repos/:id/schedule` | owner | Schedule console: the stored schedule, the planner's next run, the newest decided instant (state, reason, attempts, lease) and the last success; an unknown value prints `unknown` |
 | POST | `/repos/:id/schedule` | owner + CSRF | Save the console form (cron or interval, zone, window); audits `schedule.saved` and writes nothing when the form is refused |
 | POST | `/repos/:id/schedule/remove` | owner + CSRF | Delete the schedule so the repository returns to its legacy interval; audits `schedule.removed` |
+| POST | `/repos/:id/schedule/pause` | maintainer + CSRF | Pause the schedule: the worker records passing instants as `skipped` with reason `paused` and dispatches nothing until it is resumed; audits `schedule.pause` |
+| POST | `/repos/:id/schedule/resume` | maintainer + CSRF | Resume the schedule from the next instant, without replaying the paused window; audits `schedule.resume` |
 | POST | `/repos/:id/run` | owner + CSRF, expensive rate limit | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/rules` | maintainer + CSRF, destructive rate limit | Save one repository rule override against its expected revision |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |
@@ -887,6 +889,30 @@ against the same row, and
 `POST /repos/:id/releases/:releaseId/check` (owner only, CSRF, maintainer role)
 repeats it, then redirects to `?release=1&checked=<message>`. The check may
 prepare a draft Release; it never publishes, reruns, deletes or moves anything.
+
+`POST /repos/:id/releases/:releaseId/analyze` (#546 slice 4) is that read's
+read-only sibling: owner only, CSRF, maintainer role, redirecting to
+`?release=1&notice=<message>` or `?release=1&error=<sentence>`. It explains the
+failed run the row recorded: at most two failed jobs, 40 lines and 4,000
+characters of each log, ANSI stripped and the whole log redacted before the
+excerpt is cut, stored in `repo_releases.analysis_json`. It changes no release
+state and never reruns a workflow — a row with no recorded run, a run still
+running or concluded anything but a failure, a run with no failed job and an
+unreadable log are each a sentence on the page.
+
+The credential is a short-lived installation token minted outside the cache, not
+the repository's cached one. `GithubApp.ephemeralToken`
+(`POST /app/installations/{id}/access_tokens`) takes `permissions` plus an
+optional `repositories` narrowing; the analysis asks for exactly `actions: read`
+and names the one repository, which covers the two endpoints it touches —
+`GET /actions/runs/{id}/jobs` and `GET /actions/jobs/{id}/logs` — and nothing
+wider. `GithubApp.revokeToken` (`DELETE /installation/token`, authenticated with
+that token rather than the App JWT) revokes it when the read ends and returns
+`false` instead of throwing, so a failed revocation is recorded beside the result
+rather than swallowing the answer. `analyzeReleaseRun` asks for the token only
+after its own refusal check, so a green or running row costs no credential at
+all, and a repository without a GitHub App installation is refused as
+`ANALYSIS_READ_ONLY_TOKEN` instead of being read with a wider user token.
 
 The draft body is built from the release range (#546 slice 3), not from a fixed
 sentence: `compareReleaseRange` reads `GET /compare/{previous tag}...{target SHA}`
