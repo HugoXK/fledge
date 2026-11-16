@@ -1249,6 +1249,18 @@ card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the
 guard as the reason its claim was lowered.
 
+The loop's riskiest step is one card on the job page (`id="review-merge"`), not a
+merge button on every surface. It answers with one sentence and one action —
+review, merge, fix findings, wait for checks, or a named block — and the evidence
+(head SHA, the verdict at that SHA, checks, path guard, base movement and queue
+state) sits below the action, so a 360px screen reaches the control before the
+evidence. The delivery list links to that card instead of carrying a second merge
+control. A PASS is evidence about one commit: when the pull request moved after
+the snapshot was taken, `tryMerge` refuses it, names both tips, audits
+`job.merge_skipped` as a stale verification and asks for a re-check, because a new
+commit voids a PASS; a base that moved is refused as `behind` with its own next
+step rather than the bare state name.
+
 ### The independent adversarial review
 
 The last gate before an automatic merge is a second read of the same change by a

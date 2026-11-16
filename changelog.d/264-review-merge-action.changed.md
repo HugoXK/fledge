@@ -1,0 +1,1 @@
+The job page now answers the review-to-merge step in one card: one sentence, one action (review, merge, fix findings, wait for checks, or the reason it is blocked) and the evidence under it. The delivery list links to that card instead of repeating the merge button, and a PASS taken at an older commit is refused with both tips named instead of being reused.

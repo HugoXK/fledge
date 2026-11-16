@@ -36,7 +36,8 @@ const FORM_ACTIONS = [
   '/repos/:id/delete',
   '/repos/:id/delivery/merge-clean',
   '/repos/:id/disable',
-  '/repos/:id/jobs/job_nav/merge',
+  // #264: the merge control lives on the job page's review card; the delivery
+  // row links to it instead of posting a second merge from this page.
   '/repos/:id/jobs/job_nav/recheck',
   '/repos/:id/plan',
   '/repos/:id/refresh',

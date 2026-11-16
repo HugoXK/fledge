@@ -103,3 +103,67 @@ export function mergeReadiness(job: Pick<JobRow, 'pr_url' | 'path_guard_json' | 
   }
   return { state: 'ready', reasons: [] }
 }
+
+export type ReviewMergeState =
+  | 'no-pr'
+  | 'running'
+  | 'merged'
+  | 'closed'
+  | 'unverified'
+  | 'stale-pass'
+  | 'draft'
+  | 'path-guard'
+  | 'checks-pending'
+  | 'checks-blocked'
+  | 'changes-requested'
+  | 'base-moved'
+  | 'blocked'
+  | 'ready'
+
+export type ReviewMergeAction = 'merge' | 'review' | 'recheck' | 'none'
+
+export interface ReviewMergeView {
+  state: ReviewMergeState
+  action: ReviewMergeAction
+  /** Raw reasons, in GitHub's own words, for the detail line under the answer. */
+  reasons: string[]
+}
+
+// The review -> merge step answers one question: what is the one thing to do
+// now. Everything it decides comes from the stored verification, the path
+// guard and the job row; `headSha` is only passed when the caller has read the
+// live tip, which is how a PASS taken at an older commit gets named instead of
+// silently reused.
+export function reviewMergeView(input: {
+  job: Pick<JobRow, 'pr_url' | 'pr_state' | 'status' | 'path_guard_json' | 'verification_json'>
+  maintainer: boolean
+  headSha?: string
+}): ReviewMergeView {
+  const { job, maintainer } = input
+  // No pull request yet: an unfinished job is still working, a finished one has
+  // nothing to decide. A pull request that exists is answered by its own state,
+  // whatever the job is doing now.
+  if (job.pr_url === null) {
+    return job.status === 'queued' || job.status === 'running' || job.status === 'paused'
+      ? { state: 'running', action: 'none', reasons: [] }
+      : { state: 'no-pr', action: 'none', reasons: [] }
+  }
+  if (job.pr_state === 'merged') return { state: 'merged', action: 'none', reasons: [] }
+  if (job.pr_state === 'closed') return { state: 'closed', action: 'none', reasons: [] }
+  const verification = parseVerification(job.verification_json)
+  if (verification === null) return { state: 'unverified', action: 'recheck', reasons: [] }
+  if (input.headSha !== undefined && input.headSha !== verification.sha) {
+    return { state: 'stale-pass', action: 'recheck', reasons: [`${verification.sha.slice(0, 12)} -> ${input.headSha.slice(0, 12)}`] }
+  }
+  if (verification.prState !== 'open') return { state: 'closed', action: 'none', reasons: [] }
+  const guard = parsePathGuard(job.path_guard_json)
+  if (guard !== null && !guard.ok) return { state: 'path-guard', action: 'review', reasons: mergeReadiness(job).reasons }
+  if (verification.draft) return { state: 'draft', action: 'review', reasons: [] }
+  if (verification.checks.pending.length > 0) return { state: 'checks-pending', action: 'none', reasons: verification.checks.pending }
+  if (verification.checks.failing.length > 0) return { state: 'checks-blocked', action: 'review', reasons: verification.checks.failing }
+  if (verification.reviews.changesRequested) return { state: 'changes-requested', action: 'review', reasons: verification.reasons }
+  if (verification.mergeableState === 'behind') return { state: 'base-moved', action: 'recheck', reasons: verification.reasons }
+  if (['blocked', 'dirty', 'unknown'].includes(verification.mergeableState)) return { state: 'blocked', action: 'review', reasons: [`mergeable state: ${verification.mergeableState}`] }
+  if (!verification.ok) return { state: 'blocked', action: 'review', reasons: verification.reasons.length === 0 ? ['Evidence verification failed.'] : verification.reasons }
+  return { state: 'ready', action: maintainer ? 'merge' : 'review', reasons: [] }
+}

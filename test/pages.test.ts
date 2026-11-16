@@ -1340,7 +1340,7 @@ test('a pull request with half the merge evidence never renders as Ready', () =>
     assert.doesNotMatch(rowHtml, /可合并/, 'the Chinese badge is not Ready either')
 
     const jobHtml = jobPage({ config, locale: 'en', viewer, repo, job: row!, events: [] })
-    const card = cardAfterHeading(jobHtml, 'PR verification')
+    const card = cardWithId(jobHtml, 'review-merge')
     assert.match(card, /Not verified/, 'the job page badge says not verified')
     assert.doesNotMatch(card, />Ready</, 'the job page never prints the Ready badge above "No verification yet."')
     assert.match(card, /No verification yet\./, 'the card still states that no verification ran')

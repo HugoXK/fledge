@@ -159,6 +159,7 @@ test('every localisation row is pinned by a sample in both directions', () => {
     ['en', '任务 job_4 成本 12.5 元，超过单任务预算 10 元。', 'Job job_4 cost 12.5 CNY, over its 10 CNY single-job budget.'],
     ['en', '任务 job_5 属于临时失败，将在约 5 分钟后自动重试。', 'Job job_5 hit a temporary failure; it will retry automatically in about 5 minutes.'],
     ['en', '任务 job_6 的 PR 改动了受保护路径，已阻止合并：src/auth/x.ts', 'The PR for job job_6 changed protected paths, so the merge was blocked: src/auth/x.ts'],
+    ['en', '任务 job_20 的 PR 在证据核实后又有新提交（aaaa11112222 → bbbb33334444），过期的 PASS 不合并；先重新核实。', 'The PR for job job_20 received a commit after the evidence was verified (aaaa11112222 → bbbb33334444); the stale PASS is not merged, so re-check first.'],
     ['en', '任务 job_16 的 PR 改动的文件列表不完整，无法确认路径约束，已阻止合并：incomplete changed-file list: checked 3000 of 3100', 'The PR for job job_16 has an incomplete changed-file list, so the path constraint could not be confirmed and the merge was blocked: incomplete changed-file list: checked 3000 of 3100'],
     ['en', '任务 job_17 改动的文件列表不完整，无法确认路径约束：incomplete changed-file list: checked 3000', 'Job job_17 has an incomplete changed-file list, so the path constraint could not be confirmed: incomplete changed-file list: checked 3000'],
     ['en', '任务 job_7 改动了受保护路径：src/auth/x.ts', 'Job job_7 changed protected paths: src/auth/x.ts'],

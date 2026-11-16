@@ -260,6 +260,13 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   if (connectFailed !== null) return `Connection failed: ${connectFailed[1]}`
   const modelHttp = /^模型服务返回 HTTP (\d+)：(.+)$/.exec(message)
   if (modelHttp !== null) return `The model service returned HTTP ${modelHttp[1]}: ${modelHttp[2]}`
+  // #264: the two merge refusals that name both tips say the same thing in
+  // English, so a maintainer reading the console in English is not handed a
+  // Chinese sentence at the moment the merge was refused.
+  const stalePass = /^证据在 (\S+) 核实，PR 现在已经到 (\S+)；这是过期的 PASS，先重新核实再合并。$/.exec(message)
+  if (stalePass !== null) return `The evidence was verified at ${stalePass[1]} but the pull request is now at ${stalePass[2]}; that PASS is stale, so re-check before merging.`
+  const baseMoved = /^PR 的目标分支在核实后前进了（behind）；先 rebase 到最新目标分支，再重新核实。$/.exec(message)
+  if (baseMoved !== null) return 'The pull request base moved after the last check (behind); rebase onto the latest base, then re-check.'
   // Route banners whose value is built from data (#240). The rendered sentence
   // is what reaches the console, so these match the rendered shape.
   const merged = /^已合并 (\d+) 个 PR(?:，([\s\S]+))?$/.exec(message)
@@ -342,6 +349,7 @@ export const ZH_TO_EN: ReadonlyArray<readonly [RegExp, Localizer]> = [
   [/^任务 (\S+) 的 PR 改动的文件列表不完整，无法确认路径约束，已阻止合并：([\s\S]+)$/, (m) => `The PR for job ${m[1]} has an incomplete changed-file list, so the path constraint could not be confirmed and the merge was blocked: ${m[2]}`],
   [/^任务 (\S+) 改动的文件列表不完整，无法确认路径约束：([\s\S]+)$/, (m) => `Job ${m[1]} has an incomplete changed-file list, so the path constraint could not be confirmed: ${m[2]}`],
   [/^任务 (\S+) 的 PR 改动了受保护路径，已阻止合并：([\s\S]+)$/, (m) => `The PR for job ${m[1]} changed protected paths, so the merge was blocked: ${m[2]}`],
+  [/^任务 (\S+) 的 PR 在证据核实后又有新提交（(\S+) → (\S+)），过期的 PASS 不合并；先重新核实。$/, (m) => `The PR for job ${m[1]} received a commit after the evidence was verified (${m[2]} → ${m[3]}); the stale PASS is not merged, so re-check first.`],
   [/^任务 (\S+) 改动了受保护路径：([\s\S]+)$/, (m) => `Job ${m[1]} changed protected paths: ${m[2]}`],
   // #417: the inventory/cleanup verdict is written once by `src/jobs/service.ts`
   // and carries no code, so it travels only this table; the English form has to

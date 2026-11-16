@@ -32,7 +32,7 @@ import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { carryOverHeaderFromGoal } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
-import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
+import { mergeReadiness, parsePathGuard, parseVerification, reviewMergeView, type ReviewMergeState, type ReviewMergeView, type VerificationResult } from '../lib/verification.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
 import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
@@ -267,6 +267,47 @@ function readinessLabel(t: Translate, state: 'ready' | 'blocked' | 'unknown'): s
 function readinessBadge(t: Translate, state: 'ready' | 'blocked' | 'unknown'): string {
   const cls = state === 'ready' ? 'good' : state === 'blocked' ? 'bad' : 'busy'
   return `<span class="badge ${cls}">${escapeHtml(readinessLabel(t, state))}</span>`
+}
+
+// #264: the review -> merge step answers one question, "what is the one thing
+// to do now". The badge names the state, the lede is the sentence and the row
+// under it is the single action; the evidence stays below so a 360px screen
+// reaches the action without scrolling past it.
+function reviewMergeCopy(t: Translate, state: ReviewMergeState): { label: string; tone: 'good' | 'bad' | 'busy' } {
+  if (state === 'ready') return { label: t('可合并', 'Ready'), tone: 'good' }
+  if (state === 'merged') return { label: t('已合并', 'Merged'), tone: 'good' }
+  if (state === 'closed') return { label: t('已关闭', 'Closed'), tone: 'bad' }
+  if (state === 'no-pr') return { label: t('没有 PR', 'No PR'), tone: 'busy' }
+  if (state === 'running') return { label: t('运行中', 'Running'), tone: 'busy' }
+  if (state === 'unverified') return { label: t('未核实', 'Not verified'), tone: 'busy' }
+  if (state === 'draft') return { label: t('草稿', 'Draft'), tone: 'busy' }
+  if (state === 'checks-pending') return { label: t('等待检查', 'Waiting for checks'), tone: 'busy' }
+  if (state === 'stale-pass') return { label: t('被阻止：PASS 已过期', 'Blocked: stale PASS'), tone: 'bad' }
+  if (state === 'path-guard') return { label: t('被路径守卫阻止', 'Blocked: path guard'), tone: 'bad' }
+  if (state === 'checks-blocked') return { label: t('被阻止：检查失败', 'Blocked: failing checks'), tone: 'bad' }
+  if (state === 'changes-requested') return { label: t('被阻止：等待修改', 'Blocked: changes requested'), tone: 'bad' }
+  if (state === 'base-moved') return { label: t('被阻止：目标分支已前进', 'Blocked: base moved'), tone: 'bad' }
+  return { label: t('被阻止', 'Blocked'), tone: 'bad' }
+}
+
+function reviewMergeAnswer(t: Translate, view: ReviewMergeView, verification: VerificationResult | null, maintainer: boolean): string {
+  const sha = verification === null ? '' : verification.sha.slice(0, 12)
+  const names = (list: string[]): string => list.slice(0, 3).join(', ')
+  if (view.state === 'no-pr') return t('这个任务还没有 PR；这里没有要做的决定。', 'This job has no pull request, so there is nothing to decide here.')
+  if (view.state === 'merged') return t('PR 已合并；这里没有待办动作。', 'The PR is merged; nothing to do here.')
+  if (view.state === 'closed') return t('PR 已关闭未合并；这里没有待办动作。', 'The PR was closed unmerged; nothing to do here.')
+  if (view.state === 'running') return t('任务还在跑；PR 出现后这里会给出唯一要做的动作。', 'The job is still running; the one action appears here once the PR exists.')
+  if (view.state === 'unverified') return t('这个 PR 还没有核实；先看 PR，再点重新核实。', 'This PR has not been verified yet; read it, then re-check.')
+  if (view.state === 'stale-pass') return t(`证据在 ${sha} 核实，PR 已经移动到 ${view.reasons[0]?.split(' -> ')[1] ?? ''}；过期的 PASS 不会被合并，先重新核实。`, `The evidence was verified at ${sha} but the PR has moved to ${view.reasons[0]?.split(' -> ')[1] ?? ''}; a stale PASS is not merged, so re-check first.`)
+  if (view.state === 'draft') return t('PR 还是草稿；等它转成可审查状态后再决定。', 'The PR is still a draft; decide once it is ready for review.')
+  if (view.state === 'path-guard') return t(`被路径守卫阻止：${view.reasons.length} 个文件不在允许范围；改范围或改代码后再核实。`, `Blocked by the path guard: ${view.reasons.length} file(s) outside the allowed paths; change the scope or the code, then re-check.`)
+  if (view.state === 'checks-pending') return t(`等检查：${view.reasons.length} 个还在跑（${names(view.reasons)}）；全部完成后才能合并。`, `Waiting for checks: ${view.reasons.length} still running (${names(view.reasons)}); merge unlocks when they finish.`)
+  if (view.state === 'checks-blocked') return t(`先修 findings：${view.reasons.length} 个检查失败（${names(view.reasons)}）。`, `Fix findings first: ${view.reasons.length} check(s) failed (${names(view.reasons)}).`)
+  if (view.state === 'changes-requested') return t('先修 findings：PR 还有 changes requested。', 'Fix findings first: the PR still has changes requested.')
+  if (view.state === 'base-moved') return t('目标分支在核实后前进了（behind）；先 rebase 到最新目标分支，再重新核实。', 'The base branch moved after the last check (behind); rebase onto the latest base, then re-check.')
+  if (view.state === 'blocked') return t(`被阻止：${view.reasons.slice(0, 3).join(' · ')}`, `Blocked: ${view.reasons.slice(0, 3).join(' · ')}`)
+  const counts = verification === null ? '' : `${formatCount(verification.checks.green)}/${formatCount(verification.checks.total)} `
+  return t(`证据在 ${sha} 通过，${counts}个检查全绿；${maintainer ? '现在可以合并。' : '合并需要 maintainer，你可以先审查这个 PR。'}`, `Evidence passed at ${sha}, ${counts}checks green; ${maintainer ? 'ready to merge.' : 'merging needs a maintainer, so review the PR for now.'}`)
 }
 
 function agreementHtml(text: string): string {
@@ -1685,7 +1726,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         const number = /\/pull\/(\d+)/.exec(job.pr_url ?? '')?.[1] ?? ''
         const readiness = mergeReadiness(job)
         const reasons = readiness.reasons.slice(0, 2).join(' · ')
-        return `<tr><td data-label="PR"><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}</td><td data-label="${escapeHtml(t('核实', 'Verified'))}">${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td data-label="${escapeHtml(t('审核分', 'Review'))}">${job.review_score === null ? '—' : job.review_score}</td><td data-label="${escapeHtml(t('成本', 'Cost'))}">${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td data-label="${escapeHtml(t('创建', 'Created'))}">${escapeHtml(humanTimeShort(job.created_at))}</td><td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form>${repo.repo_role === 'maintainer' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}${commandHidden(commands[`merge:${job.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('合并', 'Merge'))}</button></form>` : ''}</div></td></tr>`
+        return `<tr><td data-label="PR"><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}</td><td data-label="${escapeHtml(t('核实', 'Verified'))}">${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td data-label="${escapeHtml(t('审核分', 'Review'))}">${job.review_score === null ? '—' : job.review_score}</td><td data-label="${escapeHtml(t('成本', 'Cost'))}">${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td data-label="${escapeHtml(t('创建', 'Created'))}">${escapeHtml(humanTimeShort(job.created_at))}</td><td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form>${repo.repo_role === 'maintainer' ? `<a class="btn btn-ghost btn-small" href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}#review-merge">${escapeHtml(t('审查并合并', 'Review and merge'))}</a>` : ''}</div></td></tr>`
       }).join('')
   if (repo.auto_merge === 0 && prJobs.length >= 3) {
     pageMessages.push({
@@ -3158,6 +3199,9 @@ export function jobPage(input: {
   execute?: { revision: number; idempotencyKey: string }
   resume?: { revision: number; idempotencyKey: string }
   retry?: { revision: number; idempotencyKey: string }
+  // #264: the merge form is the one primary action on this page, so it carries
+  // the revision this render saw and the key a double submit replays.
+  merge?: { revision: number; idempotencyKey: string }
   supportMode?: boolean
   notice?: string
   error?: string
@@ -3321,6 +3365,22 @@ export function jobPage(input: {
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}${retryHidden}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
     : ''
   const recheck = job.pr_url === null || supportMode ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新核实 PR', 'Re-check PR'))}</button></form>`
+  // #264: one action, one sentence. This step reads the stored verification,
+  // the path guard and the job row; a PASS taken at an older tip is named by the
+  // merge path itself, never guessed from data the page does not have.
+  const reviewMerge = reviewMergeView({ job, maintainer: repo.repo_role === 'maintainer' })
+  const reviewMergeText = reviewMergeCopy(t, reviewMerge.state)
+  const reviewPrLink = (cls: string): string => job.pr_url === null
+    ? ''
+    : `<a class="${cls}" href="${escapeHtml(job.pr_url)}" target="_blank" rel="noreferrer">${escapeHtml(t('审查 PR', 'Review PR'))}</a>`
+  const reviewPrimary = reviewMerge.action === 'merge' && input.merge !== undefined
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}${commandHidden(input.merge)}<button class="btn" type="submit">${escapeHtml(t('合并 PR', 'Merge PR'))}</button></form>`
+    : reviewMerge.action === 'review'
+      ? reviewPrLink('btn')
+      : reviewMerge.action === 'recheck'
+        ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form>`
+        : ''
+  const reviewSecondary = `${reviewMerge.action === 'recheck' ? '' : recheck}${reviewMerge.action === 'review' ? '' : reviewPrLink('btn btn-ghost')}`
   const ackRuleChange = verification?.ruleChange === undefined || verification.ruleChange.acknowledged || repo.repo_role !== 'maintainer'
     ? ''
     : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/ack-rule-change">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t(`确认规则变更（${verification.ruleChange.paths.length} 个文件）`, `Acknowledge rule change (${verification.ruleChange.paths.length} files)`))}</button></form>`
@@ -3497,13 +3557,46 @@ export function jobPage(input: {
         ${advanced && !supportMode ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
         ${supportMode ? '' : control}
         ${supportMode ? '' : execute}
-        ${supportMode ? '' : recheck}
         ${supportMode ? '' : ackRuleChange}
         ${supportMode ? '' : retry}
       </div>
     </div>
     ${queueBlock}
   </section>
+  ${supportMode ? '' : `<section class="card" id="review-merge">
+    <div class="row between">
+      <div>
+        <div class="eyebrow">REVIEW → MERGE</div>
+        <h2>${escapeHtml(t('审查与合并', 'Review and merge'))}</h2>
+        <p class="lede" id="review-merge-answer">${escapeHtml(reviewMergeAnswer(t, reviewMerge, verification, repo.repo_role === 'maintainer'))}</p>
+        ${readiness.reasons.length === 0 ? '' : `<p class="fine">${escapeHtml(readiness.reasons.slice(0, 6).join(' · '))}</p>`}
+      </div>
+      <span class="badge ${reviewMergeText.tone}">${escapeHtml(reviewMergeText.label)}</span>
+    </div>
+    <div class="row" id="review-merge-actions">${reviewPrimary}${reviewSecondary}${ackRuleChange}</div>
+    <div id="review-merge-evidence">${verification === null
+      ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`
+      : `<div class="list">
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(evidenceVerdict)}</strong><small>${escapeHtml(t('核实时间', 'Checked'))} ${escapeHtml(humanTimeShort(verification.checkedAt))} · ${escapeHtml(t('基于', 'At'))} <code>${escapeHtml(verification.sha.slice(0, 12))}</code></small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('检查', 'Checks'))}</strong><small>${verification.checks.green}/${verification.checks.total} ${escapeHtml(t('通过', 'green'))}${verification.checks.failing.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.checks.failing.join(', '))}`}${verification.checks.pending.length === 0 ? '' : ` · ${escapeHtml(t('等待', 'pending'))}: ${escapeHtml(verification.checks.pending.join(', '))}`}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试证据', 'Test evidence'))}</strong><small>${escapeHtml(verification.testEvidence.state === 'verified' ? t('已核实', 'Verified') : verification.testEvidence.state === 'contradicted' ? t('与 checks 不一致', 'Contradicted by checks') : t('未核实', 'Unverified'))}${verification.testEvidence.greenChecks.length === 0 ? '' : ` · ${escapeHtml(t('通过', 'green'))}: ${escapeHtml(verification.testEvidence.greenChecks.join(', '))}`}${verification.testEvidence.failingChecks.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.testEvidence.failingChecks.join(', '))}`}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('审核', 'Reviews'))}</strong><small>${escapeHtml(t(`批准 ${verification.reviews.approvals} 个`, `${verification.reviews.approvals} approval(s)`))}${verification.reviews.changesRequested ? ` · ${escapeHtml(t('有 changes requested', 'changes requested'))}` : ''}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('PR 状态', 'PR state'))}</strong><small>${escapeHtml(verification.prState)} · ${escapeHtml(verification.mergeableState)} · ${escapeHtml(verification.combinedStatus)}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('目标分支', 'Base'))}</strong><small>${escapeHtml(verification.mergeableState)} · <code>${escapeHtml(job.base_branch ?? '')}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'at'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('队列', 'Queue'))}</strong><small>${escapeHtml(statusLabel(t, job.status))} · ${repo.auto_merge === 1 && repo.repo_role === 'maintainer' ? escapeHtml(t('自动合并已开启：合并前仍会重读 tip。', 'Auto-merge is on; it still re-reads the tip before merging.')) : escapeHtml(t('自动合并未开启。', 'Auto-merge is off.'))}</small></div></div>
+        </div>`}</div>
+    ${pathGuard === null
+      ? ''
+      : `<h3 class="mt-16">${escapeHtml(t('路径守卫', 'Path guard'))}</h3>
+        <p class="fine">${pathGuard.ok
+          ? escapeHtml(t('改动文件都在允许范围内。', 'All changed files are within the allowed paths.'))
+          : pathGuard.truncated === true
+            ? escapeHtml(t(`已检查 ${formatCount(pathGuard.checkedFiles)} / 报告 ${formatCount(pathGuard.reportedFiles)} 个文件`, `Checked ${formatCount(pathGuard.checkedFiles)} / ${formatCount(pathGuard.reportedFiles)} reported files`))
+            : escapeHtml(t(`${pathGuard.violations.length} 个文件违反路径约束。`, `${pathGuard.violations.length} file(s) violate the path constraints.`))}${pathGuard.allow.length === 0 && pathGuard.deny.length === 0 ? ` · ${escapeHtml(t('未设置约束', 'no constraints set'))}` : ''}</p>
+        ${pathGuard.violations.length === 0 ? '' : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('文件', 'File'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th></tr></thead><tbody>${pathGuard.violations.map((violation) => `<tr><td><code>${escapeHtml(violation.file)}</code></td><td>${escapeHtml(violation.reason === 'denied' ? t('命中禁止路径', 'Denied path') : t('不在允许路径', 'Not allowed'))}</td></tr>`).join('')}</tbody></table></div>`}`}
+    ${adversarial === null ? '' : `<h3 class="mt-16">${escapeHtml(t('独立对抗式审核', 'Independent adversarial review'))}</h3>
+      <p class="fine" data-adversarial>${escapeHtml(adversarialText(adversarial))}${adversarial.model === null ? '' : ` · ${escapeHtml(t('模型', 'Model'))} ${escapeHtml(adversarial.model)}`}${adversarial.promptHash === null ? '' : ` · ${escapeHtml(t('提示哈希', 'Prompt hash'))} <code>${escapeHtml(adversarial.promptHash.slice(0, 12))}</code>`}</p>`}
+  </section>`}
   ${priorityCard}
   ${relationsCard}
   ${decisionCard}
@@ -3536,34 +3629,6 @@ export function jobPage(input: {
       ${evidenceRows}
     </div>
   </section>
-  ${supportMode ? '' : `<section class="card">
-    <h2>${escapeHtml(t('PR 核实', 'PR verification'))}</h2>
-    <div class="row between">
-      <div>${readinessBadge(t, readiness.state)}${readiness.reasons.length === 0 ? '' : `<p class="fine">${escapeHtml(readiness.reasons.slice(0, 6).join(' · '))}</p>`}</div>
-      ${recheck}
-      ${ackRuleChange}
-    </div>
-    ${verification === null
-      ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`
-      : `<div class="list">
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(evidenceVerdict)}</strong><small>${escapeHtml(t('核实时间', 'Checked'))} ${escapeHtml(humanTimeShort(verification.checkedAt))} · ${escapeHtml(t('基于', 'At'))} <code>${escapeHtml(verification.sha.slice(0, 12))}</code></small></div></div>
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('检查', 'Checks'))}</strong><small>${verification.checks.green}/${verification.checks.total} ${escapeHtml(t('通过', 'green'))}${verification.checks.failing.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.checks.failing.join(', '))}`}${verification.checks.pending.length === 0 ? '' : ` · ${escapeHtml(t('等待', 'pending'))}: ${escapeHtml(verification.checks.pending.join(', '))}`}</small></div></div>
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试证据', 'Test evidence'))}</strong><small>${escapeHtml(verification.testEvidence.state === 'verified' ? t('已核实', 'Verified') : verification.testEvidence.state === 'contradicted' ? t('与 checks 不一致', 'Contradicted by checks') : t('未核实', 'Unverified'))}${verification.testEvidence.greenChecks.length === 0 ? '' : ` · ${escapeHtml(t('通过', 'green'))}: ${escapeHtml(verification.testEvidence.greenChecks.join(', '))}`}${verification.testEvidence.failingChecks.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.testEvidence.failingChecks.join(', '))}`}</small></div></div>
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('审核', 'Reviews'))}</strong><small>${escapeHtml(t(`批准 ${verification.reviews.approvals} 个`, `${verification.reviews.approvals} approval(s)`))}${verification.reviews.changesRequested ? ` · ${escapeHtml(t('有 changes requested', 'changes requested'))}` : ''}</small></div></div>
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('PR 状态', 'PR state'))}</strong><small>${escapeHtml(verification.prState)} · ${escapeHtml(verification.mergeableState)} · ${escapeHtml(verification.combinedStatus)}</small></div></div>
-        </div>`}
-    ${pathGuard === null
-      ? ''
-      : `<h3 class="mt-16">${escapeHtml(t('路径守卫', 'Path guard'))}</h3>
-        <p class="fine">${pathGuard.ok
-          ? escapeHtml(t('改动文件都在允许范围内。', 'All changed files are within the allowed paths.'))
-          : pathGuard.truncated === true
-            ? escapeHtml(t(`已检查 ${formatCount(pathGuard.checkedFiles)} / 报告 ${formatCount(pathGuard.reportedFiles)} 个文件`, `Checked ${formatCount(pathGuard.checkedFiles)} / ${formatCount(pathGuard.reportedFiles)} reported files`))
-            : escapeHtml(t(`${pathGuard.violations.length} 个文件违反路径约束。`, `${pathGuard.violations.length} file(s) violate the path constraints.`))}${pathGuard.allow.length === 0 && pathGuard.deny.length === 0 ? ` · ${escapeHtml(t('未设置约束', 'no constraints set'))}` : ''}</p>
-        ${pathGuard.violations.length === 0 ? '' : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('文件', 'File'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th></tr></thead><tbody>${pathGuard.violations.map((violation) => `<tr><td><code>${escapeHtml(violation.file)}</code></td><td>${escapeHtml(violation.reason === 'denied' ? t('命中禁止路径', 'Denied path') : t('不在允许路径', 'Not allowed'))}</td></tr>`).join('')}</tbody></table></div>`}`}
-    ${adversarial === null ? '' : `<h3 class="mt-16">${escapeHtml(t('独立对抗式审核', 'Independent adversarial review'))}</h3>
-      <p class="fine" data-adversarial>${escapeHtml(adversarialText(adversarial))}${adversarial.model === null ? '' : ` · ${escapeHtml(t('模型', 'Model'))} ${escapeHtml(adversarial.model)}`}${adversarial.promptHash === null ? '' : ` · ${escapeHtml(t('提示哈希', 'Prompt hash'))} <code>${escapeHtml(adversarial.promptHash.slice(0, 12))}</code>`}</p>`}
-  </section>`}
   <section class="card">
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
     <p class="fine" data-trace-token="${escapeHtml(job.id)}">${escapeHtml(t('日志检索令牌', 'Log search token'))}: <code>${escapeHtml(job.id)}</code> — ${escapeHtml(t('这个任务的每条日志都用 trace 记着它；在日志里检索这个值，就能一次拿到整个任务的全部行。', 'every line this job writes carries it under trace; search the logs for it and the whole job comes back in one pass.'))}</p>

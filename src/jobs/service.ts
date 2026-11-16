@@ -42,7 +42,7 @@ import {
   type AdversarialReview,
   type AdversarialVerdict,
 } from '../lib/adversarialReview.js'
-import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
+import { evaluateTestEvidence, parseVerification, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
 import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
@@ -2491,6 +2491,20 @@ export class Jobs {
         return { ok: false, message: 'PR 已合并。', alreadyMerged: true }
       }
       if (pr.state !== 'open' || pr.draft) return { ok: false, message: 'PR 不是 open 状态。' }
+      // #264: a PASS is evidence about one commit. When the pull request moved
+      // after the last verification, the stored PASS describes a tip nobody can
+      // merge, so it is refused here instead of being reused as a green light.
+      // Re-read the row: `verifyAndMaybeMerge` verifies and then hands the
+      // snapshot it read before that write to this call, so the snapshot's
+      // verification still names the previous tip.
+      const verified = parseVerification((this.store.getJob(job.id) ?? job).verification_json)
+      if (verified !== null && verified.sha !== pr.headSha) {
+        const from = verified.sha.slice(0, 12)
+        const to = pr.headSha.slice(0, 12)
+        this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: stale verification ${from} -> ${to}`)
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR 在证据核实后又有新提交（${from} → ${to}），过期的 PASS 不合并；先重新核实。`)
+        return { ok: false, message: `证据在 ${from} 核实，PR 现在已经到 ${to}；这是过期的 PASS，先重新核实再合并。` }
+      }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
       this.store.updateJob(job.id, { path_guard_json: JSON.stringify(guard) })
       const changedRules = await this.ruleChangePaths(job, client, owner, name, number, pr.changedFiles, guard.files)
@@ -2508,7 +2522,9 @@ export class Jobs {
       }
       if (pr.mergeable === false || ['blocked', 'dirty', 'behind', 'unknown'].includes(pr.mergeableState)) {
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: PR ${number} is ${pr.mergeableState}`)
-        return { ok: false, message: `PR 当前不可合并（${pr.mergeableState}）。` }
+        // #264: a base that moved is its own refusal with its own next step; the
+        // bare state name left the maintainer guessing what to do about it.
+        return { ok: false, message: pr.mergeableState === 'behind' ? 'PR 的目标分支在核实后前进了（behind）；先 rebase 到最新目标分支，再重新核实。' : `PR 当前不可合并（${pr.mergeableState}）。` }
       }
       const checks = await client.listCheckRuns(owner, name, pr.headSha)
       if (checks.length === 0) {

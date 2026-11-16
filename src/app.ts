@@ -2282,13 +2282,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       commands[`work-scope:${item.id}`] = fields()
       commands[`work-verify:${item.id}`] = fields()
     }
-    // #540 slice 6: each delivery row's merge button carries its own job
-    // revision and key, so a double click replays one receipt and a page
-    // rendered before the job moved on conflicts instead of merging blind.
+    // #264: the merge control moved to the job page's review card, so the
+    // delivery table no longer mints a per-row merge command.
     const prJobs = store.listPrJobsForRepo(repo.id, 10)
-    for (const prJob of prJobs) {
-      commands[`merge:${prJob.id}`] = { revision: management.revisionOf('job', prJob.id), idempotencyKey: randomId('cmd') }
-    }
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -3487,6 +3483,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       execute: { revision: management.revisionOf('project', repo.id), idempotencyKey: randomId('cmd') },
       resume: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       retry: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      // #264: the merge control lives on the job page now, so it renders the
+      // same revision/key pair the delivery table used to carry.
+      merge: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,
     }))
