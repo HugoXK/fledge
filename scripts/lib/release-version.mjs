@@ -4,7 +4,7 @@
 //   first release of an ISO week  -> bump the minor  (0.3.4 -> 0.4.0)
 //   later release in the same week -> bump the patch (0.3.4 -> 0.3.5)
 //
-// The weeks are UTC weeks, because the nightly runs at 14:30 UTC and the tag is
+// The weeks are UTC weeks, because the release runs at 02:00 UTC and the tag is
 // created a few hours later, still on the same UTC day. Using the local date
 // would move a late Monday release into Tuesday and make the next Monday look
 // like the same week.

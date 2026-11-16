@@ -30,7 +30,7 @@ correct fix, opens one pull request, and reports back. Fledge never pushes to th
 default branch, does not merge by default, and never runs a user repository itself.
 
 > **Status:** `v0.4.0` is the latest release (2026-11-16) at <https://fledge.hugoxk.online/>.
-> A weekly minor release goes out on Monday night; later releases in the same week are patch releases.
+> A weekly minor release goes out on Monday morning (10:00 Asia/Shanghai); later releases in the same week are patch releases.
 > Login is GitHub OAuth: the production OAuth App is configured and the token login is disabled. Documentation is at
 > <https://fledge-docs.hugoxk.online/docs/>; the project homepage and guide are at
 > <https://hugoxk.online/fledge/>.
@@ -140,7 +140,7 @@ own improvements. See [docs/decisions/0001-name.md](docs/decisions/0001-name.md)
 - **Review at the tip**: the required `review-gate` check reads the newest verdict at the exact head SHA. A T2/T3 change needs a PASS with a real `Ran:` command from a reviewer identity other than the tip author; a new commit voids the PASS.
 - **Risk tiers from the diff**: T0/T1 merge on green `ci-ok`; T2/T3 need the tip PASS. The tier is computed from every changed path, never from a label.
 - **Opt-in auto-merge**: only a maintainer can enable it. Fledge independently verifies the PR is open and mergeable, every required check is green, no review requests changes, the path guard and test evidence pass, and the newest iterate job succeeded before it squash-merges.
-- **Mechanical releases**: the nightly workflow plans the next version, pushes one `release/v<version>` branch and opens one mechanical pull request. The first release of an ISO week bumps the minor; later releases in that week bump the patch. After merge, the tag job creates the annotated tag and dispatches the publish run; the release image carries an SBOM and a build-provenance attestation.
+- **Mechanical releases**: the daily workflow plans the next version, pushes one `release/v<version>` branch and opens one mechanical pull request. The first release of an ISO week bumps the minor; later releases in that week bump the patch. After merge, the tag job creates the annotated tag and dispatches the publish run; the release image carries an SBOM and a build-provenance attestation.
 - **Duplicate-work preflight**: before an iterate job opens a branch, it checks the upstream open PRs and refuses work already covered by an open pull request.
 
 ### Operations
@@ -214,7 +214,7 @@ The user guide and reference live at
 
 ## Releases and docs
 
-The nightly release routine runs at **22:30 Asia/Shanghai**. It plans the next
+The daily release routine runs at **10:00 Asia/Shanghai**. It plans the next
 version, pushes `release/v<version>` and opens one mechanical pull request. The
 first release of an ISO week bumps the minor; every later release in the same
 week bumps the patch. After the release PR merges, the tag job writes the

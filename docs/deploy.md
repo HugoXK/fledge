@@ -256,24 +256,24 @@ not a multi-writer cluster.
 ### Daily release pull request
 
 The version follows the weekly cadence: the first release of an ISO week (the
-Monday 22:30 Asia/Shanghai run) bumps the minor (`0.3.4 -> 0.4.0`); every later
+Monday 10:00 Asia/Shanghai run) bumps the minor (`0.3.4 -> 0.4.0`); every later
 release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
 the last tag's commit time and the workflow's run time; if either is unreadable
 it falls back to the minor, which is the first-release behaviour.
 
 #### Reliable slot trigger
 
-GitHub's `schedule` event is best-effort: on 2026-11-14 the `14:30Z` slot
+GitHub's `schedule` event is best-effort: on 2026-11-14 the then-`14:30Z` slot
 produced a run at `19:24Z`. `scripts/trigger-release.mjs` is the external
-trigger. A host cron or a Cloudflare Worker calls it at `14:30Z` (22:30
+trigger. A host cron or a Cloudflare Worker calls it at `02:00Z` (10:00
 Asia/Shanghai) with `GITHUB_REPOSITORY` and an Actions-write `GITHUB_TOKEN` in a
 `0600` env file; the script calls the `daily-release.yml` workflow_dispatch with
-`dry_run=false` and never prints the token. GitHub's `schedule` and the `15:30Z`
+`dry_run=false` and never prints the token. GitHub's `schedule` and the `03:00Z`
 catch-up stay as the fallback, and `release-trigger` makes a late run a no-op
 once the slot is filled. Install it only on a host whose clock is trustworthy
 (see #758) or on an NTP-backed scheduler; the example is
 `deploy/release-trigger.cron.example`. Raise one alert if no plan exists by
-`15:00Z`.
+`02:30Z`.
 
 A release that changes user-facing behaviour updates `README.md`,
 `README.zh.md` and the relevant `docs/` page in the same pull request. The
@@ -300,7 +300,7 @@ regenerated `mock/` with the release work or its follow-up docs pull request.
 hand and do not add a per-PR drift gate. The snapshot is the UI at the release
 tip, not a second application.
 
-The nightly workflow pushes `release/v<next>` and then opens exactly one release
+The daily workflow pushes `release/v<next>` and then opens exactly one release
 pull request for it, because a pull request opened with `GITHUB_TOKEN` starts no
 `pull_request` workflow and would never get a `ci-ok`. The opener uses a real
 token for that reason. `.github/workflows/ci-watchdog.yml` is the scheduled
@@ -318,13 +318,13 @@ account — never the Reviewer's `HugoXK-bot` account — scoped to this reposit
 alone, with `Contents: read` and `Pull requests: write` — it does not need push,
 because the workflow pushes `release/v<next>` before the opener runs.
 
-The environment must carry **no required reviewers**: the nightly runs
+The environment must carry **no required reviewers**: the routine runs
 unattended, and a protection rule blocks it exactly like a missing secret. Order
 matters too — the environment and its secret have to exist before the workflow
 change that names it merges, because a job that declares an environment reads
 repository secrets too until an environment secret of the same name overrides
-them. Since the repository secret is deleted in that same owner step, a nightly
-that runs between the two would fail the opener with `RELEASE_OPEN_TOKEN is not
+them. Since the repository secret is deleted in that same owner step, a daily run
+that starts between the two would fail the opener with `RELEASE_OPEN_TOKEN is not
 set`: loudly, before anything is pushed, and with nothing posted on #80. The opener reads
 `GET /user` and
 refuses a credential whose login is the review policy's `requiredPass`, so the
@@ -332,12 +332,12 @@ reviewer account cannot open the release pull request even if it were installed
 by mistake. The token reaches the step through the environment only; it is never
 an argument, an output or a log line.
 
-A missing secret is a red precondition, not a reported night: the run fails
+A missing secret is a red precondition, not a reported run: the run fails
 before the branch is pushed and names `RELEASE_OPEN_TOKEN`, and because nothing
 was pushed it says nothing on #80. A refused opener — the branch at another
 commit, `main` moved since the plan, a path outside the mechanical set, the
 version or changelog check failing in the fetched tree — is a red run with the
-reason in the job summary and on #80. Dry runs and nights that pushed nothing
+reason in the job summary and on #80. Dry runs and runs that pushed nothing
 never reach the write path.
 
 A manual run is still possible and uses the same tool:

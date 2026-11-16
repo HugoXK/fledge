@@ -70,9 +70,9 @@ function permissionBlock(job: string): Record<string, string> {
   return Object.fromEntries(entries)
 }
 
-test('the schedule is 22:30 Asia/Shanghai (14:30 UTC) with a 15:30Z catch-up, a manual dispatch defaults to a dry run, and a push is filtered to release-shaped paths', () => {
-  assert.match(daily, /schedule:\s*\n(?:.*\n)*?\s*- cron: '30 14 \* \* \*'/)
-  assert.match(daily, /schedule:\s*\n(?:.*\n)*?\s*- cron: '30 15 \* \* \*'/)
+test('the schedule is 10:00 Asia/Shanghai (02:00 UTC) with a 03:00Z catch-up, a manual dispatch defaults to a dry run, and a push is filtered to release-shaped paths', () => {
+  assert.match(daily, /schedule:\s*\n(?:.*\n)*?\s*- cron: '0 2 \* \* \*'/)
+  assert.match(daily, /schedule:\s*\n(?:.*\n)*?\s*- cron: '0 3 \* \* \*'/)
   assert.match(daily, /workflow_dispatch:/)
   assert.match(daily, /dry_run:/)
   assert.match(daily, /default: true/)
