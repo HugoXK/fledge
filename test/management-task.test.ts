@@ -268,7 +268,7 @@ test('a create refusal is recorded with its code so the banner can translate it'
 
 test('the catalog closes over the task commands and the settings command', async () => {
   const { operationNames } = await import('../src/management/catalog.js')
-  assert.deepEqual(operationNames().sort(), ['repo.update', 'task.cancel', 'task.create', 'task.pause', 'task.resume', 'task.retry'])
+  assert.deepEqual(operationNames().sort(), ['repo.update', 'task.cancel', 'task.create', 'task.merge', 'task.pause', 'task.resume', 'task.retry'])
 })
 
 test('a caller cannot put an identity field into a create command', async () => {

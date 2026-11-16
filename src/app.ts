@@ -2197,6 +2197,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       commands[`work-scope:${item.id}`] = fields()
       commands[`work-verify:${item.id}`] = fields()
     }
+    // #540 slice 6: each delivery row's merge button carries its own job
+    // revision and key, so a double click replays one receipt and a page
+    // rendered before the job moved on conflicts instead of merging blind.
+    const prJobs = store.listPrJobsForRepo(repo.id, 10)
+    for (const prJob of prJobs) {
+      commands[`merge:${prJob.id}`] = { revision: management.revisionOf('job', prJob.id), idempotencyKey: randomId('cmd') }
+    }
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -2214,7 +2221,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         },
         jobs: store.listJobsPageForRepo(repo.id, 10, (jobsPage - 1) * 10),
         queued: store.listQueuedJobs(),
-        prJobs: store.listPrJobsForRepo(repo.id, 10),
+        prJobs,
         workItems,
         // #379: the repository page lists every state the ledger can hold. These
         // are the ids jobs reported, not GitHub's alert store.
@@ -3616,18 +3623,64 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
   })
 
+  // #540 slice 6: the merge button is a command whose durable effect is on
+  // GitHub. The gates and the merge call stay in `Jobs.tryMerge`; the route
+  // resolves the actor, the job and the revision the page rendered, and turns the
+  // receipt into a redirect. A lost answer leaves the receipt `unknown`, and
+  // resubmitting the same form reconciles against the pull request first.
   app.post('/repos/:id/jobs/:jobId/merge', async (request, reply) => {
     // #708: expensive — a merge writes to the upstream repository.
     if (!limits.take('expensive', `job-merge:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
-    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以合并 PR。')}`)
-    const result = await jobs.manualMerge(repo, job)
-    store.audit(viewer.user.id, 'job.merge_requested', `${job.id}: ${result.ok ? 'merged' : (result.message ?? 'failed')}`)
-    const key = result.ok ? 'notice' : 'error'
-    const message = result.ok ? 'PR 已合并。' : (result.message ?? '合并失败。')
-    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?${key}=${encodeURIComponent(message)}`)
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    const t = translator(request.locale ?? 'zh')
+    const today = async (): Promise<{ notice: string } | { error: string }> => {
+      if (repo.repo_role !== 'maintainer') return { error: t('只有 maintainer 可以合并 PR。', 'Only a maintainer can merge a pull request.') }
+      const result = await jobs.manualMerge(repo, job)
+      const merged = result.ok || result.alreadyMerged === true
+      store.audit(viewer.user.id, 'job.merge_requested', `${job.id}: ${merged ? 'merged' : (result.message ?? 'failed')}`)
+      return merged ? { notice: t('PR 已合并。', 'The pull request is merged.') } : { error: result.message ?? t('合并失败。', 'The merge failed.') }
+    }
+    const answer = (result: { notice: string } | { error: string }) => ('notice' in result
+      ? reply.redirect(`${back}?notice=${encodeURIComponent(result.notice)}`)
+      : reply.redirect(`${back}?error=${encodeURIComponent(result.error)}`))
+
+    if (config.managementService === 'off') return answer(await today())
+
+    const parts = commandParts(form(request), management.revisionOf('job', job.id))
+    const actor = managementActor({ store, userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const envelope = {
+      operation: 'task.merge',
+      target: { projectId: repo.id, jobId: job.id },
+      arguments: {},
+      expectedRevision: parts.expectedRevision,
+      idempotencyKey: parts.idempotencyKey,
+    }
+
+    if (config.managementService === 'shadow') {
+      const begun = management.begin(actor, envelope)
+      const result = await today()
+      // The receipt records what the contract would have done with the same form;
+      // a replay never rewrites a receipt that already answered.
+      if (begun.ok && !begun.replayed) {
+        management.settle(begun.receipt.id, 'notice' in result
+          ? { ok: true, result: { jobId: job.id, shadow: true } }
+          : { ok: false, code: 'job_not_merged', message: 'the route refused the merge' })
+      }
+      return answer(result)
+    }
+
+    const outcome = await management.run(actor, envelope)
+    if (outcome.ok) return answer({ notice: t('PR 已合并。', 'The pull request is merged.') })
+    // A gate refusal is not a management code: its sentence is the reason the
+    // service wrote (a stale check, a missing approval), which is what the job
+    // page showed before this slice.
+    const sentence = outcome.code === 'job_not_merged'
+      ? (outcome.message === '' ? t('合并失败。', 'The merge failed.') : outcome.message)
+      : managementFailure(t, outcome, t('合并失败。', 'The merge failed.'))
+    return reply.redirect(`${back}?error=${encodeURIComponent(sentence)}&code=${outcome.code}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/approve-plan', async (request, reply) => {

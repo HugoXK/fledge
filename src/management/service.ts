@@ -40,6 +40,7 @@ export type ManagementCode =
   | 'job_not_pausable'
   | 'job_not_resumable'
   | 'job_not_retryable'
+  | 'job_not_merged'
   | 'task_not_queued'
   | 'invalid_arguments'
   | 'work_item_not_found'
@@ -306,7 +307,7 @@ export class ManagementService {
     }
     if (verdict.state === 'still-unknown') return this.unknownOutcome(receipt, `the effect of ${receipt.operation} is still unknown`)
     if (verdict.state === 'applied') {
-      return this.settleReconciled(receipt, operation, target, verdict.result ?? {})
+      return this.settleReconciled(receipt, operation, target, verdict.result ?? {}, verdict.settle)
     }
     // Absent: the effect provably did not happen, so this is the one case where
     // the same command may run again.
@@ -326,10 +327,14 @@ export class ManagementService {
   // The probe found the effect already there. The receipt records the answer but
   // does not bump the revision: whoever wrote the effect already moved it, and a
   // second bump would fence a page that read the real change.
-  private settleReconciled(receipt: ManagementCommandRow, operation: Operation, target: CommandTarget, result: Record<string, unknown>): CommandOutcome {
+  private settleReconciled(receipt: ManagementCommandRow, operation: Operation, target: CommandTarget, result: Record<string, unknown>, settle?: () => void): CommandOutcome {
     const merged = { ...result, reconciled: true }
     const resourceId = String(target[operation.revisionTarget] ?? '')
     this.store.transaction(() => {
+      // #540 slice 6: an effect that happened remotely may still owe its local
+      // record. The settle runs here, in the same transaction as the receipt, so
+      // a crash cannot leave the merge recorded with the receipt still unknown.
+      settle?.()
       const revision = this.store.revisionOf(operation.revisionType, resourceId)
       this.store.updateCommandReceipt(receipt.id, {
         status: 'succeeded',

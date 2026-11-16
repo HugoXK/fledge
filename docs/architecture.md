@@ -2281,6 +2281,25 @@ effect is what moved the revision), `absent` resends exactly once under the same
 revision fence, and `still-unknown` — or an operation with no hook at all —
 answers `management_unknown` and writes nothing. Nothing is resent blind.
 
+`task.merge` (#540 slice 6) is the first command whose durable effect is not in
+SQLite: GitHub performs the merge. The gates and the merge call stay in
+`Jobs.tryMerge`, which the auto-merge path uses too, so the two paths cannot
+disagree about what may merge. The operation calls `Jobs.manualMerge` with the
+transport failure rethrown, which is what turns a lost answer into an `unknown`
+receipt instead of a refusal. The stable marker is the remote pull request, read
+back by `Jobs.probePullRequestMerged`: `merged` settles the receipt with
+`reconciled: true`, and the verdict's `settle` callback writes the work item, the
+PR state, the `job.manually_merged` audit row and the job event that the lost
+answer skipped — inside the receipt transaction, exactly where `commit` runs on
+the accepted path. The merge already moved the revision, so the settle does not
+bump it. A probe that finds the pull request not merged proves the effect absent
+and the command runs once more under the same fence. A fresh key that finds the
+pull request already merged is a success (`alreadyMerged`), not the old failure
+sentence, and `recordMerge` skips the counter, audit and event when the merge is
+already recorded. Merging requires the new `job.merge` capability, held by
+`maintainer` only; `release.manage` is also maintainer-only, but cutting a
+release is not merging this pull request.
+
 `ManagementService.markUnknown` is for an adapter that learns about a lost
 response itself, such as a future API or chat channel: only the principal on the
 receipt may call it, it applies only while the receipt is still `accepted`, and a

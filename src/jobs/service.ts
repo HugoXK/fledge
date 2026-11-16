@@ -2343,7 +2343,7 @@ export class Jobs {
     return { block, reused: false, refusal: null }
   }
 
-  private async tryMerge(job: JobRow, prUrl: string, manual: boolean): Promise<{ ok: boolean; message?: string }> {
+  private async tryMerge(job: JobRow, prUrl: string, manual: boolean, rethrowTransport = false): Promise<{ ok: boolean; message?: string; alreadyMerged?: boolean }> {
     if (job.kind !== 'iterate') return { ok: false, message: '只有 iterate 任务可以合并。' }
     let repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, message: '仓库不存在。' }
@@ -2423,8 +2423,12 @@ export class Jobs {
         }
       }
       if (pr.merged) {
+        // #540 slice 6: a merge command that finds the pull request already
+        // merged did not fail — the effect it wanted is there. The caller records
+        // the local rows the lost answer skipped; the auto-merge path keeps
+        // treating it as "nothing to do" and is unchanged.
         this.store.updateJobsPrState(prUrl, 'merged')
-        return { ok: false, message: 'PR 已合并。' }
+        return { ok: false, message: 'PR 已合并。', alreadyMerged: true }
       }
       if (pr.state !== 'open' || pr.draft) return { ok: false, message: 'PR 不是 open 状态。' }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
@@ -2534,15 +2538,7 @@ export class Jobs {
       const requestedMethod = repo.merge_method === 'merge' || repo.merge_method === 'rebase' ? repo.merge_method : 'squash'
       const merged = await client.mergePullRequest(owner, name, number, { sha: pr.headSha, mergeMethod: requestedMethod })
       if (merged.merged) {
-        const workItem = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
-        if (workItem !== undefined) {
-          this.store.updateWorkItem(workItem.id, { state: 'merged', pr_state: 'merged', merged_at: nowIso(), merge_commit: merged.sha ?? null })
-        }
-        incCounter('fledge_merges_total', { result: 'merged' }, 1, 'Pull request merge results')
-        this.store.updateJobsPrState(prUrl, 'merged')
-        this.store.audit(job.user_id, manual ? 'job.manually_merged' : 'job.auto_merged', `${job.id}: PR ${number} ${merged.sha ?? ''}`)
-        this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
-        this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.merged', step: `pr=${number}`, meta: merged.sha ?? null })
+        this.recordMerge(job, merged.sha, manual)
         return { ok: true, message: '已合并。' }
       }
       this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: ${merged.message ?? 'merge rejected'}`)
@@ -2550,8 +2546,46 @@ export class Jobs {
     } catch (error) {
       this.store.audit(job.user_id, 'job.merge_failed', `${job.id}: ${String(error).slice(0, 300)}`)
       log.warn('merge failed', { trace: job.id, pr: number, error: String(error) })
+      // #540 slice 6: a transport failure may have crossed the commit boundary —
+      // GitHub can have merged while the answer was lost. The command path needs
+      // the error to reach the service so the receipt becomes `unknown`; every
+      // other caller keeps today's refusal sentence.
+      if (rethrowTransport) throw error
       return { ok: false, message: error instanceof Error ? error.message : String(error) }
     }
+  }
+
+  // #540 slice 6: the local record of a merged pull request, in one place so the
+  // auto-merge path, the console command and a reconciled `unknown` write the
+  // same rows. `already` is read before the write: a merge recorded by this job's
+  // own answer or by the webhook is not counted or announced a second time.
+  recordMerge(job: JobRow, sha: string | undefined, manual = true): void {
+    const prUrl = job.pr_url
+    if (prUrl === null) return
+    const number = /\/pull\/(\d+)/.exec(prUrl)?.[1] ?? ''
+    const already = this.store.getJob(job.id)?.pr_state === 'merged'
+    const workItem = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
+    if (workItem !== undefined) {
+      this.store.updateWorkItem(workItem.id, { state: 'merged', pr_state: 'merged', merged_at: nowIso(), merge_commit: sha ?? null })
+    }
+    this.store.updateJobsPrState(prUrl, 'merged')
+    if (already) return
+    incCounter('fledge_merges_total', { result: 'merged' }, 1, 'Pull request merge results')
+    this.store.audit(job.user_id, manual ? 'job.manually_merged' : 'job.auto_merged', `${job.id}: PR ${number} ${sha ?? ''}`)
+    this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
+    this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.merged', step: `pr=${number}`, meta: sha ?? null })
+  }
+
+  // #540 slice 6: the reconcile probe for `task.merge`. It reads the one remote
+  // fact the command needs — whether the pull request is merged — and never calls
+  // the merge endpoint. A probe that throws leaves the receipt unknown.
+  async probePullRequestMerged(repo: RepoRow, job: JobRow): Promise<{ merged: boolean; sha?: string }> {
+    if (job.pr_url === null) return { merged: false }
+    const parsed = parsePrUrl(repo, job.pr_url, this.config.github.apiBase)
+    if (!parsed.ok) return { merged: false }
+    const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+    const pr = await new GithubClient(token, this.config.github.apiBase).getPullRequest(parsed.ref.owner, parsed.ref.name, parsed.ref.number)
+    return { merged: pr.merged, ...(pr.mergeCommitSha === undefined ? {} : { sha: pr.mergeCommitSha }) }
   }
 
   private async verifyAndMaybeMerge(jobId: string): Promise<void> {
@@ -2616,10 +2650,10 @@ export class Jobs {
     return { merged, skipped }
   }
 
-  async manualMerge(repo: RepoRow, job: JobRow): Promise<{ ok: boolean; message?: string }> {
+  async manualMerge(repo: RepoRow, job: JobRow, options: { rethrowTransport?: boolean } = {}): Promise<{ ok: boolean; message?: string; alreadyMerged?: boolean }> {
     if (job.repo_id !== repo.id) return { ok: false, message: '任务不属于这个仓库。' }
     if (job.pr_url === null) return { ok: false, message: '这个任务没有 PR。' }
-    return this.tryMerge(job, job.pr_url, true)
+    return this.tryMerge(job, job.pr_url, true, options.rethrowTransport === true)
   }
 
   private async resolveHeadSha(repo: RepoRow, prUrl: string): Promise<string | undefined> {

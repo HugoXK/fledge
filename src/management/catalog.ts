@@ -57,7 +57,11 @@ export interface OperationResult {
 // it provably did not happen, so resending is safe; `still-unknown` means the
 // probe itself could not decide, and the receipt has to stay `unknown`.
 export type ReconcileVerdict =
-  | { state: 'applied'; result?: Record<string, unknown> }
+  // `settle` is for an effect whose local record depends on the external answer:
+  // a merge that GitHub performed but whose response was lost left the work item,
+  // the PR state and the audit row unwritten. The service runs it inside the
+  // receipt transaction, exactly where `commit` runs on the accepted path.
+  | { state: 'applied'; result?: Record<string, unknown>; settle?: () => void }
   | { state: 'absent' }
   | { state: 'still-unknown' }
 
@@ -354,9 +358,60 @@ const repoUpdate: Operation = {
   },
 }
 
+// #540 slice 6: the console merge button, whose durable effect is not in SQLite.
+// The gates and the merge call stay in `Jobs.tryMerge`, which the auto-merge path
+// uses too; this operation only names the command. A transport failure is
+// rethrown so the receipt becomes `unknown`, and the probe reads the pull request
+// back before anything is resent.
+const taskMerge: Operation = {
+  kind: 'command',
+  capabilities: ['job.merge'],
+  requiredTarget: ['projectId', 'jobId'],
+  revisionTarget: 'jobId',
+  revisionType: 'job',
+  async execute(context, target) {
+    const repo = context.store.getRepo(target.projectId ?? '')
+    if (repo === undefined) return { status: 'failed', errorCode: 'project_not_found', errorMessage: 'the project does not exist' }
+    const job = context.store.getJob(target.jobId ?? '')
+    if (job === undefined || job.repo_id !== repo.id) return { status: 'failed', errorCode: 'job_not_found', errorMessage: 'the job does not exist in this project' }
+    const result = await context.jobs.manualMerge(repo, job, { rethrowTransport: true })
+    if (!result.ok) {
+      // A fresh key after a merge that landed elsewhere is not a failure: the
+      // effect this command wanted is there. The commit writes the local rows the
+      // earlier attempt may have skipped, and `recordMerge` keeps it idempotent.
+      if (result.alreadyMerged === true) {
+        return {
+          status: 'succeeded',
+          result: { jobId: job.id, merged: true, alreadyMerged: true },
+          commit: () => context.jobs.recordMerge(job, undefined),
+        }
+      }
+      return { status: 'failed', errorCode: 'job_not_merged', errorMessage: result.message ?? 'the pull request was not merged' }
+    }
+    return { status: 'succeeded', result: { jobId: job.id, merged: true } }
+  },
+  // The stable marker is the remote pull request, read back. `merged` means the
+  // effect happened whoever performed it, and the settle writes the local record
+  // the lost answer skipped; anything else proves the merge did not happen, so a
+  // resend is safe.
+  async reconcile(context, target) {
+    const repo = context.store.getRepo(target.projectId ?? '')
+    const job = context.store.getJob(target.jobId ?? '')
+    if (repo === undefined || job === undefined) return { state: 'applied', result: { jobId: target.jobId ?? '', reconciled: true } }
+    const probe = await context.jobs.probePullRequestMerged(repo, job)
+    if (!probe.merged) return { state: 'absent' }
+    return {
+      state: 'applied',
+      result: { jobId: job.id, merged: true, ...(probe.sha === undefined ? {} : { sha: probe.sha }) },
+      settle: () => context.jobs.recordMerge(job, probe.sha),
+    }
+  },
+}
+
 export const OPERATIONS: Readonly<Record<string, Operation>> = Object.freeze({
   'repo.update': repoUpdate,
   'task.cancel': taskCancel,
+  'task.merge': taskMerge,
   'task.pause': taskPause,
   'task.create': taskCreate,
   'task.resume': taskResume,
