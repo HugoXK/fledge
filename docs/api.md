@@ -853,6 +853,21 @@ against the same row, and
 repeats it, then redirects to `?release=1&checked=<message>`. The check may
 prepare a draft Release; it never publishes, reruns, deletes or moves anything.
 
+The draft body is built from the release range (#546 slice 3), not from a fixed
+sentence: `compareReleaseRange` reads `GET /compare/{previous tag}...{target SHA}`
+for its commits and `listMergedPullRequestsSince` supplies the merged pull
+requests, each carrying the `merge_commit_sha` the range is matched against. A
+pull request counts only when that merge commit is in the compared commits, so a
+pull request merged before the previous tag is absent however recent its merge
+date looks; its merge commit is then not printed again as a bare commit, so every
+source appears exactly once. `total_commits` greater than the returned commits,
+or a pull-request walk that hit its page cap, marks the notes partial and the body
+says so instead of describing a smaller release. The range is read only at the
+moment a draft is about to be written: a running, failed or already-released run
+costs no compare, and a failed read keeps the placeholder body rather than losing
+the Release. The exact sources are stored in `repo_releases.notes_source_json` and
+the repository page lists them with their links.
+
 ### `GET /repos/:id/release-readiness`
 
 Owner only; no CSRF, because nothing is written. It answers whether a connected
@@ -898,4 +913,5 @@ race stays `tag_exists`; no upstream GitHub body text reaches the page. The
 outcome travels to the page as a one-shot flash — "tag created" or the refusal —
 and never as a query string. Nothing else is written: no Release object, no draft
 notes, no workflow dispatch and no token beyond the repository's installation
-token. Draft notes and the Release are a later slice of #546.
+token. The draft body's range notes are slice 3 of #546 and are written by the
+tracking route above, not here.

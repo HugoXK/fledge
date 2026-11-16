@@ -1632,6 +1632,7 @@ CREATE TABLE IF NOT EXISTS repo_releases (
   draft_url TEXT,
   external_release_id TEXT,
   last_checked_at TEXT,
+  notes_source_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(repo_id, tag_name)
@@ -2210,6 +2211,8 @@ export interface ReleaseRow {
   draft_url: string | null
   external_release_id: string | null
   last_checked_at: string | null
+  /** #546 slice 3: the exact sources the draft notes were built from. */
+  notes_source_json: string | null
   created_at: string
   updated_at: string
 }
@@ -2584,6 +2587,7 @@ export class Store {
       ['draft_url', 'TEXT'],
       ['external_release_id', 'TEXT'],
       ['last_checked_at', 'TEXT'],
+      ['notes_source_json', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE repo_releases ADD COLUMN ${name} ${type}`)
@@ -3837,6 +3841,14 @@ export class Store {
       nowIso(),
       id,
     )
+    return this.releaseById(id)
+  }
+
+  // #546 slice 3: the sources are written beside the draft pointer, in the same
+  // reconcile that created it, so the page can show what the body was built from
+  // without reading GitHub again. A row with no notes keeps `NULL`.
+  updateReleaseNotes(id: string, notesSourceJson: string | null): ReleaseRow | undefined {
+    this.run('UPDATE repo_releases SET notes_source_json = ?, updated_at = ? WHERE id = ?', notesSourceJson, nowIso(), id)
     return this.releaseById(id)
   }
 

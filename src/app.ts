@@ -10,6 +10,7 @@ import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
 import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
+import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
 import { readReleaseReadiness } from './releases/readiness.js'
 import { releaseReadinessPage } from './views/releaseReadiness.js'
 import { GithubOAuth } from './auth/github.js'
@@ -2447,11 +2448,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         targetSha: plan.targetSha,
         prerelease: plan.prerelease,
         draftReleaseId: recorded.draft_release_id === null ? null : Number(recorded.draft_release_id),
+        // #546 slice 3: the draft body is the release range. A read failure keeps
+        // the draft with its placeholder body instead of losing the Release.
+        notes: async () => {
+          try {
+            return await collectReleaseNotes(client, { owner, name, previousTag: plan.previousTag, targetSha: plan.targetSha })
+          } catch (cause) {
+            log.warn('release notes range read failed', { repo: repo.id, tag: plan.tagName, error: String(cause) })
+            return null
+          }
+        },
       })
       store.updateReleaseTracking(recorded.id, trackingUpdate(tracked, {
         draftReleaseId: recorded.draft_release_id,
         draftUrl: recorded.draft_url,
       }))
+      if (tracked.status === 'draft_created' && tracked.notes !== null) {
+        store.updateReleaseNotes(recorded.id, releaseNotesSourceJson(tracked.notes))
+      }
     } catch (error) {
       log.warn('release run check after tag failed', { repo: repo.id, tag: plan.tagName, error: String(error) })
     }
@@ -2475,6 +2489,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const name = repo.upstream_name || repo.name
     const token = await repoGithubToken(repo, config, githubApp, store)
     const client = new GithubClient(token, config.github.apiBase)
+    // The range starts at the tag recorded when the tag was written; a stored
+    // value that no longer parses is treated as a first release rather than as an
+    // unreadable page, because the draft itself is still the deliverable.
+    const previousTag = (() => {
+      if (release.preflight_json === null) return null
+      try {
+        const parsed = JSON.parse(release.preflight_json) as { previousTag?: unknown }
+        return typeof parsed.previousTag === 'string' ? parsed.previousTag : null
+      } catch {
+        return null
+      }
+    })()
     let result: Awaited<ReturnType<typeof reconcileRelease>>
     try {
       result = await reconcileRelease(client, {
@@ -2484,6 +2510,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         targetSha: release.target_sha,
         prerelease: (parseVersion(release.version)?.prerelease.length ?? 0) > 0,
         draftReleaseId: release.draft_release_id === null ? null : Number(release.draft_release_id),
+        notes: async () => {
+          try {
+            return await collectReleaseNotes(client, { owner, name, previousTag, targetSha: release.target_sha })
+          } catch (cause) {
+            log.warn('release notes range read failed', { repo: repo.id, tag: release.tag_name, error: String(cause) })
+            return null
+          }
+        },
       })
     } catch (error) {
       log.warn('release run check failed', { repo: repo.id, tag: release.tag_name, error: String(error) })
@@ -2493,6 +2527,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       draftReleaseId: release.draft_release_id,
       draftUrl: release.draft_url,
     }))
+    if (result.status === 'draft_created' && result.notes !== null) {
+      store.updateReleaseNotes(release.id, releaseNotesSourceJson(result.notes))
+    }
     store.audit(viewer.user.id, 'release.checked', `${repo.id}: ${release.tag_name} ${result.status}`)
     return reply.redirect(`${back}&checked=${encodeURIComponent(result.message)}`)
   })

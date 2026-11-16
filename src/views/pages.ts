@@ -35,6 +35,7 @@ import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
+import { readReleaseNotesSources } from '../releases/notes.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
@@ -1924,7 +1925,14 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       const run = release.run_id === null
         ? ''
         : ` · run ${escapeHtml(release.run_id)}${release.conclusion === null ? '' : ` / ${escapeHtml(release.conclusion)}`}`
-      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span> <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
+      // #546 slice 3: the exact sources the draft body was built from. The page
+      // keeps them so a maintainer can check the release against what merged,
+      // with the same links the body carries, without opening GitHub.
+      const sources = readReleaseNotesSources(release.notes_source_json)
+      const sourceList = sources.length === 0
+        ? ''
+        : ` <details class="advanced-help"><summary>${escapeHtml(t(`发布说明来源 ${sources.length} 项`, `${sources.length} note source${sources.length === 1 ? '' : 's'}`))}</summary><ul class="list">${sources.map((source) => `<li><code>${escapeHtml(source.ref)}</code> <a class="link" href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.title)}</a></li>`).join('')}</ul></details>`
+      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span>${sourceList} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
     }).join('')}</ul>`}
   </section>`
   const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`

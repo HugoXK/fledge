@@ -1,5 +1,6 @@
 import { GithubError } from '../repos/github.js'
 import type { GithubReleaseInfo, GithubReleaseInput, WorkflowJobInfo, WorkflowRunInfo } from '../repos/github.js'
+import type { ReleaseNotes } from './notes.js'
 
 // #546 slice 3: follow the workflow a tag fires. Nothing here publishes a
 // Release, reruns a workflow, or moves a tag. A run is observed in bounded
@@ -31,13 +32,18 @@ export interface ReconcileReleaseInput {
   targetSha: string
   prerelease: boolean
   draftReleaseId: number | null
+  // #546 slice 3: the range is read only at the moment a draft is about to be
+  // written, so a run that is still going, failed, or already has a Release costs
+  // no commit-range read. `null` means the range could not be read and the draft
+  // keeps its placeholder body rather than losing the release to a failed read.
+  notes?: () => ReleaseNotes | null | Promise<ReleaseNotes | null>
 }
 
 export type ReleaseTrackingResult =
   | { status: 'run_missing'; message: string }
   | { status: 'running'; message: string; run: WorkflowRunInfo }
   | { status: 'run_failed'; message: string; run: WorkflowRunInfo; conclusion: string }
-  | { status: 'draft_created'; message: string; run: WorkflowRunInfo; release: GithubReleaseInfo }
+  | { status: 'draft_created'; message: string; run: WorkflowRunInfo; release: GithubReleaseInfo; notes: ReleaseNotes | null }
   | { status: 'draft_exists'; message: string; run: WorkflowRunInfo | null; release: GithubReleaseInfo | null }
   | { status: 'draft_published'; message: string; release: GithubReleaseInfo }
   | { status: 'external_release'; message: string; release: GithubReleaseInfo }
@@ -148,12 +154,16 @@ export async function reconcileRelease(
     }
   }
 
+  // The notes are read here, not earlier: only a run that finished green with
+  // every job agreeing reaches this point, so a failed or still-running release
+  // never spends the commit-range reads.
+  const notes = input.notes === undefined ? null : await input.notes()
   try {
     const release = await client.createRelease(input.owner, input.name, {
       tagName: input.tagName,
       targetCommitish: input.targetSha,
       name: input.tagName,
-      body: draftBody(input.tagName),
+      body: notes === null ? draftBody(input.tagName) : notes.body,
       prerelease: input.prerelease,
     })
     return {
@@ -161,6 +171,7 @@ export async function reconcileRelease(
       message: `created draft Release ${release.htmlUrl}`,
       run,
       release,
+      notes,
     }
   } catch (error) {
     // A 422 means a Release for this tag appeared between the read and the

@@ -2603,9 +2603,10 @@ deleted` sentence, so the race and the generic refusal do not merge.
 the tag object SHA, the target commit, the previous tag and the actor. The
 workflow-run slice adds its observation to that same row (additive columns, no
 second table): `run_id`, `run_attempt`, `status`, `conclusion`, `workflow_name`,
-`draft_release_id`, `draft_url`, `external_release_id` and `last_checked_at`.
-`release_sources` from the issue is deliberately not created yet: it belongs to
-the notes slice.
+`draft_release_id`, `draft_url`, `external_release_id`, `last_checked_at` and
+`notes_source_json`. `release_sources` from the issue is still not a table: the
+notes slice keeps its exact sources as one JSON column on the row they belong to,
+because a source only ever exists for that release and is written once.
 
 The read-only readiness view (`GET /repos/:id/release-readiness`, #546 slice 1)
 answers the same question before a version is typed: the latest SemVer tag
@@ -2634,8 +2635,8 @@ is never moved or deleted and a stale target costs a version rather than a retry
 a refused ref write (403/404) is `tag_scope_missing`, naming `Contents: write`
 instead of repeating GitHub's text. The route creates the annotated tag and its
 `repo_releases` row and stops there — observing the run and preparing a draft
-Release stay with `src/releases/tracking.ts` (slice 3), so the page's own write
-path cannot publish anything.
+Release stay with `src/releases/tracking.ts`, so the page's own write path cannot
+publish anything.
 
 ## Following the release workflow and preparing a draft
 
@@ -2672,5 +2673,31 @@ never turns the created tag into a refusal. The maintainer repeats it from the
 repository page with `POST /repos/:id/releases/:releaseId/check` (owner only,
 CSRF, maintainer role), which re-reads the run, writes the tracking columns and
 audits `release.checked`. The page shows the status, run id, conclusion, draft
-link or external marker, and the check button. Nothing in this slice publishes a
-Release, deletes or moves a tag, or starts a workflow.
+link or external marker, and the check button. Nothing here publishes a Release,
+deletes or moves a tag, or starts a workflow.
+
+## The draft body is the release range (#546 slice 3)
+
+`src/releases/notes.ts` builds the draft body from `[previous tag, target SHA]`
+and hands it to the same create call. `compareReleaseRange` reads
+`GET /compare/{previous tag}...{target}` once for its commits, and
+`listMergedPullRequestsSince` supplies the merged pull requests with their
+`merge_commit_sha`. Membership is decided by ancestry, not by date: a pull request
+is in the release only when its merge commit is one of the compared commits, and a
+pull request merged before the previous tag is absent however recent its merge
+date looks. Every source appears exactly once — the pull request is listed by
+number and title, and its merge commit is not printed again as a bare commit — so
+the body cannot double-count one change. `total_commits` larger than the returned
+commits, or a pull-request walk that hit its page cap, marks the notes partial and
+the body says so rather than describing a smaller release.
+
+The range is read only at the moment a draft is about to be written, so a run that
+is still going, failed, or already has a Release costs no compare. A failed range
+read is caught, logged as `release notes range read failed`, and the draft keeps
+its placeholder body: losing the Release to an unreadable commit list would be
+worse than a draft without notes. The exact sources are stored on the same row in
+`notes_source_json` by the same reconcile that created the draft, and the
+repository page renders them with their links, so the page and the body cannot
+disagree about what the release contains. A stored value that is missing or
+malformed renders no sources rather than an error — the draft Release is the
+record of what shipped, the column is its explanation.

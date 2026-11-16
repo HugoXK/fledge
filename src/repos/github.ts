@@ -969,6 +969,45 @@ export class GithubClient {
     return { status: result.status ?? 'unknown', aheadBy: result.ahead_by ?? 0 }
   }
 
+  // #546 slice 3: the same compare endpoint, read for its contents. `totalCommits`
+  // is what tells the notes whether the range was read whole — the endpoint caps
+  // its `commits` array, so a body built from a short array without this check
+  // would silently describe a smaller release.
+  async compareReleaseRange(
+    owner: string,
+    name: string,
+    base: string,
+    head: string,
+  ): Promise<{ status: string; aheadBy: number; totalCommits: number; commits: Array<{ sha: string; title: string; url: string }> }> {
+    const result = await this.request<{
+      status?: string
+      ahead_by?: number
+      total_commits?: number
+      commits?: Array<{ sha?: string; html_url?: string; commit?: { message?: string } }>
+    }>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/compare/${encodeURIComponent(base)}...${encodeURIComponent(head)}`,
+    )
+    const commits: Array<{ sha: string; title: string; url: string }> = []
+    for (const entry of Array.isArray(result.commits) ? result.commits : []) {
+      if (typeof entry.sha !== 'string') continue
+      // The first line is the title: everything after the blank line is the
+      // commit body and does not belong in a release-note bullet.
+      const title = (entry.commit?.message ?? '').split('\n')[0]?.trim() ?? ''
+      commits.push({
+        sha: entry.sha,
+        title,
+        url: typeof entry.html_url === 'string' ? entry.html_url : `https://github.com/${owner}/${name}/commit/${entry.sha}`,
+      })
+    }
+    return {
+      status: result.status ?? 'unknown',
+      aheadBy: result.ahead_by ?? 0,
+      totalCommits: typeof result.total_commits === 'number' ? result.total_commits : commits.length,
+      commits,
+    }
+  }
+
   // A release target is a SHA a maintainer types by hand, so existence is a
   // question with a boolean answer: the caller refuses by name instead of
   // discovering the missing object as a 404 from compare or a 422 from a write.
@@ -1011,9 +1050,9 @@ export class GithubClient {
     name: string,
     since: string,
     maxPages = 3,
-  ): Promise<{ pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string }>; complete: boolean }> {
+  ): Promise<{ pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string; mergeCommitSha: string }>; complete: boolean }> {
     const sinceMs = Date.parse(since)
-    const pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string }> = []
+    const pulls: Array<{ number: number; title: string; url: string; labels: string[]; mergedAt: string; mergeCommitSha: string }> = []
     let complete = false
     for (let page = 1; page <= maxPages; page += 1) {
       const batch = await this.request<Array<{
@@ -1022,6 +1061,7 @@ export class GithubClient {
         title?: string
         merged_at?: string | null
         updated_at?: string | null
+        merge_commit_sha?: string | null
         labels?: Array<{ name?: string }>
       }>>(
         'GET',
@@ -1046,6 +1086,9 @@ export class GithubClient {
             ? pull.labels.flatMap((label) => (typeof label.name === 'string' ? [label.name] : []))
             : [],
           mergedAt: pull.merged_at,
+          // The notes decide range membership by this sha, so a missing one is
+          // an empty string rather than a guess at the pull request's head.
+          mergeCommitSha: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : '',
         })
       }
       if (batch.length < 100) {
