@@ -5947,12 +5947,16 @@ export class Store {
     return this.get<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND issue_url = ? ORDER BY updated_at DESC LIMIT 1', repoId, issueUrl)
   }
 
+  // FIFO within one priority: the scheduler in `decideNextJob()` and the board
+  // read the same order, so a recently touched item cannot jump ahead of an
+  // older item that has waited. `rowid` is the stable tie-break for rows written
+  // in the same millisecond.
   listWorkItems(repoId: string): WorkItemRow[] {
-    return this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? ORDER BY priority DESC, updated_at DESC', repoId)
+    return this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? ORDER BY priority DESC, created_at ASC, updated_at ASC, rowid ASC', repoId)
   }
 
   listOpenWorkItems(repoId: string): WorkItemRow[] {
-    return this.all<WorkItemRow>("SELECT * FROM work_items WHERE repo_id = ? AND state NOT IN ('merged', 'closed') ORDER BY priority DESC, updated_at DESC", repoId)
+    return this.all<WorkItemRow>("SELECT * FROM work_items WHERE repo_id = ? AND state NOT IN ('merged', 'closed') ORDER BY priority DESC, created_at ASC, updated_at ASC, rowid ASC", repoId)
   }
 
   // #359: every plan job that has waited for a decision since `finishedBeforeIso`,

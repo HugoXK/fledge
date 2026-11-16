@@ -1339,7 +1339,10 @@ service itself writes.
 
 A due repository with open work is never skipped because the item exists.
 `decideNextJob()` carries the highest-priority open item into a `followup` job,
-or a `review` when the item has a PR and a maintainer reviewer is due. With no
+or a `review` when the item has a PR and a maintainer reviewer is due. Within
+one priority the oldest item wins: the board and the scheduler use
+`priority DESC, created_at ASC`, so a recently edited item cannot jump ahead of
+one that has waited longer. With no
 open work it returns `none` with reason `idle`: the scheduler writes
 `last_status='idle'` and creates no job, issue or PR. When the repository's
 discovery interval is due, it may instead run one `discover` job; that job may
