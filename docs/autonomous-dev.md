@@ -218,12 +218,22 @@ risk-tier: T2; basis: src/jobs/service.ts
 | Tier | Paths | Merge requirement |
 |---|---|---|
 | T0 | `docs/`, `README*`, `CHANGELOG.md`, `changelog.d/`, `CODE_OF_CONDUCT.md` | `ci-ok` green |
-| T1 | `test/`, `public/`, issue templates, small UI-only changes | `ci-ok` green |
-| T2 | the rest of `src/` (app routing, views, email, users, lib) | PASS at tip + `ci-ok` |
+| T1 | `test/`, `public/` assets, issue templates, small UI-only changes | `ci-ok` green |
+| T2 | the rest of `src/` (app routing, views, email, users, lib), a `public/**/*.js|mjs` client-side script | PASS at tip + `ci-ok` |
 | T3 | auth, gateway, jobs, repos, config, db, bridge, `scripts/`, `deploy/`, `.github/`, manifests, licence, policy docs | PASS at tip + `ci-ok` |
 
 Unknown path → T2. A `risk:T*` label is advisory and never a reason to skip a
 review.
+
+The tier is also raised by what a diff does, not only by the path it touches
+(#869). A T1 tip becomes T2 when it removes an `assert.`/`expect(` line under
+`test/`, adds `assert.ok(true)`/`assert(true)`, or adds an inline `<script>`
+under `public/`: changed-line coverage counts added `src/` lines, so a deleted
+assertion leaves the suite green and the percentage flat. The rules are data in
+`.github/agent/risk-rules.json` (`escalations`), and the CI risk job,
+`scripts/lib/review-gate.mjs` and `scripts/pr-lint.mjs` all classify through
+`tierForChanges` in `scripts/lib/risk.mjs`, so the computed tier, the `risk:T*`
+label and the PASS the gate demands cannot disagree.
 
 ## Gates
 

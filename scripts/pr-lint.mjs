@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs'
 import { mechanicalRelease } from './lib/mechanical-release.mjs'
 import { checkBody } from './lib/pr-body.mjs'
 import { incompleteList, paginate } from './lib/review-gate.mjs'
-import { tierForFiles, loadRules } from './lib/risk.mjs'
+import { loadRules, tierForChanges } from './lib/risk.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -162,7 +162,7 @@ if (!mechanical.mechanical && (changedFiles > 20 || changedLines > 800) && !/(^|
 }
 
 const rules = loadRules()
-const computed = mechanical.mechanical ? 'T0' : tierForFiles(paths, rules).tier
+const computed = mechanical.mechanical ? 'T0' : tierForChanges(files.map((file) => ({ path: file.filename, patch: file.patch })), rules).tier
 const labels = (pr.labels ?? []).map((label) => label.name)
 for (const label of labels.filter((name) => /^risk:T[0-3]$/.test(name))) {
   if (label !== `risk:${computed}`) errors.push(`label ${label} does not match the computed tier risk:${computed}`)

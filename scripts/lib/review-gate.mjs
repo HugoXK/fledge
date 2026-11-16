@@ -11,7 +11,7 @@
 //     (scripts/gate-repair.mjs performs that re-run);
 //   - the gate needs nothing from the pull request tree: the policy comes from
 //     the base ref, the tier from the API and the verdicts from the API.
-import { tierForFiles, loadRules } from './risk.mjs'
+import { loadRules, tierForChanges } from './risk.mjs'
 import { mechanicalDiffShape, mechanicalRelease } from './mechanical-release.mjs'
 import { compareVersions, nextReleaseVersion } from './release-version.mjs'
 
@@ -319,7 +319,7 @@ export async function evaluateGate({ api, threads, repo, policy, prNumber, tier:
           ? `the release version v${identity.version} is not the computed next ${nextVersion === '' ? 'of the base branch' : `v${nextVersion}`}`
           : identity.reason,
       }
-  const declaredTier = String(tierOverride ?? tierForFiles(files.map((file) => file.filename), loadRules()).tier).toUpperCase()
+  const declaredTier = String(tierOverride ?? tierForChanges(files.map((file) => ({ path: file.filename, patch: file.patch })), loadRules()).tier).toUpperCase()
   const tier = tierOverride === undefined && shape.shaped ? 'T0' : declaredTier
   if (!['T0', 'T1', 'T2', 'T3'].includes(tier)) return failed(`unknown tier ${tier}`, 'error')
 
