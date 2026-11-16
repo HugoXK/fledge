@@ -65,7 +65,7 @@ export const SCHEMA_VERSION = 43
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted'
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted' | 'superseded'
 
 // #361: a repository's review history, read from rows that already exist.
 // A window is one `since`; the page asks for two. The outcome of a review is

@@ -34,9 +34,19 @@ export interface Config {
   // erased. The sweep's purge phase reads this; 72 hours is the host-side cron it
   // replaces.
   trialPurgeGraceHours: number
+  /** #803: promote a discovered issue into one proposed work item. Off by default. */
+  autoPromoteDiscovery: boolean
+  /** #803: maximum automatic discovery promotions per UTC day; 0 disables them. */
+  autoPromoteDiscoveryDailyCap: number
   // #708: the per-class windows mutating routes take. A route names its class;
   // the numbers live here so a deployment tightens a limit without a rebuild.
   rateLimit: RateLimitBudgets
+  // #637: the comment names that count as a trigger. `@<name>` in an issue or
+  // pull request comment starts a review; a deployment renames or adds names
+  // here rather than in code, and an empty list disables the trigger.
+  triggers: {
+    mentions: string[]
+  }
   // #540: how far the console adapters go for commands added after slice 1.
   // `off` (the default) is the route that existed before the contract.
   managementService: ManagementServiceMode
@@ -298,6 +308,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
     trialPurgeGraceHours: Math.max(1, number('TRIAL_PURGE_GRACE_HOURS', 72)),
+    autoPromoteDiscovery: bool('AUTO_PROMOTE_DISCOVERY', false),
+    autoPromoteDiscoveryDailyCap: Math.max(0, number('AUTO_PROMOTE_DISCOVERY_DAILY_CAP', 3)),
     rateLimit: {
       login: {
         max: Math.max(1, number('RATE_LIMIT_LOGIN_MAX', DEFAULT_RATE_LIMIT_BUDGETS.login.max)),
@@ -311,6 +323,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         max: Math.max(1, number('RATE_LIMIT_EXPENSIVE_MAX', DEFAULT_RATE_LIMIT_BUDGETS.expensive.max)),
         windowMs: Math.max(1_000, number('RATE_LIMIT_EXPENSIVE_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.expensive.windowMs)),
       },
+    },
+    triggers: {
+      mentions: text('FLEDGE_MENTION_NAMES', 'fledge')
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name !== ''),
     },
     managementService: parseManagementService(text('MANAGEMENT_SERVICE', 'off')),
     tokenEncryptionKey: encryptionKey,
