@@ -265,6 +265,17 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   and Apply would land on a hidden table. A failed job whose message the
   platform only writes in Chinese is named by its failure class on a page in the
   other language, and the raw sentence stays on the job page.
+- **The header names the cadence it prints** (`src/views/pages.ts`, repository
+  header): the interval pill reads "Discovery every" / 发现间隔 — the word the
+  Add-repository and settings forms already use — and prints
+  `max(60, interval_minutes)`, the floor `discoverDue` applies
+  (`MIN_DISCOVERY_INTERVAL_MINUTES`), so a 30-minute legacy row cannot advertise
+  a cadence discovery never runs at. It used to read "Auto every" beside the
+  automatic-work switch and read as the work interval; work starts from ready
+  items after the short cooldown (`workDue`), and a repository with a saved
+  schedule row is still answered by that row in the pill to its right
+  (`data-next-source="schedule"`). "Automatic work" stays its own on/off answer,
+  so enabling work never requires choosing an interval.
 - **Queue position** (`src/lib/queueRank.ts`, `rankQueued`): a queued job shows
   its place in the queue with the length (`#3/7`) and the priority it competes
   on, computed with the claimer's two keys only — `priority DESC, created_at ASC`

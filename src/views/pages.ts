@@ -31,7 +31,7 @@ import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
-import { carryOverHeaderFromGoal } from '../jobs/continuity.js'
+import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromGoal } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
@@ -1428,6 +1428,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   })
   const scheduledNext = input.scheduledNext
   const nextRunText = scheduledNext === undefined ? nextRunLine(nextRunState, t) : plannedNextLine(scheduledNext, t)
+  // #802: the header called this interval "Auto every", which reads as the work
+  // cadence. It is not: work starts from ready items after the short cooldown
+  // (`workDue`), while discovery is gated on this interval and floors it at an
+  // hour (`discoverDue`, `MIN_DISCOVERY_INTERVAL_MINUTES`). Printing the stored
+  // number would let a legacy 30-minute row claim a cadence discovery never runs
+  // at, so the pill prints the interval discovery actually uses.
+  const discoveryIntervalMinutes = Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes)
   const instanceTeam = instance === undefined ? null : parseTeam(instance.team_json)
   const instanceReady = instance?.status === 'ready' && instanceTeam !== null
   const flybotAvailable = config.flybot.instanceImage !== ''
@@ -1505,7 +1512,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <p class="fine">${escapeHtml(t('目标分支', 'Target branch'))} <code>${escapeHtml(targetBranch)}</code>${targetBranch === defaultBranch ? '' : ` · ${escapeHtml(t('默认分支', 'Default branch'))} <code>${escapeHtml(defaultBranch)}</code>`}</p>
         <div class="repo-status-strip">
           <span class="repo-status"><span class="fine">${escapeHtml(t('自动迭代', 'Automatic work'))}</span><b>${escapeHtml(repo.auto_iterate === 1 ? t('自动迭代已开启', 'Auto-iteration on') : t('仅手动运行', 'Manual runs only'))}</b></span>
-          <span class="repo-status"><span class="fine">${escapeHtml(t('自动间隔', 'Auto every'))}</span><b>${escapeHtml(intervalLabel(repo.interval_minutes, t))}</b></span>
+          <span class="repo-status"><span class="fine">${escapeHtml(t('发现间隔', 'Discovery every'))}</span><b>${escapeHtml(intervalLabel(discoveryIntervalMinutes, t))}</b></span>
           <span class="repo-status"><span class="fine">${escapeHtml(t('下次约', 'Next'))}</span><span data-next-run data-next-source="${escapeHtml(scheduledNext === undefined ? 'interval' : 'schedule')}">${escapeHtml(nextRunText)}</span></span>
           <a class="repo-status" href="/repos/${escapeHtml(repo.id)}/schedule">${escapeHtml(t('排期控制台', 'Schedule console'))}</a>
           <span class="repo-status"><span class="fine">FlyBot</span>${flybotAvailable ? (instance === undefined ? escapeHtml(t('未创建', 'not created')) : badge(t, instance.status)) : escapeHtml(t('未启用', 'not enabled'))}</span>
