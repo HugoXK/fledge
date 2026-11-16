@@ -2915,6 +2915,36 @@ disagree about what the release contains. A stored value that is missing or
 malformed renders no sources rather than an error — the draft Release is the
 record of what shipped, the column is its explanation.
 
+## The failed run analysis is read-only (#546 slice 4)
+
+`POST /repos/:id/releases/:releaseId/analyze` reads the failed jobs of the run the
+release row recorded. It is a maintainer action with an explicit button, and it is
+the only place Fledge reads a workflow log for a release. The credential is the
+point: `GithubApp.ephemeralToken` mints an installation token with exactly
+`actions: read` outside the token cache and narrowed to the one repository named in
+the mint body, the read uses it, and `GithubApp.revokeToken` revokes it with
+`DELETE /installation/token` in the same call's `finally`. `actions: read` is what
+`/actions/runs/{id}/jobs` and `/actions/jobs/{id}/logs` need; a token with
+`contents: read` could also read the source of every repository in the installation,
+which a log read cannot justify. A repository whose token is a user OAuth token is
+refused with `ANALYSIS_READ_ONLY_TOKEN` rather than widened, because a user token
+cannot be narrowed. A revocation that fails is stored with the result rather than
+swallowed.
+
+`src/releases/analysis.ts` keeps the excerpt honest: the whole log is redacted
+before any slice, so a secret split by a truncation cannot survive as a fragment,
+and the bounded tail records the exact 1-based lines it kept (`lineStart`,
+`lineEnd`, `totalLines`) plus the job's `html_url`. At most two failed jobs are
+read per analysis. The route hands the mint to the module as a callback, so the
+order is the module's: a run that is still going or concluded anything but a
+failure is refused before a token is minted, and a POST against a green or running
+row spends no credential at all. The result is written to `analysis_json` on
+`repo_releases` (schema 47), which is beside `status`, `conclusion` and the draft
+pointer and never inside them: an analysis cannot turn a failure into a success,
+create a Release or rerun a workflow. The repository page renders each excerpt with
+its line range and the job link, and a stored value that is missing or malformed
+renders no analysis rather than an error.
+
 ## The strategy bundle (#433 slice 1)
 
 A repository's development strategy is one artifact, not a set of settings spread

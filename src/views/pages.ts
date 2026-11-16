@@ -40,6 +40,7 @@ import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { readReleaseNotesSources } from '../releases/notes.js'
+import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
@@ -1976,7 +1977,17 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       const sourceList = sources.length === 0
         ? ''
         : ` <details class="advanced-help"><summary>${escapeHtml(t(`发布说明来源 ${sources.length} 项`, `${sources.length} note source${sources.length === 1 ? '' : 's'}`))}</summary><ul class="list">${sources.map((source) => `<li><code>${escapeHtml(source.ref)}</code> <a class="link" href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.title)}</a></li>`).join('')}</ul></details>`
-      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span>${sourceList} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form></li>`
+      // #546 slice 4: the redacted excerpt and the exact log lines it came from.
+      // The link is the job page the excerpt was read from, so a maintainer can
+      // open the same window in GitHub instead of trusting the copy.
+      const analysis = readReleaseAnalysis(release.analysis_json)
+      const analysisBlock = analysis === null
+        ? ''
+        : ` <details class="advanced-help" data-release-analysis><summary>${escapeHtml(t(`失败运行分析 · run ${analysis.runId}`, `Failed run analysis · run ${analysis.runId}`))}${analysis.tokenRevoked ? '' : ` · ${escapeHtml(t('只读令牌未能撤销，已记录', 'the read-only token could not be revoked, recorded'))}`}</summary>${analysis.jobs.map((job) => `<div><p class="fine"><a class="link" href="${escapeHtml(job.url)}" target="_blank" rel="noreferrer">${escapeHtml(job.name)}</a> · ${escapeHtml(job.conclusion ?? 'failed')} · ${escapeHtml(t(`日志第 ${job.lineStart}–${job.lineEnd} 行，共 ${job.totalLines} 行`, `log lines ${job.lineStart}–${job.lineEnd} of ${job.totalLines}`))}</p><pre>${escapeHtml(job.excerpt)}</pre></div>`).join('')}</details>`
+      const analyze = release.status !== 'run_failed' || release.run_id === null
+        ? ''
+        : ` <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/analyze" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('分析失败运行（只读）', 'Analyse failed run (read-only)'))}</button></form>`
+      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
     }).join('')}</ul>`}
   </section>`
   const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`

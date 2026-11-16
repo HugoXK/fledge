@@ -63,7 +63,7 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 // restore check (#652) has to prove a fixture written by an older build still
 // migrates to exactly this number, and a literal in two places would let the
 // check and the migration disagree.
-export const SCHEMA_VERSION = 46
+export const SCHEMA_VERSION = 47
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
@@ -1720,6 +1720,7 @@ CREATE TABLE IF NOT EXISTS repo_releases (
   draft_url TEXT,
   external_release_id TEXT,
   last_checked_at TEXT,
+  analysis_json TEXT,
   notes_source_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -2337,6 +2338,8 @@ export interface ReleaseRow {
   last_checked_at: string | null
   /** #546 slice 3: the exact sources the draft notes were built from. */
   notes_source_json: string | null
+  /** #546 slice 4: the last run analysis, redacted; null until one was taken. */
+  analysis_json: string | null
   created_at: string
   updated_at: string
 }
@@ -2754,6 +2757,9 @@ export class Store {
       ['external_release_id', 'TEXT'],
       ['last_checked_at', 'TEXT'],
       ['notes_source_json', 'TEXT'],
+      // #546 slice 4: the run analysis is an observation beside the tracking
+      // fields, so it is one JSON column and never a second state machine.
+      ['analysis_json', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE repo_releases ADD COLUMN ${name} ${type}`)
@@ -4037,6 +4043,15 @@ export class Store {
   // without reading GitHub again. A row with no notes keeps `NULL`.
   updateReleaseNotes(id: string, notesSourceJson: string | null): ReleaseRow | undefined {
     this.run('UPDATE repo_releases SET notes_source_json = ?, updated_at = ? WHERE id = ?', notesSourceJson, nowIso(), id)
+    return this.releaseById(id)
+  }
+
+  // #546 slice 4: the analysis is written beside the tracking fields and never
+  // into them. A second analysis replaces the first, and neither touches
+  // `status`, `conclusion` or the draft pointer, because an observation is not
+  // a release decision.
+  updateReleaseAnalysis(id: string, analysisJson: string | null): ReleaseRow | undefined {
+    this.run('UPDATE repo_releases SET analysis_json = ?, updated_at = ? WHERE id = ?', analysisJson, nowIso(), id)
     return this.releaseById(id)
   }
 
