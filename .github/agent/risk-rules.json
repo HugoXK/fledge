@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "note": "The tier is computed from the diff. Labels are advisory mirrors, never a reason to skip a review. Editing this file is T3.",
+  "note": "The tier is computed from the diff. Labels are advisory mirrors, never a reason to skip a review. Editing this file is T3. Escalations raise a path's tier by what the diff does to it (#869).",
   "tiers": {
     "T3": {
       "meaning": "security, data, deploy, CI or protocol surface: a PASS at the tip and green ci-ok",
@@ -42,7 +42,9 @@
     "T2": {
       "meaning": "app code: a PASS at the tip and green ci-ok",
       "paths": [
-        "src/**"
+        "src/**",
+        "public/**/*.js",
+        "public/**/*.mjs"
       ]
     },
     "T1": {
@@ -85,5 +87,37 @@
       "files": 40,
       "lines": 1200
     }
-  }
+  },
+  "escalations": [
+    {
+      "to": "T2",
+      "why": "a deleted assertion weakens the suite and does not move line coverage",
+      "paths": [
+        "test/**"
+      ],
+      "removed": [
+        "^\\s*(?:assert(?:\\.\\w+)?\\s*\\(|expect\\s*\\()"
+      ]
+    },
+    {
+      "to": "T2",
+      "why": "an assertion that is always true proves nothing",
+      "paths": [
+        "test/**"
+      ],
+      "added": [
+        "assert\\.ok\\(\\s*true\\s*\\)|assert\\s*\\(\\s*true\\s*\\)"
+      ]
+    },
+    {
+      "to": "T2",
+      "why": "new inline script runs in a browser without a review",
+      "paths": [
+        "public/**"
+      ],
+      "added": [
+        "<script\\b"
+      ]
+    }
+  ]
 }
