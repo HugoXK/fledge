@@ -292,6 +292,21 @@ release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
 the last tag's commit time and the workflow's run time; if either is unreadable
 it falls back to the minor, which is the first-release behaviour.
 
+#### The `ci-ok` read waits for the verdict (#864)
+
+Rule 4 releases only on a green `ci-ok`, and a check run that is still queued or
+running reports no conclusion. The planner used to read the aggregate once, so a
+run that started at the same moment as `ci.yml` saw `missing` and ended the slot
+with `none`; `0.3.7` was refused that way. `scripts/lib/release-drive.mjs` now
+keeps the two facts apart: `failure` (and any other concluded non-success) still
+blocks at once, while `missing` returns `wait-ci` and the decide step re-reads
+`ci-ok` at the *same* tip the plan was computed from — three reads, five minutes
+apart, so at most ten minutes of waiting. The bound is in the module
+(`CI_OK_READS`, `CI_OK_INTERVAL_MS`), the step summary prints the run id, the
+status and how many reads were made, and a tip that never concludes ends the slot
+with `none` and that run id in the reason. A dry run never waits: it reports what
+a real run would have done.
+
 #### Reliable slot trigger
 
 GitHub's `schedule` event is best-effort: on 2026-11-14 the then-`14:30Z` slot

@@ -19,6 +19,12 @@ export interface ReleaseBranchEntry {
   commit?: { sha?: string }
 }
 
+export interface CiOkObservation {
+  id: number
+  status: string
+  conclusion: string
+}
+
 export interface OrphanBranch {
   branch: string
   version: string
@@ -34,6 +40,8 @@ export interface ReleaseState {
   tags: string[]
   dryRun: boolean
   ciOk: string
+  /** The newest `ci-ok` run, with the id and status the drive's wait needs (#864). */
+  ciOkRun: CiOkObservation
   openPr: PullRequestPageEntry | null
   openPrRejected: { number: number; title: string; branch: string; repo: string } | null
   lastMerged: PullRequestPageEntry | null
@@ -44,6 +52,7 @@ export interface ReleaseState {
 
 export declare function flattenPages(value: unknown): PullRequestPageEntry[]
 export declare function checkRunsOf(value: unknown): CheckRunEntry[]
+export declare function latestRun(value: unknown, name: string): CiOkObservation
 export declare function latestConclusion(value: unknown, name: string): string
 export declare function buildState(input: {
   lastTag?: string

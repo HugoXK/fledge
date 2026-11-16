@@ -87,7 +87,10 @@ jobs:
     # its own RELEASE_OPEN_TOKEN and no required reviewers; before that the nightly
     # fails loudly at the opener step instead of opening its pull request.
     environment: release
-    timeout-minutes: 20
+    # #864: the decide step re-reads `ci-ok` for up to ten minutes when CI is
+    # still running, so the job keeps room for the waits plus the push, the
+    # opener, auto-merge and the comment that follow.
+    timeout-minutes: 30
     permissions:
       contents: write
       pull-requests: read
@@ -198,6 +201,13 @@ jobs:
         # Same rule as Plan: the drive reads the state and the plan files, so a
         # failed collect step must be reported once, not again as a missing file.
         if: ${{ steps.state.outcome == 'success' }}
+        # #864: the step may sit through the bounded `ci-ok` re-read (three reads
+        # five minutes apart), so it states a budget of its own rather than
+        # inheriting the job's.
+        timeout-minutes: 15
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MAIN_SHA: ${{ steps.state.outputs.main_sha }}
         run: |
           set -euo pipefail
           # Rule 4 and the dry-run reduction live in the tested drive module. The
@@ -205,33 +215,61 @@ jobs:
           # acts only on `open-pr`, which is the branch push below.
           node --input-type=module -e '
             import { readFileSync, writeFileSync, appendFileSync } from "node:fs"
-            import { decideDrive } from "./scripts/lib/release-drive.mjs"
+            import { execFileSync } from "node:child_process"
+            import { decideWithCiRetry } from "./scripts/lib/release-drive.mjs"
+            import { latestConclusion, latestRun } from "./scripts/lib/release-state.mjs"
             const TMP = process.env.RUNNER_TEMP ?? "/tmp"
             const state = JSON.parse(readFileSync(TMP + "/state.json", "utf8"))
             const plan = JSON.parse(readFileSync(TMP + "/plan.json", "utf8"))
+            const MAIN_SHA = String(process.env.MAIN_SHA ?? "")
+            const REPO = String(process.env.GITHUB_REPOSITORY ?? "")
+            // #864: the collect step reads `ci-ok` once, and a run that starts while
+            // CI is still in flight sees `missing`. The drive asks for a bounded
+            // re-read instead of treating that as a quiet night. The re-read names
+            // the same tip the plan was computed from — polling `commits/main`
+            // could judge a commit the release branch was never cut from — and
+            // asks for the same `check_name`, so a busy tip cannot page the
+            // verdict away (#567).
+            let last = { ciOk: state.ciOk, ciOkRun: state.ciOkRun }
+            const readCiOk = async () => {
+              const text = execFileSync("gh", ["api", `repos/${REPO}/commits/${MAIN_SHA}/check-runs?per_page=100&check_name=ci-ok`], { encoding: "utf8" })
+              const parsed = JSON.parse(text)
+              last = { ciOk: latestConclusion(parsed, "ci-ok"), ciOkRun: latestRun(parsed, "ci-ok") }
+              return last
+            }
             const open = state.openPr
-            const decision = decideDrive({
-              plan: { shouldRelease: plan.shouldRelease, nextVersion: plan.nextVersion, reason: plan.reason },
-              openReleasePr: open === null || open === undefined
-                ? null
-                : {
-                    number: Number(open.number ?? 0),
-                    headSha: String(open.head?.sha ?? ""),
-                    branch: String(open.head?.ref ?? ""),
-                    title: String(open.title ?? ""),
-                    files: [],
-                    blocked: false,
-                    checks: [],
-                    sameRepo: open.head?.repo?.full_name === open.base?.repo?.full_name,
-                  },
-              mergedPrs: [],
-              tags: state.tags,
-              orphanBranches: state.orphanBranches,
-              ciOk: state.ciOk,
-              dryRun: state.dryRun,
+            const decision = await decideWithCiRetry({
+              state: {
+                plan: { shouldRelease: plan.shouldRelease, nextVersion: plan.nextVersion, reason: plan.reason },
+                openReleasePr: open === null || open === undefined
+                  ? null
+                  : {
+                      number: Number(open.number ?? 0),
+                      headSha: String(open.head?.sha ?? ""),
+                      branch: String(open.head?.ref ?? ""),
+                      title: String(open.title ?? ""),
+                      files: [],
+                      blocked: false,
+                      checks: [],
+                      sameRepo: open.head?.repo?.full_name === open.base?.repo?.full_name,
+                    },
+                mergedPrs: [],
+                tags: state.tags,
+                orphanBranches: state.orphanBranches,
+                ciOk: state.ciOk,
+                ciOkRun: state.ciOkRun,
+                dryRun: state.dryRun,
+              },
+              readCiOk,
+              wait: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
             })
+            // The re-read can leave the file behind the fact it established: the
+            // summary and the #80 comment read `.ciOk` from here, and reporting
+            // `missing` beside a released branch would be the old confusion again.
+            writeFileSync(TMP + "/state.json", `${JSON.stringify({ ...state, ciOk: last.ciOk, ciOkRun: last.ciOkRun })}\n`)
             writeFileSync(TMP + "/drive.json", `${JSON.stringify(decision)}\n`)
             appendFileSync(process.env.GITHUB_OUTPUT, `action=${decision.action}\nreason=${decision.reason}\nversion=${decision.version ?? ""}\ntag=${decision.tag ?? ""}\n`)
+            appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- ci-ok on main at \`${MAIN_SHA}\`: **${String(last.ciOk)}** (run ${String(last.ciOkRun?.id ?? 0)}, ${String(last.ciOkRun?.status ?? "unknown")}) after ${String(decision.ciOkReads ?? 1)} read(s)\n`)
             appendFileSync(process.env.GITHUB_STEP_SUMMARY, `- action: **${decision.action}** — ${decision.reason}\n`)
             console.log(JSON.stringify(decision))
             // An orphan branch is a wedged slot, not a quiet night: the run is red

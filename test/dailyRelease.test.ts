@@ -271,7 +271,10 @@ test('the mechanical release branch push is idempotent and never forced', () => 
 test('the planner and the state projection are still the tested modules', () => {
   assert.match(daily, /import \{ plannerInput \} from "\.\/scripts\/lib\/release-state\.mjs"/)
   assert.match(daily, /import \{ planRelease \} from "\.\/scripts\/release-plan\.mjs"/)
-  assert.match(daily, /import \{ decideDrive \} from "\.\/scripts\/lib\/release-drive\.mjs"/)
+  // #864: the step calls the drive's bounded retry, whose decision table —
+  // including `decideDrive` itself — is executed by `test/releaseCiOk.test.ts`
+  // and `test/mechanicalRelease.test.ts` rather than grepped out of the YAML.
+  assert.match(daily, /import \{ decideWithCiRetry \} from "\.\/scripts\/lib\/release-drive\.mjs"/)
   assert.match(readFileSync('scripts/lib/release-state.mjs', 'utf8'), /labels: \(Array\.isArray\(pr\?\.labels\) \? pr\.labels : \[\]\)\.map\(\(label\) => String\(label\?\.name/)
 })
 
@@ -285,6 +288,35 @@ test('the state job names the ci-ok check in the request, so a busy tip cannot p
   const fetchLine = daily.split('\n').find((line) => line.includes('/commits/main/check-runs'))
   assert.ok(fetchLine, 'the workflow fetches check runs for the main tip')
   assert.match(fetchLine, /check_name=ci-ok/, 'the check-runs request names ci-ok instead of trusting the first page')
+})
+
+test('the decide step re-reads ci-ok at the tip the plan was made from', () => {
+  // #864: the drive read `ci-ok` once, so a run that started while CI was still
+  // in flight reported `missing` and never released. The step now calls the
+  // tested bounded retry, and every re-read asks for the *same* tip the plan was
+  // computed from — polling `commits/main` could judge a commit the release
+  // branch was never cut from.
+  const step = between('      - name: Decide', '      - name: Trigger')
+  assert.match(step, /import \{ decideWithCiRetry \} from "\.\/scripts\/lib\/release-drive\.mjs"/)
+  assert.match(step, /GH_TOKEN: \$\{\{ secrets\.GITHUB_TOKEN \}\}/, 'the re-read calls the checks API, so the step needs the token')
+  assert.match(step, /MAIN_SHA: \$\{\{ steps\.state\.outputs\.main_sha \}\}/, 'the re-read is pinned to the tip the plan was made from')
+  assert.match(step, /commits\/\$\{MAIN_SHA\}\/check-runs\?per_page=100&check_name=ci-ok/, 'the re-read asks for the same named check as the first read')
+  assert.match(step, /latestConclusion\(/, 'the re-read parses the answer with the tested helper')
+  assert.ok(step.includes('setTimeout'), 'the wait between reads is a real sleep, not a busy loop')
+})
+
+test('the decide step can wait out the ci-ok bound without the job killing it', () => {
+  // #864: the retry is at most three reads five minutes apart, so ~10 minutes of
+  // sleeping. The step and the job timeouts must both leave room for the waits,
+  // or the fix would trade a missed release for a cancelled run.
+  const jobText = job('release')
+  const jobMinutes = /timeout-minutes: (\d+)/.exec(jobText)
+  assert.notEqual(jobMinutes, null, 'the release job states its timeout')
+  assert.ok(Number(jobMinutes?.[1] ?? '0') >= 30, 'the job budget covers the ci-ok re-read window plus the push, opener and comment steps')
+  const step = between('      - name: Decide', '      - name: Trigger')
+  const stepMinutes = /timeout-minutes: (\d+)/.exec(step)
+  assert.notEqual(stepMinutes, null, 'the decide step states its own timeout')
+  assert.ok(Number(stepMinutes?.[1] ?? '0') >= 15, 'the decide step budget covers three reads five minutes apart')
 })
 
 test('the run writes the counts and the decision to the job summary', () => {
