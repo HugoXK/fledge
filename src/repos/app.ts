@@ -246,9 +246,12 @@ export class GithubApp {
   // #546 slice 4: a short-lived read credential whose whole life is one read.
   // It is minted outside the cache on purpose — revoking a cached token would
   // hand the next caller a token that no longer works — and the caller revokes
-  // it itself through `revokeToken` when the read ends.
-  async ephemeralToken(id: number, permissions: Record<string, 'read'>): Promise<string> {
-    const result = await this.appRequest<{ token: string }>('POST', `/app/installations/${id}/access_tokens`, { permissions })
+  // it itself through `revokeToken` when the read ends. `repositories` narrows
+  // the token to the named repositories of the installation; a token without it
+  // reaches every repository the installation can see.
+  async ephemeralToken(id: number, permissions: Record<string, 'read'>, repositories?: string[]): Promise<string> {
+    const body = repositories === undefined ? { permissions } : { permissions, repositories }
+    const result = await this.appRequest<{ token: string }>('POST', `/app/installations/${id}/access_tokens`, body)
     if (result === null) throw new Error('无法创建 GitHub App installation token')
     return result.token
   }

@@ -1778,10 +1778,10 @@ the current state.
 ### Pull-request delivery
 
 Each repository page has a delivery list of iterate jobs with open pull requests,
-with review score, cost, age and a maintainer one-click merge. Merging re-checks
-the PR state, checks, commit status, reviews and branch protection through the
-same path as auto-merge, updates the linked work item and marks the job's PR
-state. A webhook updates the PR state when a PR is merged or closed. A bulk
+with review score, cost and age; each row links to the job page's review → merge
+card (below), which holds the one per-PR merge control. Merging re-checks the PR
+state, checks, commit status, reviews and branch protection through the same path
+as auto-merge, updates the linked work item and marks the job's PR state. A webhook updates the PR state when a PR is merged or closed. A bulk
 action re-checks and merges all clean PRs, skipping blocked ones. When at least
 three PRs are waiting and auto-merge is off, the page suggests enabling it.
 
@@ -1969,6 +1969,31 @@ body does not carry renders `not stated` and is never filled from another
 section. A read that fails — 404, no token, a capped list — leaves the page at
 200 and names the unavailable fact instead, because a page that 500s on a read
 it did not need is worse than no block.
+
+### Review and merge as one action
+
+The job page opens with one card that answers a single question: what is the next
+step on this pull request. `src/views/reviewMerge.ts` derives it from facts the
+page already has — the job row, the repository role, the stored
+`verification_json` and `path_guard_json`, the newest independent-review record,
+and the pull request's current tip — and names exactly one state: `merge`,
+`review`, `stale`, `checks`, `fix`, `moved-base`, `blocked`, `waiting` or `done`.
+Each state carries one action: the `task.merge` command, the `recheck` that
+records a fresh verdict, or a link to where the fix happens.
+
+The rule that matters is the stale verdict. `verification_json.sha` names the
+commit a verdict covers, and the tip comes from the same cached pull-request read
+the change story makes, so a verdict recorded before a new commit was pushed is
+reported as `stale` instead of being read as green. The card also mirrors the
+merge gate's own answers — GitHub's `behind` (base moved), `dirty` (conflict),
+`blocked`, pending and failing checks, the path guard, an unacknowledged rule
+change, changes-requested reviews, the role, and the independent review's risk —
+so a state it calls ready is not one the merge path refuses on those grounds. It
+adds no merge call and no second verdict vocabulary; the policy stays in
+`tryMerge`, and the repository's own settings stay with #885.
+
+The repository page's delivery list links to this card rather than rendering a
+second merge control; the bulk "merge all clean PRs" action is unchanged.
 
 ### Email notifications
 
@@ -2849,18 +2874,24 @@ record of what shipped, the column is its explanation.
 release row recorded. It is a maintainer action with an explicit button, and it is
 the only place Fledge reads a workflow log for a release. The credential is the
 point: `GithubApp.ephemeralToken` mints an installation token with exactly
-`actions: read` and `contents: read` outside the token cache, the read uses it,
-and `GithubApp.revokeToken` revokes it with `DELETE /installation/token` in the
-same call's `finally`. A repository whose token is a user OAuth token is refused
-with `ANALYSIS_READ_ONLY_TOKEN` rather than widened, because a user token cannot be
-narrowed. A revocation that fails is stored with the result rather than swallowed.
+`actions: read` outside the token cache and narrowed to the one repository named in
+the mint body, the read uses it, and `GithubApp.revokeToken` revokes it with
+`DELETE /installation/token` in the same call's `finally`. `actions: read` is what
+`/actions/runs/{id}/jobs` and `/actions/jobs/{id}/logs` need; a token with
+`contents: read` could also read the source of every repository in the installation,
+which a log read cannot justify. A repository whose token is a user OAuth token is
+refused with `ANALYSIS_READ_ONLY_TOKEN` rather than widened, because a user token
+cannot be narrowed. A revocation that fails is stored with the result rather than
+swallowed.
 
 `src/releases/analysis.ts` keeps the excerpt honest: the whole log is redacted
 before any slice, so a secret split by a truncation cannot survive as a fragment,
 and the bounded tail records the exact 1-based lines it kept (`lineStart`,
 `lineEnd`, `totalLines`) plus the job's `html_url`. At most two failed jobs are
-read per analysis. A run that is still going or concluded anything but a failure is
-refused before a token is minted. The result is written to `analysis_json` on
+read per analysis. The route hands the mint to the module as a callback, so the
+order is the module's: a run that is still going or concluded anything but a
+failure is refused before a token is minted, and a POST against a green or running
+row spends no credential at all. The result is written to `analysis_json` on
 `repo_releases` (schema 46), which is beside `status`, `conclusion` and the draft
 pointer and never inside them: an analysis cannot turn a failure into a success,
 create a Release or rerun a workflow. The repository page renders each excerpt with
@@ -2900,9 +2931,32 @@ The sections are assembled from sources that already exist — `repo_rule_overri
 by revision, the role playbook by version and goal fingerprint, the goal by hash —
 and a path or key under a frozen family (`evaluator`, `evidence`, `ci`, `gate`,
 `auth`, `gateway`, `capability`) is refused before the store is asked to write.
-Recording `strategy_hash` and `strategy_version` on every job, the job-page diff,
-canary promotion with rollback, and the global bundle are later slices.
+Canary promotion with rollback, the accepted-version lineage edge and the global
+bundle are later slices.
 
+## Every job records its strategy (#433 slice 2)
+
+A job row carries `strategy_hash`, `strategy_version` and `strategy_json`, written
+by `Store.createJob` from `currentStrategySections` — the same assembly the
+strategy page reads — so a page a maintainer opens and the strategy a job names
+cannot disagree. The section map is stored on the job rather than as a pointer to
+a bundle row because a job can run a strategy that was never frozen, and because
+history must not change under a later pointer move: the job keeps the exact map it
+was created under. `strategy_version` is NULL for exactly the unfrozen case; the
+page says "not frozen" instead of borrowing the candidate's version number. A
+strategy whose sources name a frozen section is not a bundle the page would
+accept, so that job records none rather than a hash that was never valid.
+
+The job page shows the hash, the version when there is one, and the sections the
+job recorded. When the previous job on the same repository recorded a different
+hash, the page names the section keys that moved — added, changed or removed —
+with the value each key had on both sides; the comparison is
+`Store.previousStrategyJob` (the newest earlier row of that repository that
+recorded a strategy), so a row from before the columns existed is skipped rather
+than reported as "no change". The older job keeps its own hash and its own page;
+a bundle change is a diff between two jobs, never a rewrite of the earlier one. A
+job whose row predates the columns renders "no strategy was recorded" rather than
+an empty strategy.
 ## Run now is an occurrence, not a moved cursor (#544)
 
 A schedule names logical instants; the tick decides which of them run. "Run now"

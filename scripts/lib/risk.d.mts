@@ -9,6 +9,12 @@ export interface RiskRules {
   [key: string]: unknown
 }
 
+/** One changed file: its new path and, when the caller has it, its patch. */
+export interface FileChange {
+  path: string
+  patch?: string
+}
+
 export interface TierResult {
   tier: Tier
   basis: string
@@ -24,6 +30,12 @@ export declare const RULES_FILE: string
 export declare function loadRules(path?: string): RiskRules
 export declare function matchesPath(path: string, pattern: string): boolean
 export declare function tierForFiles(files: string[], rules?: RiskRules): TierResult
+/** One file's changed lines, split out of a unified diff, by new path. */
+export declare function patchesByFile(diffText: string): Map<string, string>
+/** The `+`/`-` lines of one file's patch, without the hunk headers. */
+export declare function linesOfPatch(patch: string): string[]
+/** The tier of a pull request described by its files and their patches. */
+export declare function tierForChanges(changes: FileChange[], rules?: RiskRules): TierResult
 export declare function classify(files: string[], diffText?: string, rules?: RiskRules): TierResult
 export declare function limitsFor(tier: Tier | string, rules?: RiskRules): { files: number; lines: number } | null
 export declare function chooseBase(eventName: string, event?: Record<string, unknown>): BaseChoice

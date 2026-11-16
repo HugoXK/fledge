@@ -151,6 +151,11 @@ Ran:
 Not run: Docker image, real SMTP
 ```
 
+The tier in that `Ran:` block is computed from the diff, not read off the label:
+a path that would be T1 is raised to T2 by a deleted assertion, an always-true
+assertion, or an inline client-side script (#869). `scripts/lib/risk.mjs` is the
+one classifier the review gate and `pr-lint` both call.
+
 - First line: exactly `Verdict: PASS|INC|REQUEST_CHANGES at <sha>`.
 - Second line: `Written-by:` the GitHub account that posted the verdict. It must
   be in the policy's `writers` list; that check is unchanged.

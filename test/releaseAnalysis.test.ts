@@ -76,11 +76,13 @@ test('the analysis token is least-privilege and always revoked after the read', 
 
   const minted: Minted = { token: '', revoked: 0 }
   const seen: Array<Record<string, 'read'>> = []
-  const repo = { installation_id: 11 }
+  const scopes: Array<string[] | undefined> = []
+  const repo = { installation_id: 11, name: 'widget' }
   const app = {
     configured: true,
-    async ephemeralToken(_id: number, permissions: Record<string, 'read'>) {
+    async ephemeralToken(_id: number, permissions: Record<string, 'read'>, repositories?: string[]) {
       seen.push(permissions)
+      scopes.push(repositories)
       return 'ghs_read_only'
     },
     async revokeToken() {
@@ -90,7 +92,13 @@ test('the analysis token is least-privilege and always revoked after the read', 
   }
   const mint = await mintAnalysisToken(repo, app)
   assert.deepEqual(seen[0], ANALYSIS_TOKEN_PERMISSIONS, 'the token is minted with exactly the read permissions the analysis needs')
-  assert.deepEqual(ANALYSIS_TOKEN_PERMISSIONS, { actions: 'read', contents: 'read' })
+  // #546 review finding 2: the only two endpoints this token reads are
+  // /actions/runs/{id}/jobs and /actions/jobs/{id}/logs, and both need
+  // `actions: read`. `contents: read` would additionally let it read the source
+  // of every repository in the installation, on a token that is minted per
+  // installation rather than per repository.
+  assert.deepEqual(ANALYSIS_TOKEN_PERMISSIONS, { actions: 'read' })
+  assert.deepEqual(scopes[0], ['widget'], 'the token is narrowed to the repository it reads')
   assert.equal(mint.token, 'ghs_read_only')
   await mint.revoke()
   assert.equal(minted.revoked, 1)
@@ -324,6 +332,77 @@ test('the analysis route refuses without an installation and never falls back to
   assert.match(refused, /read-only/)
   assert.equal(store.releaseById(release.id)?.analysis_json, null, 'a refusal stores no analysis')
   assert.equal(store.releaseById(release.id)?.status, 'run_failed', 'a refusal changes no release state')
+  await built.close()
+})
+
+// #546 review finding 1: a release row whose recorded run is green still carries
+// a `run_id`, and the POST route is reachable even though the page hides the
+// button for it. The route must let the module refuse before any credential is
+// spent. In this test the app has no GitHub App credentials, so a route that
+// mints first can only answer the installation refusal — the parent tip does
+// exactly that — while a route that asks the module first answers the module's
+// own sentence and never asks for a token at all.
+test('the analysis route refuses a green run without minting a token', async () => {
+  const { buildApp } = await import('../src/app.js')
+  const { MockRunner } = await import('../src/jobs/mock.js')
+  const { encryptSecret } = await import('../src/lib/secrets.js')
+  const { MemoryMailer, flashOf, formBody, sessionFor, testConfig } = await import('./helpers.js')
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  const user = makeUser(store, { login: 'analysis-green-user', status: 'approved' })
+  const repo = store.createRepo({
+    id: 'repo_analysis_green',
+    userId: user.id,
+    owner: 'o',
+    name: 'r',
+    defaultBranch: 'main',
+    tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey),
+    installationId: 11,
+    permission: 'admin',
+    repoRole: 'maintainer',
+    autoMerge: false,
+    roleCheckedAt: new Date().toISOString(),
+    goal: '',
+    autoIterate: false,
+    intervalMinutes: 1440,
+  })
+  const session = sessionFor(built, user)
+  const recorded = store.recordRelease({
+    repoId: repo.id,
+    userId: user.id,
+    version: 'v1.0.1',
+    tagName: 'v1.0.1',
+    targetSha: 'a'.repeat(40),
+    tagObjectSha: 'e'.repeat(40),
+    previousTag: null,
+    actor: 'analysis-green-user',
+  })
+  if (recorded === undefined) throw new Error('the release row must exist for this test')
+  const release = recorded
+  store.updateReleaseTracking(release.id, {
+    status: 'run_succeeded',
+    runId: '4242',
+    runAttempt: 1,
+    conclusion: 'success',
+    workflowName: 'release',
+    draftReleaseId: null,
+    draftUrl: null,
+    externalReleaseId: null,
+    lastCheckedAt: new Date().toISOString(),
+  })
+  const green = await built.app.inject({
+    method: 'POST',
+    url: `/repos/${repo.id}/releases/${release.id}/analyze`,
+    headers: { cookie: session.cookie, 'content-type': 'application/x-www-form-urlencoded' },
+    payload: formBody({ csrf: session.csrf }),
+  })
+  assert.equal(green.statusCode, 302)
+  const refused = flashOf(green)?.error?.text ?? ''
+  assert.match(refused, /concluded success|no failed log/, 'the refusal is the module\'s own, not a token or installation answer')
+  assert.doesNotMatch(refused, /ANALYSIS_READ_ONLY_TOKEN/, 'a run the module refuses costs no token: the mint happens only after its check')
+  assert.equal(store.releaseById(release.id)?.analysis_json, null, 'a refusal stores no analysis')
+  assert.equal(store.releaseById(release.id)?.status, 'run_succeeded', 'a refusal changes no release state')
   await built.close()
 })
 

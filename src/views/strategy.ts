@@ -2,6 +2,7 @@ import type { Config } from '../config.js'
 import { translator, type Locale } from '../i18n.js'
 import { csrfField, escapeHtml, layout, type Viewer } from './layout.js'
 import type { StrategyBundleRow, StrategyPointers } from '../db.js'
+import { diffStrategies, type StrategySections } from '../strategy/bundle.js'
 
 // #433 slice 1: the strategy page. It shows which strategy version and hash a
 // repository is on, what each section is derived from, and one action: freeze the
@@ -74,4 +75,65 @@ export function strategyPage(input: {
       ${history}
     </section>`
   return layout({ title: t('开发策略', 'Development strategy'), viewer, body, config, locale, path: `/repos/${repoId}`, active: 'dashboard', ...(notice === undefined ? {} : { notice }), ...(refused === undefined ? {} : { error: refused }) })
+}
+
+// #433 slice 2: the strategy a job recorded, and the section keys that moved
+// since the previous job on the same repository. The page states the hash of the
+// content the job stored; a strategy that was never frozen says so instead of
+// borrowing the candidate's version number, and a job that predates the columns
+// says it has no recorded strategy rather than showing an empty one.
+export interface JobStrategyView {
+  hash: string | null
+  version: number | null
+  sections: StrategySections | null
+  // The previous job on this repository that recorded a strategy, present only
+  // when this job recorded one too.
+  previous?: {
+    jobId: string
+    hash: string
+    version: number | null
+    sections: StrategySections | null
+  }
+}
+
+export function jobStrategyBlock(input: { locale: Locale; repoId: string; strategy: JobStrategyView }): string {
+  const { locale, repoId, strategy } = input
+  const t = translator(locale)
+  const label = (hash: string, version: number | null): string => version === null
+    ? t(`未冻结 · 哈希 ${hash.slice(0, 12)}`, `not frozen · hash ${hash.slice(0, 12)}`)
+    : t(`v${String(version)} · 哈希 ${hash.slice(0, 12)}`, `v${String(version)} · hash ${hash.slice(0, 12)}`)
+  if (strategy.hash === null) {
+    return `<section class="card" data-job-strategy-none>
+      <h2>${escapeHtml(t('这次任务的策略', 'Strategy of this job'))}</h2>
+      <p class="fine">${escapeHtml(t('这个任务没有记录策略：它创建于策略被记录之前，或者这个仓库当时的策略提到了冻结的节。', 'No strategy was recorded for this job: it was created before strategies were recorded, or the repository’s strategy at that moment named a frozen section.'))}</p>
+    </section>`
+  }
+  const previous = strategy.previous
+  const sections = strategy.sections === null
+    ? ''
+    : `<details class="fine"><summary>${escapeHtml(t('这次任务使用的节', 'Sections this job recorded'))}</summary><ul class="list">${Object.entries(strategy.sections)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .map(([key, value]) => `<li><code>${escapeHtml(key)}</code> <span class="fine">${escapeHtml(value)}</span></li>`)
+      .join('')}</ul></details>`
+  // A diff is shown only against a previous job that recorded a strategy, and
+  // only when the two hashes differ. Two identical hashes are one strategy seen
+  // twice, so the block says nothing rather than listing zero keys.
+  const changes = previous === undefined || previous.sections === null || strategy.sections === null
+    ? []
+    : diffStrategies(previous.sections, strategy.sections)
+  const diff = previous === undefined || previous.hash === strategy.hash
+    ? ''
+    : `<div data-strategy-diff>
+        <p class="fine"><strong>${escapeHtml(t('策略自上一个任务以来发生了变化', 'The strategy changed since the previous job'))}</strong> — ${escapeHtml(label(previous.hash, previous.version))} → <span data-strategy-previous-hash="${escapeHtml(previous.hash)}">${escapeHtml(label(strategy.hash, strategy.version))}</span> · <a href="/repos/${escapeHtml(repoId)}/jobs/${escapeHtml(previous.jobId)}">${escapeHtml(t('上一个任务', 'previous job'))}</a></p>
+        ${changes.length === 0
+          ? `<p class="fine">${escapeHtml(t('节的内容无法比较，只比较了哈希。', 'The section maps could not be compared; only the hashes were compared.'))}</p>`
+          : `<ul class="list">${changes.map((change) => `<li data-strategy-key="${escapeHtml(change.key)}"><code>${escapeHtml(change.key)}</code> <span class="fine">${escapeHtml(change.before ?? t('（新增）', '(added)'))} → ${escapeHtml(change.after ?? t('（移除）', '(removed)'))}</span></li>`).join('')}</ul>`}
+        <p class="fine">${escapeHtml(t('这个任务保留它自己的哈希，上一个任务的记录不会被改写。', 'This job keeps its own hash; the earlier job is not rewritten.'))}</p>
+      </div>`
+  return `<section class="card" data-job-strategy-block>
+    <h2>${escapeHtml(t('这次任务的策略', 'Strategy of this job'))}</h2>
+    <p class="fine" data-job-strategy data-strategy-hash="${escapeHtml(strategy.hash)}" data-strategy-version="${strategy.version === null ? 'none' : String(strategy.version)}">${escapeHtml(t('任务创建时记录：', 'Recorded when the job was created:'))} <strong>${escapeHtml(label(strategy.hash, strategy.version))}</strong> · <a href="/repos/${escapeHtml(repoId)}/strategy">${escapeHtml(t('这个仓库的开发策略', 'the repository’s strategy'))}</a></p>
+    ${diff}
+    ${sections}
+  </section>`
 }

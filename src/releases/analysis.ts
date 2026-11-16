@@ -9,11 +9,13 @@ import { stripAnsi } from '../actions/workflowLog.js'
 // observation, and a failed analysis is a sentence on the page.
 
 // The token can only read the run and the logs it belongs to. `actions: read`
-// is what the logs endpoint needs; `contents: read` is what the run list needs.
-// It is never the token that writes a tag: that one is minted separately and
-// carries Contents: write, and handing it to a log read would be a wider
-// credential than this action can justify.
-export const ANALYSIS_TOKEN_PERMISSIONS: Record<string, 'read'> = { actions: 'read', contents: 'read' }
+// covers both endpoints this analysis touches — /actions/runs/{id}/jobs and
+// /actions/jobs/{id}/logs — and nothing else is asked for: `contents: read`
+// would also let the credential read the source of every repository in the
+// installation, which is a wider blast radius than a log read can justify. The
+// mint is scoped to this repository as well, so the token cannot reach another
+// one even if a later permission were to widen.
+export const ANALYSIS_TOKEN_PERMISSIONS: Record<string, 'read'> = { actions: 'read' }
 
 export const ANALYSIS_JOB_PAGES = 3
 /** Two failed jobs are enough to explain a release; the rest are named, not read. */
@@ -34,7 +36,7 @@ export class AnalysisTokenUnavailable extends Error {
 
 export interface AnalysisTokenApp {
   configured: boolean
-  ephemeralToken(installationId: number, permissions: Record<string, 'read'>): Promise<string>
+  ephemeralToken(installationId: number, permissions: Record<string, 'read'>, repositories?: string[]): Promise<string>
   revokeToken(token: string): Promise<boolean>
 }
 
@@ -46,15 +48,17 @@ export interface MintedAnalysisToken {
 
 // The same refusal shape the triage token uses: a user OAuth token cannot be
 // narrowed to read-only, so a repository without an App installation gets a
-// named refusal instead of a wider credential on a log read.
+// named refusal instead of a wider credential on a log read. The mint names the
+// repository it reads, because an installation token is a repository-set
+// credential: without the scope it reaches everything the installation sees.
 export async function mintAnalysisToken(
-  repo: { installation_id: number | null },
+  repo: { installation_id: number | null; name: string },
   app: AnalysisTokenApp,
 ): Promise<MintedAnalysisToken> {
   if (repo.installation_id === null || !app.configured) {
     throw new AnalysisTokenUnavailable('ANALYSIS_READ_ONLY_TOKEN: run analysis needs a GitHub App installation; a user token cannot be narrowed to read-only, so the analysis is refused.')
   }
-  const token = await app.ephemeralToken(repo.installation_id, ANALYSIS_TOKEN_PERMISSIONS)
+  const token = await app.ephemeralToken(repo.installation_id, ANALYSIS_TOKEN_PERMISSIONS, [repo.name])
   return { token, revoke: () => app.revokeToken(token) }
 }
 

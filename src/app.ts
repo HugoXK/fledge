@@ -14,8 +14,8 @@ import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js
 import { readReleaseReadiness } from './releases/readiness.js'
 import { AnalysisTokenUnavailable, analyzeReleaseRun, mintAnalysisToken, releaseAnalysisJson } from './releases/analysis.js'
 import { currentStrategySections } from './strategy/sources.js'
-import { strategyRefusal } from './strategy/bundle.js'
-import { strategyPage } from './views/strategy.js'
+import { parseStrategySections, strategyRefusal } from './strategy/bundle.js'
+import { strategyPage, type JobStrategyView } from './views/strategy.js'
 import { releaseReadinessPage } from './views/releaseReadiness.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
@@ -120,6 +120,7 @@ import {
   type InboxQuestion,
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
+import type { PullTip } from './views/reviewMerge.js'
 import { gatePage } from './views/gate.js'
 import { planHash, validateGatePlan, type GatePlan } from './gates/plan.js'
 import { applyGatePlan } from './gates/apply.js'
@@ -250,6 +251,28 @@ function jobPageLimit(value: string | undefined): number {
   const parsed = value.trim() === '' ? Number.NaN : Number(value)
   if (!Number.isInteger(parsed)) return 50
   return Math.min(100, Math.max(1, parsed))
+}
+
+// #433 slice 2: the strategy block is a read of rows the job already carries plus
+// one earlier row of the same repository — no GitHub call and no bundle lookup
+// that could go missing. A job with no recorded hash renders "no strategy
+// recorded", which is what a row from before the columns means.
+function jobStrategyView(store: Store, repoId: string, job: JobRow): JobStrategyView {
+  const previousRow = job.strategy_hash === null ? undefined : store.previousStrategyJob(repoId, job.id)
+  const previous = previousRow === undefined || previousRow.strategy_hash === null
+    ? undefined
+    : {
+      jobId: previousRow.id,
+      hash: previousRow.strategy_hash,
+      version: previousRow.strategy_version,
+      sections: parseStrategySections(previousRow.strategy_json),
+    }
+  return {
+    hash: job.strategy_hash,
+    version: job.strategy_version,
+    sections: parseStrategySections(job.strategy_json),
+    ...(previous === undefined ? {} : { previous }),
+  }
 }
 
 // The item contract, in one place: these ten fields and nothing else. The row
@@ -945,13 +968,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // same shape as `inboxCache` above: a page refresh must not spend a GitHub
   // request, and a job without a pull request spends none at all.
   const changeStoryTtlMs = 60_000
-  const changeStoryCache = new Map<string, { at: number; story: ChangeStory }>()
-  const changeStoryFor = async (repo: RepoRow, job: JobRow): Promise<ChangeStory | undefined> => {
-    if (job.pr_url === null || job.pr_url === '') return undefined
+  const changeStoryCache = new Map<string, { at: number; story: ChangeStory; tip: PullTip | null }>()
+  // #264: the review/merge card needs the pull request's current tip to compare
+  // against the tip the stored verdict names. It rides on this same read: a page
+  // that already reads the pull request for the change story must not spend a
+  // second request on the tip.
+  const pullSnapshotFor = async (repo: RepoRow, job: JobRow): Promise<{ story: ChangeStory | undefined; tip: PullTip | null }> => {
+    if (job.pr_url === null || job.pr_url === '') return { story: undefined, tip: null }
     const cached = changeStoryCache.get(job.id)
-    if (cached !== undefined && Date.now() - cached.at < changeStoryTtlMs) return cached.story
+    if (cached !== undefined && Date.now() - cached.at < changeStoryTtlMs) return { story: cached.story, tip: cached.tip }
     const parsed = parsePrUrl(repo, job.pr_url, config.github.apiBase)
     let story: ChangeStory
+    let tip: PullTip | null = null
     if (!parsed.ok) {
       story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
     } else {
@@ -961,6 +989,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         const pr = await client.getPullRequest(parsed.ref.owner, parsed.ref.name, parsed.ref.number)
         const diff = await client.pullRequestDiffTotals(parsed.ref.owner, parsed.ref.name, parsed.ref.number, pr.changedFiles)
         story = readChangeStory({ body: pr.body, totals: diff.totals, diffState: diff.complete ? 'ok' : 'capped' })
+        tip = { headSha: pr.headSha, state: pr.state, draft: pr.draft, mergeableState: pr.mergeableState }
       } catch (error) {
         // A read that failed is a fact the block reports, not a reason to fail
         // the page: the evidence below it is what the maintainer came for.
@@ -971,8 +1000,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (changeStoryCache.size >= 200) {
       for (const [key, entry] of changeStoryCache) if (Date.now() - entry.at >= changeStoryTtlMs) changeStoryCache.delete(key)
     }
-    changeStoryCache.set(job.id, { at: Date.now(), story })
-    return story
+    changeStoryCache.set(job.id, { at: Date.now(), story, tip })
+    return { story, tip }
   }
 
   const requireAdvanced = (viewer: { user: UserRow; preview?: boolean }): void => {
@@ -2283,13 +2312,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       commands[`work-scope:${item.id}`] = fields()
       commands[`work-verify:${item.id}`] = fields()
     }
-    // #540 slice 6: each delivery row's merge button carries its own job
-    // revision and key, so a double click replays one receipt and a page
-    // rendered before the job moved on conflicts instead of merging blind.
+    // #540 slice 6 / #264: the per-PR merge command moved to the job page's
+    // review/merge card, which renders the same revision + key on the surface
+    // that carries the evidence. The repository page lists the pull requests and
+    // links to that card instead of holding a second merge control.
     const prJobs = store.listPrJobsForRepo(repo.id, 10)
-    for (const prJob of prJobs) {
-      commands[`merge:${prJob.id}`] = { revision: management.revisionOf('job', prJob.id), idempotencyKey: randomId('cmd') }
-    }
     return reply.type('text/html').send(
       repoPage({
         config,
@@ -2711,27 +2738,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     const owner = repo.upstream_owner || repo.owner
     const name = repo.upstream_name || repo.name
-    let minted: Awaited<ReturnType<typeof mintAnalysisToken>>
+    // #546 review finding 1: the mint belongs to the module, not to the route.
+    // A row whose recorded run is green or still running is refused by
+    // analyzeReleaseRun before it asks for a credential; minting here would spend
+    // a read-only token on every such POST and expire it unused. The module calls
+    // this only after its own check, and the one refusal that comes back through
+    // the call is the installation refusal, which is a sentence on the page.
+    let result: Awaited<ReturnType<typeof analyzeReleaseRun>>
     try {
-      minted = await mintAnalysisToken(repo, githubApp)
+      result = await analyzeReleaseRun({
+        owner,
+        name,
+        run: {
+          id: Number(release.run_id),
+          attempt: release.run_attempt ?? 1,
+          // The row keeps the conclusion, not the run's live status: a null
+          // conclusion is a run that has not finished, which the analysis refuses.
+          status: release.conclusion === null ? 'in_progress' : 'completed',
+          conclusion: release.conclusion,
+        },
+        mint: () => mintAnalysisToken({ installation_id: repo.installation_id, name }, githubApp),
+        client: (token) => new GithubClient(token, config.github.apiBase),
+      })
     } catch (error) {
       if (error instanceof AnalysisTokenUnavailable) return reply.redirect(`${back}&error=${encodeURIComponent(error.message)}`)
       throw error
     }
-    const result = await analyzeReleaseRun({
-      owner,
-      name,
-      run: {
-        id: Number(release.run_id),
-        attempt: release.run_attempt ?? 1,
-        // The row keeps the conclusion, not the run's live status: a null
-        // conclusion is a run that has not finished, which the analysis refuses.
-        status: release.conclusion === null ? 'in_progress' : 'completed',
-        conclusion: release.conclusion,
-      },
-      mint: async () => minted,
-      client: (token) => new GithubClient(token, config.github.apiBase),
-    })
     if (!result.ok) {
       store.audit(viewer.user.id, 'release.analysis_refused', `${repo.id}: ${release.tag_name} ${result.code}`)
       return reply.redirect(`${back}&error=${encodeURIComponent(result.message)}`)
@@ -3511,14 +3543,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const repoLabels = new Map(store.listRepos(viewer.user.id).map((entry) => [entry.id, `${entry.upstream_owner || entry.owner}/${entry.upstream_name || entry.name}`]))
     // #373: one read of the pull request, cached per job, so the page can say
     // what the change is and not only that its checks passed.
-    const changeStory = await changeStoryFor(repo, job)
+    const pull = await pullSnapshotFor(repo, job)
     return reply.type('text/html').send(jobPage({
       config,
       locale: request.locale ?? 'zh',
       viewer: viewOf(viewer),
       repo,
       job,
-      changeStory,
+      changeStory: pull.story,
+      pullTip: pull.tip,
+      // #264: the card's merge control is the same `task.merge` command the
+      // repository page sends, carrying the revision this render saw.
+      merge: { revision: management.revisionOf('job', job.id), idempotencyKey: randomId('cmd') },
+      strategy: jobStrategyView(store, repo.id, job),
       queued,
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
@@ -5139,6 +5176,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       job,
+      strategy: jobStrategyView(store, repo.id, job),
       events: store.listJobEvents(job.id, 200),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       supportMode: true,

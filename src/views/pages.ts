@@ -14,6 +14,7 @@ import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/rel
 import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/taskDecision.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, starIcon, type PageNotification, type Viewer } from './layout.js'
+import { jobStrategyBlock, type JobStrategyView } from './strategy.js'
 import { renderState, stateCell, type StateAction } from './states.js'
 import { maskEmail, maskIp, redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
@@ -33,6 +34,7 @@ import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { carryOverHeaderFromGoal } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
+import { reviewMergeCard, reviewMergeState, type PullTip } from './reviewMerge.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
 import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
@@ -1686,7 +1688,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         const number = /\/pull\/(\d+)/.exec(job.pr_url ?? '')?.[1] ?? ''
         const readiness = mergeReadiness(job)
         const reasons = readiness.reasons.slice(0, 2).join(' · ')
-        return `<tr><td data-label="PR"><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}</td><td data-label="${escapeHtml(t('核实', 'Verified'))}">${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td data-label="${escapeHtml(t('审核分', 'Review'))}">${job.review_score === null ? '—' : job.review_score}</td><td data-label="${escapeHtml(t('成本', 'Cost'))}">${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td data-label="${escapeHtml(t('创建', 'Created'))}">${escapeHtml(humanTimeShort(job.created_at))}</td><td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form>${repo.repo_role === 'maintainer' ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/merge">${csrf(viewer)}${commandHidden(commands[`merge:${job.id}`])}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('合并', 'Merge'))}</button></form>` : ''}</div></td></tr>`
+        return `<tr><td data-label="PR"><a href="${escapeHtml(job.pr_url ?? '')}" target="_blank" rel="noreferrer">#${escapeHtml(number)}</a></td><td data-label="${escapeHtml(t('状态', 'Status'))}">${badge(t, job.status)}</td><td data-label="${escapeHtml(t('核实', 'Verified'))}">${readinessBadge(t, readiness.state)}${reasons === '' ? '' : `<br /><small class="muted">${escapeHtml(reasons)}</small>`}</td><td data-label="${escapeHtml(t('审核分', 'Review'))}">${job.review_score === null ? '—' : job.review_score}</td><td data-label="${escapeHtml(t('成本', 'Cost'))}">${escapeHtml(quotaMoney(job.cost_usd * config.quota.usdCny))}</td><td data-label="${escapeHtml(t('创建', 'Created'))}">${escapeHtml(humanTimeShort(job.created_at))}</td><td data-label="${escapeHtml(t('操作', 'Actions'))}"><div class="row"><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重新核实', 'Re-check'))}</button></form><a class="link" href="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}#review-merge">${escapeHtml(t('审查并合并', 'Review and merge'))}</a></div></td></tr>`
       }).join('')
   if (repo.auto_merge === 0 && prJobs.length >= 3) {
     pageMessages.push({
@@ -1696,7 +1698,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     })
   }
   const deliveryCard = `<section class="card"><h2>${escapeHtml(t('待处理 PR', 'Pull requests to decide'))}</h2>
-    <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection.'))}</p>
+    <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。每个 PR 的合并在它自己的任务页『审查 → 合并』卡片里，只有那一个合并控件。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection. Each pull request is merged from the one review → merge card on its own job page.'))}</p>
     ${repo.repo_role === 'maintainer' && prJobs.length > 0 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : ''}
     <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('核实', 'Verified'))}</th><th>${escapeHtml(t('审核分', 'Review'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th><th>${escapeHtml(t('创建', 'Created'))}</th><th></th></tr></thead><tbody>${prRows}</tbody></table></div></section>`
   const lifecycleItems: string[] = []
@@ -3162,8 +3164,18 @@ export function jobPage(input: {
   // #373 slice 1: the "Why this change" block, read from the pull request. Absent
   // on a surface that has no pull request to read.
   changeStory?: ChangeStory
+  // #433 slice 2: the strategy this job recorded, plus the previous job's when
+  // the two hashes differ. Absent on a caller that does not compute it.
+  strategy?: JobStrategyView
   // #540: the revision this render saw and the key a double submit replays.
   // Absent on surfaces that cannot write (the admin support view).
+  // #264: the merge command the review/merge card sends. Absent on a read-only
+  // surface, which then renders the state without a control.
+  merge?: { revision: number; idempotencyKey: string }
+  // #264: the pull request's current tip, from the same cached read the change
+  // story uses. Without it the card says it could not read the tip instead of
+  // assuming the stored verdict still covers it.
+  pullTip?: PullTip | null
   cancel?: { revision: number; idempotencyKey: string }
   pause?: { revision: number; idempotencyKey: string }
   execute?: { revision: number; idempotencyKey: string }
@@ -3495,6 +3507,28 @@ export function jobPage(input: {
     ${relationForm}
   </section>`
 
+  // #264: one card answers review -> merge at the top of the page, before the
+  // evidence cards, so the action is reachable without scrolling past them.
+  const mergeState = reviewMergeState({
+    job,
+    role: repo.repo_role ?? '',
+    verification,
+    guard: pathGuard,
+    adversarial,
+    tip: supportMode ? null : input.pullTip ?? null,
+  })
+  const reviewMerge = supportMode || mergeState.kind === 'none'
+    ? ''
+    : reviewMergeCard({
+        t,
+        viewer,
+        repoId: repo.id,
+        jobId: job.id,
+        prUrl: job.pr_url,
+        state: mergeState,
+        ...(input.merge === undefined ? {} : { merge: input.merge }),
+      })
+
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -3515,6 +3549,7 @@ export function jobPage(input: {
     </div>
     ${queueBlock}
   </section>
+  ${reviewMerge}
   ${priorityCard}
   ${relationsCard}
   ${decisionCard}
@@ -3524,6 +3559,7 @@ export function jobPage(input: {
   ${supportMode ? '' : workTypeCard}
   ${supportMode ? '' : triageCard}
   ${changeStoryCard}
+  ${input.strategy === undefined ? '' : jobStrategyBlock({ locale, repoId: repo.id, strategy: input.strategy })}
   ${jobSecurityFindingsCard(t, findings)}
   <section class="cols">
     <div class="card">
