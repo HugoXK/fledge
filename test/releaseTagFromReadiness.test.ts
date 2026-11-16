@@ -53,7 +53,13 @@ async function harness(options: HarnessOptions = {}) {
       return json(response, 200, options.tags ?? [{ name: 'v1.3.0', sha: TAG_SHA, commit: { sha: TAG_SHA } }])
     }
     if (method === 'GET' && url.startsWith('/repos/o/r/compare/')) {
-      return json(response, 200, { status: 'ahead', ahead_by: 3 })
+      // compare/main...{target} is the tag POST's containment read: `behind` is
+      // what GitHub answers when the default branch contains the target. The
+      // readiness page compares the previous tag with the head, so that one is
+      // `ahead`.
+      return url.includes('compare/main...')
+        ? json(response, 200, { status: 'behind', behind_by: 3 })
+        : json(response, 200, { status: 'ahead', ahead_by: 3 })
     }
     if (method === 'GET' && url.startsWith('/repos/o/r/commits/')) {
       return json(response, 200, { sha: TAG_SHA, commit: { committer: { date: TAG_DATE } } })

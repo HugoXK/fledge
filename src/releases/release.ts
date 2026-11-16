@@ -95,8 +95,10 @@ export const releaseRefusals = {
   // #893: a tag is a ref write, and pushing it runs the workflows committed in
   // the tagged tree. A target the default branch never contained would make
   // "this release was built from this repository at this commit" uncheckable, so
-  // ancestry is proven before anything is written.
-  targetNotOnDefault: (sha: string, branch: string, status: string): string => `${sha} is ${status === 'behind' ? 'behind' : 'not on'} the default branch ${branch}; nothing was tagged, because a release is cut from a commit the default branch contains`,
+  // ancestry is proven before anything is written. The status is the one
+  // `compare/{defaultBranch}...{target}` reports, where `ahead` means the target
+  // holds commits the default branch does not — the unmerged branch refused here.
+  targetNotOnDefault: (sha: string, branch: string, status: string): string => `${sha} is ${status === 'ahead' ? 'ahead of' : 'not contained in'} the default branch ${branch}; nothing was tagged, because a release is cut from a commit the default branch contains`,
   ancestryUnreadable: (branch: string): string => `the default branch ${branch} could not be compared with the target commit; nothing was tagged, because ancestry is required before a ref write`,
   tagScopeMissing: (status: number): string => status === 404
     // A 404 does not prove a missing permission: it also means the App cannot see
@@ -325,15 +327,10 @@ export interface ReleaseLookupClient {
   getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null>
 }
 
-// #893: the version scan is capped, because it used to run one compare per tag
-// behind a route with no rate limit; the newest tags are the only ones that can
-// be the previous version, so the cap cannot change which release is legal.
-export const MAX_TAG_COMPARES = 10
-
-// The preflight is read-only: five GETs decide whether a tag may be written, and
-// the answer is the plan a maintainer confirms. Nothing here writes. The commit
-// is checked first because a maintainer types that SHA by hand: a missing object
-// must be a named refusal here, not a 404 from `compare` or a 422 from the write.
+// The preflight is read-only: every call is a GET, and the answer is the plan a
+// maintainer confirms. Nothing here writes. The commit is checked first because
+// a maintainer types that SHA by hand: a missing object must be a named refusal
+// here, not a 404 from `compare` or a 422 from the write.
 export async function releasePreflight(
   client: ReleaseLookupClient,
   input: { owner: string; name: string; defaultBranch: string; requestedVersion: string; targetSha: string },
@@ -343,9 +340,13 @@ export async function releasePreflight(
     return { ok: false, code: 'target_missing', message: `${input.targetSha} is not a commit in this repository` }
   }
   // #893: the commit exists, but that says nothing about which branch contains
-  // it. `ahead` and `identical` are the only answers that prove the default
-  // branch contains the target; `diverged` and `behind` do not, and a compare
-  // that cannot be read fails closed rather than passing on an assumption.
+  // it. GitHub's compare is `base...head`, so on
+  // `compare/{defaultBranch}...{target}` `behind` means the target is an
+  // ancestor of the default branch — the branch contains it — and `identical`
+  // means the same commit; those two are the accepted answers. `ahead` is a
+  // target the branch does not contain (an unmerged branch) and `diverged`
+  // shares no base with it; both are refused, and a compare that cannot be read
+  // fails closed rather than passing on an assumption.
   let ancestry: { status: string; aheadBy: number } | null = null
   try {
     ancestry = await client.compareCommits(input.owner, input.name, input.defaultBranch, input.targetSha)
@@ -355,25 +356,29 @@ export async function releasePreflight(
   if (ancestry === null) {
     return { ok: false, code: 'ancestry_unreadable', message: releaseRefusals.ancestryUnreadable(input.defaultBranch) }
   }
-  if (ancestry.status !== 'ahead' && ancestry.status !== 'identical') {
+  if (ancestry.status !== 'behind' && ancestry.status !== 'identical') {
     return { ok: false, code: 'target_not_on_default', message: releaseRefusals.targetNotOnDefault(input.targetSha, input.defaultBranch, ancestry.status) }
   }
   const tags = await client.listTags(input.owner, input.name)
   const candidates: ReleaseTag[] = []
-  // #893: the previous version is the highest reachable SemVer tag, so the scan
-  // walks the newest tags first and stops there. The cap is the bound: one
-  // POST may not ask GitHub one compare per tag however many tags exist.
+  // #893: the previous version is the highest reachable SemVer tag, so
+  // reachability decides first and the walk stops at the first tag that
+  // qualifies: a tag the target is not ahead of is not an ancestor of it. The
+  // walk visits the tags newest-first, which is one compare per tag newer than
+  // the previous release — the destructive class limit on the route is what
+  // paces that. Capping to the ten newest tags *before* the test was wrong: a
+  // target older than them lost its real previous release, `previous` was
+  // undefined, and both "nothing to release" and "not higher" were skipped, so a
+  // downgrade passed.
   const semverTags = tags
     .filter((tag) => parseVersion(tag.name) !== null)
     .sort((left, right) => compareVersions(right.name, left.name))
-    .slice(0, MAX_TAG_COMPARES)
   for (const tag of semverTags) {
     const compare = await client.compareCommits(input.owner, input.name, tag.name, input.targetSha)
-    candidates.push({
-      name: tag.name,
-      sha: tag.sha,
-      targetCommitsAhead: compare.status === 'ahead' || compare.status === 'identical' ? (compare.status === 'identical' ? 0 : compare.aheadBy) : null,
-    })
+    const targetCommitsAhead = compare.status === 'identical' ? 0 : compare.status === 'ahead' ? compare.aheadBy : null
+    if (targetCommitsAhead === null) continue
+    candidates.push({ name: tag.name, sha: tag.sha, targetCommitsAhead })
+    break
   }
   const workflow = await client.getRepoFile(input.owner, input.name, '.github/workflows/release.yml', input.targetSha)
   const protection = await client.getBranchProtection(input.owner, input.name, input.defaultBranch)
