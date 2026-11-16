@@ -1031,10 +1031,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const instances = store.listRepoInstances()
     const ready = instances.filter((entry) => entry.status === 'ready').length
     const failed = instances.filter((entry) => entry.status === 'failed').length
-    // #758: the skew the App JWT already corrects for, reported rather than
-    // re-measured. `null` means no measurement has succeeded — never 0, which
-    // would read as a clock that is exactly right.
-    return { ok: true, db: true, instances: { ready, failed, total: instances.length }, clock: { skewSeconds: githubApp.clockSkewSeconds(), source: 'github' } }
+    // #758 slice 2: readiness fails on a measured clock outside the threshold, so
+    // a monitor that reads only the status code stops seeing a "healthy" instance
+    // whose every stored time is 28 minutes ahead. `unknown` and
+    // `not-configured` stay 200: a GitHub outage, or a deployment with no App, is
+    // not a clock verdict. The object keeps `source` and adds `state` and
+    // `thresholdSeconds`, so a reader can tell "no number" from "a number that is
+    // too far".
+    const clock = githubApp.clockState()
+    const body = {
+      ok: clock.state !== 'fail',
+      db: true,
+      instances: { ready, failed, total: instances.length },
+      clock: { ...clock, source: 'github' },
+    }
+    return clock.state === 'fail' ? reply.code(503).send(body) : body
   })
 
   app.get('/lang/:locale', async (request, reply) => {

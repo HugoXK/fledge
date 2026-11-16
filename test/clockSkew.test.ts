@@ -216,9 +216,9 @@ test('/readyz reads the last measurement instead of calling GitHub', async () =>
 // through the whole chain: `skewSeconds: NaN` on /readyz (serialised as `null` by
 // luck), a literal `NaN` gauge on /metrics because `setGauge` never checked
 // finiteness, a `Math.abs(NaN) > 60` log test that is false, and an `iat: NaN`
-// JWT. A number that was never measured, failing silently. The fourth way to be
-// unknown is the same as the other three: no reading, no series.
-test('a Date header that is present but unparseable is no measurement, and the JWT keeps its last real correction', async () => {
+// JWT. A number that was never measured, failing silently. An unparseable header
+// is therefore a failed measurement: it may not replace the last real reading.
+test('a Date header that is present but unparseable is no measurement, so the last real reading stands', async () => {
   resetMetrics()
   const dir = mkdtempSync(join(tmpdir(), 'fledge-clock-skew-'))
   const keyPath = join(dir, 'app.pem')
@@ -233,7 +233,7 @@ test('a Date header that is present but unparseable is no measurement, and the J
   const realNow = Date.now
   const measuredAt = 1_800_000_000_000
   try {
-    // A real reading first. This is the last real correction the JWT may keep.
+    // A real reading first. This is the reading the failure below must not move.
     Date.now = () => measuredAt
     assert.equal(await h.built.githubApp.measureSkew(), 90, 'the fake clock is 90 seconds behind')
 
@@ -243,14 +243,20 @@ test('a Date header that is present but unparseable is no measurement, and the J
     const loggedBefore = capture.lines.length
     assert.equal(await h.built.githubApp.measureSkew(), null, 'an unparseable Date was recorded as a measurement')
 
+    // #758 slice 2: the failed refresh keeps the last successful reading, which is
+    // 2.5 s old and inside the reuse window, so the report still names the number
+    // that was really measured — with its state, so a reader can tell it apart.
     const ready = await h.built.app.inject({ method: 'GET', url: '/readyz' })
-    const body = ready.json() as { clock?: { skewSeconds?: number | null } }
-    assert.equal(body.clock?.skewSeconds, null, 'an unparseable Date read as a number on /readyz')
+    const body = ready.json() as { clock?: { skewSeconds?: number | null; state?: string } }
+    assert.equal(ready.statusCode, 200)
+    assert.equal(body.clock?.skewSeconds, 90, 'an unparseable Date replaced the last real reading')
+    assert.equal(body.clock?.state, 'ok')
     const metrics = await h.built.app.inject({ method: 'GET', url: '/metrics', remoteAddress: '127.0.0.1' })
-    assert.doesNotMatch(metrics.body, /fledge_clock_skew_seconds/, 'an unparseable Date published a gauge')
+    assert.match(metrics.body, /^fledge_clock_skew_seconds 90$/m, 'an unparseable Date published a NaN gauge')
     assert.deepEqual(capture.lines.slice(loggedBefore).filter((line) => line.msg === 'clock.skew'), [], 'a NaN skew passed the 60-second log test')
 
-    // The JWT still mints, with the last correction that was really measured.
+    // The JWT still mints, with the same real correction: a failed refresh inside
+    // the window is not a clock verdict.
     // `floor` truncates the half-second toward the past; that is the asserted
     // direction, not a tolerance around the nearest second.
     await h.built.githubApp.getApp()

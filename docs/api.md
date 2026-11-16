@@ -732,7 +732,7 @@ Public, and answerable without a token, because a readiness probe that needs a
 credential fails when the credential does. The body is:
 
 ```json
-{ "ok": true, "db": true, "instances": { "ready": 2, "failed": 0, "total": 2 }, "clock": { "skewSeconds": 1680, "source": "github" } }
+{ "ok": false, "db": true, "instances": { "ready": 2, "failed": 0, "total": 2 }, "clock": { "skewSeconds": 1680, "measuredAt": "2026-11-15T21:14:02.000Z", "thresholdSeconds": 120, "state": "fail", "source": "github" } }
 ```
 
 `instances` counts the per-repository instances the database knows about.
@@ -750,14 +750,36 @@ API, and an outage cannot make readiness flap. An operator watches an absent
 `fledge_clock_skew_seconds` series as "not measured", not as "aligned" (see
 [`docs/deploy.md`](deploy.md)).
 
+`clock.state` is the decision the measurement supports, and `ok` in the body
+follows it:
+
+| state | meaning | response |
+|---|---|---|
+| `not-configured` | this deployment has no GitHub App, so nothing is measured | `200` |
+| `ok` | measured at most 15 minutes ago and within `thresholdSeconds` | `200` |
+| `unknown` | never measured, or the last reading is older than 15 minutes | `200` |
+| `fail` | the last measurement is outside `thresholdSeconds` | **`503`, `ok:false`** |
+
+`clock.thresholdSeconds` is `CLOCK_SKEW_FAIL_SECONDS` (`src/repos/app.ts`), the
+same `120` the `FledgeClockSkewHigh` alert fires on, and `clock.measuredAt` is
+when the reported reading was taken. `unknown` and `not-configured` stay `200`
+on purpose: a GitHub outage, or a deployment without an App, is not a clock
+verdict. In `fail` the platform also refuses work — `Jobs.enqueue` answers
+`CLOCK_SKEW` before any job row is written, counted as
+`fledge_admission_rejected_total{reason="clock_skew"}` — and the App JWT refuses
+to sign (`CLOCK_SKEW_EXCEEDED`), where `unknown` refuses with
+`CLOCK_SKEW_UNVERIFIED`.
+
 The measurement itself lives on the GitHub App client
 (`src/repos/app.ts`): `measureSkew()` reads the `Date` header of one
-unauthenticated `GET /rate_limit`, records it, and leaves `null` behind when the
-request fails, the header is missing, or its value is present but unparseable
-(a rewriting proxy) — the last case keeps the JWT's last real correction rather
-than handing `NaN` to `iat`. `clockSkewSeconds()` returns that stored
-reading. The App JWT still refreshes the same figure at most every five minutes
-and corrects `iat` with it; the JWT path is unchanged by this field.
+unauthenticated `GET /rate_limit`, records it, and leaves the last successful
+reading untouched when the request fails, the header is missing, or its value is
+present but unparseable (a rewriting proxy) — an unparseable header used to hand
+`NaN` to `iat`, and it never replaces a real reading now. `clockSkewSeconds()`
+returns that stored reading and `clockState()` turns it into the state above.
+The App JWT refreshes the same figure at most every five minutes and signs only
+from a reading inside the 15-minute window, so a failed refresh can no longer
+keep a stale correction signing.
 
 ## Conventions
 

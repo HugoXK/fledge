@@ -41,15 +41,38 @@ function base64url(value: Buffer | string): string {
 const CLOCK_SKEW_LOG_SECONDS = 60
 const SKEW_REFRESH_MS = 5 * 60_000
 
+// #758 slice 2: the number that turns a measurement into a decision. It is the
+// same 120 the alert rule fires on (`deploy/prometheus/fledge-alerts.yml`) and
+// `docs/deploy.md` names both, so a failing readiness probe and a firing alert
+// cannot disagree about what "too far" means.
+export const CLOCK_SKEW_FAIL_SECONDS = 120
+
+// How long one successful measurement stays usable. Inside the window a GitHub
+// outage is tolerated; past it the clock is unverified, which is not the same as
+// good, and nothing may sign from a number nobody has re-measured.
+export const CLOCK_SKEW_REUSE_MS = 15 * 60_000
+
+export type ClockStateName = 'not-configured' | 'ok' | 'fail' | 'unknown'
+
+export interface ClockState {
+  /** The last successful measurement: seconds the process is ahead of GitHub. */
+  skewSeconds: number | null
+  /** When that measurement was taken, ISO-8601, or null when none succeeded. */
+  measuredAt: string | null
+  thresholdSeconds: number
+  state: ClockStateName
+}
+
 export class GithubApp {
   private key: string | null = null
-  private skewMs = 0
   private skewAt = 0
-  // The last successful measurement, kept apart from `skewMs`: the JWT needs a
-  // number, while a report has to be able to say "unknown". A 0 here would read
-  // as a clock that is exactly right, which is the one lie this slice exists to
-  // prevent.
+  // The last successful measurement. It is kept when a refresh fails — the
+  // reading is still what was measured, it just stops being trusted once
+  // `CLOCK_SKEW_REUSE_MS` passes — and it is the only number the JWT may sign
+  // with. `skewMs` used to be a private fail-open copy of it and is gone: that
+  // copy is how a host 28 minutes fast kept signing.
   private measuredSkewSeconds: number | null = null
+  private measuredAt: number | null = null
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>()
 
   constructor(private readonly config: Config) {}
@@ -71,37 +94,34 @@ export class GithubApp {
   async measureSkew(): Promise<number | null> {
     if (!this.configured) {
       this.measuredSkewSeconds = null
+      this.measuredAt = null
       return null
     }
     try {
       const response = await fetch(`${this.config.github.apiBase}/rate_limit`, { headers: { 'user-agent': 'fledge/0.1' }, signal: AbortSignal.timeout(10_000) })
       const date = response.headers.get('date')
-      this.skewAt = Date.now()
-      if (date === null) {
-        this.measuredSkewSeconds = null
-        return null
-      }
+      const at = Date.now()
+      this.skewAt = at
+      if (date === null) return null
       const remote = Date.parse(date)
       if (!Number.isFinite(remote)) {
         // #758 finding: a `Date` header that is present but unparseable (a
         // rewriting proxy is the realistic case) is a failed measurement, not a
-        // reading. `skewMs` keeps the last real correction for the JWT, and the
-        // report says "unknown" — `NaN` here used to travel to /readyz, to the
-        // metric, and into the JWT's `iat` without failing anything.
-        this.measuredSkewSeconds = null
+        // reading — `NaN` here used to travel to /readyz, to the metric, and into
+        // the JWT's `iat` without failing anything. The previous reading stays;
+        // it ages out of `ok` on its own rather than being replaced by a guess.
         return null
       }
-      this.skewMs = Date.now() - remote
-      const seconds = Math.round(this.skewMs / 1000)
+      const seconds = Math.round((at - remote) / 1000)
       this.measuredSkewSeconds = seconds
+      this.measuredAt = at
       if (Math.abs(seconds) > CLOCK_SKEW_LOG_SECONDS) log.warn('clock.skew', { skewSeconds: seconds, source: 'github' })
       return seconds
     } catch {
-      // The JWT keeps its last correction here; slice 2 of #758 owns that hole.
-      // The report does not keep it, because a measurement that failed is not a
-      // reading, and a stale number would hide the next drift.
+      // A failed refresh is not a reading: the last successful one stays as the
+      // report's answer and ages out of `ok` after `CLOCK_SKEW_REUSE_MS`. The JWT
+      // has no correction of its own to fall back on any more.
       this.skewAt = Date.now()
-      this.measuredSkewSeconds = null
       return null
     }
   }
@@ -111,10 +131,38 @@ export class GithubApp {
     return this.measuredSkewSeconds
   }
 
+  // #758 slice 2: one answer to "may anything act on this clock", read by
+  // /readyz, by `appJwt` and by `Jobs.enqueue`. `not-configured` is a deployment
+  // with no App, which is not a clock verdict; `unknown` is "nobody measured, or
+  // the last reading is stale"; `fail` is a measurement above the threshold, and
+  // it stays `fail` once it ages out — an outage does not repair a clock that was
+  // measured 28 minutes wrong.
+  clockState(): ClockState {
+    const thresholdSeconds = CLOCK_SKEW_FAIL_SECONDS
+    if (!this.configured) return { skewSeconds: null, measuredAt: null, thresholdSeconds, state: 'not-configured' }
+    const seconds = this.measuredSkewSeconds
+    const at = this.measuredAt
+    if (seconds === null || at === null) return { skewSeconds: null, measuredAt: null, thresholdSeconds, state: 'unknown' }
+    const measuredAt = new Date(at).toISOString()
+    if (Math.abs(seconds) > thresholdSeconds) return { skewSeconds: seconds, measuredAt, thresholdSeconds, state: 'fail' }
+    if (Date.now() - at > CLOCK_SKEW_REUSE_MS) return { skewSeconds: seconds, measuredAt, thresholdSeconds, state: 'unknown' }
+    return { skewSeconds: seconds, measuredAt, thresholdSeconds, state: 'ok' }
+  }
+
   private async appJwt(): Promise<string> {
     if (!this.configured) throw new Error('GitHub App 未配置')
     if (Date.now() - this.skewAt > SKEW_REFRESH_MS) await this.measureSkew()
-    const now = Math.floor((Date.now() - this.skewMs) / 1000)
+    // #758 slice 2: sign only with a measurement that is inside both the reuse
+    // window and the threshold. Everything else refuses with a named error
+    // instead of signing from a stale or zero correction — that fail-open is what
+    // let a host 28 minutes fast keep talking to GitHub as if its clock were
+    // right, and a 401 from GitHub was the only symptom.
+    const clock = this.clockState()
+    if (clock.state === 'fail') {
+      throw new Error(`CLOCK_SKEW_EXCEEDED: the process clock is ${String(clock.skewSeconds)}s from GitHub time, above the ${String(clock.thresholdSeconds)}s threshold`)
+    }
+    if (clock.state !== 'ok') throw new Error('CLOCK_SKEW_UNVERIFIED: no clock measurement inside the reuse window')
+    const now = Math.floor(Date.now() / 1000) - (clock.skewSeconds ?? 0)
     const header = base64url(JSON.stringify({ alg: 'RS256', typ: 'JWT' }))
     const payload = base64url(JSON.stringify({ iat: now - 60, exp: now + 540, iss: this.config.githubApp.id }))
     const signer = createSign('RSA-SHA256')
