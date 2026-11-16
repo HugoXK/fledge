@@ -1,4 +1,4 @@
-# External trigger for the daily release (14:30Z = 22:30 Asia/Shanghai).
+# External trigger for the daily release (02:00Z = 10:00 Asia/Shanghai).
 #
 # GitHub's `schedule` event is best-effort and can arrive hours late. Install
 # this only on a host whose clock is trustworthy (see issue #758) or on a
@@ -10,4 +10,4 @@
 #   GITHUB_TOKEN=<actions:write token>
 #
 # The script never prints the token. Keep the env file out of git.
-30 14 * * * cd /opt/fledge && set -a && . /etc/fledge/release-trigger.env && set +a && /usr/bin/node scripts/trigger-release.mjs >> /var/log/fledge/release-trigger.log 2>&1
+0 2 * * * cd /opt/fledge && set -a && . /etc/fledge/release-trigger.env && set +a && /usr/bin/node scripts/trigger-release.mjs >> /var/log/fledge/release-trigger.log 2>&1

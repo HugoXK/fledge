@@ -1,6 +1,6 @@
 # 0008 — Weekly minor, daily patch
 
-Status: **accepted** (2026-11-10)
+Status: **accepted** (2026-11-10), slot amended by [0024](0024-release-slot-1000.md)
 Date: 2026-11-10
 
 ## Context

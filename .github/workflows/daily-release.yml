@@ -1,9 +1,10 @@
 name: Daily minor release
 
-# Owner decision 2026-11-06, cadence corrected by ADR 0008 (accepted 2026-11-10):
-# a nightly release at 22:30 Asia/Shanghai (14:30 UTC) when the rule in issue #80
-# is satisfied. The version bumps the minor on the first release of a UTC week and
-# the patch on later nights in the same week
+# Owner decision 2026-11-06, cadence corrected by ADR 0008 (accepted 2026-11-10)
+# and the slot moved by ADR 0024 (2026-11-16): a daily release at 10:00
+# Asia/Shanghai (02:00 UTC) when the rule in issue #80 is satisfied. The version
+# bumps the minor on the first release of a UTC week and the patch on later
+# releases in the same week
 # (`docs/decisions/0008-release-cadence.md`), and the annotated tag for that
 # release is pushed once its mechanical pull request is merged.
 #
@@ -11,7 +12,7 @@ name: Daily minor release
 # records that label as non-authoritative, and the version decides the bump.
 #
 # Two jobs, two scheduled slots plus a filtered push, two credentials:
-#   release  plans the night on `schedule` (14:30Z, with a 15:30Z catch-up) and
+#   release  plans the day on `schedule` (02:00Z, with a 03:00Z catch-up) and
 #            on `workflow_dispatch`, pushes `release/v<version>` with the
 #            automatic token and opens exactly one release pull request with the
 #            team token (`RELEASE_OPEN_TOKEN`). Without that secret the night is
@@ -24,7 +25,7 @@ name: Daily minor release
 #            (`fetch-depth: 0`, several API calls) just to report
 #            `slot-shipped` (#548). Whether an eligible run plans is still
 #            decided by `scripts/lib/release-trigger.mjs`, not by the event name:
-#            the `14:30Z` slot is filled at most once by any trigger, and a tag
+#            the `02:00Z` slot is filled at most once by any trigger, and a tag
 #            newer than the boundary is `slot-shipped`.
 #   tag      recognises the merge of that branch on `main` and writes the tag
 #            through the Git data API, then dispatches the publish run at it. It
@@ -39,12 +40,12 @@ name: Daily minor release
 
 on:
   schedule:
-    # 22:30 Asia/Shanghai is the release slot. The second delivery is a catch-up
+    # 10:00 Asia/Shanghai is the release slot. The second delivery is a catch-up
     # for a late or dropped run: `decideTrigger` still compares the newest tag
-    # with the 14:30Z boundary, so a 15:30Z run after a release is `slot-shipped`
+    # with the 02:00Z boundary, so a 03:00Z run after a release is `slot-shipped`
     # and a slot never releases twice.
-    - cron: '30 14 * * *'
-    - cron: '30 15 * * *'
+    - cron: '0 2 * * *'
+    - cron: '0 3 * * *'
   workflow_dispatch:
     inputs:
       dry_run:
@@ -54,7 +55,7 @@ on:
   push:
     branches: [main]
     # Steady-state cost: a plan job per merge made this workflow run once for
-    # every pull request, even when the 14:30Z slot had already shipped (#548).
+    # every pull request, even when the 02:00Z slot had already shipped (#548).
     # Only a release-shaped change needs the workflow. The tag job must see the
     # mechanical release merge, and a release pull request always changes
     # `package.json` and `CHANGELOG.md`. `changelog.d/**` is deliberately absent:
@@ -76,7 +77,7 @@ jobs:
     # A push to `main` is eligible only when the paths filter above matched a
     # release-shaped change. Ordinary merges are kept quiet by that filter; among
     # the runs that do arrive, the trigger predicate below decides whether the
-    # `14:30Z` slot still needs filling, and the push, the pull request and the
+    # `02:00Z` slot still needs filling, and the push, the pull request and the
     # comment each depend on its answer.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
@@ -248,7 +249,7 @@ jobs:
         # step is the one place that says whether the night still needs filling,
         # and it names the blocker when it does not: the rule's guards, an open
         # release pull request, an existing `release/v<next>` branch, a tag newer
-        # than the `14:30Z` boundary, or a catch-up fill of the previous slot.
+        # than the `02:00Z` boundary, or a catch-up fill of the previous slot.
         # The condition is the collect step's own outcome, not `always()`: this
         # step reads `$RUNNER_TEMP/state.json`, and #548 showed what a dereference
         # of a state file the collect step never wrote looks like (ENOENT instead

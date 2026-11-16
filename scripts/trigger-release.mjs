@@ -3,7 +3,7 @@
 //
 // GitHub's `schedule` event is best-effort and can arrive hours late. This
 // script is the external trigger: a host cron or a Cloudflare Worker calls it
-// at 14:30Z (22:30 Asia/Shanghai), and GitHub's own schedule remains the
+// at 02:00Z (10:00 Asia/Shanghai), and GitHub's own schedule remains the
 // fallback. It only calls the workflow_dispatch endpoint; the workflow's
 // `release-trigger` predicate still decides whether the slot needs filling, so
 // a late schedule after this run is a no-op.

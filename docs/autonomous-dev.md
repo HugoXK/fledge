@@ -817,19 +817,19 @@ credential: both run with the automatic `GITHUB_TOKEN`, and the token is scoped 
 job rather than at file level (`release`: contents write, pull-requests read, checks
 read, issues write; `tag`: contents write, pull-requests read, actions write).
 
-The `release` job runs at 22:30 Asia/Shanghai (`30 14 * * *`), again at 23:30
-(`30 15 * * *`) as a catch-up for a late or dropped delivery, on
+The `release` job runs at 10:00 Asia/Shanghai (`0 2 * * *`), again at 11:00
+(`0 3 * * *`) as a catch-up for a late or dropped delivery, on
 `workflow_dispatch` (default `dry_run: true`) and on a push to `main` that
 touches a release-shaped path: `package.json`, `package-lock.json`,
 `CHANGELOG.md` or `docker-compose.yml`. The paths filter is the steady-state fix
 (#548): an ordinary feature merge changed the pull-request count but started a
-full plan job (`fetch-depth: 0`, several API calls) even when the `14:30Z` slot
+full plan job (`fetch-depth: 0`, several API calls) even when the `02:00Z` slot
 had already shipped. `changelog.d/**` is deliberately not in the filter, because
 almost every feature pull request adds a fragment; including it would put the
 per-merge noise back. The catch-up slot and the filtered push still go through the
 same trigger predicate, which is unchanged. It collects the state, asks the
 planner and the pure `decideDrive()` in `scripts/lib/release-drive.mjs`, and does
-exactly one thing per night:
+exactly one thing per run:
 
 | Situation | Action |
 |---|---|
@@ -839,7 +839,7 @@ exactly one thing per night:
 | a `release/v<next>` branch has no pull request in any state and no tag | `STATE=orphan-branch` in the summary, naming the branch and its sha, and the run is red: this is a slot wedged by an earlier run, and only the owner deletes or adopts that branch |
 | a release PR is already open | no push; the drive decision goes to the artifact and the summary, and whoever calls `#187` owns the PR |
 | the rule is not met | write the counts and the reason to the job summary and exit 0 |
-| the trigger refuses: tag newer than the `14:30Z` boundary, a release branch present, or a release pull request open | no push; the summary names the blocker. Exit 0 only when the Decide step above already cleared the branch: a `release/v<next>` branch with no pull request and no tag is the orphan row, red and named, and no run repairs it |
+| the trigger refuses: tag newer than the `02:00Z` boundary, a release branch present, or a release pull request open | no push; the summary names the blocker. Exit 0 only when the Decide step above already cleared the branch: a `release/v<next>` branch with no pull request and no tag is the orphan row, red and named, and no run repairs it |
 | a push before today's boundary with the previous boundary unreleased | plan; the summary says `catch-up` |
 | a dry run | the same summary and artifact, and no push and no comment |
 
@@ -859,7 +859,7 @@ plan job per merge was the steady-state cost #548 removed, so ordinary feature
 merges no longer start one. What actually gates an eligible run is the pure
 `decideTrigger()` in `scripts/lib/release-trigger.mjs`: it plans only when the
 planner's guards pass, no `release/v<next>` branch exists, no release pull request
-is open and the newest tag is older than the most recent `14:30Z` boundary. That
+is open and the newest tag is older than the most recent `02:00Z` boundary. That
 boundary is the at-most-once marker: after a plan the branch exists, after the
 merge the tag is newer than it, so no run has to remember an earlier one. A push
 before today's boundary that finds the previous boundary unreleased fills it and
@@ -867,8 +867,8 @@ says `catch-up`, deliberately — a dropped slot must not cost a day. The run pr
 `trigger=`, `plan=`, `catchUp=` and `reason=` in the job summary, so a merge that
 planned nothing and a slot that was refused are both visible in the run history.
 
-The two `schedule` slots are the dependable planning path: the 14:30Z delivery is
-the slot, and the 15:30Z delivery fills it again if the first was late or dropped;
+The two `schedule` slots are the dependable planning path: the 02:00Z delivery is
+the slot, and the 03:00Z delivery fills it again if the first was late or dropped;
 the predicate makes the second run `slot-shipped` when the first already released,
 so the catch-up cannot double-release. `workflow_dispatch` is the owner's manual
 path. The push stays eligible so a release-shaped merge still reaches the same

@@ -28,7 +28,7 @@ bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修�
 平台。Fledge 不会推默认分支、不会自动合并、也不会在本地执行用户仓库。
 
 > **状态：** 最新发布是 `v0.4.0`（2026-11-16）：<https://fledge.hugoxk.online/>。
-> 周一晚发 minor，周内后续发布都是 patch。登录走 GitHub OAuth：生产 OAuth App 已配置，token 登录兜底已关闭。文档在
+> 周一早上（Asia/Shanghai 10:00）发 minor，周内后续发布都是 patch。登录走 GitHub OAuth：生产 OAuth App 已配置，token 登录兜底已关闭。文档在
 > <https://fledge-docs.hugoxk.online/docs/>；项目主页和 Guide 在
 > <https://hugoxk.online/fledge/>。
 
@@ -125,7 +125,7 @@ Fledge 是幼鸟长齐飞羽、离巢试飞的那一刻——不是因为被推�
 - **按 tip 审核**：required `review-gate` 读取精确 head SHA 上最新的结论。T2/T3 需要由非 tip 作者身份的 reviewer 给出带真实 `Ran:` 命令的 PASS；新 commit 会让旧 PASS 作废。
 - **从 diff 计算风险等级**：T0/T1 绿 `ci-ok` 即入队；T2/T3 还需要同 tip PASS。等级按全部改动路径计算，不看标签。
 - **自动合并显式开启**：只有 maintainer 能开。Fledge 会独立检查 PR 处于 open/mergeable、required checks 全绿、没有 changes requested、path guard 和测试证据通过、同一 PR 最新 iterate 任务成功，才执行 squash merge。
-- **机械发布**：夜间工作流计算下一版本、推一个 `release/v<version>` 分支并开一个机械发布 PR。每周第一个发布 bump minor，同周后续发布 bump patch。合并后 tag job 写 annotated tag 并触发 publish；发布镜像带 SBOM 和 build-provenance attestation。
+- **机械发布**：每日工作流计算下一版本、推一个 `release/v<version>` 分支并开一个机械发布 PR。每周第一个发布 bump minor，同周后续发布 bump patch。合并后 tag job 写 annotated tag 并触发 publish；发布镜像带 SBOM 和 build-provenance attestation。
 - **重复工作 preflight**：iterate 任务开分支前会检查上游 open PR，已有 PR 覆盖时拒绝重复工作。
 
 ### 运维
@@ -196,7 +196,7 @@ flowchart LR
 
 ## 发布与文档同步
 
-夜间发布流程在 **Asia/Shanghai 22:30** 运行：计算下一版本、推
+每日发布流程在 **Asia/Shanghai 10:00** 运行：计算下一版本、推
 `release/v<version>`、开一个机械发布 PR。每周第一个发布 bump minor，同周后续
 发布 bump patch。发布 PR 合并后，tag job 写 annotated tag 并触发 publish；
 发布镜像带 SBOM 和 build-provenance attestation。

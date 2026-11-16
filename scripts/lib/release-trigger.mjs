@@ -23,17 +23,17 @@
 // `branch-exists` no-plan, because the drive keeps its own red and this module
 // must never be the thing that turns a wedged slot green.
 
-/** The nightly boundary in UTC; 22:30 Asia/Shanghai. */
-export const BOUNDARY = '14:30Z'
-const BOUNDARY_HOUR = 14
-const BOUNDARY_MINUTE = 30
+/** The daily boundary in UTC; 10:00 Asia/Shanghai. */
+export const BOUNDARY = '02:00Z'
+const BOUNDARY_HOUR = 2
+const BOUNDARY_MINUTE = 0
 const DAY_MS = 24 * 60 * 60 * 1000
 
 const VERSION = /^\d+\.\d+\.\d+$/
 const EVENTS = new Set(['push', 'schedule', 'workflow_dispatch'])
 
 /**
- * The most recent 14:30Z boundary at or before `now`, as an ISO string, or null
+ * The most recent 02:00Z boundary at or before `now`, as an ISO string, or null
  * when the clock cannot be read. A morning push therefore compares against
  * yesterday's boundary, which is what makes a dropped slot catch up.
  */

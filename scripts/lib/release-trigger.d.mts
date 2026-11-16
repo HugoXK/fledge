@@ -28,7 +28,7 @@ export interface TriggerDecision {
   plan: boolean
   /** True only for a push before today's boundary that fills a dropped slot. */
   catchUp: boolean
-  /** The 14:30Z boundary the decision was taken against, or null. */
+  /** The 02:00Z boundary the decision was taken against, or null. */
   boundary: string | null
   /** Starts with a stable token: slot-open, catch-up, guard, open-pr, … */
   reason: string

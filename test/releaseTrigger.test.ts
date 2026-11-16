@@ -12,28 +12,28 @@ import type { TriggerInput } from '../scripts/lib/release-trigger.mjs'
 // Every case below fails on the pre-#315 tree, where the module does not exist
 // and the `release` job's `if:` refuses a push outright.
 
-const boundary = '2026-11-12T14:30:00.000Z'
+const boundary = '2026-11-12T02:00:00.000Z'
 
 function base(over: Partial<TriggerInput> = {}): TriggerInput {
   return {
     event: 'push',
-    now: '2026-11-12T15:00:00Z',
+    now: '2026-11-12T03:00:00Z',
     tags: ['v0.3.1'],
     branches: ['main', 'dev1/315-release-trigger'],
     openReleasePullRequests: [],
     nextVersion: '0.3.2',
-    lastTagCommittedAt: '2026-11-11T15:00:00Z',
+    lastTagCommittedAt: '2026-11-11T01:00:00Z',
     guardsPass: true,
     guardReason: 'ok',
     ...over,
   }
 }
 
-test('the boundary is 14:30Z of the same UTC day, and yesterday before it', () => {
-  assert.equal(latestBoundary('2026-11-12T15:00:00Z'), boundary)
-  assert.equal(latestBoundary('2026-11-12T14:29:59Z'), '2026-11-11T14:30:00.000Z')
-  assert.equal(latestBoundary('2026-11-12T14:30:00Z'), boundary)
-  assert.equal(BOUNDARY, '14:30Z')
+test('the boundary is 02:00Z of the same UTC day, and yesterday before it', () => {
+  assert.equal(latestBoundary('2026-11-12T03:00:00Z'), boundary)
+  assert.equal(latestBoundary('2026-11-12T01:59:59Z'), '2026-11-11T02:00:00.000Z')
+  assert.equal(latestBoundary('2026-11-12T02:00:00Z'), boundary)
+  assert.equal(BOUNDARY, '02:00Z')
   assert.equal(latestBoundary('not a date'), null, 'an unreadable clock has no boundary and never plans')
 })
 
@@ -65,20 +65,20 @@ test('case 3: an open release pull request blocks the night and names it', () =>
 })
 
 test('case 4: a tag newer than the boundary means the slot already shipped', () => {
-  const decision = decideTrigger(base({ lastTagCommittedAt: '2026-11-12T15:05:00Z' }))
+  const decision = decideTrigger(base({ lastTagCommittedAt: '2026-11-12T03:05:00Z' }))
   assert.equal(decision.plan, false)
   assert.match(decision.reason, /^slot-shipped/)
 })
 
 test('case 5: a push before today\'s boundary catches up a dropped slot', () => {
-  const decision = decideTrigger(base({ now: '2026-11-12T10:00:00Z', lastTagCommittedAt: '2026-11-10T16:00:00Z' }))
+  const decision = decideTrigger(base({ now: '2026-11-12T01:00:00Z', lastTagCommittedAt: '2026-11-10T16:00:00Z' }))
   assert.equal(decision.plan, true)
   assert.equal(decision.catchUp, true)
   assert.match(decision.reason, /^catch-up/)
 })
 
 test('case 5b: a morning push after the previous slot shipped is quiet, not a catch-up', () => {
-  const decision = decideTrigger(base({ now: '2026-11-12T10:00:00Z', lastTagCommittedAt: '2026-11-11T16:00:00Z' }))
+  const decision = decideTrigger(base({ now: '2026-11-12T01:00:00Z', lastTagCommittedAt: '2026-11-11T03:00:00Z' }))
   assert.equal(decision.plan, false)
   assert.equal(decision.catchUp, false)
   assert.match(decision.reason, /^slot-shipped/)
@@ -126,6 +126,6 @@ test('no tag yet is not an unreadable tag: a first release plans when the guards
 })
 
 test('the branch, the pull request and the tag each outrank the clock, so the reason names the real blocker', () => {
-  const blocked = decideTrigger(base({ lastTagCommittedAt: '2026-11-12T15:05:00Z', branches: ['release/v0.3.2'] }))
+  const blocked = decideTrigger(base({ lastTagCommittedAt: '2026-11-12T03:05:00Z', branches: ['release/v0.3.2'] }))
   assert.match(blocked.reason, /^branch-exists/)
 })
