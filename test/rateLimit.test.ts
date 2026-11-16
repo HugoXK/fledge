@@ -2,10 +2,10 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
-import { loadConfig, type Config } from '../src/config.js'
+import { loadConfig, parseTrustProxy, type Config } from '../src/config.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { rateLimitKey } from '../src/lib/rateLimit.js'
+import { OPAQUE_ADDRESS_KEY, rateLimitKey } from '../src/lib/rateLimit.js'
 import { MemoryMailer, testConfig } from './helpers.js'
 
 async function withApp(run: (built: Awaited<ReturnType<typeof buildApp>>) => Promise<void>, overrides: Partial<Config> = {}): Promise<void> {
@@ -38,6 +38,52 @@ test('the bucket key is the client address, not a raw string a client can mint',
   assert.equal(rateLimitKey({ ip: '2001:0db8:0001:0002:aaaa:bbbb:cccc:dddd' }), rateLimitKey({ ip: '2001:db8:1:2::1' }))
   assert.notEqual(rateLimitKey({ ip: '2001:db8:1:2::1' }), rateLimitKey({ ip: '2001:db8:1:3::1' }))
   assert.equal(rateLimitKey({ ip: '::1' }), rateLimitKey({ ip: '::ffff:0:1' }))
+})
+
+test('a malformed address cannot crash the bucket key or mint a bucket per spelling', () => {
+  // A trusted hop forwards the client header verbatim, so more than eight groups
+  // reach request.ip. It used to throw RangeError: Invalid array length.
+  assert.equal(typeof rateLimitKey({ ip: '1:2:3:4:5:6:7:8:9' }), 'string')
+  assert.equal(typeof rateLimitKey({ ip: '1:2:3:4:5:6:7:8:9:a' }), 'string')
+  // One constant key, not a key per malformed spelling: a derived key would be
+  // an oracle that mints a fresh bucket for every request.
+  assert.equal(rateLimitKey({ ip: '1:2:3:4:5:6:7:8:9' }), OPAQUE_ADDRESS_KEY)
+  assert.equal(rateLimitKey({ ip: '1:2:3:4:5:6:7:8:9:a' }), OPAQUE_ADDRESS_KEY)
+  assert.equal(rateLimitKey({ ip: 'not-an-address' }), OPAQUE_ADDRESS_KEY)
+  // The mapped pattern checks digit shape, not validity. A spelling that matches
+  // it but is not an address must share the opaque key, not mint one per value.
+  for (const spelling of ['::ffff:1.2.3.999', '::ffff:1.2.3.998', '::ffff:256.0.0.1', '::ffff:001.2.3.4']) {
+    assert.equal(rateLimitKey({ ip: spelling }), OPAQUE_ADDRESS_KEY, `${spelling} minted its own key`)
+  }
+  // Guards, unchanged by the fallback: the zone id is stripped and a mapped
+  // address stays the IPv4 address it is.
+  assert.equal(rateLimitKey({ ip: 'fe80::1%eth0' }), 'fe80:0:0:0::/64')
+  assert.equal(rateLimitKey({ ip: '::ffff:127.0.0.1' }), '127.0.0.1')
+})
+
+test('a trusted hop forwarding malformed mapped spellings answers too many requests, not a fresh bucket', async () => {
+  await withApp(async (built) => {
+    const statuses: number[] = []
+    for (let i = 0; i < 31; i += 1) {
+      // Every value has a different digit shape, so a key derived from the text
+      // would open a new bucket for each one.
+      const response = await tokenLogin(built, '10.0.0.2', `::ffff:1.2.3.${999 - i}`)
+      statuses.push(response.statusCode)
+    }
+    assert.equal(statuses[30], 429, `the 31st malformed mapped value answered ${statuses[30]} instead of 429; statuses ${statuses.join(',')}`)
+  }, { trustProxy: ['10.0.0.1', '10.0.0.2'] })
+})
+
+test('a nine-group address forwarded by a trusted hop answers 400, never 500', async () => {
+  await withApp(async (built) => {
+    // The two-hop shape: the inner hop forwarded the malformed value verbatim,
+    // so request.ip is the nine-group address and it decides the bucket.
+    const forwarded = await tokenLogin(built, '10.0.0.2', '1:2:3:4:5:6:7:8:9')
+    assert.ok(forwarded.statusCode === 400 || forwarded.statusCode === 429, `a forwarded nine-group address answered ${forwarded.statusCode} instead of 400 or 429`)
+    // The peer itself carries the malformed address.
+    const peer = await tokenLogin(built, '1:2:3:4:5:6:7:8:9')
+    assert.ok(peer.statusCode === 400 || peer.statusCode === 429, `a nine-group peer answered ${peer.statusCode} instead of 400 or 429`)
+  }, { trustProxy: ['10.0.0.1', '10.0.0.2'] })
 })
 
 test('a rotating forged X-Forwarded-For from one untrusted peer does not mint new buckets', async () => {
@@ -119,6 +165,35 @@ test('the app refuses to start when TRUST_PROXY is not an address or CIDR', () =
   for (const refused of ['true', '*', 'all', '0.0.0.0/0', '::/0', '10.0.0.0/33', 'localhost']) {
     withTrustProxy(refused, () => assert.throws(() => loadConfig({ env: 'test' }), /TRUST_PROXY/, `"${refused}" must be refused`))
   }
+})
+
+test('the app refuses to start when the hops together cover the whole space', () => {
+  // Each entry below is a legal prefix on its own; the union is what trusts
+  // every caller, so the check has to be numeric, not per entry.
+  for (const covering of ['0.0.0.0/1,128.0.0.0/1', '::/1,8000::/1', '0.0.0.0/1,128.0.0.0/2,192.0.0.0/2', '::ffff:0:0/96', '::ffff:0.0.0.0/96', '::ffff:0.0.0.0/97,::ffff:128.0.0.0/97']) {
+    withTrustProxy(covering, () => assert.throws(() => loadConfig({ env: 'test' }), /TRUST_PROXY/, `"${covering}" must be refused`))
+  }
+  // The message names the covering entries and the space, so an operator can fix
+  // the env without guessing which line did it.
+  withTrustProxy('0.0.0.0/1,128.0.0.0/1', () => assert.throws(() => loadConfig({ env: 'test' }), /"0\.0\.0\.0\/1" and "128\.0\.0\.0\/1" together cover the whole IPv4 space/))
+  withTrustProxy('::ffff:0:0/96', () => assert.throws(() => loadConfig({ env: 'test' }), /"::ffff:0:0\/96" \(an IPv4-mapped prefix\) covers the whole IPv4 space/))
+  // Directly on the parser too: the refusal is not only reachable through boot.
+  assert.throws(() => parseTrustProxy('0.0.0.0/1,128.0.0.0/1'), /TRUST_PROXY/)
+  assert.throws(() => parseTrustProxy('::/1,8000::/1'), /TRUST_PROXY/)
+})
+
+test('a hop list that stops short of the whole space still starts', () => {
+  // Three quarters of IPv4, host bits set, a mapped single address, a mapped
+  // prefix below the marker that matches nothing, and the default list: none of
+  // these cover the space, so none may lock an operator out.
+  assert.deepEqual(parseTrustProxy('0.0.0.0/1,128.0.0.0/2'), ['0.0.0.0/1', '128.0.0.0/2'])
+  assert.deepEqual(parseTrustProxy('10.1.2.3/8'), ['10.1.2.3/8'])
+  assert.deepEqual(parseTrustProxy('127.0.0.1,::1'), ['127.0.0.1', '::1'])
+  assert.deepEqual(parseTrustProxy('172.17.0.0/16'), ['172.17.0.0/16'])
+  assert.deepEqual(parseTrustProxy('::ffff:127.0.0.1'), ['::ffff:127.0.0.1'])
+  assert.deepEqual(parseTrustProxy('::ffff:0:0/95'), ['::ffff:0:0/95'])
+  assert.deepEqual(parseTrustProxy('fe80:0:0:0:0:0:0:1'), ['fe80:0:0:0:0:0:0:1'])
+  withTrustProxy('0.0.0.0/1,128.0.0.0/2', () => assert.deepEqual(loadConfig({ env: 'test' }).trustProxy, ['0.0.0.0/1', '128.0.0.0/2']))
 })
 
 test('a configured proxy hop is trusted: the appended client address, not the peer, decides the bucket', async () => {
