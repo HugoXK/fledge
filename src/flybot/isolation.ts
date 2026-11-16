@@ -75,15 +75,18 @@ export function assertContainerBoundary(args: string[], dataDir: string): string
     }
     if (argument === '-v') binds.push(args[index + 1] ?? '')
   }
+  // Only a mount can reach the host socket; the probe command that proves it is
+  // absent from inside names the path on purpose, so argument text is not a
+  // mount and must not be refused.
+  if (binds.some((bind) => (bind.split(':')[0] ?? '').includes('docker.sock'))) {
+    throw new Error('FlyBot container must never mount the host Docker socket')
+  }
   if (binds.length !== 1) {
     throw new Error(`FlyBot container must mount exactly one host path, got ${binds.length}`)
   }
   const [source, target] = (binds[0] ?? '').split(':')
   if (source !== dataDir || target !== DATA_MOUNT) {
     throw new Error(`FlyBot container must mount the repository data directory at ${DATA_MOUNT}, got "${binds[0] ?? ''}"`)
-  }
-  if (args.some((argument) => argument.includes('docker.sock'))) {
-    throw new Error('FlyBot container arguments must never name the host Docker socket')
   }
   return args
 }

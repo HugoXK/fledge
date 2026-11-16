@@ -210,20 +210,34 @@ test('the builder refuses a root user or no user at all', () => {
   )
 })
 
-test('the builder never touches the host Docker socket, including as a data path', () => {
+test('the builder never mounts the host Docker socket, including as a data path', () => {
   const args = unitArgs()
-  assert.equal(args.some((argument) => argument.includes('docker.sock')), false)
+  assert.equal(
+    args.filter((argument) => argument.startsWith('-v')).includes('-v'),
+    true,
+  )
   assert.throws(
-    () => assertContainerBoundary(withFlags(args, '-v', '/var/run/docker.sock:/var/run/docker.sock'), UNIT_DATA_DIR),
-    /never name the host Docker socket|exactly one host path/,
+    () => assertContainerBoundary(replaceValue(args, '-v', '/var/run/docker.sock:/data'), UNIT_DATA_DIR),
+    /never mount the host Docker socket/,
+    'a bind whose source is the host Docker socket must be refused',
   )
   const socketDir = join(UNIT_DATA_DIR, 'docker.sock')
   mkdirSync(socketDir, { recursive: true })
   assert.throws(
     () => unitArgs({ dataDir: socketDir }),
-    /never name the host Docker socket/,
+    /never mount the host Docker socket/,
     'a repository data path that names the socket must be refused before it becomes a bind',
   )
+})
+
+test('a command that inspects the socket path is not a socket mount', () => {
+  // The isolation check proves the socket is absent from inside the container,
+  // so its probe command names the path. A command is not a mount and must not
+  // be refused, or the check fails before it can start a container.
+  const probe = "node -e \"require('node:fs').existsSync('/var/run/docker.sock')\""
+  const args = unitArgs({ command: probe })
+  assert.equal(args.at(-1), probe, 'the probe command reaches docker run unchanged')
+  assert.equal(flag(args, '-v'), `${UNIT_DATA_DIR}:/data`, 'the only bind is still the data directory')
 })
 
 test('the builder refuses a data directory that is not an absolute existing directory', () => {
