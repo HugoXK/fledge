@@ -114,15 +114,45 @@ export function hasRan(body) {
   return false
 }
 
-export async function paginate(api, path, maxPages = 4) {
+// #862: the file list decides the tier and the commit list decides who authored
+// the tip, so a fixed page cap makes a *prefix* of a large pull request decide
+// both: 401 files could put the only T3 path past page 4, and a reviewer-authored
+// commit past page 4 was invisible to the independence check (#144). The reader
+// therefore keeps asking while a page comes back full, and `LIST_MAX_PAGES` is an
+// absurdity guard that refuses — a cap that returns a prefix is the same bypass
+// one size larger, so it is never the answer.
+export const LIST_PER_PAGE = 100
+export const LIST_MAX_PAGES = 40
+
+export async function paginate(api, path, maxPages = LIST_MAX_PAGES) {
   const out = []
   for (let page = 1; page <= maxPages; page += 1) {
     const sep = path.includes('?') ? '&' : '?'
-    const items = await api(`${path}${sep}per_page=100&page=${page}`)
+    const items = await api(`${path}${sep}per_page=${String(LIST_PER_PAGE)}&page=${String(page)}`)
+    if (!Array.isArray(items)) throw new Error(`${path} returned no list on page ${String(page)}, so the list cannot be read`)
     out.push(...items)
-    if (items.length < 100) break
+    if (items.length < LIST_PER_PAGE) return out
   }
-  return out
+  throw new Error(`the list at ${path} was still full after ${String(maxPages)} pages of ${String(LIST_PER_PAGE)}; refusing to decide from a partial list`)
+}
+
+// #862: completeness is a property, not a page count. The pull request object
+// reports how many files and commits it has, so the caller compares the list it
+// read with that number and refuses when they differ — a list that ends early is
+// not a smaller pull request. A missing count fails closed the same way: "did not
+// say how many" is not evidence that the list was whole.
+export function incompleteList(label, read, reported) {
+  // `Number(null)` is 0, which would call an empty read complete, so a count is
+  // used only when it is a number and never coerced (#862 Security read).
+  const expected = typeof reported === 'number' ? reported : Number.NaN
+  if (!Number.isSafeInteger(expected) || expected < 0) {
+    return `the pull request does not report a ${label} count, so its ${label} list cannot be called complete`
+  }
+  if (read === expected) return ''
+  if (read > expected) {
+    return `the ${label} list returned ${String(read)} entries for a pull request that reports ${String(expected)}; refusing to decide from a list that does not add up`
+  }
+  return `the ${label} list is incomplete: read ${String(read)} of ${String(expected)}`
 }
 
 // #144: a tip is only independently reviewed when the reviewer identity did not
@@ -261,6 +291,9 @@ export async function evaluateGate({ api, threads, repo, policy, prNumber, tier:
   } catch (cause) {
     return threw(cause, '')
   }
+  // #862: classify nothing from a list that cannot be shown to be the whole list.
+  const filesIncomplete = incompleteList('changed-file', files.length, pr.changed_files)
+  if (filesIncomplete !== '') return failed(filesIncomplete, 'error')
   // The mechanical daily release is the one identity-based exemption from the
   // PASS requirement, and it is honoured here for the same reason it is honoured
   // in risk-gate: otherwise the release PR's own review-gate fails forever on the
@@ -391,6 +424,10 @@ export async function evaluateGate({ api, threads, repo, policy, prNumber, tier:
   } catch (cause) {
     return threw(cause, 'cannot read the pull request commits, so the tip cannot be called independently reviewed: ')
   }
+  // #862: a commit list that ended early can hide exactly the commit this check
+  // exists to find, so an incomplete read is refused rather than searched.
+  const commitsIncomplete = incompleteList('commit', tipCommits.length, pr.commits)
+  if (commitsIncomplete !== '') return failed(`${commitsIncomplete}, so the tip cannot be called independently reviewed`, 'error')
   const authored = reviewerAuthoredCommit(tipCommits, policy)
   if (authored !== null) {
     const at = authored.sha === '' ? '' : ` (${authored.sha.slice(0, 12)})`

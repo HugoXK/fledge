@@ -101,7 +101,7 @@ interface FakeState {
   reviews: Array<Record<string, unknown>>
   // What the pull request API reports for size. The rule reads these and not
   // `git diff --stat`, so a rebase cannot change the number behind its back.
-  size: { changed_files: number; additions: number; deletions: number }
+  size: { changed_files?: number; additions: number; deletions: number }
 }
 
 function state(overrides: Partial<FakeState> = {}): FakeState {
@@ -111,7 +111,9 @@ function state(overrides: Partial<FakeState> = {}): FakeState {
     policy: POLICY,
     comments: [],
     reviews: [],
-    size: { changed_files: 1, additions: 1, deletions: 1 },
+    // `changed_files` defaults to the file list's own length, like the API: a
+    // fixture whose two counts disagree is the truncated shape #862 refuses.
+    size: { additions: 1, deletions: 1 },
     ...overrides,
   }
 }
@@ -121,7 +123,7 @@ async function withFakeGitHub(current: FakeState, run: (env: Record<string, stri
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
     if (path === '/repos/o/r/pulls/7') {
-      json(response, 200, { number: 7, head: { sha: SHA }, user: { login: 'HugoXK' }, labels: [], body: current.body, ...current.size })
+      json(response, 200, { number: 7, head: { sha: SHA }, user: { login: 'HugoXK' }, labels: [], body: current.body, ...current.size, changed_files: current.size.changed_files ?? current.files.length, commits: 0 })
       return
     }
     if (path === '/repos/o/r/pulls/7/files') {
