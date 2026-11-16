@@ -145,6 +145,17 @@ function commandHidden(fields: { revision: number; idempotencyKey: string } | un
   return `<input type="hidden" name="expected_revision" value="${fields.revision}" /><input type="hidden" name="idempotency_key" value="${escapeHtml(fields.idempotencyKey)}" />`
 }
 
+// #852: a provider can stop offering a model it used to serve, and the row keeps
+// the first day it said so. The marker only ever reads that column; a model that
+// has answered is never labelled, and nothing here guesses a state.
+function retiredOn(model: { retired_at?: string | null }): string {
+  return model.retired_at === null || model.retired_at === undefined ? '' : String(model.retired_at).slice(0, 10)
+}
+
+function retiredMark(model: { retired_at?: string | null }, t: Translate): string {
+  return retiredOn(model) === '' ? '' : ` · ${t('已下架', 'retired')}`
+}
+
 function infoTip(text: string): string {
   return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
 }
@@ -1867,7 +1878,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
             ${models.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有模型。先到 Settings 添加提供方和模型。', 'No models yet. Add a provider and models in Settings.'))}</span>`
-              : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div class="mb-6"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
+              : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div class="mb-6"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"${retiredOn(model) === '' ? '' : ` data-retired-model="${escapeHtml(model.id)}"`}><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)}${retiredMark(model, t)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
           </label>
         </div>
         <div class="row">
@@ -1879,8 +1890,8 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label>${escapeHtml(t('区域约束（可选）', 'Region constraint (optional)'))} <input name="providerRegion" value="${escapeHtml(repo.required_region ?? '')}" maxlength="80" placeholder="eu" /></label>
         </div>
         <p class="fine">${escapeHtml(t('区域约束比较提供方标注的区域（不区分大小写）；留空表示不限区域。这个策略只作用于当前仓库。', 'The region constraint compares the provider region label case-insensitively; empty allows any region. This policy applies to this repository only.'))}</p>
-        <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
-        ${models.length === 0 ? '' : `<div class="row bot-models">${([['chief', 'Chief'], ['lead', 'Lead'], ['product', 'Product'], ['test', 'Test'], ['security', 'Security'], ['reviewer', 'Reviewer'], ['dev1', 'Dev-1'], ['dev2', 'Dev-2']] as const).map(([role, label]) => `<label>${escapeHtml(label)} <select name="botModel_${role}"><option value="">${escapeHtml(t('跟随默认', 'Follow default'))}</option>${models.filter((model) => repoModelIds.has(model.id)).map((model) => `<option value="${escapeHtml(model.id)}"${botModelMap.get(role) === model.id ? ' selected' : ''}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}</option>`).join('')}</select></label>`).join('')}</div>
+        <label>${escapeHtml(t('默认模型', 'Default model'))} <select name="defaultModelId"><option value="">${escapeHtml(t('平台默认', 'Platform default'))}</option>${models.map((model) => `<option value="${escapeHtml(model.id)}"${repoDefaultModelId === model.id ? ' selected' : ''}${retiredOn(model) === '' ? '' : ` data-retired-model="${escapeHtml(model.id)}"`}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${retiredMark(model, t)}${repoModelIds.has(model.id) ? '' : ' *'}</option>`).join('')}</select></label>
+        ${models.length === 0 ? '' : `<div class="row bot-models">${([['chief', 'Chief'], ['lead', 'Lead'], ['product', 'Product'], ['test', 'Test'], ['security', 'Security'], ['reviewer', 'Reviewer'], ['dev1', 'Dev-1'], ['dev2', 'Dev-2']] as const).map(([role, label]) => `<label>${escapeHtml(label)} <select name="botModel_${role}"><option value="">${escapeHtml(t('跟随默认', 'Follow default'))}</option>${models.filter((model) => repoModelIds.has(model.id)).map((model) => `<option value="${escapeHtml(model.id)}"${botModelMap.get(role) === model.id ? ' selected' : ''}${retiredOn(model) === '' ? '' : ` data-retired-model="${escapeHtml(model.id)}"`}>${escapeHtml(model.provider_label)} · ${escapeHtml(model.label)}${retiredMark(model, t)}</option>`).join('')}</select></label>`).join('')}</div>
         <p class="fine">${escapeHtml(t('每个 bot 可以单独选择模型；不选则跟随默认。保存选择后，空闲时点击“应用模型并重启工作区”才会生效，Fledge 会通过 DSH 把模型分配给对应 bot。', 'Each bot can choose a model; empty follows the default. After saving, use "Apply models and restart workspace" while idle; Fledge assigns the model through DSH.'))}</p>`}
         </details>
         ${roleMissing ? `<p class="fine">${escapeHtml(t('先选择你的角色，审核和自动合并才会生效。', 'Choose your role before review or auto-merge can take effect.'))}</p>` : !githubCanReview ? `<p class="fine">${escapeHtml(t('你在这个上游没有 admin/maintain 权限，审核角色不可用。', 'You do not have admin/maintain permission on this upstream, so the reviewer role is unavailable.'))}</p>` : !canMaintain ? `<p class="fine">${escapeHtml(t('developer 不能启用 PR 审核或自动合并；切换为 maintainer 后才可用。', 'A developer cannot enable PR review or auto-merge; switch to maintainer first.'))}</p>` : ''}
@@ -2228,7 +2239,7 @@ export function settingsPage(input: {
           </div>
           ${provider.models.length === 0
             ? `<p class="muted">${escapeHtml(t('还没有模型。', 'No models yet.'))}</p>`
-            : `<ul>${provider.models.map((model) => `<li><strong>${escapeHtml(model.label)}</strong> <code>${escapeHtml(model.model)}</code> <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models/${escapeHtml(model.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除', 'Delete'))}</button></form></li>`).join('')}</ul>`}
+            : `<ul>${provider.models.map((model) => `<li><strong>${escapeHtml(model.label)}</strong> <code>${escapeHtml(model.model)}</code>${retiredOn(model) === '' ? '' : ` <span class="badge bad" data-retired="${escapeHtml(retiredOn(model))}">${escapeHtml(t(`提供方已于 ${retiredOn(model)} 下架`, `retired by the provider on ${retiredOn(model)}`))}</span>`} <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models/${escapeHtml(model.id)}/delete">${csrf(viewer)}<button class="link bad" type="submit">${escapeHtml(t('删除', 'Delete'))}</button></form></li>`).join('')}</ul>`}
           <form method="post" action="/settings/providers/${escapeHtml(provider.id)}/models" class="form">
             ${csrf(viewer)}
             <div class="row">
@@ -3241,13 +3252,16 @@ export function jobPage(input: {
   // primary was rate-limited finished on another model, so the page must name the
   // one that replied instead of the one the instance was configured with.
   const modelRun = parseModelRun(job.model_json)
-  const triedText = (run: typeof modelRun): string => (run === null ? '' : run.attempts.map((entry) => `${entry.label} (${entry.status})`).join(', '))
+  // #852: a retired attempt says why, not only that it failed: the status alone
+  // cannot tell a wrong URL from a model its provider stopped serving.
+  const triedText = (run: typeof modelRun): string => (run === null ? '' : run.attempts.map((entry) => `${entry.label} (${entry.status}${entry.retired === true ? `, ${t('已下架', 'retired')}` : ''})`).join(', '))
   // #407: a fallback an earlier call made is its own clause. The rule: it is stated
   // unless the `tried` clause of this same line already names the model it ended
   // on — only then would two clauses repeat one model. So the skip needs the tried
   // clause to exist (`attempts` non-empty) and a model to compare against; a last
   // call with no attempt or no winner keeps the pair visible. A row whose status is
   // not a real HTTP code states the pair without inventing a number for it.
+  const retiredAttempt = modelRun === null ? null : modelRun.attempts.find((entry) => entry.retired === true) ?? null
   const fellBackText = (run: typeof modelRun): string => {
     if (run === null || run.fallback === null) return ''
     if (run.attempts.length > 0 && run.model !== null && run.fallback.to.label === run.model.label) return ''
@@ -3258,7 +3272,7 @@ export function jobPage(input: {
   }
   const modelLine = modelRun === null
     ? ''
-    : `<p class="fine" data-model><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}${escapeHtml(fellBackText(modelRun))}</p>`
+    : `<p class="fine" data-model${retiredAttempt === null ? '' : ` data-retired-attempt="${escapeHtml(retiredAttempt.modelId)}"`}><strong>${escapeHtml(t('模型', 'Model'))}:</strong> ${escapeHtml(modelRun.model === null ? t('没有完成的调用', 'no completed call') : modelRun.model.label)}${modelRun.attempts.length === 0 ? '' : escapeHtml(` · ${t(`此前尝试 ${triedText(modelRun)}`, `tried ${triedText(modelRun)}`)}`)}${escapeHtml(fellBackText(modelRun))}</p>`
   const providerParts = [
     job.provider_label === null ? '' : job.provider_label,
     job.provider_region === null ? '' : job.provider_region,

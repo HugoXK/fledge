@@ -62,7 +62,7 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 // restore check (#652) has to prove a fixture written by an older build still
 // migrates to exactly this number, and a literal in two places would let the
 // check and the migration disagree.
-export const SCHEMA_VERSION = 44
+export const SCHEMA_VERSION = 45
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
@@ -383,6 +383,8 @@ export interface ProviderModelRow {
   provider_id: string
   model: string
   label: string
+  /** #852: the first day a provider answered "this model does not exist"; null while live. */
+  retired_at: string | null
   created_at: string
 }
 
@@ -1493,6 +1495,7 @@ CREATE TABLE IF NOT EXISTS provider_models (
   provider_id TEXT NOT NULL REFERENCES model_providers(id) ON DELETE CASCADE,
   model TEXT NOT NULL,
   label TEXT NOT NULL,
+  retired_at TEXT,
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS provider_models_provider_idx ON provider_models(provider_id, created_at ASC);
@@ -2416,6 +2419,7 @@ export class Store {
     this.migrateColumns()
     this.migrateRepoColumns()
     this.migrateProviderColumns()
+    this.migrateProviderModelColumns()
     this.migrateWebhookColumns()
     this.migrateArtifactColumns()
     this.migrateManagementColumns()
@@ -2837,6 +2841,14 @@ export class Store {
     if (!ledgerColumns.has('cost_known')) this.run('ALTER TABLE quota_ledger ADD COLUMN cost_known INTEGER NOT NULL DEFAULT 1')
     if (!jobColumns.has('base_branch')) this.run('ALTER TABLE jobs ADD COLUMN base_branch TEXT')
     this.run("UPDATE jobs SET base_branch = (SELECT upstream_default_branch FROM repos WHERE repos.id = jobs.repo_id) WHERE base_branch IS NULL")
+  }
+
+  // #852: a provider can stop offering a model it used to serve, and the row must
+  // carry that fact so the console can say it. Additive: a row written before the
+  // column keeps NULL, which is exactly the "live" it was always shown as.
+  private migrateProviderModelColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(provider_models)').map((row) => row.name))
+    if (!columns.has('retired_at')) this.run('ALTER TABLE provider_models ADD COLUMN retired_at TEXT')
   }
 
   private migrateProviderColumns(): void {
@@ -4868,6 +4880,17 @@ export class Store {
       'SELECT pm.*, mp.label AS provider_label, mp.region AS provider_region, mp.data_policy_url AS provider_data_policy_url, mp.allowed AS provider_allowed FROM provider_models pm JOIN model_providers mp ON mp.id = pm.provider_id WHERE mp.user_id = ? ORDER BY mp.created_at ASC, pm.created_at ASC',
       userId,
     )
+  }
+
+  // #852: the first date wins. A second 404 for the same model must not move it,
+  // so the write is decided by the WHERE clause rather than by the caller.
+  markProviderModelRetired(modelId: string, at: string): boolean {
+    return this.transaction(() => {
+      const live = this.get<{ id: string }>('SELECT id FROM provider_models WHERE id = ? AND retired_at IS NULL', modelId)
+      if (live === undefined) return false
+      this.run('UPDATE provider_models SET retired_at = ? WHERE id = ?', at, modelId)
+      return true
+    })
   }
 
   createProviderModel(input: { id: string; providerId: string; model: string; label: string }): ProviderModelRow {

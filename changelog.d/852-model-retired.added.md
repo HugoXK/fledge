@@ -1,0 +1,1 @@
+A provider model its provider has stopped serving is recorded as retired with the date: Settings and the repository page say so, the job's model line names the reason, and an apply that would restart a workspace onto that model is refused with its name.

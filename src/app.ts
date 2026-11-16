@@ -4378,6 +4378,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/models/apply', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
+    // #852: a retired model is still in the selection, so applying would restart
+    // the workspace onto a model its provider no longer serves. Refused by name
+    // rather than deleted: the maintainer picks a live model and nothing is lost.
+    const retiredSelection = store.listRepoModelSelection(repo.id).find((model) => model.retired_at !== null && model.retired_at !== undefined)
+    if (retiredSelection !== undefined) {
+      const t = translator(request.locale ?? 'zh')
+      const on = String(retiredSelection.retired_at).slice(0, 10)
+      const message = t(`模型“${retiredSelection.label}”已于 ${on} 被提供方下架，请先选择一个可用的模型再应用。`, `The model "${retiredSelection.label}" was retired by its provider on ${on}. Choose a live model before applying.`)
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(message)}#repo-settings`)
+    }
     try {
       const result = await instances.applyModels(repo.id)
       if (!result.ok) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '模型应用失败。')}#repo-settings`)

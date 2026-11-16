@@ -73,6 +73,12 @@ writes one of those rows rather than none: the provider's `x-litellm-response-co
 figure as a known USD row when the response carried one, and a `cost_known = 0`
 row with reason `no_usage`, its audit entry and its job event when it did not.
 
+An attempt that never reached a model is not billed: a `404` whose body says the
+model does not exist writes no ledger row, so a model its provider has retired
+costs nothing, and the fallback to the next selected model is priced on its own
+answer. The retirement itself is recorded on the provider model
+(`provider_models.retired_at`, #852), not in the ledger.
+
 For streaming requests Fledge adds `stream_options.include_usage = true` and
 parses each SSE `data:` line. It keeps the last `usage` object, including nested
 `completion_tokens_details` / `prompt_tokens_details`, and meters after the

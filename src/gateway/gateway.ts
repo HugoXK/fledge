@@ -8,7 +8,8 @@ import { log } from '../lib/log.js'
 import { decryptSecret } from '../lib/secrets.js'
 import { headerCost, quotaView } from './quota.js'
 import { fallbackPriceTable, parsePriceTable, requestCost, type PriceTable } from '../metrics/cost.js'
-import { modelOrder, retryableModelFailure } from './modelFallback.js'
+import { modelOrder, retiredModelFailure, retryableModelFailure } from './modelFallback.js'
+import { nowIso } from '../lib/time.js'
 import { parseProviderAllowlist, providerPolicyRefusal } from './modelUrl.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import type { ModelAttempt, ModelFallback } from '../lib/modelRun.js'
@@ -318,7 +319,12 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       }
       const text = await readAnswer(answer.res)
       const retryable = retryableModelFailure(answer.status, text)
-      attempts.push({ ...attemptName, status: answer.status, retryable })
+      // #852: a retired model is the one 404 that is not about the URL. The row is
+      // written once with the first date, so the console can say when it happened;
+      // a 429, a 5xx or any other 404 never writes it.
+      const retired = retiredModelFailure(answer.status, text)
+      if (retired && candidate !== undefined) store.markProviderModelRetired(candidate.id, nowIso())
+      attempts.push({ ...attemptName, status: answer.status, retryable, ...(retired ? { retired: true } : {}) })
       lastFailure = { status: answer.status, text, headers: { ...forwardHeaders(answer.headers), ...quotaHeaders() } }
       // Auth, an exhausted quota, a payment problem and a policy refusal are the
       // repository's own answer: a second model must not mask them.
