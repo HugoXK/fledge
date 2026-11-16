@@ -243,9 +243,12 @@
     dialog.addEventListener('close', () => clearDialogHash(dialog))
   })
   document.querySelectorAll('[data-open-dialog]').forEach((button) => {
-    button.addEventListener('click', () => {
+    button.addEventListener('click', (event) => {
       const dialog = document.getElementById(button.getAttribute('data-open-dialog') ?? '')
       if (dialog === null || !openDialog(dialog)) return
+      // The trigger may be an <a href="/settings#feedback">: the href is the
+      // no-JavaScript fallback, so the enhancement must stop the navigation.
+      event.preventDefault()
       if (location.hash !== `#${dialog.id}`) history.replaceState(null, '', `${location.pathname}${location.search}#${dialog.id}`)
     })
   })

@@ -31,6 +31,8 @@ const KEPT_IDS = ['inbox', 'chief', 'chief-thread', 'board', 'jobs', 'repo-setti
 
 const FORM_ACTIONS = [
   '/auth/logout',
+  // The global feedback dialog lives in the layout, so every page carries it.
+  '/feedback',
   '/repos/:id/delete',
   '/repos/:id/delivery/merge-clean',
   '/repos/:id/disable',

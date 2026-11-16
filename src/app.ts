@@ -4533,7 +4533,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const kind = body.kind === 'bug' || body.kind === 'other' ? body.kind : 'feedback'
     const message = redact((body.message ?? '').trim()).slice(0, 2000)
     const page = (body.page ?? '').trim().slice(0, 200)
-    if (message === '') return reply.redirect(`/settings?error=${encodeURIComponent('请填写反馈内容。')}#feedback`)
+    const returnTo = safeLocalPath(body.returnTo, '/settings')
+    const back = (key: 'notice' | 'error', text: string): string => {
+      const target = withMessageParam(returnTo, key, text)
+      return returnTo.startsWith('/settings') ? `${target}#feedback` : target
+    }
+    if (message === '') return reply.redirect(back('error', '请填写反馈内容。'))
     const id = randomId('fb')
     const createdAt = new Date().toISOString()
     const publishConsent = body.publishConsent === '1'
@@ -4548,10 +4553,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         ...feedbackMail({ id, login: viewer.user.login, kind, message, page, createdAt }),
         ...(replyTo === '' ? {} : { replyTo }),
       })
-      return reply.redirect(`/settings?notice=${encodeURIComponent('反馈已发送，谢谢。')}#feedback`)
+      return reply.redirect(back('notice', '反馈已发送，谢谢。'))
     } catch (error) {
       log.error('feedback mail failed', { id, error: redact(String(error)) })
-      return reply.redirect(`/settings?error=${encodeURIComponent('反馈已保存，但通知邮件发送失败；请稍后再试。')}#feedback`)
+      return reply.redirect(back('error', '反馈已保存，但通知邮件发送失败；请稍后再试。'))
     }
   })
 

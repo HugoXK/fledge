@@ -2309,7 +2309,7 @@ export function settingsPage(input: {
           <option value="jobs:read">${escapeHtml(t('任务读取：只读 /api/v1/jobs', 'Jobs: read /api/v1/jobs only'))}</option>
         </select>
       </label>
-      <label>${escapeHtml(t('有效期', 'Expires'))}{infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
+      <label>${escapeHtml(t('有效期', 'Expires'))}${infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
         <select name="expiryDays">
           ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
           ${viewer.user.role === 'admin' || viewer.user.role === 'superadmin' ? `<option value="never">${escapeHtml(t('永不过期（运维）', 'Never (operator)'))}</option>` : ''}
@@ -2335,6 +2335,7 @@ export function settingsPage(input: {
     <p class="muted">${escapeHtml(t('遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。', 'Found a problem, want a feature, or saw something unexpected? This stores a record and mails the maintainer.'))}</p>
     <form method="post" action="/feedback" class="form">
       ${csrf(viewer)}
+      <input type="hidden" name="returnTo" value="/settings" />
       <div class="row">
         <label>${escapeHtml(t('类型', 'Kind'))}
           <select name="kind">
@@ -2368,7 +2369,6 @@ export function settingsPage(input: {
     <p class="muted">${escapeHtml(t('Fledge 是开源的自托管平台；如果它对你的仓库有帮助，可以在 GitHub 上加星支持。', 'Fledge is an open-source, self-hosted platform. If it helps your repositories, a star on GitHub supports it.'))}</p>
     <div class="actions">
       <a class="btn star-btn" href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer">${starIcon()}${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}</a>
-      <a class="btn btn-ghost" href="#feedback">${escapeHtml(t('反馈', 'Feedback'))}</a>
     </div>
   </section>`
   return layout({ title: t('设置', 'Settings'), viewer, body, config, locale, path: '/settings', active: 'settings', notice, error })
