@@ -122,6 +122,35 @@ test('--muted-2 clears AA on every surface it is painted on and stays below --mu
   const muted = tokens.get('--muted')
   assert.ok(muted !== undefined, 'missing --muted')
   assert.ok(luminance(channels(muted) ?? [0, 0, 0]) > luminance(channels(muted2) ?? [0, 0, 0]), '--muted-2 must stay dimmer than --muted')
+
+  // #911: a token can be readable on one fill and unreadable on another, so the
+  // AA floor also covers the pairs a rule actually paints: --accent-ink on
+  // --accent is 1.92:1 in the dark palette, and a 12px mark sat on it. The scan
+  // reads the palette with the line-anchored reader on purpose: the :root block
+  // carries a semicolon inside a comment, and the whole-block reader drops
+  // --accent with it, which is how the pair stayed unseen. Both palettes are
+  // checked, because the same rule paints in light too.
+  const palettes: Array<[string, Map<string, string>]> = [
+    ['dark', lineTokens(cssSource, /:root\s*\{([^}]*)\}/, 'dark')],
+    ['light', lineTokens(cssSource, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')],
+  ]
+  const unreadable: string[] = []
+  for (const rule of cssSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const body = rule[2] ?? ''
+    const colour = /(?:^|;)\s*color:\s*var\((--[a-z0-9-]+)\)/.exec(body)
+    const background = /(?:^|;)\s*background(?:-color)?:\s*var\((--[a-z0-9-]+)\)/.exec(body)
+    if (colour === null || background === null) continue
+    const selector = (rule[1] ?? '').trim().split('\n').pop()?.trim() ?? ''
+    for (const [name, palette] of palettes) {
+      const foreground = palette.get(colour[1] ?? '')
+      const surface = palette.get(background[1] ?? '')
+      if (foreground === undefined || surface === undefined) continue
+      if (channels(foreground) === null || channels(surface) === null) continue
+      const ratio = contrast(foreground, surface)
+      if (ratio < 4.5) unreadable.push(`${name} ${selector}: ${colour[1]} on ${background[1]} = ${ratio.toFixed(2)}:1 (needs 4.5)`)
+    }
+  }
+  assert.deepEqual(unreadable, [], `text below AA on the fill it is painted on:\n${unreadable.join('\n')}`)
 })
 
 // 4. The token contract is documented, not only implemented: one row per token
