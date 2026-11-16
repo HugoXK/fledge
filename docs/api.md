@@ -890,6 +890,30 @@ against the same row, and
 repeats it, then redirects to `?release=1&checked=<message>`. The check may
 prepare a draft Release; it never publishes, reruns, deletes or moves anything.
 
+`POST /repos/:id/releases/:releaseId/analyze` (#546 slice 4) is that read's
+read-only sibling: owner only, CSRF, maintainer role, redirecting to
+`?release=1&notice=<message>` or `?release=1&error=<sentence>`. It explains the
+failed run the row recorded: at most two failed jobs, 40 lines and 4,000
+characters of each log, ANSI stripped and the whole log redacted before the
+excerpt is cut, stored in `repo_releases.analysis_json`. It changes no release
+state and never reruns a workflow — a row with no recorded run, a run still
+running or concluded anything but a failure, a run with no failed job and an
+unreadable log are each a sentence on the page.
+
+The credential is a short-lived installation token minted outside the cache, not
+the repository's cached one. `GithubApp.ephemeralToken`
+(`POST /app/installations/{id}/access_tokens`) takes `permissions` plus an
+optional `repositories` narrowing; the analysis asks for exactly `actions: read`
+and names the one repository, which covers the two endpoints it touches —
+`GET /actions/runs/{id}/jobs` and `GET /actions/jobs/{id}/logs` — and nothing
+wider. `GithubApp.revokeToken` (`DELETE /installation/token`, authenticated with
+that token rather than the App JWT) revokes it when the read ends and returns
+`false` instead of throwing, so a failed revocation is recorded beside the result
+rather than swallowing the answer. `analyzeReleaseRun` asks for the token only
+after its own refusal check, so a green or running row costs no credential at
+all, and a repository without a GitHub App installation is refused as
+`ANALYSIS_READ_ONLY_TOKEN` instead of being read with a wider user token.
+
 The draft body is built from the release range (#546 slice 3), not from a fixed
 sentence: `compareReleaseRange` reads `GET /compare/{previous tag}...{target SHA}`
 for its commits and `listMergedPullRequestsSince` supplies the merged pull
