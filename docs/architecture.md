@@ -2623,12 +2623,27 @@ version tag is the highest SemVer tag whose commit is an ancestor of the target
 order), so "nothing to release" and "not higher than what shipped" are decidable
 from the repository's own history.
 
-The preflight is read-only (five GETs) and checks, in this order: the version
-parses; the confirmed SHA is a commit in the repository; the default branch is
-protected by required checks (the gate onboarding of #543); a tag-triggered
-`.github/workflows/release.yml` exists at the target commit; the tag does not
-exist; there is something to release; the version is higher than the previous
-tag. A not-higher refusal carries the next legal version, and the page shows it.
+The preflight is read-only — every call is a GET — and checks, in this order: the
+version parses; the confirmed SHA is a commit in the repository; the default
+branch contains that commit; the default branch is protected by required checks
+(the gate onboarding of #543); a tag-triggered `.github/workflows/release.yml`
+exists at the target commit; the tag does not exist; there is something to
+release; the version is higher than the previous tag. A not-higher refusal
+carries the next legal version, and the page shows it.
+
+The containment check compares the default branch with the target and accepts
+only `ahead` and `identical`; `diverged` and `behind` are `target_not_on_default`,
+and a compare that cannot be read is `ancestry_unreadable` rather than a pass on
+an assumption. A tag push runs the workflows committed in the tagged tree, so a
+target the default branch never contained would make "this release was built from
+this repository at this commit" uncheckable. The previous-version scan is bounded
+to the ten newest SemVer tags (`MAX_TAG_COMPARES`): only those can be the
+previous version, so the cap changes no legal release, and one request can no
+longer ask GitHub for one compare per tag. Both routes that write a tag — this
+release POST and the readiness page's tag button — take the destructive class
+limit and a fresh GitHub confirmation before they read a version, a head or a
+token; the release POST is filed under the destructive route class, beside the
+other ref writes.
 
 A tag-triggered workflow means a `tags:` filter directly under the `push:` event.
 The filter's depth is read from the block instead of assumed to be two spaces, so
