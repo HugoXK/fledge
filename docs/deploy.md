@@ -293,6 +293,13 @@ Before that, every release pull request was red by construction — `#347` was t
 one that showed it. The reasoning is recorded in
 [decisions/0011-mechanical-readme-status.md](decisions/0011-mechanical-readme-status.md).
 
+The release routine also refreshes the generated UI snapshot once per release:
+run `npm run mock:snapshot`, then `npm run mock:check`, and commit the
+regenerated `mock/` with the release work or its follow-up docs pull request.
+`mock/` is generated from the released views and is read-only; do not edit it by
+hand and do not add a per-PR drift gate. The snapshot is the UI at the release
+tip, not a second application.
+
 The nightly workflow pushes `release/v<next>` and then opens exactly one release
 pull request for it, because a pull request opened with `GITHUB_TOKEN` starts no
 `pull_request` workflow and would never get a `ci-ok`. The opener uses a real

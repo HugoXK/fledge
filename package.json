@@ -34,6 +34,8 @@
     "slo:report": "node scripts/slo-report.mjs",
     "trial:sweep": "tsx scripts/trial-sweep.ts",
     "visual:matrix": "tsx scripts/visual-matrix.ts",
+    "mock:snapshot": "tsx scripts/mock-snapshot.ts",
+    "mock:check": "tsx scripts/mock-snapshot.ts --check",
     "evolution:consent": "tsx scripts/evolution-consent.ts",
     "lint:update": "node scripts/lint-warnings.mjs --update"
   },
