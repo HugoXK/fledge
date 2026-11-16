@@ -5352,6 +5352,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         instances: store.listRepoInstances().filter((row) => row.user_id === user.id).length,
         tokens: store.listApiTokens(user.id).length,
         installations: store.listInstallations(user.id).length,
+        // #846: both rows survive the account on a `SET NULL` key, so the preview
+        // counts them the same way the purge does.
+        errorReports: store.countErrorReportsForUser(user.id),
+        feedbackTriage: store.countFeedbackTriageForUser(user.id),
       },
       blocked: accountDeleteBlocked(viewer, user),
       notice: request.flash?.notice?.text,

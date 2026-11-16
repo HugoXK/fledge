@@ -333,3 +333,76 @@ test('a failure mid-teardown is audited by step, the account stays visible, and 
     await built.close()
   }
 })
+
+// #846: `error_reports` and `feedback_triage` point at the account with
+// `ON DELETE SET NULL`, so neither the cascade nor a purge that only relied on it
+// could reach them. The delete preview counts them and the purge takes them, so
+// the retention row says what actually went.
+function seedFeedbackSurvivors(store: Store, userId: string, login: string): { feedbackId: string; ref: string } {
+  const feedback = store.createFeedback({ id: 'fb_846', userId, kind: 'feedback', message: 'the console broke', page: '/console' })
+  const report = store.createErrorReport({
+    ref: 'err_846',
+    user_id: userId,
+    user_login: login,
+    method: 'GET',
+    path: '/console',
+    status_code: 500,
+    error_name: 'Error',
+    error_message: 'boom',
+    error_stack: 'at handler',
+    build_version: '0.0.0',
+    build_commit: 'c',
+  })
+  store.createFeedbackTriage({ ref: 'err_846', userId, userLogin: login, kind: 'error', publishConsent: false })
+  store.addFeedbackEvent('err_846', 'new')
+  return { feedbackId: feedback.id, ref: report.ref }
+}
+
+test('the delete preview counts the error reports and triage rows the cascade cannot reach', async () => {
+  const { built, store } = await build()
+  try {
+    const boss = makeUser(store, { login: 'root', superadmin: true, status: 'approved' })
+    const { user: victim } = seedTarget(store)
+    seedFeedbackSurvivors(store, victim.id, victim.login)
+    const { cookie } = sessionFor(built, boss)
+    const preview = await built.app.inject({ method: 'GET', url: `/admin/users/${victim.id}/delete`, headers: { cookie: `${cookie}; fledge_lang=en` } })
+    assert.equal(preview.statusCode, 200)
+    assert.match(preview.body, /Error reports<\/td><td data-label="Count"><strong>1<\/strong>/, 'the preview must count the seeded error report')
+    assert.match(preview.body, /Feedback triage records<\/td><td data-label="Count"><strong>1<\/strong>/, 'the preview must count the seeded triage row')
+  } finally {
+    await built.close()
+  }
+})
+
+test('the purge takes the error reports and triage rows the cascade cannot reach', async () => {
+  const { built, store } = await build()
+  try {
+    const boss = makeUser(store, { login: 'root', superadmin: true, status: 'approved' })
+    const { user: victim } = seedTarget(store)
+    const seeded = seedFeedbackSurvivors(store, victim.id, victim.login)
+    const { cookie, csrf } = sessionFor(built, boss)
+    const done = await built.app.inject({
+      method: 'POST',
+      url: `/admin/users/${victim.id}/delete`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: confirmPayload(csrf, victim.login),
+    })
+    assert.equal(done.statusCode, 302)
+    assert.equal(store.errorReportByRef(seeded.ref), undefined, 'the error report outlived the account')
+    assert.equal(store.feedbackTriageByRef(seeded.ref), undefined, 'the triage row outlived the account')
+    assert.equal(store.listFeedbackEvents(seeded.ref).length, 0, 'the triage events must go with the triage row')
+    assert.equal(store.feedbackById(seeded.feedbackId), undefined, 'the cascade on feedback must keep working')
+
+    const retention = store.listAudit(200).find((row) => row.action === 'admin.user.deleted')
+    assert.ok(retention !== undefined, 'one retention row must be written')
+    const parsed = JSON.parse(String(retention.detail ?? '')) as { rows: Record<string, number> }
+    assert.equal(parsed.rows.error_reports, 1, 'the retention row must count the error report it removed')
+    assert.equal(parsed.rows.feedback_triage, 1, 'the retention row must count the triage row it removed')
+    const left = store.all<{ n: number }>('SELECT COUNT(*) AS n FROM error_reports WHERE user_login = ?', victim.login)
+    assert.equal(Number(left[0]?.n ?? 0), 0, 'a row still names the deleted login')
+    const triageLeft = store.all<{ n: number }>('SELECT COUNT(*) AS n FROM feedback_triage WHERE user_login = ?', victim.login)
+    assert.equal(Number(triageLeft[0]?.n ?? 0), 0, 'a triage row still names the deleted login')
+  } finally {
+    await built.close()
+  }
+})

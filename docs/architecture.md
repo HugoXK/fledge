@@ -1803,7 +1803,8 @@ the single delete path that #691's superadmin deletion also calls (it decides no
 eligibility — the caller asserts the account is dead). That function is one
 transaction: it computes the spend aggregate and the row counts, deletes the rows
 no cascade reaches (`artifact_versions.repo_id`, `audit_log.user_id`, `events`,
-the six `settings` shapes keyed or valued by the account id or login), deletes
+the six `settings` shapes keyed or valued by the account id or login, and the two
+`ON DELETE SET NULL` rows `error_reports` and `feedback_triage`), deletes
 the `users` row so the repo-scoped cascade fires, and writes one `trial.purged`
 retention row with `user_id` NULL so it survives. The page's purge section reads
 those rows (`Store.recentPurgeAudits`) and renders the reason, the operator, the
@@ -1812,8 +1813,9 @@ row total and the per-currency spend — the aggregate never folds buckets, beca
 
 The superadmin deletion (#691) sits on the same delete path. `GET
 /admin/users/:id/delete` is a read-only preview: it counts the account's
-repositories, jobs (all, running and queued), FlyBot instances, API tokens and
-GitHub installation records, names the backup window, and says that the GitHub
+repositories, jobs (all, running and queued), FlyBot instances, API tokens,
+GitHub installation records, error reports and feedback triage rows, names the
+backup window, and says that the GitHub
 App installation itself is not uninstalled — it keeps its repository access and
 its webhooks until an operator removes it on GitHub; the preview writes no audit
 row.
