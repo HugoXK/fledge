@@ -2,7 +2,6 @@ import { lookup } from 'node:dns/promises'
 import { isIP } from 'node:net'
 import type { Config } from '../config.js'
 import { isBlockedIpAddress } from './ipAddress.js'
-import { log } from './log.js'
 import { nowIso } from './time.js'
 
 export interface WebhookAddress {
@@ -109,7 +108,14 @@ async function postWebhook(
   let payload: string | undefined = body
 
   for (let redirects = 0; ; redirects += 1) {
-    const safeUrl = await assertSafeWebhookUrl(current.toString(), options)
+    let safeUrl: URL
+    try {
+      safeUrl = await assertSafeWebhookUrl(current.toString(), options)
+    } catch (error) {
+      // A destination the safety rule refuses is not transient: retrying it
+      // forever would never change the answer, so the outbox records it blocked.
+      throw new NotificationWebhookError(String(error), 'blocked')
+    }
     let response: Response
     try {
       response = await fetchImpl(safeUrl.toString(), {
@@ -119,12 +125,17 @@ async function postWebhook(
         redirect: 'manual',
         signal: AbortSignal.timeout(5_000),
       })
-    } catch {
-      throw new Error(`Notification webhook request to host "${normalizeHost(current.hostname)}" failed`)
+    } catch (error) {
+      // A timeout or reset may have happened after the body left the process, so
+      // it is unknown; a connect/DNS failure never reached the destination.
+      throw new NotificationWebhookError(
+        `Notification webhook request to host "${normalizeHost(current.hostname)}" failed`,
+        isAmbiguousWebhookFailure(error) ? 'unknown' : 'retry',
+      )
     }
     if (!REDIRECT_STATUSES.has(response.status)) return response
     if (redirects >= MAX_REDIRECTS) {
-      throw new Error(`Refusing notification webhook: too many redirects for host "${normalizeHost(current.hostname)}"`)
+      throw new NotificationWebhookError(`Refusing notification webhook: too many redirects for host "${normalizeHost(current.hostname)}"`, 'blocked')
     }
     const location = response.headers.get('location')
     if (location === null || location === '') return response
@@ -139,25 +150,48 @@ async function postWebhook(
   }
 }
 
-export async function sendNotificationWebhook(
+/** #544 slice 7: what the caller can prove about a failed request. */
+export type WebhookFailureKind = 'blocked' | 'retry' | 'unknown'
+
+export class NotificationWebhookError extends Error {
+  constructor(message: string, readonly kind: WebhookFailureKind) {
+    super(message)
+    this.name = 'NotificationWebhookError'
+  }
+}
+
+// Anything that may have happened after the request was written is ambiguous.
+// Connection refused, DNS and TLS-setup failures are not.
+const AMBIGUOUS_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'])
+
+function isAmbiguousWebhookFailure(error: unknown): boolean {
+  if (typeof error !== 'object' || error === null) return false
+  const record = error as { name?: unknown; code?: unknown }
+  if (record.name === 'TimeoutError' || record.name === 'AbortError') return true
+  return typeof record.code === 'string' && AMBIGUOUS_CODES.has(record.code)
+}
+
+/**
+ * #544 slice 7: the outbox's webhook transport. It reports the response status
+ * and lets the typed failure through, so the caller can record `sent` / `retry`
+ * / `dead` / `blocked` / `unknown` instead of losing the outcome in a log line.
+ */
+export async function postNotificationWebhook(
   config: Config,
   event: string,
   payload: Record<string, unknown>,
   options: WebhookSafetyOptions = {},
-): Promise<void> {
-  if (config.notifyWebhookUrl === '') return
-  try {
-    const text = typeof payload.text === 'string' ? payload.text : `${event}: ${JSON.stringify(payload).slice(0, 500)}`
-    const headers: Record<string, string> = {
-      'content-type': 'application/json',
-      'user-agent': 'fledge/0.2',
-      ...(config.notifyWebhookSecret === '' ? {} : { authorization: `Bearer ${config.notifyWebhookSecret}` }),
-    }
-    await postWebhook(new URL(config.notifyWebhookUrl), JSON.stringify({ event, at: nowIso(), text, ...payload }), headers, {
-      ...options,
-      allowedHosts: config.notifyWebhookAllowedHosts,
-    })
-  } catch (error) {
-    log.warn('notification webhook failed', { event, error: String(error) })
+): Promise<number> {
+  if (config.notifyWebhookUrl === '') throw new NotificationWebhookError('notification webhook is not configured', 'blocked')
+  const text = typeof payload.text === 'string' ? payload.text : `${event}: ${JSON.stringify(payload).slice(0, 500)}`
+  const headers: Record<string, string> = {
+    'content-type': 'application/json',
+    'user-agent': 'fledge/0.2',
+    ...(config.notifyWebhookSecret === '' ? {} : { authorization: `Bearer ${config.notifyWebhookSecret}` }),
   }
+  const response = await postWebhook(new URL(config.notifyWebhookUrl), JSON.stringify({ event, at: nowIso(), text, ...payload }), headers, {
+    ...options,
+    allowedHosts: config.notifyWebhookAllowedHosts,
+  })
+  return response.status
 }

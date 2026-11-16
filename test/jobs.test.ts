@@ -1205,6 +1205,9 @@ test('job completion and questions can be forwarded to a notification webhook', 
     store.createJob({ id: 'job_webhook', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
     store.updateJob('job_webhook', { status: 'running', started_at: new Date().toISOString() })
     await jobs.handleCallback('job_webhook', secret, { status: 'succeeded', summary: 'done' })
+    // #544 slice 7: the webhook is queued first, and the tick's one delivery
+    // pass is what touches the transport.
+    await jobs.tick()
     for (let i = 0; i < 20 && events.length === 0; i += 1) await new Promise((resolve) => setTimeout(resolve, 25))
     assert.equal(events.length, 1)
     assert.equal(events[0]?.event, 'job.succeeded')

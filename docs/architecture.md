@@ -519,8 +519,9 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
   is optional and lives under an advanced disclosure, so a reader who only wants
   "weekdays at 09:30" never types cron or an ISO offset.
-  Layered budgets and the notification outbox are not built yet (the misfire
-  policy is, see the slice below).
+  Layered budgets beyond a schedule's own daily run limit and event
+  subscriptions are not built yet (the misfire policy and the notification
+  outbox are, see the slices below).
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
   most one per repository — makes `nextTime` the only rule for when a work run is
   due, and `repos.interval_minutes` stops deciding for that repository. A
@@ -613,6 +614,29 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   transaction still makes the instant single-dispatch; a distributed worker
   (`#387`) must move the count inside that claim, or two workers could each spend
   the last slot.
+- **The notification outbox** (#544, slice 7): every notification is a durable
+  row (`notification_outbox`) instead of a call whose failure lived only in a log
+  line. The digests, question mails, ops alerts and per-job/PR webhooks are
+  queued with an idempotency key, so a replayed callback or a second tick keeps
+  one row rather than sending twice. A tick pass sweeps lapsed `sending` leases
+  into `unknown`, then attempts the due `pending`/`retry` rows one at a time.
+  The states are deliberately not interchangeable: a 429/5xx webhook or a 4xx
+  SMTP greeting is `retry` with exponential backoff (one minute, doubling,
+  capped at an hour); a 4xx webhook answer or a 5xx SMTP rejection is `dead`; a
+  timeout or reset that may have happened after the request left the process is
+  `unknown`, and `unknown` is never resent automatically because the destination
+  may already have it; a missing address, a revoked account, a switched-off
+  webhook or a destination the safety rule refuses is `blocked`, so a human
+  fixes the cause first. Email is resolved again at delivery (`notifyEmail` of
+  the current account), which is why a queued message cannot follow an address
+  the user has since changed or a revoked account. The one human action is an
+  explicit resend from `/admin/notifications`, which reuses the row's
+  idempotency key, keeps the attempt count readable, and is audited as
+  `notification.resend`; a delivered row is not reopened. The console names
+  every state and prints the last error and the delivery time, and it shows the
+  address masked and never the mail or webhook body. `unknown` keeps a longer
+  retention window than the other states, because it is the only one whose
+  duplicate risk a human still has to judge.
 - **Upstream/fork onboarding**: the user submits the upstream repository. Fledge
   reads it with the user's token, checks for a same-name fork, creates one when
   needed, and stores both sides. Iteration jobs push to the fork and open the PR

@@ -309,6 +309,35 @@ export interface ScheduleOccurrenceRow {
   lease_expires_at: number | null
 }
 
+/** #544 slice 7: one durable notification send. */
+export type NotificationTransport = 'email' | 'webhook'
+export type NotificationOutboxState = 'pending' | 'sending' | 'sent' | 'retry' | 'unknown' | 'dead' | 'blocked'
+
+export interface NotificationOutboxRow {
+  id: string
+  transport: NotificationTransport
+  /** Where the send goes. For email this is the address at queue time; for a
+   * webhook the transport reads the configured URL at send time instead. */
+  destination: string
+  /** The account the email belongs to; null for a webhook. Delivery re-checks
+   * that account and its current notification address before sending. */
+  user_id: string | null
+  payload_json: string
+  /** Reused by a human resend: the same logical notification, not a second one. */
+  idempotency_key: string
+  state: NotificationOutboxState
+  /** Claims so far. Kept across a human resend, so duplication is visible. */
+  attempts: number
+  /** Epoch milliseconds before which a retry is not due; null means immediately. */
+  next_attempt_at: number | null
+  lease_token: string | null
+  lease_expires_at: number | null
+  last_error: string | null
+  sent_at: string | null
+  created_at: string
+  updated_at: string
+}
+
 export interface UserModelRow {
   id: string
   user_id: string
@@ -967,6 +996,7 @@ const PURGE_USER_TABLES = [
   'api_tokens',
   'quota_ledger',
   'notifications',
+  'notification_outbox',
   'github_installations',
   'work_items',
   'user_models',
@@ -1998,6 +2028,42 @@ CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrence
 CREATE INDEX IF NOT EXISTS schedule_occurrences_repo_idx ON schedule_occurrences(repo_id, logical_time DESC);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_schedule_idx ON schedule_occurrences(schedule_id, logical_time DESC);
 
+-- #544 slice 7: the notification outbox. A notification used to be a call whose
+-- failure lived only in a log line, so a webhook that timed out and one that
+-- never ran looked the same. Every send now has a durable row and one of seven
+-- states:
+--   pending  queued, no lease held
+--   sending  a worker holds the row until its lease lapses
+--   sent     the transport accepted it
+--   retry    a definite transient refusal, due again at next_attempt_at
+--   unknown  the request may have crossed the external commit boundary; never
+--            resent automatically, because a resend could duplicate it
+--   dead     a definite refusal (4xx, 5xx SMTP) a retry cannot fix
+--   blocked  the destination cannot receive it now (missing address, revoked
+--            recipient, webhook switched off); a human fixes the cause first
+-- The unique key is the idempotency key a human resend reuses, so a resend is
+-- the same logical notification rather than a second one.
+CREATE TABLE IF NOT EXISTS notification_outbox (
+  id TEXT PRIMARY KEY,
+  transport TEXT NOT NULL,
+  destination TEXT NOT NULL,
+  user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  payload_json TEXT NOT NULL,
+  idempotency_key TEXT NOT NULL,
+  state TEXT NOT NULL,
+  attempts INTEGER NOT NULL DEFAULT 0,
+  next_attempt_at INTEGER,
+  lease_token TEXT,
+  lease_expires_at INTEGER,
+  last_error TEXT,
+  sent_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(transport, idempotency_key)
+);
+CREATE INDEX IF NOT EXISTS notification_outbox_due_idx ON notification_outbox(state, next_attempt_at);
+CREATE INDEX IF NOT EXISTS notification_outbox_created_idx ON notification_outbox(created_at DESC);
+
 -- #786: feedback and unexpected-error reports. Both are additive; no existing
 -- table or row is rewritten. The error ref is the unguessable capability the
 -- error page carries; the row is written with redacted, bounded fields before
@@ -2266,9 +2332,9 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 43) {
+    if (previousVersion > 44) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (43)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (44)`)
     }
     this.db.exec(SCHEMA)
     this.migrateFeedbackTriageColumns()
@@ -2293,7 +2359,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 43)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 44)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -5253,6 +5319,179 @@ export class Store {
     return row !== undefined && row.lease_token !== null && row.lease_expires_at !== null && row.lease_expires_at > now
   }
 
+  // #544 slice 7. One durable row per logical notification. The unique key is
+  // the idempotency key, so queueing the same notification twice (a replayed
+  // callback, a second tick) keeps one row instead of sending twice. `created`
+  // is the only place that distinction is visible.
+  enqueueNotification(input: {
+    transport: NotificationTransport
+    destination: string
+    userId?: string | null
+    payload: unknown
+    idempotencyKey: string
+    now?: number
+  }): { row: NotificationOutboxRow; created: boolean } {
+    const now = input.now ?? Date.now()
+    const result = this.db.prepare(
+      `INSERT INTO notification_outbox
+         (id, transport, destination, user_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+       ON CONFLICT(transport, idempotency_key) DO NOTHING`,
+    ).run(...clean([
+      `ntf_${randomBytes(8).toString('hex')}`,
+      input.transport,
+      input.destination.slice(0, 500),
+      input.userId ?? null,
+      JSON.stringify(input.payload),
+      input.idempotencyKey.slice(0, 300),
+      now,
+      new Date(now).toISOString(),
+      new Date(now).toISOString(),
+    ]))
+    const row = this.get<NotificationOutboxRow>(
+      'SELECT * FROM notification_outbox WHERE transport = ? AND idempotency_key = ?',
+      input.transport, input.idempotencyKey.slice(0, 300),
+    )
+    if (row === undefined) throw new Error(`notification ${input.transport}/${input.idempotencyKey} disappeared after insert`)
+    return { row, created: Number(result.changes) > 0 }
+  }
+
+  getNotificationOutbox(id: string): NotificationOutboxRow | undefined {
+    return this.get<NotificationOutboxRow>('SELECT * FROM notification_outbox WHERE id = ?', id)
+  }
+
+  // Claiming is one transaction, like the occurrence lease: the due rows are
+  // read and taken under the same lock, so two workers cannot both hold one row.
+  // Only `pending` and a due `retry` are claimable. `unknown` is deliberately
+  // absent: it is a send that may already have landed, so only a human resend
+  // may move it.
+  claimNotificationOutbox(now: number, leaseMs: number, limit = 25): NotificationOutboxRow[] {
+    return this.transaction(() => {
+      const due = this.all<{ id: string }>(
+        `SELECT id FROM notification_outbox
+          WHERE state IN ('pending', 'retry') AND (next_attempt_at IS NULL OR next_attempt_at <= ?)
+          ORDER BY COALESCE(next_attempt_at, 0) ASC, created_at ASC LIMIT ?`,
+        now, limit,
+      )
+      const claimed: NotificationOutboxRow[] = []
+      for (const row of due) {
+        const token = randomBytes(8).toString('hex')
+        const changed = this.db.prepare(
+          `UPDATE notification_outbox
+              SET state = 'sending', lease_token = ?, lease_expires_at = ?, attempts = attempts + 1, updated_at = ?
+            WHERE id = ? AND state IN ('pending', 'retry')`,
+        ).run(token, now + leaseMs, new Date(now).toISOString(), row.id)
+        if (Number(changed.changes) === 0) continue
+        const claimedRow = this.getNotificationOutbox(row.id)
+        if (claimedRow !== undefined) claimed.push(claimedRow)
+      }
+      return claimed
+    })
+  }
+
+  // The lease token is the whole check, exactly as on an occurrence: a worker
+  // whose lease lapsed and was swept still holds a token, but it is no longer
+  // the row's, so its result cannot overwrite the current state.
+  settleNotificationOutbox(input: {
+    id: string
+    leaseToken: string
+    state: 'sent' | 'retry' | 'dead' | 'unknown' | 'blocked'
+    error?: string | null
+    retryDelayMs?: number
+    now?: number
+  }): { row: NotificationOutboxRow; settled: boolean } {
+    const now = input.now ?? Date.now()
+    return this.transaction(() => {
+      const existing = this.getNotificationOutbox(input.id)
+      if (existing === undefined) throw new Error(`notification ${input.id} is not queued`)
+      if (existing.lease_token !== input.leaseToken) return { row: existing, settled: false }
+      const nextAttempt = input.state === 'retry' ? now + (input.retryDelayMs ?? 0) : null
+      this.run(
+        `UPDATE notification_outbox
+            SET state = ?, last_error = ?, next_attempt_at = ?, sent_at = ?, lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE id = ?`,
+        input.state, input.error === undefined ? null : input.error, nextAttempt,
+        input.state === 'sent' ? new Date(now).toISOString() : null, new Date(now).toISOString(), existing.id,
+      )
+      const row = this.getNotificationOutbox(existing.id)
+      if (row === undefined) throw new Error(`notification ${existing.id} disappeared after settle`)
+      return { row, settled: true }
+    })
+  }
+
+  // A `sending` row whose holder died is not a retry: the request may have
+  // reached the destination before the lease lapsed, so the outcome is unknown.
+  // The row keeps its idempotency key and waits for a human.
+  expireNotificationLeases(now: number, limit = 100): { expired: number; ids: string[] } {
+    return this.transaction(() => {
+      const expired = this.all<{ id: string }>(
+        `SELECT id FROM notification_outbox
+          WHERE state = 'sending' AND lease_expires_at IS NOT NULL AND lease_expires_at <= ?
+          ORDER BY lease_expires_at ASC LIMIT ?`,
+        now, limit,
+      )
+      for (const row of expired) {
+        this.run(
+          `UPDATE notification_outbox
+              SET state = 'unknown', last_error = 'lease-expired', next_attempt_at = NULL,
+                  lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+            WHERE id = ? AND state = 'sending'`,
+          new Date(now).toISOString(), row.id,
+        )
+      }
+      return { expired: expired.length, ids: expired.map((row) => row.id) }
+    })
+  }
+
+  // The human decision to accept a possible duplicate: the row becomes due
+  // again under the same id and idempotency key, and the attempt history stays
+  // readable so the console can say how many sends may exist.
+  resendNotification(id: string, now = Date.now()): { row: NotificationOutboxRow; requeued: boolean } {
+    return this.transaction(() => {
+      const existing = this.getNotificationOutbox(id)
+      if (existing === undefined) throw new Error(`notification ${id} is not queued`)
+      if (!['retry', 'unknown', 'dead', 'blocked'].includes(existing.state)) {
+        return { row: existing, requeued: false }
+      }
+      this.run(
+        `UPDATE notification_outbox
+            SET state = 'pending', next_attempt_at = ?, lease_token = NULL, lease_expires_at = NULL, updated_at = ?
+          WHERE id = ?`,
+        now, new Date(now).toISOString(), existing.id,
+      )
+      const row = this.getNotificationOutbox(existing.id)
+      if (row === undefined) throw new Error(`notification ${existing.id} disappeared after resend`)
+      return { row, requeued: true }
+    })
+  }
+
+  listNotificationOutbox(filters: { state?: string; transport?: string }, limit: number, offset: number): NotificationOutboxRow[] {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filters.state !== undefined && filters.state !== '') { where.push('state = ?'); params.push(filters.state) }
+    if (filters.transport !== undefined && filters.transport !== '') { where.push('transport = ?'); params.push(filters.transport) }
+    const clause = where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`
+    return this.all<NotificationOutboxRow>(
+      `SELECT * FROM notification_outbox ${clause} ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
+      ...params, limit, offset,
+    )
+  }
+
+  countNotificationOutbox(filters: { state?: string; transport?: string }): number {
+    const where: string[] = []
+    const params: unknown[] = []
+    if (filters.state !== undefined && filters.state !== '') { where.push('state = ?'); params.push(filters.state) }
+    if (filters.transport !== undefined && filters.transport !== '') { where.push('transport = ?'); params.push(filters.transport) }
+    const clause = where.length === 0 ? '' : `WHERE ${where.join(' AND ')}`
+    return Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM notification_outbox ${clause}`, ...params)?.n ?? 0)
+  }
+
+  countNotificationsByState(): Array<{ state: NotificationOutboxState; count: number }> {
+    return this.all<{ state: NotificationOutboxState; count: number }>(
+      'SELECT state, COUNT(*) AS count FROM notification_outbox GROUP BY state ORDER BY state',
+    )
+  }
+
   getRepoInstance(repoId: string): RepoInstanceRow | undefined {
     return this.get<RepoInstanceRow>('SELECT * FROM repo_instances WHERE repo_id = ?', repoId)
   }
@@ -6034,6 +6273,13 @@ export class Store {
     this.run('DELETE FROM events WHERE at < ?', cutoff(90))
     this.run('DELETE FROM job_events WHERE at < ?', cutoff(365))
     this.run('DELETE FROM webhook_deliveries WHERE received_at < ?', cutoff(30))
+    // #544 slice 7: a delivered notification is a receipt, so it goes with the
+    // other 30-day receipts. The unresolved states are kept longer because they
+    // are what a human still has to look at; `unknown` keeps its full window so
+    // the duplicate risk stays visible instead of ageing out with the sent rows.
+    this.run("DELETE FROM notification_outbox WHERE state = 'sent' AND created_at < ?", cutoff(30))
+    this.run("DELETE FROM notification_outbox WHERE state IN ('dead', 'blocked') AND created_at < ?", cutoff(90))
+    this.run("DELETE FROM notification_outbox WHERE state = 'unknown' AND created_at < ?", cutoff(365))
     this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
     this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
     this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))

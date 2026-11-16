@@ -21,6 +21,9 @@ const DESTRUCTIVE_ROUTE_LIST = [
   'POST /admin/users/:id/role',
   'POST /admin/users/:id/private-models',
   'POST /admin/users/:id/resend-approval',
+  // A resend can duplicate a delivery that already landed; it cannot be
+  // recalled, so it belongs beside the approval resend rather than ordinary.
+  'POST /admin/notifications/:id/resend',
   'POST /admin/users/:id/approve',
   'POST /admin/users/:id/reject',
   'POST /admin/users/:id/quota',

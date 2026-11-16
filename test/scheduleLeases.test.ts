@@ -49,7 +49,7 @@ test('the occurrence row carries attempts and a lease, at user_version 43', () =
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')
-    assert.equal(Number(version?.user_version), 43, 'the Lead delivery columns move the refusal boundary from 42 to 43')
+    assert.equal(Number(version?.user_version), 44, 'the notification outbox moves the refusal boundary from 43 to 44')
 
     const columns = store.all<{ name: string }>('PRAGMA table_info(schedule_occurrences)').map((column) => column.name)
     for (const column of ['attempts', 'lease_token', 'lease_expires_at']) {

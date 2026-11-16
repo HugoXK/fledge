@@ -410,6 +410,26 @@ digest in Settings; approval and quota mail stay transactional. A question is
 mailed at most once per `sessionId + questionId`; a digest is sent once per user
 per day. Test mail is rate-limited to one per minute.
 
+### Notification outbox
+
+Job, digest and question mail and the operator webhook are queued in
+`notification_outbox` instead of being sent inline. A queued email stores its
+subject, plain-text body and HTML beside the account, never a token, key or
+bridge secret; `redact()` runs on the source text before the row is written. The
+address is resolved again at delivery from the account's current `notify_email`
+(falling back to the GitHub email), so a revoked account receives nothing and a
+changed address is not mailed the old copy. A queued webhook row stores no URL:
+the configured `NOTIFY_WEBHOOK_URL` is read at send time under the same safety
+rule as a live send (https or allowlisted host, no credentials in the URL, no
+private or reserved address, bounded redirects), and a refused destination is
+`blocked` rather than retried. The admin outbox page renders transport, state,
+attempt count, last error and delivery time with the address masked; it never
+renders the mail or webhook body. A delivered row is kept for 30 days, `dead`
+and `blocked` rows for 90, and `unknown` for 365 because it is the only state
+whose duplicate risk a person still has to judge; a human resend is audited as
+`notification.resend`. A send that may have reached the destination is
+`unknown` and is never replayed automatically.
+
 ### Roles, admin scope and preview
 
 - `user`, `admin` and super admin (`superadmin`) are platform roles. The configured

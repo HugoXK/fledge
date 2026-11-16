@@ -87,9 +87,12 @@ different thing; being ordinary says they take no **class** budget.
 **Classification is not enforcement.** A green sweep says every mutating route
 has a class; it does not say every class has a budget. Read the table as policy
 and `limits.take(...)` as what is paced today — they are compared in a later
-slice. Counted from this tree: 13 of the 31 destructive routes and 4 of the 51
-expensive routes carry a budget, so 18 destructive and 47 expensive routes are
-classified and unpaced. The three feedback routes `#797` added are in the table
+slice. Counted from this tree: 13 of the 32 destructive routes and 4 of the 51
+expensive routes carry a budget, so 19 destructive and 47 expensive routes are
+classified and unpaced. The notification outbox's resend
+(`POST /admin/notifications/:id/resend`) is destructive for the same reason
+`resend-approval` is: a duplicate send cannot be recalled. The three feedback
+routes `#797` added are in the table
 for the same reason the gate routes are: `POST /feedback` and
 `POST /errors/:ref/report` deliver the packet to the Lead bot, which spends a
 model turn on it, so they are `expensive` and unpaced; the triage callback only

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { assertSafeNotificationWebhook, assertSafeWebhookUrl, sendNotificationWebhook, type WebhookResolver } from '../src/lib/webhook.js'
+import { assertSafeNotificationWebhook, assertSafeWebhookUrl, postNotificationWebhook, type WebhookResolver } from '../src/lib/webhook.js'
 import { parseHostAllowlist } from '../src/config.js'
 import { MemoryMailer, testConfig } from './helpers.js'
 
@@ -15,7 +15,7 @@ test('a public https webhook is accepted', async () => {
   assert.equal(accepted.toString(), 'https://hooks.example.com/fledge')
 
   let calls = 0
-  await sendNotificationWebhook(
+  const status = await postNotificationWebhook(
     testConfig({ notifyWebhookUrl: 'https://hooks.example.com/fledge' }),
     'job.succeeded',
     { text: 'iterate job job_1 succeeded' },
@@ -28,6 +28,7 @@ test('a public https webhook is accepted', async () => {
     },
   )
   assert.equal(calls, 1)
+  assert.equal(status, 200)
 })
 
 test('loopback, RFC1918, metadata, link-local, multicast and IPv4-mapped private targets are refused', async () => {
@@ -97,11 +98,14 @@ test('a redirect to a private address is refused before the body is sent there',
     return new Response(null, { status: 307, headers: { location: 'https://10.0.0.1/internal' } })
   }) as typeof fetch
 
-  await sendNotificationWebhook(
-    testConfig({ notifyWebhookUrl: 'https://hooks.example.com/fledge', notifyWebhookSecret: 'hook-secret' }),
-    'ops.alert',
-    { text: 'disk almost full' },
-    { resolve: publicResolve, fetch: redirectingFetch },
+  await assert.rejects(
+    () => postNotificationWebhook(
+      testConfig({ notifyWebhookUrl: 'https://hooks.example.com/fledge', notifyWebhookSecret: 'hook-secret' }),
+      'ops.alert',
+      { text: 'disk almost full' },
+      { resolve: publicResolve, fetch: redirectingFetch },
+    ),
+    /private or reserved/,
   )
 
   assert.equal(calls.length, 1, 'only the public https target may receive a request')

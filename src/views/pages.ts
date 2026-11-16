@@ -1,6 +1,6 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SecurityFindingRow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationOutboxRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SecurityFindingRow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
 import { isVerifiedFixed } from '../lib/securityFindings.js'
 import { assetUrl } from '../lib/assetVersion.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
@@ -2380,6 +2380,7 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'repo.refreshed': ['刷新仓库', 'Repository refreshed'],
   'schedule.saved': ['保存排期', 'Schedule saved'],
   'schedule.removed': ['删除排期', 'Schedule deleted'],
+  'notification.resend': ['重发通知', 'Notification resent'],
   'job.enqueued': ['任务入队', 'Job queued'],
   'job.succeeded': ['任务成功', 'Job succeeded'],
   'job.failed': ['任务失败', 'Job failed'],
@@ -2835,7 +2836,8 @@ export function adminPage(input: {
     <div class="row between"><h2>${escapeHtml(t('运维工具', 'Operations'))}</h2><span class="fine">${escapeHtml(t('独立运维页面', 'separate operator pages'))}</span></div>
     <div class="admin-modules">
       ${superadmin ? `<a class="admin-module" href="/admin/metrics"><strong>${escapeHtml(t('产品指标', 'Product metrics'))}</strong><small>${escapeHtml(t('用户、任务、成本、失败分类和告警。', 'Users, jobs, cost, failure breakdown and alerts.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
-      <a class="admin-module" href="/admin/webhooks"><strong>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</strong><small>${escapeHtml(t('出站通知投递状态、重试和详情。', 'Outbound notification delivery state, retries and detail.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>` : ''}
+      <a class="admin-module" href="/admin/webhooks"><strong>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</strong><small>${escapeHtml(t('出站通知投递状态、重试和详情。', 'Outbound notification delivery state, retries and detail.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
+      <a class="admin-module" href="/admin/notifications"><strong>${escapeHtml(t('通知发件箱', 'Notification outbox'))}</strong><small>${escapeHtml(t('待发送、已送达、重试、结果未知和受阻的通知。', 'Queued, delivered, retrying, unknown and blocked notifications.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>` : ''}
       <a class="admin-module" href="/admin/deployments"><strong>${escapeHtml(t('部署与漂移', 'Deployments and drift'))}</strong><small>${escapeHtml(t('已记录的部署、漂移、canary 和回滚计划。', 'Recorded deployments, drift, canary and rollback plans.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
       <a class="admin-module" href="/admin/search"><strong>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</strong><small>${escapeHtml(t('按用户、状态、类型和时间筛选并导出任务/审计。', 'Filter and export jobs/audit by user, status, kind and time.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
       <a class="admin-module" href="/admin/trials"><strong>${escapeHtml(t('试用预览', 'Preview trials'))}</strong><small>${escapeHtml(t('试用到期状态、可转化账号和清理记录。', 'Trial expiry state, eligible accounts and purge records.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
@@ -4167,6 +4169,85 @@ export function adminWebhooksPage(input: {
     ${pages <= 1 ? '' : `<div class="row between mt-12"><span class="fine">${escapeHtml(t(`第 ${page} / ${pages} 页`, `Page ${page} of ${pages}`))}</span><div class="row"><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.max(1, page - 1) })}">${escapeHtml(t('上一页', 'Previous'))}</a><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.min(pages, page + 1) })}">${escapeHtml(t('下一页', 'Next'))}</a></div></div>`}
   </section>`
   return layout({ title: t('Webhook deliveries', 'Webhook deliveries'), viewer, body, config, locale, path: '/admin/webhooks', active: 'admin', notice, error })
+}
+
+// #544 slice 7: the outbox's operator surface. It answers the one question a
+// log line could not: did this notification arrive, may it have arrived, or is
+// it waiting for someone? `unknown` never reads as zero or as failure — it is
+// named, because only a person can decide to risk a duplicate.
+function outboxStateLabel(t: Translate, state: string): string {
+  const labels: Record<string, [string, string]> = {
+    pending: ['待发送', 'Queued'],
+    sending: ['发送中', 'Sending'],
+    sent: ['已送达', 'Delivered'],
+    retry: ['待重试', 'Retrying'],
+    unknown: ['结果未知', 'Unknown'],
+    dead: ['永久失败', 'Failed'],
+    blocked: ['受阻', 'Blocked'],
+  }
+  const found = labels[state]
+  return found === undefined ? state : t(found[0], found[1])
+}
+
+export function adminNotificationsPage(input: {
+  config: Config
+  locale: Locale
+  viewer: Viewer
+  rows: NotificationOutboxRow[]
+  counts: Array<{ state: string; count: number }>
+  filters: { state: string; transport: string }
+  page: number
+  pages: number
+  total: number
+  notice?: string
+  error?: string
+}): string {
+  const { config, locale, viewer, rows, counts, filters, page, pages, total, notice, error } = input
+  const t = translator(locale)
+  const query = (extra: Record<string, string | number>): string => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries({ ...filters, ...extra })) if (String(value) !== '') params.set(key, String(value))
+    return params.toString()
+  }
+  const badge = (state: string): string => {
+    const cls = state === 'sent' ? 'good' : state === 'dead' || state === 'blocked' ? 'bad' : 'busy'
+    return `<span class="badge ${cls}">${escapeHtml(outboxStateLabel(t, state))}</span>`
+  }
+  const resentable = (state: string): boolean => state === 'retry' || state === 'unknown' || state === 'dead' || state === 'blocked'
+  const transportLabel = (transport: string): string => transport === 'email' ? t('邮件', 'Email') : t('Webhook', 'Webhook')
+  const destinationText = (row: NotificationOutboxRow): string => {
+    if (row.transport === 'webhook') return 'webhook'
+    return row.destination === '' ? '—' : maskEmail(row.destination)
+  }
+  const summary = counts.length === 0
+    ? `<span class="fine">${escapeHtml(t('还没有通知。', 'No notifications yet.'))}</span>`
+    : `<div class="row">${counts.map((entry) => `<span class="badge ${entry.state === 'sent' ? 'good' : entry.state === 'dead' || entry.state === 'blocked' ? 'bad' : 'busy'}">${escapeHtml(outboxStateLabel(t, entry.state))} ${entry.count}</span>`).join(' ')}</div>`
+  const bodyRows = rows.length === 0
+    ? stateCell(7, { kind: 'empty', title: t('没有匹配的通知。', 'No matching notifications.'), body: t('发送任务、摘要或提问后，投递状态会出现在这里。', 'Delivery state appears here after a job, digest or question notification.'), action: { href: '/admin', label: t('返回管理', 'Back to admin') } })
+    : rows.map((row) => `<tr>
+        <td>${escapeHtml(humanTimeShort(row.created_at))}</td>
+        <td>${escapeHtml(transportLabel(row.transport))}<br /><small class="muted">${escapeHtml(destinationText(row))}</small></td>
+        <td>${badge(row.state)}</td>
+        <td>${row.attempts}</td>
+        <td>${row.last_error === null ? '—' : `<span title="${escapeHtml(row.last_error)}">${escapeHtml(row.last_error.slice(0, 160))}</span>`}</td>
+        <td>${row.sent_at === null ? '—' : escapeHtml(humanTimeShort(row.sent_at))}</td>
+        <td>${resentable(row.state) ? `<form method="post" action="/admin/notifications/${escapeHtml(row.id)}/resend">${csrf(viewer)}<button class="btn btn-ghost btn-small" type="submit">${escapeHtml(t('重发', 'Resend'))}</button></form>` : ''}</td>
+      </tr>`).join('')
+  const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
+  <section class="card">
+    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('发件箱', 'OUTBOX'))}</div><h1>${escapeHtml(t('通知发件箱', 'Notification outbox'))}</h1><p class="muted">${escapeHtml(t(`最近 ${total} 条；只显示元数据和错误，不显示邮件或 webhook 正文。`, `Latest ${total}; metadata and errors only, the body is not shown.`))}</p></div>${summary}</div>
+    <form method="get" action="/admin/notifications" class="form">
+      <div class="row">
+        <label>${escapeHtml(t('状态', 'State'))} <select name="state"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['pending', 'sending', 'sent', 'retry', 'unknown', 'dead', 'blocked'].map((value) => `<option value="${value}"${filters.state === value ? ' selected' : ''}>${escapeHtml(outboxStateLabel(t, value))}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('通道', 'Transport'))} <select name="transport"><option value="">${escapeHtml(t('全部', 'All'))}</option><option value="email"${filters.transport === 'email' ? ' selected' : ''}>${escapeHtml(t('邮件', 'Email'))}</option><option value="webhook"${filters.transport === 'webhook' ? ' selected' : ''}>${escapeHtml(t('Webhook', 'Webhook'))}</option></select></label>
+        <button class="btn" type="submit">${escapeHtml(t('筛选', 'Filter'))}</button>
+      </div>
+    </form>
+    <p class="fine">${escapeHtml(t('“结果未知”表示请求可能已经送达，系统不会自动重发；重发会使用同一个幂等键，可能产生重复。', 'Unknown means the request may have arrived; it is not resent automatically. A resend reuses the same idempotency key and may duplicate.'))}</p>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('创建', 'Created'))}</th><th>${escapeHtml(t('通道', 'Transport'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('尝试', 'Attempts'))}</th><th>${escapeHtml(t('错误', 'Error'))}</th><th>${escapeHtml(t('送达', 'Delivered'))}</th><th></th></tr></thead><tbody>${bodyRows}</tbody></table></div>
+    ${pages <= 1 ? '' : `<div class="row between mt-12"><span class="fine">${escapeHtml(t(`第 ${page} / ${pages} 页`, `Page ${page} of ${pages}`))}</span><div class="row"><a class="btn btn-ghost btn-small" href="/admin/notifications?${query({ page: Math.max(1, page - 1) })}">${escapeHtml(t('上一页', 'Previous'))}</a><a class="btn btn-ghost btn-small" href="/admin/notifications?${query({ page: Math.min(pages, page + 1) })}">${escapeHtml(t('下一页', 'Next'))}</a></div></div>`}
+  </section>`
+  return layout({ title: t('Notification outbox', 'Notification outbox'), viewer, body, config, locale, path: '/admin/notifications', active: 'admin', notice, error })
 }
 
 export function adminSupportPage(input: {
