@@ -1801,6 +1801,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
       ...(queryText(request, 'ran') === undefined ? {} : { notice: t('已立即开始一次运行。', 'One run has started now.') }),
       ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
+      ...(queryText(request, 'paused') === undefined ? {} : { notice: t('排期已暂停：期间走过的时刻记为 skipped，不会补跑。', 'The schedule is paused: instants that pass are recorded as skipped and are not made up.') }),
+      ...(queryText(request, 'resumed') === undefined ? {} : { notice: t('排期已恢复，从下一个时刻开始运行。', 'The schedule is resumed and runs from the next instant.') }),
       ...(refused === undefined ? {} : { error: refused }),
     }))
   })
@@ -1884,6 +1886,44 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
     }
     return reply.redirect(`${back}?ran=${encodeURIComponent(result.jobId ?? '')}`)
+  })
+
+  // #544 slice 9: pausing is a decision about the schedule, not an edit of it, so
+  // it has its own route and its own audit action. Both are maintainer-only:
+  // stopping or restarting the cadence a repository agreed to is a
+  // settings-level act, while a viewer may still read the console. Pausing an
+  // already paused schedule writes nothing the second time, so a double submit
+  // does not move the instant the paused window started.
+  app.post('/repos/:id/schedule/pause', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
+    const back = `/repos/${repo.id}/schedule`
+    const t = translator(request.locale ?? 'zh')
+    const existing = store.scheduleForRepo(repo.id)
+    if (existing === undefined) {
+      return reply.redirect(`${back}?refused=${encodeURIComponent(t('这个仓库还没有排期。', 'This repository has no schedule yet.'))}`)
+    }
+    const row = store.setScheduleStatus(repo.id, 'paused', Date.now())
+    if (row !== undefined && existing.status !== 'paused') {
+      store.audit(viewer.user.id, 'schedule.pause', `${repo.id}: ${existing.kind} ${existing.expression ?? `${String(existing.every_ms)}ms`}`)
+    }
+    return reply.redirect(`${back}?paused=1`)
+  })
+
+  // Resuming is the same write in the other direction; it does not create an
+  // occurrence or move the cursor, so a resume cannot itself cause a run.
+  app.post('/repos/:id/schedule/resume', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
+    const back = `/repos/${repo.id}/schedule`
+    const t = translator(request.locale ?? 'zh')
+    const existing = store.scheduleForRepo(repo.id)
+    if (existing === undefined) {
+      return reply.redirect(`${back}?refused=${encodeURIComponent(t('这个仓库还没有排期。', 'This repository has no schedule yet.'))}`)
+    }
+    const row = store.setScheduleStatus(repo.id, 'active', Date.now())
+    if (row !== undefined && existing.status === 'paused') {
+      store.audit(viewer.user.id, 'schedule.resume', `${repo.id}: ${existing.kind} ${existing.expression ?? `${String(existing.every_ms)}ms`}`)
+    }
+    return reply.redirect(`${back}?resumed=1`)
   })
 
   // Deleting the row hands the repository back to its legacy interval; it does

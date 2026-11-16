@@ -2095,7 +2095,10 @@ test('scheduled jobs carry the previous run and open work, and classify meta out
     const goal = contexts[0]?.goal ?? ''
     assert.match(goal, /\[Carry-over/)
     assert.match(goal, /created issue #1/)
-    assert.match(goal, /work_open state=triaged/)
+    // #788: the line states the live state the read observed, and the row's own
+    // state is not presented as it.
+    assert.match(goal, /work_open observed \d{2}:\d{2}Z open/)
+    assert.doesNotMatch(goal, /work_open state=/)
     assert.equal(store.getJob(result.job!.id)?.continuity_used, 1)
 
     // The invariant allows one active job per repository, so the carried-over job
@@ -2356,7 +2359,8 @@ test('carry-over is bounded, names the open work and is explicitly data', async 
   assert.match(text, /not a new goal/)
   assert.match(text, /Recent runs:/)
   assert.match(text, /Open work:/)
-  assert.match(text, /work_1 state=pr_ready/)
+  assert.match(text, /work_1 priority=0/)
+  assert.doesNotMatch(text, /work_1 state=/)
   assert.match(text, /https:\/\/x\/pr\/3/)
 })
 

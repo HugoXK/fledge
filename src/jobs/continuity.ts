@@ -109,6 +109,25 @@ export interface CarryOverReport {
   reads: number
   droppedLinks: string[]
   unverifiedLinks: string[]
+  observations: CarryOverObservation[]
+}
+
+//: #788: the state a read returned, when it returned one. `observedAt` is null
+//: unless the read produced a state, so a failed read cannot borrow a time.
+export interface CarryOverObservation {
+  link: string
+  state: CarryOverLinkState | 'unverified'
+  observedAt: string | null
+}
+
+//: The live state of a pull request: merged and closed are both finished, and
+//: only an open one is still work. Kept here so the reader and the tests agree
+//: on the mapping rather than each spelling it.
+export function carryOverPullState(pull: { merged: boolean; state: string }): CarryOverLinkState {
+  if (pull.merged) return 'merged'
+  // #788: a pull request closed without merging is finished. Reading it as
+  // `open` kept the line while the header called it dropped.
+  return pull.state === 'closed' ? 'closed' : 'open'
 }
 
 export interface CarryOverBlock {
@@ -124,6 +143,38 @@ export function carryOverHeaderFromGoal(goal: string): string {
     if (line.startsWith('carry-over: ')) return line.trim()
   }
   return ''
+}
+
+//: The one spelling of the counts, so the goal and the stored report cannot
+//: describe the same block two ways.
+export function carryOverHeaderText(report: CarryOverReport): string {
+  const unverified = report.unverified > 0 ? `, ${report.unverified} unverified` : ''
+  return `carry-over: ${report.used} used, ${report.dropped} dropped (closed/merged)${unverified}`
+}
+
+//: What a page reads back from `jobs.carry_over_json`: the counts and the
+//: per-link observation. An unreadable or pre-#788 value is null, and the page
+//: then says the observation was not recorded rather than inventing one.
+export function parseCarryOverReport(value: string | null): CarryOverReport | null {
+  if (!value) return null
+  try {
+    const parsed = JSON.parse(value) as Partial<CarryOverReport>
+    if (typeof parsed.used !== 'number' || typeof parsed.dropped !== 'number' || typeof parsed.reads !== 'number') return null
+    const observations = Array.isArray(parsed.observations) ? parsed.observations : []
+    return {
+      used: parsed.used,
+      dropped: parsed.dropped,
+      unverified: typeof parsed.unverified === 'number' ? parsed.unverified : 0,
+      reads: parsed.reads,
+      droppedLinks: Array.isArray(parsed.droppedLinks) ? parsed.droppedLinks : [],
+      unverifiedLinks: Array.isArray(parsed.unverifiedLinks) ? parsed.unverifiedLinks : [],
+      observations: observations.filter((entry): entry is CarryOverObservation =>
+        typeof entry?.link === 'string'
+        && ['open', 'closed', 'merged', 'unverified'].includes(entry.state)),
+    }
+  } catch {
+    return null
+  }
 }
 
 export interface CarryOverLinkRef {
@@ -155,12 +206,17 @@ export async function buildCarryOver(input: {
   //: claimed: every linked line is kept and the header carries no counts. A
   //: count of zero dropped without a read is the false claim this slice removes.
   read?: CarryOverReader
+  now?: () => string
 }): Promise<CarryOverBlock> {
   const recent = (input.recent ?? []).filter((job) => job.id).slice(0, 3)
   const work = (input.openWork ?? []).slice(0, 4)
   const reader = input.read
+  const clock = input.now ?? (() => new Date().toISOString())
   const states = new Map<string, CarryOverLinkState | 'unverified'>()
-  const report: CarryOverReport = { used: 0, dropped: 0, unverified: 0, reads: 0, droppedLinks: [], unverifiedLinks: [] }
+  const report: CarryOverReport = { used: 0, dropped: 0, unverified: 0, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [] }
+
+  const observationOf = (link: string | null): CarryOverObservation | undefined =>
+    link === null ? undefined : report.observations.find((entry) => entry.link === link)
 
   const stateOf = async (link: string | null): Promise<CarryOverLinkState | 'unverified' | null> => {
     if (link === null) return null
@@ -168,6 +224,7 @@ export async function buildCarryOver(input: {
     const known = states.get(link)
     if (known !== undefined) return known
     let state: CarryOverLinkState | 'unverified'
+    let observedAt: string | null = null
     if (report.reads >= CARRY_OVER_MAX_READS) {
       // The ceiling is a bound on a job's GitHub budget, not a reason to drop:
       // an item nobody had budget to read is unverified, and it stays.
@@ -176,11 +233,15 @@ export async function buildCarryOver(input: {
       report.reads += 1
       try {
         state = await reader.read(link)
+        // #788: the moment the read answered. It is taken after the read, so the
+        // time is the observation's and not the block's start.
+        observedAt = clock()
       } catch {
         state = 'unverified'
       }
     }
     states.set(link, state)
+    report.observations.push({ link, state, observedAt })
     return state
   }
 
@@ -205,7 +266,8 @@ export async function buildCarryOver(input: {
     const links = [issue, pr].filter(Boolean).map((value) => value as string)
     recentLines.push(
       `- ${job.created_at.slice(0, 16)} ${job.kind} ${job.status}: ${summary || '(no summary)'}` +
-      (links.length > 0 ? ` [${[...new Set(links)].join(' ')}]` : ''),
+      (links.length > 0 ? ` [${[...new Set(links)].join(' ')}]` : '') +
+      observationText(observationOf(link)),
     )
   }
 
@@ -224,17 +286,15 @@ export async function buildCarryOver(input: {
     }
     report.used += 1
     workLines.push(
-      `- ${item.id} state=${item.state} priority=${item.priority}` +
+      `- ${item.id}${observationText(observationOf(link))}` +
+      ` priority=${item.priority}` +
       `${item.issue_url ? ` issue=${item.issue_url}` : ''}` +
       `${item.pr_url ? ` pr=${item.pr_url}` : ''} title=${item.title.slice(0, 120)}`,
     )
   }
 
   const lines: string[] = ['[Carry-over - auto-generated state, not a new goal]']
-  if (reader !== undefined) {
-    const unverified = report.unverified > 0 ? `, ${report.unverified} unverified` : ''
-    lines.push(`carry-over: ${report.used} used, ${report.dropped} dropped (closed/merged)${unverified}`)
-  }
+  if (reader !== undefined) lines.push(carryOverHeaderText(report))
   lines.push(
     'Continue the open work item when one exists; do not create a duplicate issue/PR.',
     'Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.',
@@ -247,6 +307,14 @@ export async function buildCarryOver(input: {
     text: text.length <= limit ? text : `${text.slice(0, limit - 20)}\n[carry-over truncated]`,
     report,
   }
+}
+
+//: One observation, as a line suffix: `observed 07:12Z open`. A read that failed
+//: says `observed unverified` and carries no time, because it saw no state.
+function observationText(observation: CarryOverObservation | undefined): string {
+  if (observation === undefined) return ''
+  if (observation.state === 'unverified' || observation.observedAt === null) return ' observed unverified'
+  return ` observed ${observation.observedAt.slice(11, 16)}Z ${observation.state}`
 }
 
 function parseDigest(value: string | null): RunDigest | null {

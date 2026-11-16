@@ -1397,7 +1397,15 @@ request — so a closed issue or a merged pull request is dropped from the block
 and counted instead of being carried into the next run. The block states what it
 did in its header, `carry-over: 1 used, 1 dropped (closed/merged)`, with an
 `, N unverified` segment when a read failed; a failed read keeps its line rather
-than dropping it silently, and the job page shows the same header line.
+than dropping it silently, and the job page shows the same header line. Since
+#788 each carried line also states the observation it rests on, `observed
+07:12Z open`, from the read that line already spent — a failed read says
+`observed unverified` and claims no time — and the per-link `{state,
+observedAt}` is stored with the job in `jobs.carry_over_json`, so the page reads
+the observation back instead of re-deriving it. A pull request that was closed
+without merging is `closed`, not `open`, so the header's `(closed/merged)` is
+true as written; a job row written before that column says the observation was
+not recorded rather than borrowing a time.
 
 The goal also carries one **temporal delta** line (#366), built by
 `summariseDelta()` in `src/lib/temporal.ts` from two reads plus the commit
@@ -2291,8 +2299,9 @@ queued ──► running ──► succeeded
   answer is refused, and only that retry resumes the work (#381).
 - The repo records `last_run_at` and `last_status`; a scheduled job is skipped if
   another job for the repo is active. `jobs.continuity_json` stores the run
-  digest, `jobs.output_kind` its classification and `jobs.continuity_used`
-  whether the carry-over block was injected.
+  digest, `jobs.output_kind` its classification, `jobs.continuity_used` whether
+  the carry-over block was injected and `jobs.carry_over_json` the block's
+  counts and its per-link observation.
 
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
@@ -2955,3 +2964,24 @@ settles the row so the replay answers the same refusal.
 The recurrence cursor (`last_occurrence_at`) is not touched: "run this now" must
 not move when the schedule next fires. `schedule_occurrences.command_key` is
 null on every row the tick wrote, which is why the unique index is partial.
+
+## A paused schedule is decided, not run (#544)
+
+A schedule carries a state — `active` or `paused` — in `schedules.status`, with
+the instant of the last pause in `paused_at`. Only a maintainer's button writes
+it (`POST /repos/:id/schedule/pause` and `.../resume`, audited as
+`schedule.pause` / `schedule.resume`); saving the schedule form never changes it,
+so editing an expression cannot quietly switch a paused schedule back on.
+
+A paused schedule is still planned. The tick runs `planTick` as usual and then
+records the decision as `skipped` with reason `paused`, in the same
+`recordScheduleDecisions` transaction that moves the cursor — the pause window is
+readable afterwards instead of vanishing, and because the cursor keeps moving a
+resume does not make up a backlog or dispatch once per missed instant. The
+paused branch sits before the budget, active-job and idle reasons, because
+"somebody paused this" is the honest explanation for the instant.
+
+`run-now` stays available while paused: a person pressing the button is an
+explicit command, not the cadence, and it settles under its own command key.
+Resuming does not create an occurrence or move the cursor either, so the only
+thing it changes is whether the next instant dispatches.
