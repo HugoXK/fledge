@@ -2800,3 +2800,21 @@ and a path or key under a frozen family (`evaluator`, `evidence`, `ci`, `gate`,
 `auth`, `gateway`, `capability`) is refused before the store is asked to write.
 Recording `strategy_hash` and `strategy_version` on every job, the job-page diff,
 canary promotion with rollback, and the global bundle are later slices.
+
+## Run now is an occurrence, not a moved cursor (#544)
+
+A schedule names logical instants; the tick decides which of them run. "Run now"
+is the one command that starts an instant a person asked for, and it keeps the
+same record: an occurrence row, settled `dispatched` with the job it started or
+`skipped` with the refusal.
+
+The occurrence's identity is the `command_key` the console form rendered, under
+`UNIQUE(schedule_id, command_key)`. The same key returns the occurrence it
+already wrote — a double click is one run — and a new key is a distinct
+instance. The row is written before the job, so a crash between the two leaves a
+row the next press reads instead of a second job, and a refused run still
+settles the row so the replay answers the same refusal.
+
+The recurrence cursor (`last_occurrence_at`) is not touched: "run this now" must
+not move when the schedule next fires. `schedule_occurrences.command_key` is
+null on every row the tick wrote, which is why the unique index is partial.

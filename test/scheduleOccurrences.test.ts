@@ -69,7 +69,7 @@ test('the occurrence table is part of the schema at user_version 44', () => {
     assert.deepEqual(columns, [
       'id', 'schedule_id', 'repo_id', 'logical_time', 'timing_revision',
       'state', 'reason', 'missed', 'job_id', 'decided_at', 'dispatched_at', 'lag_ms',
-      'attempts', 'lease_token', 'lease_expires_at',
+      'attempts', 'lease_token', 'lease_expires_at', 'command_key',
     ])
 
     // The identity of a decision is the row's own uniqueness constraint, not a

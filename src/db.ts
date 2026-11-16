@@ -314,6 +314,12 @@ export interface ScheduleOccurrenceRow {
   lease_token: string | null
   /** Epoch milliseconds at which the lease lapses; null when nobody holds it. */
   lease_expires_at: number | null
+  /**
+   * #544 slice 8: the command key a run-now press carried; null on an occurrence
+   * the tick decided. `UNIQUE(schedule_id, command_key)` is what makes the
+   * button idempotent.
+   */
+  command_key: string | null
 }
 
 /** #544 slice 7: one durable notification send. */
@@ -2068,6 +2074,9 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
   attempts INTEGER NOT NULL DEFAULT 1,
   lease_token TEXT,
   lease_expires_at INTEGER,
+  -- #544 slice 8: a run-now occurrence is named by the command key the button
+  -- carried, not by a planned instant, so the same key cannot start twice.
+  command_key TEXT,
   UNIQUE(schedule_id, logical_time, timing_revision)
 );
 CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrences(state, lease_expires_at);
@@ -2464,6 +2473,7 @@ export class Store {
       ['attempts', 'INTEGER NOT NULL DEFAULT 1'],
       ['lease_token', 'TEXT'],
       ['lease_expires_at', 'INTEGER'],
+      ['command_key', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE schedule_occurrences ADD COLUMN ${name} ${type}`)
@@ -2473,6 +2483,9 @@ export class Store {
   migrateIndexes(): void {
     this.run('CREATE INDEX IF NOT EXISTS quota_ledger_repo_idx ON quota_ledger(repo_id, at DESC)')
     this.run('CREATE INDEX IF NOT EXISTS jobs_pr_state_idx ON jobs(pr_state, created_at DESC)')
+    // #544 slice 8: one occurrence per command key. Partial so the tick's rows
+    // (command_key NULL) are not collapsed into one another.
+    this.run('CREATE UNIQUE INDEX IF NOT EXISTS schedule_occurrences_command_idx ON schedule_occurrences(schedule_id, command_key) WHERE command_key IS NOT NULL')
     this.ensureOneActiveJobIndex()
   }
 
@@ -5359,6 +5372,63 @@ export class Store {
     const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
     if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after insert`)
     return { row, created: Number(result.changes) > 0 }
+  }
+
+  // #544 slice 8: a run-now press is an occurrence too, but its identity is the
+  // command key the button carried rather than a planned instant. The unique
+  // index on `(schedule_id, command_key)` is what makes a replay a replay; the
+  // row is inserted `claimed` and settled by the service with the job it started,
+  // so a repeated press reads the outcome of the first instead of starting again.
+  scheduleOccurrenceByCommandKey(scheduleId: string, commandKey: string): ScheduleOccurrenceRow | undefined {
+    return this.get<ScheduleOccurrenceRow>(
+      'SELECT * FROM schedule_occurrences WHERE schedule_id = ? AND command_key = ?',
+      scheduleId, commandKey,
+    )
+  }
+
+  createRunNowOccurrence(input: {
+    id: string
+    scheduleId: string
+    repoId: string
+    logicalTime: number
+    timingRevision: number
+    commandKey: string
+  }): { row: ScheduleOccurrenceRow; created: boolean } {
+    // Two explicit commands in the same millisecond are two instances, so the
+    // logical time steps forward until the triple is free. The command key is
+    // checked first: a replay must never be mistaken for a collision.
+    for (let offset = 0; offset < 1_000; offset += 1) {
+      const result = this.db.prepare(
+        `INSERT INTO schedule_occurrences
+           (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, command_key)
+         VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, ?)
+         ON CONFLICT DO NOTHING`,
+      ).run(input.id, input.scheduleId, input.repoId, input.logicalTime + offset, input.timingRevision, nowIso(), input.commandKey)
+      if (Number(result.changes) > 0) {
+        const row = this.scheduleOccurrenceByCommandKey(input.scheduleId, input.commandKey)
+        if (row === undefined) throw new Error(`run-now occurrence ${input.commandKey} disappeared after insert`)
+        return { row, created: true }
+      }
+      const existing = this.scheduleOccurrenceByCommandKey(input.scheduleId, input.commandKey)
+      if (existing !== undefined) return { row: existing, created: false }
+    }
+    throw new Error(`run-now occurrence ${input.commandKey} could not take an instant`)
+  }
+
+  settleRunNowOccurrence(input: {
+    id: string
+    state: 'dispatched' | 'skipped'
+    reason?: string | null
+    jobId?: string | null
+    dispatchedAt?: number | null
+  }): ScheduleOccurrenceRow | undefined {
+    this.run(
+      `UPDATE schedule_occurrences
+          SET state = ?, reason = ?, job_id = ?, dispatched_at = ?, lag_ms = 0
+        WHERE id = ? AND command_key IS NOT NULL`,
+      input.state, input.reason ?? null, input.jobId ?? null, input.dispatchedAt ?? null, input.id,
+    )
+    return this.get<ScheduleOccurrenceRow>('SELECT * FROM schedule_occurrences WHERE id = ?', input.id)
   }
 
   // #544 slice 5: the instants one decision passed over are rows of their own, and
