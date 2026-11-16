@@ -1168,6 +1168,8 @@ a.list-row:hover strong { color: var(--accent); }
 .repos-head { align-items: center; gap: 12px; margin-bottom: 12px; }
 .repos-head h2 { margin: 0; }
 .add-repo-dialog { width: min(680px, calc(100vw - 32px)); max-height: min(80vh, 720px); overflow: auto; border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 22px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.feedback-dialog { width: min(560px, calc(100vw - 32px)); }
+.feedback-dialog .dialog-head .link { font-size: 20px; line-height: 1; }
 .add-repo-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
 .add-repo-dialog .dialog-head { position: sticky; top: 0; z-index: 1; align-items: center; background: var(--panel); padding-bottom: 8px; }
 .add-repo-dialog .dialog-head h2 { margin: 0; }

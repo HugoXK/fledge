@@ -272,13 +272,45 @@ export function layout(options: LayoutOptions): string {
         <form method="post" action="/auth/logout"><input type="hidden" name="csrf" value="${escapeHtml(viewer.csrfToken)}" /><button class="link account-exit" type="submit">${escapeHtml(t('退出', 'Sign out'))}</button></form>
       </div>`
   const brandSmall = locale === 'zh' ? '<small>羽巢</small>' : ''
+  // Feedback is a global action, not a Settings section. The dialog uses the
+  // existing [data-open-dialog] pattern; the footer link keeps /settings#feedback
+  // as the no-JavaScript fallback and the inline form remains on Settings.
+  const onSettings = cleanPath === '/settings' || cleanPath.startsWith('/settings/')
+  const feedbackViewer = viewer !== undefined && viewer !== null && viewer.user.status === 'approved' && !onSettings ? viewer : null
+  const feedbackHref = onSettings ? '#feedback' : '/settings#feedback'
+  const feedbackAttrs = feedbackViewer === null ? '' : ' data-open-dialog="feedback-dialog" aria-haspopup="dialog" aria-controls="feedback-dialog"'
+  const feedbackDialog = feedbackViewer === null ? '' : `<dialog id="feedback-dialog" class="add-repo-dialog feedback-dialog" aria-labelledby="feedback-dialog-title">
+    <div class="row between dialog-head">
+      <h2 id="feedback-dialog-title">${escapeHtml(t('反馈给开发者', 'Send feedback'))}</h2>
+      <button class="link" type="button" data-close-dialog aria-label="${escapeHtml(t('关闭', 'Close'))}">×</button>
+    </div>
+    <p class="muted">${escapeHtml(t('遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。', 'Found a problem, want a feature, or saw something unexpected? This stores a record and mails the maintainer.'))}</p>
+    <form method="post" action="/feedback" class="form">
+      ${csrfField(feedbackViewer)}
+      <input type="hidden" name="returnTo" value="${escapeHtml(path)}" />
+      <div class="row">
+        <label>${escapeHtml(t('类型', 'Kind'))}
+          <select name="kind">
+            <option value="feedback">${escapeHtml(t('建议 / 一般反馈', 'Suggestion / feedback'))}</option>
+            <option value="bug">${escapeHtml(t('Bug', 'Bug'))}</option>
+            <option value="other">${escapeHtml(t('其他', 'Other'))}</option>
+          </select>
+        </label>
+        <label class="grow">${escapeHtml(t('相关页面（可选）', 'Related page (optional)'))} <input name="page" maxlength="200" value="${escapeHtml(path)}" placeholder="/settings 或 /dashboard" /></label>
+      </div>
+      <label>${escapeHtml(t('内容', 'Message'))}<textarea name="message" rows="4" maxlength="2000" required placeholder="${escapeHtml(t('发生了什么？你期望什么？', 'What happened, and what did you expect?'))}"></textarea></label>
+      <label class="check"><input type="checkbox" name="publishConsent" value="1" /> ${escapeHtml(t('我同意 Fledge 在公开 GitHub issue 中 @ 我的账号，并引用脱敏后的反馈摘要。', 'I agree Fledge may @ my GitHub account in a public issue, citing a sanitized summary of this feedback.'))}</label>
+      <p class="fine">${escapeHtml(t('不要粘贴 token、密码或他人的隐私信息。反馈会保存并邮件通知开发者。', 'Do not paste tokens, passwords or another person’s private data. The note is stored and mailed to the maintainer.'))}</p>
+      <button class="btn" type="submit">${escapeHtml(t('发送反馈', 'Send feedback'))}</button>
+    </form>
+  </dialog>`
   const footer = `<footer class="foot">
     <div>${escapeHtml(t('Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动', 'Fledge · hosted repositories that grow themselves · powered by FlyBot'))}${release.version === null ? '' : ` · <span class="foot-release">v${escapeHtml(release.version)}</span>`}</div>
     <nav class="foot-links" aria-label="${escapeHtml(t('页脚导航', 'Footer navigation'))}">
       <a href="${escapeHtml(withSlash(config.services.docs))}" target="_blank" rel="noreferrer">${escapeHtml(t('文档', 'Docs'))}</a>
       <a href="${escapeHtml(config.services.portal)}" target="_blank" rel="noreferrer">Portal</a>
       <a href="${escapeHtml(withSlash(config.services.status))}" target="_blank" rel="noreferrer">${escapeHtml(t('平台状态', 'Status'))}</a>
-      <a href="/settings#feedback">${escapeHtml(t('反馈', 'Feedback'))}</a>
+      <a href="${feedbackHref}"${feedbackAttrs}>${escapeHtml(t('反馈', 'Feedback'))}</a>
       <a class="star-link" href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer" title="${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}" aria-label="${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}">${starIcon()}<span>${escapeHtml(t('加星', 'Star'))}</span></a>
     </nav>
   </footer>`
@@ -310,6 +342,7 @@ export function layout(options: LayoutOptions): string {
     ${body}
   </main>
   ${footer}
+  ${feedbackDialog}
   <script src="${assetUrl('/assets/section-nav.js')}" defer></script>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
     <form method="dialog">

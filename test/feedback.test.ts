@@ -29,6 +29,34 @@ test('the settings page offers feedback and a Star link', async () => {
     assert.match(response.body, /class="star-icon"/)
     assert.doesNotMatch(response.body, /★/, 'the text glyph is replaced by the drawn star')
     assert.match(response.body, /About Fledge/)
+    assert.doesNotMatch(response.body, /\{infoTip\(/, 'the infoTip helper is interpolated, not printed as source')
+    assert.match(response.body, /name="returnTo" value="\/settings"/)
+    assert.doesNotMatch(response.body, /class="btn btn-ghost" href="#feedback"/, 'the About card no longer duplicates the feedback form')
+  } finally {
+    await f.built.close()
+  }
+})
+
+test('the feedback dialog is available on a normal page and returns there', async () => {
+  const f = await fixture()
+  try {
+    const page = await f.built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: f.cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /<dialog id="feedback-dialog"/)
+    assert.match(page.body, /data-open-dialog="feedback-dialog"/)
+    assert.match(page.body, /name="returnTo" value="\/dashboard"/)
+    assert.match(page.body, /name="publishConsent"/)
+    assert.match(page.body, /action="\/feedback"/)
+
+    const posted = await f.built.app.inject({
+      method: 'POST',
+      url: '/feedback',
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: f.cookie },
+      payload: formBody({ csrf: f.session.csrf, kind: 'bug', message: 'The dialog should keep me here.', page: '/dashboard', returnTo: '/dashboard' }),
+    })
+    assert.equal(posted.statusCode, 302)
+    assert.equal(String(posted.headers.location), '/dashboard')
+    assert.equal(flashOf(posted)?.notice?.text, '反馈已发送，谢谢。')
   } finally {
     await f.built.close()
   }
