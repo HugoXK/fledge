@@ -35,6 +35,7 @@ Key settings:
 | `MAIL_TRANSPORT` | `smtp` in production, `console` for a local demo |
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@example.com` |
+| `MAIL_OUTBOX_RETENTION_DAYS` | Window for `npm run mail:outbox` to expire `$DATA_DIR/mail-outbox/*.eml`, in days; `7` by default |
 | `FEEDBACK_EMAIL` | Optional feedback/error-report destination; defaults to `ADMIN_EMAIL` |
 | `FLEDGE_LEAD_REPO_ID` | Repo connected to Fledge whose FlyBot Lead triages feedback |
 | `FLEDGE_LEAD_BRIDGE_URL/TOKEN/SESSION_ID` | Direct bridge target when the Fledge Lead is external |
@@ -1139,9 +1140,13 @@ your nginx config), skip this file and let the distribution's nginx rotation own
 those paths — never rotate the same file from two stanzas.
 
 Development mail (`MAIL_TRANSPORT=console`) is written to
-`$DATA_DIR/mail-outbox/*.eml` and is never pruned: it is a dev aid
-(`npm run mail:outbox`), an instance with SMTP does not write it, and the
-directory may be deleted at any time.
+`$DATA_DIR/mail-outbox/*.eml`. It is a dev aid (`npm run mail:outbox`), and an
+instance with SMTP does not write it. Each run of `npm run mail:outbox` first
+deletes every `.eml` older than `MAIL_OUTBOX_RETENTION_DAYS` (7 by default) and
+then prints the newest one, so the directory is never a store of account
+identifiers: the file name is a stamp plus an opaque id, never the recipient,
+and the address lives only inside the file. The directory may be deleted at any
+time.
 
 ### Workspace snapshot retention
 

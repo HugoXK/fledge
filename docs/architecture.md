@@ -1307,7 +1307,15 @@ same pull request and work item; a review that already recorded a
 posted. `summary` is the job's progress line, written on every running heartbeat,
 not a post marker, so it does not block a retry; it and `error` pass through
 `src/lib/secrets.ts` before the row is written and again when the page renders
-them (`docs/decisions/0015`). If a review posted its comments
+them (`docs/decisions/0015`).
+
+Identifier masking is the other half and lives on the sink, not in `redact()`:
+`src/lib/log.ts` masks an account identifier in every line it writes — by shape in
+every string value, by field name for a login the shape cannot see, and through
+nested objects and arrays — while the row, the inbox and the job page keep the
+real value the operator acts on (#694). `maskEmail` and `maskIp` are in
+`src/lib/redact.ts` and are imported back by `src/views/pages.ts`, so a page and a
+log line cannot drift onto two masks. If a review posted its comments
 and then lost the terminal callback, nothing stored tells that apart from a
 review that never posted; that residual case is manual. `github`, `quota`,
 `credential` and `review` failures stay manual.
