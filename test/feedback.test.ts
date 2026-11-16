@@ -24,6 +24,10 @@ test('the settings page offers feedback and a Star link', async () => {
     assert.match(response.body, /id="feedback"/)
     assert.match(response.body, /action="\/feedback"/)
     assert.match(response.body, /Star Fledge on GitHub/)
+    assert.match(response.body, /class="btn star-btn" href="https:\/\/github\.com\/HugoXK\/fledge"/)
+    assert.match(response.body, /class="star-link" href="https:\/\/github\.com\/HugoXK\/fledge"/)
+    assert.match(response.body, /class="star-icon"/)
+    assert.doesNotMatch(response.body, /★/, 'the text glyph is replaced by the drawn star')
     assert.match(response.body, /About Fledge/)
   } finally {
     await f.built.close()

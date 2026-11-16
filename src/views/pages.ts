@@ -13,7 +13,7 @@ import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
 import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/taskDecision.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
-import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, type PageNotification, type Viewer } from './layout.js'
+import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, starIcon, type PageNotification, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
 import { redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
@@ -2358,7 +2358,7 @@ export function settingsPage(input: {
     <h2>${escapeHtml(t('关于 Fledge', 'About Fledge'))}</h2>
     <p class="muted">${escapeHtml(t('Fledge 是开源的自托管平台；如果它对你的仓库有帮助，可以在 GitHub 上加星支持。', 'Fledge is an open-source, self-hosted platform. If it helps your repositories, a star on GitHub supports it.'))}</p>
     <div class="actions">
-      <a class="btn" href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer">★ ${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}</a>
+      <a class="btn star-btn" href="${FLEDGE_GITHUB_URL}" target="_blank" rel="noreferrer">${starIcon()}${escapeHtml(t('在 GitHub 上加星', 'Star Fledge on GitHub'))}</a>
       <a class="btn btn-ghost" href="#feedback">${escapeHtml(t('反馈', 'Feedback'))}</a>
     </div>
   </section>`
