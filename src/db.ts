@@ -5108,16 +5108,90 @@ export class Store {
     return repo
   }
 
+  // #105: a repository is visible to its connection owner and to every active
+  // member. The owner keeps the credential, the instance and the quota; sharing
+  // starts with the read path (dashboard, repository page, work items, jobs).
   listRepos(userId: string): RepoRow[] {
-    return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC', userId)
+    return this.all<RepoRow>(
+      `SELECT * FROM repos
+       WHERE user_id = ? OR id IN (SELECT repo_id FROM repo_members WHERE user_id = ? AND revoked_at IS NULL)
+       ORDER BY created_at DESC`,
+      userId,
+      userId,
+    )
   }
 
   listReposPage(userId: string, limit: number, offset: number): RepoRow[] {
-    return this.all<RepoRow>('SELECT * FROM repos WHERE user_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?', userId, limit, offset)
+    return this.all<RepoRow>(
+      `SELECT * FROM repos
+       WHERE user_id = ? OR id IN (SELECT repo_id FROM repo_members WHERE user_id = ? AND revoked_at IS NULL)
+       ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`,
+      userId,
+      userId,
+      limit,
+      offset,
+    )
   }
 
+  // The connection-limit count stays owner-only: a shared repository is the
+  // owner's connection and must not consume a member's own repository limit.
   countReposForUser(userId: string): number {
     return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM repos WHERE user_id = ?', userId)?.n ?? 0)
+  }
+
+  countReposForViewer(userId: string): number {
+    return Number(this.get<{ n: number }>(
+      'SELECT COUNT(*) AS n FROM repos WHERE user_id = ? OR id IN (SELECT repo_id FROM repo_members WHERE user_id = ? AND revoked_at IS NULL)',
+      userId,
+      userId,
+    )?.n ?? 0)
+  }
+
+  // #105: the member rows already exist (the #541 identity backfill wrote the
+  // owner's). These methods are the write path a later invite slice exposes; the
+  // role vocabulary is the capability model's, so a member never gets a role the
+  // resolver cannot read.
+  listRepoMembers(repoId: string): RepoMemberRow[] {
+    return this.all<RepoMemberRow>('SELECT * FROM repo_members WHERE repo_id = ? AND revoked_at IS NULL ORDER BY created_at ASC', repoId)
+  }
+
+  memberRoleFor(repoId: string, userId: string): string | null {
+    const row = this.get<RepoMemberRow>('SELECT * FROM repo_members WHERE repo_id = ? AND user_id = ? AND revoked_at IS NULL', repoId, userId)
+    return row?.role ?? null
+  }
+
+  addRepoMember(input: { repoId: string; userId: string; role: string; grantedBy: string | null }): RepoMemberRow | undefined {
+    if (input.role !== 'maintainer' && input.role !== 'developer' && input.role !== 'viewer') return undefined
+    if (this.getRepo(input.repoId) === undefined || this.userById(input.userId) === undefined) return undefined
+    this.run(
+      `INSERT INTO repo_members (repo_id, user_id, role, granted_by, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)
+       ON CONFLICT(repo_id, user_id) DO UPDATE SET role = excluded.role, granted_by = excluded.granted_by, revoked_at = NULL`,
+      input.repoId,
+      input.userId,
+      input.role,
+      input.grantedBy,
+      nowIso(),
+    )
+    return this.get<RepoMemberRow>('SELECT * FROM repo_members WHERE repo_id = ? AND user_id = ?', input.repoId, input.userId)
+  }
+
+  setRepoMemberRole(repoId: string, userId: string, role: string): boolean {
+    if (role !== 'maintainer' && role !== 'developer' && role !== 'viewer') return false
+    const row = this.get<RepoMemberRow>('SELECT * FROM repo_members WHERE repo_id = ? AND user_id = ? AND revoked_at IS NULL', repoId, userId)
+    if (row === undefined) return false
+    this.run('UPDATE repo_members SET role = ? WHERE repo_id = ? AND user_id = ?', role, repoId, userId)
+    return true
+  }
+
+  removeRepoMember(repoId: string, userId: string): boolean {
+    const row = this.get<RepoMemberRow>('SELECT * FROM repo_members WHERE repo_id = ? AND user_id = ? AND revoked_at IS NULL', repoId, userId)
+    if (row === undefined) return false
+    // #105: the connection owner is the maintainer of last resort and cannot be
+    // removed here; that is what keeps a repository with at least one maintainer.
+    const repo = this.getRepo(repoId)
+    if (repo !== undefined && repo.user_id === userId) return false
+    this.run('UPDATE repo_members SET revoked_at = ? WHERE repo_id = ? AND user_id = ?', nowIso(), repoId, userId)
+    return true
   }
 
   getRepo(id: string): RepoRow | undefined {

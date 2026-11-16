@@ -831,11 +831,33 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return true
   }
 
-  const ownedRepo = (request: FastifyRequest, id: string, mutating = false) => {
+  // #105: a repository is shared with its active members. The connection owner
+  // stays the maintainer of last resort; a member row carries `maintainer`,
+  // `developer` or `viewer`. Reads are open to every active member, writes need
+  // developer or better, and repository settings need maintainer. A non-member
+  // and a missing repository answer the same 404 so an id does not leak.
+  // `maintainOnly` also covers the destructive and lifecycle routes: the role
+  // and settings forms write the same `repo_role`/`auto_merge` columns, and
+  // delete, release, enable/disable, the workspace controls and the model apply
+  // are settings in effect. A developer keeps the work routes (`/work`,
+  // `/run`, `/plan`, `/triage`, `/review` and job actions), never the ones that
+  // can destroy the connection or change who may use it.
+  const ownedRepo = (request: FastifyRequest, id: string, mutating = false, maintainOnly = false) => {
     const viewer = mutating ? approvedCsrfGuard(request) : requireApproved(request)
     const repo = store.getRepo(id)
-    if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
-    return { viewer, repo }
+    const role = repo === undefined
+      ? null
+      : repo.user_id === viewer.user.id
+        ? 'maintainer'
+        : store.memberRoleFor(repo.id, viewer.user.id)
+    if (repo === undefined || role === null) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
+    if (mutating && role === 'viewer') {
+      throw httpError(403, '只读成员不能修改这个仓库。', 'A viewer cannot change this repository.')
+    }
+    if (maintainOnly && role !== 'maintainer') {
+      throw httpError(403, '只有维护者可以修改仓库设置。', 'Only a maintainer can change repository settings.')
+    }
+    return { viewer, repo, role }
   }
 
   // #543: a plan carries the SHA it was analysed at. Resolving the default
@@ -1419,7 +1441,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       { repo: queryText(request, 'repo'), status: queryText(request, 'status'), kind: queryText(request, 'kind'), priority: queryText(request, 'priority') },
       allRepos.map((repo) => repo.id),
     )
-    const reposTotal = store.countReposForUser(viewer.user.id)
+    // #105: the dashboard lists shared repositories too, so its total counts
+    // what this viewer can see rather than what they own.
+    const reposTotal = store.countReposForViewer(viewer.user.id)
     const jobsTotal = store.countJobsForUser(viewer.user.id, jobFilter)
     const pageNumber = (name: string, total: number): number => {
       const pages = Math.max(1, Math.ceil(total / perPage))
@@ -2482,7 +2506,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // is read-only; only a plan that passes every check reaches the tag write, and
   // the tag is annotated and created through the repository's installation token.
   app.post('/repos/:id/release', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     const body = form(request)
     const version = String(body.version ?? '').trim()
     const targetSha = String(body.sha ?? '').trim().toLowerCase()
@@ -3965,9 +3989,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #708: starting a job spends a model budget and a FlyBot slot, so it takes
     // the expensive window before the repository is read.
     if (!limits.take('expensive', `job-start:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
-    const viewer = approvedCsrfGuard(request)
-    const repo = store.getRepo(String((request.params as Record<string, string>).id))
-    if (repo === undefined || repo.user_id !== viewer.user.id) throw httpError(404, '仓库不存在。', 'REPO_NOT_FOUND')
+    // #105 review: this start reads the repository through `ownedRepo` like the
+    // other four member-facing starts, so a developer member starts work instead
+    // of getting the 404 a stranger gets.
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const t = translator(request.locale ?? 'zh')
     const outcome = await runCreate(request, viewer, repo, { kind: repo.plan_required === 1 ? 'plan' : 'iterate' })
     if (!outcome.ok) {
@@ -4091,7 +4116,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/instance', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
     // #457 review: the guard used to run before this route knew the repository
     // already had a row, so a stopped instance counted against its own restart
@@ -4107,7 +4132,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/instance/stop', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     if (requireRecentAuth(request, reply, viewer, 'flybot.instance.stop')) return reply
     await instances.stop(repo.id)
     await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止', 'BRIDGE_ERROR')
@@ -4126,7 +4151,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/role', { config: { rateLimit: destructiveClassLimit } }, async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    // #105 review: this route writes the same `repo_role` column as the settings
+    // form, so it carries the settings rule.
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     const body = form(request)
     const t = translator(request.locale ?? 'zh')
     const role = parseRepoRole(body.role)
@@ -4147,7 +4174,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/settings', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    // #105: settings decide the merge policy and the role gate, so a developer
+    // member reads them but cannot write them.
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     const body = form(request)
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
@@ -4295,7 +4324,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/models/apply', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     try {
       const result = await instances.applyModels(repo.id)
       if (!result.ok) return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(result.error ?? '模型应用失败。')}#repo-settings`)
@@ -4307,14 +4336,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/enable', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     store.updateRepo(repo.id, { enabled: 1 })
     store.audit(viewer.user.id, 'repo.enabled', `${repo.owner}/${repo.name}`)
     return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('仓库已启用；自动迭代不会自动打开，需要时在设置里开启。')}`)
   })
 
   app.post('/repos/:id/disable', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     store.updateRepo(repo.id, { enabled: 0, auto_iterate: 0 })
     await jobs.cancelRepoJobs(repo.id, '仓库已停用', 'REPO_DISABLED')
     store.audit(viewer.user.id, 'repo.disabled', `${repo.owner}/${repo.name}`)
@@ -4322,7 +4351,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/delete', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     if (requireRecentAuth(request, reply, viewer, 'repo.delete', `/repos/${repo.id}#danger`)) return reply
     const confirmName = (form(request).confirmName ?? '').trim()
     if (confirmName !== repo.name && confirmName !== `${repo.owner}/${repo.name}`) {
