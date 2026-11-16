@@ -34,6 +34,10 @@ export interface Config {
   // erased. The sweep's purge phase reads this; 72 hours is the host-side cron it
   // replaces.
   trialPurgeGraceHours: number
+  /** #803: promote a discovered issue into one proposed work item. Off by default. */
+  autoPromoteDiscovery: boolean
+  /** #803: maximum automatic discovery promotions per UTC day; 0 disables them. */
+  autoPromoteDiscoveryDailyCap: number
   // #708: the per-class windows mutating routes take. A route names its class;
   // the numbers live here so a deployment tightens a limit without a rebuild.
   rateLimit: RateLimitBudgets
@@ -304,6 +308,8 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
     trialPurgeGraceHours: Math.max(1, number('TRIAL_PURGE_GRACE_HOURS', 72)),
+    autoPromoteDiscovery: bool('AUTO_PROMOTE_DISCOVERY', false),
+    autoPromoteDiscoveryDailyCap: Math.max(0, number('AUTO_PROMOTE_DISCOVERY_DAILY_CAP', 3)),
     rateLimit: {
       login: {
         max: Math.max(1, number('RATE_LIMIT_LOGIN_MAX', DEFAULT_RATE_LIMIT_BUDGETS.login.max)),

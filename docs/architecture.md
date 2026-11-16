@@ -1316,7 +1316,15 @@ open work it returns `none` with reason `idle`: the scheduler writes
 discovery interval is due, it may instead run one `discover` job; that job may
 create at most one concrete issue (never a PR/branch), and if it finds nothing
 concrete it creates nothing. The callback refuses a discovery result that carries
-a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). The job goal gets a bounded
+a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). A discovered issue does not
+create a work item by default; with `AUTO_PROMOTE_DISCOVERY` enabled, a
+`succeeded` discovery whose result is a concrete issue creates one `proposed`
+work item through `promoteDiscoveredIssue`, deduped by issue URL and capped per
+repository per UTC day: the counter is keyed `discover-promote:<repoId>:<day>`,
+while the cap's value comes from the deployment-wide
+`AUTO_PROMOTE_DISCOVERY_DAILY_CAP`. A result the run digest classifies as a backlog report
+is not promoted, and a failed run never promotes. It never creates a branch or a
+pull request. The job goal gets a bounded
 `Carry-over` block with the last three run digests and up to four open items; the
 block is data, not an instruction, and is capped well below the 4000-character
 goal limit. Every line that names an issue or a pull request is checked once
