@@ -75,6 +75,9 @@ const EXPENSIVE_ROUTE_LIST = [
   'POST /repos/:id/models/apply',
   'POST /repos/:id/schedule',
   'POST /repos/:id/schedule/remove',
+  // #544 slice 8: run-now starts a job the moment the maintainer asks, so it is
+  // a start of real work like the schedule save beside it.
+  'POST /repos/:id/schedule/run-now',
   'POST /repos/:id/release',
   'POST /repos/:id/releases/:releaseId/check',
   'POST /repos/:id/gate/sessions',

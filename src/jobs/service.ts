@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
-import type { JobRow, RepoRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
+import type { JobRow, RepoRow, ScheduleOccurrenceRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
 import type { Mailer, MailMessage } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
@@ -55,6 +55,7 @@ import { promoteDiscoveredIssue } from './discoveryPromotion.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
+import { parseRunNowKey } from '../schedules/runNow.js'
 import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
@@ -3761,6 +3762,94 @@ export class Jobs {
         return { ok: false, status: 403, error: error.message }
       }
       return { ok: false, status: 500, error: 'credential unavailable' }
+    }
+  }
+
+  // #544 slice 8: the console's Run now button. The press is a command whose
+  // identity is the key the form carried, so a replay answers the first press
+  // instead of starting a second run. Two rules make it safe:
+  //   - the occurrence is written before the job, so a crash between the two
+  //     starts nothing twice: the next press with the same key reads the row;
+  //   - the recurrence high water mark (`last_occurrence_at`) is never touched,
+  //     because a person asking for a run now does not move the schedule.
+  // The occurrence records the same state the tick's rows do (`dispatched` with
+  // the job, `skipped` with the refusal), so the console and the ledger read one
+  // vocabulary. A refusal still settles the row: the same key must keep
+  // answering the same thing.
+  async runScheduleNow(repo: RepoRow, rawKey: unknown): Promise<{
+    ok: boolean
+    code?: string
+    message?: string
+    occurrence?: ScheduleOccurrenceRow
+    replayed?: boolean
+    jobId?: string | null
+  }> {
+    const schedule = this.store.scheduleForRepo(repo.id)
+    if (schedule === undefined) return { ok: false, code: 'schedule_missing', message: '这个仓库还没有排期。' }
+    const parsed = parseRunNowKey(rawKey)
+    if (!parsed.ok) return { ok: false, code: 'command_key_invalid', message: '这次运行的标识无效，请刷新页面后重试。' }
+    const existing = this.store.scheduleOccurrenceByCommandKey(schedule.id, parsed.key)
+    if (existing !== undefined) return this.runNowAnswer(existing, true)
+    const created = this.store.createRunNowOccurrence({
+      id: randomId('occ'),
+      scheduleId: schedule.id,
+      repoId: repo.id,
+      logicalTime: Date.now(),
+      timingRevision: schedule.timing_revision,
+      commandKey: parsed.key,
+    })
+    if (!created.created) return this.runNowAnswer(created.row, true)
+    const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true })
+    const dispatchedAt = Date.now()
+    if (!result.ok || result.job === undefined) {
+      const reason = result.code ?? 'dispatch-refused'
+      const settled = this.store.settleRunNowOccurrence({ id: created.row.id, state: 'skipped', reason, dispatchedAt })
+      this.store.audit(repo.user_id, 'schedule.run_now', `${repo.id}: ${parsed.key} skipped ${reason}`)
+      return {
+        ok: false,
+        code: reason,
+        message: result.error ?? '这次运行没有开始。',
+        ...(settled === undefined ? {} : { occurrence: settled }),
+        replayed: false,
+        jobId: null,
+      }
+    }
+    const settled = this.store.settleRunNowOccurrence({
+      id: created.row.id,
+      state: 'dispatched',
+      jobId: result.job.id,
+      dispatchedAt,
+    })
+    this.store.audit(repo.user_id, 'schedule.run_now', `${repo.id}: ${parsed.key} -> ${result.job.id}`)
+    return {
+      ok: true,
+      ...(settled === undefined ? {} : { occurrence: settled }),
+      replayed: false,
+      jobId: result.job.id,
+    }
+  }
+
+  // A replay and a fresh dispatch answer the same shape, read from the row the
+  // first press settled. `replayed` is the only difference, so the page can say
+  // "already started" without pretending it started again.
+  private runNowAnswer(row: ScheduleOccurrenceRow, replayed: boolean): {
+    ok: boolean
+    code?: string
+    message?: string
+    occurrence: ScheduleOccurrenceRow
+    replayed: boolean
+    jobId: string | null
+  } {
+    if (row.state === 'dispatched') {
+      return { ok: true, occurrence: row, replayed, jobId: row.job_id }
+    }
+    return {
+      ok: false,
+      code: row.reason ?? 'dispatch-refused',
+      message: '这次运行没有开始。',
+      occurrence: row,
+      replayed,
+      jobId: row.job_id,
     }
   }
 

@@ -4635,10 +4635,11 @@ export function scheduleConsolePage(input: {
   repo: RepoRow
   state: ScheduleConsoleState
   form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; misfire: string; grace: string; dailyRuns: string }
+  runNowKey: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, repo, state, form, notice, error } = input
+  const { config, locale, viewer, repo, state, form, runNowKey, notice, error } = input
   const t = translator(locale)
   const iso = (at: number | null): string => (at === null ? 'unknown' : new Date(at).toISOString())
   const shown = (at: number | null): string => (at === null ? t('unknown', 'unknown') : humanTimeShort(new Date(at).toISOString()))
@@ -4671,6 +4672,11 @@ export function scheduleConsolePage(input: {
       </tr>`).join('')
   const field = (name: string, label: string, value: string, placeholder: string): string =>
     `<label>${escapeHtml(label)} <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" /></label>`
+  // #544 slice 8: run-now is only offered when a schedule exists and can be read;
+  // a repository without one has no cadence to run out of turn.
+  const runNow = state.kind === 'none' || state.kind === 'unreadable'
+    ? ''
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/run-now" class="run-now">${csrf(viewer)}<input type="hidden" name="command_key" value="${escapeHtml(runNowKey)}" /><button type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button><span class="fine">${escapeHtml(t('从当前时刻开始一次，不改动下次运行。', 'One run from now; the next scheduled run does not move.'))}</span></form>`
   const kindNote = state.kind === 'none'
     ? `<p class="muted">${escapeHtml(t('这个仓库还没有排期；它仍按旧的自动间隔运行。保存一个排期后，由排期决定何时运行。', 'This repository has no schedule yet and still runs on the legacy interval. Once a schedule is saved, the schedule decides when it runs.'))}</p>`
     : state.kind === 'unreadable'
@@ -4691,6 +4697,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('宽限', 'Grace'))}</dt><dd data-schedule-grace="${escapeHtml(state.graceMs === null ? 'none' : String(state.graceMs))}">${escapeHtml(state.graceMs === null ? t('不限（默认）', 'unbounded (default)') : t(`${Math.round(state.graceMs / 60_000)} 分钟`, `${Math.round(state.graceMs / 60_000)} minutes`))}</dd>
         <dt>${escapeHtml(t('每日运行上限', 'Daily run limit'))}</dt><dd data-schedule-daily-runs="${escapeHtml(state.budget.dailyRuns === null ? 'none' : String(state.budget.dailyRuns))}">${escapeHtml(state.budget.dailyRuns === null ? t('不限（默认）', 'unbounded (default)') : t(`${state.budget.dailyRuns} 次`, `${state.budget.dailyRuns} runs`))} · ${escapeHtml(state.budget.runsToday === null ? t('今天已运行 unknown', 'today unknown') : t(`今天已运行 ${state.budget.runsToday} 次`, `${state.budget.runsToday} today`))}${state.budget.remaining === null ? '' : ` · ${escapeHtml(t(`今天还剩 ${state.budget.remaining} 次`, `${state.budget.remaining} left today`))}`}</dd>
       </dl>
+      ${runNow}
     </section>
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
       <p class="muted">${escapeHtml(t('排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。', 'A schedule is a five-field cron or a fixed interval, one of the two; cron needs an IANA zone. The start/end instants need an offset.'))}</p>

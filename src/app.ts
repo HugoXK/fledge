@@ -1692,6 +1692,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       state,
+      // #544 slice 8: the run-now form carries a key rendered once, so a double
+      // click is one command and a fresh page is a new one.
+      runNowKey: randomId('cmd'),
       form: {
         cron: row?.expression ?? '',
         every: row?.every_ms === null || row?.every_ms === undefined ? '' : intervalFieldText(row.every_ms),
@@ -1705,6 +1708,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         dailyRuns: row?.daily_runs === null || row?.daily_runs === undefined ? '' : String(row.daily_runs),
       },
       ...(queryText(request, 'saved') === undefined ? {} : { notice: t('排期已保存。', 'The schedule is saved.') }),
+      ...(queryText(request, 'ran') === undefined ? {} : { notice: t('已立即开始一次运行。', 'One run has started now.') }),
       ...(queryText(request, 'removed') === undefined ? {} : { notice: t('排期已删除，仓库回到旧的自动间隔。', 'The schedule was deleted; the repository is back on the legacy interval.') }),
       ...(refused === undefined ? {} : { error: refused }),
     }))
@@ -1769,6 +1773,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       : `every ${intervalFieldText(schedule.everyMs)}`
     store.audit(viewer.user.id, 'schedule.saved', `${repo.id}: ${label}`)
     return reply.redirect(`${back}?saved=1`)
+  })
+
+  // #544 slice 8: Run now is one explicit occurrence. The key the page rendered
+  // makes a double click the same command; the recurrence cursor is untouched,
+  // so "run this now" never moves when the schedule next fires.
+  app.post('/repos/:id/schedule/run-now', async (request, reply) => {
+    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const back = `/repos/${repo.id}/schedule`
+    const t = translator(request.locale ?? 'zh')
+    if (repo.repo_role !== 'maintainer') {
+      return reply.redirect(`${back}?refused=${encodeURIComponent(t('只有 maintainer 可以立即运行排期。', 'Only a maintainer can run the schedule now.'))}`)
+    }
+    const result = await jobs.runScheduleNow(repo, form(request).command_key)
+    if (!result.ok) {
+      const message = result.code === 'schedule_missing'
+        ? t('这个仓库还没有排期。', 'This repository has no schedule yet.')
+        : (result.message ?? t('这次运行没有开始。', 'The run did not start.'))
+      return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
+    }
+    return reply.redirect(`${back}?ran=${encodeURIComponent(result.jobId ?? '')}`)
   })
 
   // Deleting the row hands the repository back to its legacy interval; it does
