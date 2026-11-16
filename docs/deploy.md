@@ -307,6 +307,30 @@ status and how many reads were made, and a tip that never concludes ends the slo
 with `none` and that run id in the reason. A dry run never waits: it reports what
 a real run would have done.
 
+#### Superadmin one-click release (#897)
+
+The Admin page has a superadmin-only release action. It reads the live GitHub
+state and shows the current `main`, latest tag, commits/fixes/features/fragments
+since that tag, the computed next version, `ci-ok` and the exact reason a release
+is blocked. The action is enabled only when the normal rule is met, no release
+PR/branch/tag is in flight and `ci-ok` is green.
+
+The submit button requires `RELEASE <version>` to be typed, a CSRF token, a
+recent GitHub re-authentication, the destructive rate-limit class and an audit
+row. It dispatches the existing `daily-release.yml` with `dry_run=false`; it
+never creates a tag, merges a pull request or deploys a host. The existing
+release PR, `ci-ok`, `review-gate`, auto-merge, tag job and `release.yml` publish
+chain stay in charge.
+
+The dispatch credential is `RELEASE_DISPATCH_TOKEN` in the server `.env`, scoped
+to the Fledge repository with only `Actions: write`; prefer a fine-grained token.
+An empty value disables the action instead of failing the Admin page. The token
+is never rendered, logged or returned by the route.
+
+A release is not a deploy. Production may already run `main` ahead of the latest
+tag; the next infra `service-update-fledge.sh` run installs the version-bump
+commit after the release PR merges. A separate operator action owns any restart.
+
 #### Reliable slot trigger
 
 GitHub's `schedule` event is best-effort: on 2026-11-14 the then-`14:30Z` slot

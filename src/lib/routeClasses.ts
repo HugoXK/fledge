@@ -57,6 +57,9 @@ const DESTRUCTIVE_ROUTE_LIST = [
   'POST /admin/deployments/rollback',
   'POST /admin/platform/stop',
   'POST /admin/platform/resume',
+  // #897: dispatching the release workflow can publish a release; it takes the
+  // destructive window and is filed with the other release writes.
+  'POST /admin/release',
 ] as const
 
 // Starts, stops or merges real work: a job, a plan, a release, a schedule, an

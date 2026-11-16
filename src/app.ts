@@ -66,6 +66,7 @@ import { scanUntrusted, UNTRUSTED_EVENT_KIND } from './lib/firewall.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
+import { previewRelease, previewAndDispatch, type ReleaseDispatchPreview } from './lib/releaseDispatch.js'
 import {
   deploymentFromRow,
   deploymentHealth,
@@ -5377,6 +5378,21 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const auditPages = Math.max(1, Math.ceil(auditTotal / perPage))
     const jobsPage = Math.min(pageNumber('jobsPage'), jobsPages)
     const auditPage = Math.min(pageNumber('auditPage'), auditPages)
+    let releaseDispatch: ReleaseDispatchPreview | null = null
+    let releaseDispatchError = ''
+    if (superadmin && config.release.dispatchToken !== '') {
+      try {
+        releaseDispatch = await previewRelease({
+          fetch: globalThis.fetch,
+          token: config.release.dispatchToken,
+          repo: config.release.repo,
+          workflow: config.release.workflow,
+          ref: config.release.ref,
+        })
+      } catch (error) {
+        releaseDispatchError = `GitHub preview failed: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`
+      }
+    }
     return reply.type('text/html').send(
       adminPage({
         config,
@@ -5402,8 +5418,60 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // Read from the data directory; a missing or unreadable snapshot renders
         // as "not recorded" rather than failing the page.
         releaseStatus: readReleaseStatus(config.dataDir),
+        releaseDispatch,
+        releaseDispatchError,
       }),
     )
+  })
+
+  // #897: the superadmin one-click release action. It dispatches the existing
+  // release workflow after a typed confirmation; it never tags, merges or
+  // deploys. The POST re-reads the live preview so a stale form cannot dispatch
+  // a release that is no longer eligible.
+  app.post('/admin/release', { config: { rateLimit: destructiveClassLimit } }, async (request, reply) => {
+    const t = translator(request.locale ?? 'zh')
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    if (!sessions.verifyCsrf(request, viewer)) throw httpError(403, '表单已过期，请刷新页面后重试。', 'CSRF_FAILED')
+    if (requireRecentAuth(request, reply, viewer, 'admin.release')) return reply
+    if (config.release.dispatchToken === '') {
+      return reply.redirect('/admin?error=' + encodeURIComponent(t('一键发布未配置 RELEASE_DISPATCH_TOKEN。', 'One-click release is not configured: set RELEASE_DISPATCH_TOKEN.')))
+    }
+    let preview: ReleaseDispatchPreview
+    try {
+      preview = await previewRelease({
+        fetch: globalThis.fetch,
+        token: config.release.dispatchToken,
+        repo: config.release.repo,
+        workflow: config.release.workflow,
+        ref: config.release.ref,
+      })
+    } catch (error) {
+      store.audit(viewer.user.id, 'release.dispatch_failed', String(error instanceof Error ? error.message : error).slice(0, 300))
+      return reply.redirect('/admin?error=' + encodeURIComponent(t(`读取发布状态失败：${String(error instanceof Error ? error.message : error).slice(0, 200)}`, `Could not read the release state: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`)))
+    }
+    if (!preview.eligible) {
+      return reply.redirect('/admin?error=' + encodeURIComponent(t(`一键发布不可用：${preview.reason}`, `One-click release is unavailable: ${preview.reason}`)))
+    }
+    const confirm = String((request.body as Record<string, unknown> | undefined)?.confirm ?? '').trim()
+    if (confirm !== `RELEASE ${preview.nextVersion}`) {
+      return reply.redirect('/admin?error=' + encodeURIComponent(t(`请准确输入 RELEASE ${preview.nextVersion} 以确认。`, `Type RELEASE ${preview.nextVersion} to confirm.`)))
+    }
+    store.audit(viewer.user.id, 'release.requested', `${preview.repo} v${preview.nextVersion} ${preview.mainSha}`)
+    try {
+      const { result } = await previewAndDispatch({
+        fetch: globalThis.fetch,
+        token: config.release.dispatchToken,
+        repo: config.release.repo,
+        workflow: config.release.workflow,
+        ref: config.release.ref,
+      })
+      store.audit(viewer.user.id, 'release.dispatched', `${preview.repo} v${preview.nextVersion} ${result.runUrl}`)
+      return reply.redirect('/admin?notice=' + encodeURIComponent(t(`已启动 v${preview.nextVersion} 发布流程：${result.runUrl}`, `Started the v${preview.nextVersion} release: ${result.runUrl}`)) + '#release')
+    } catch (error) {
+      store.audit(viewer.user.id, 'release.dispatch_failed', String(error instanceof Error ? error.message : error).slice(0, 300))
+      return reply.redirect('/admin?error=' + encodeURIComponent(t(`发布启动失败：${String(error instanceof Error ? error.message : error).slice(0, 200)}`, `Could not start the release: ${String(error instanceof Error ? error.message : error).slice(0, 200)}`)) + '#release')
+    }
   })
 
   // #395: the deployment read model. The latest release comes from the

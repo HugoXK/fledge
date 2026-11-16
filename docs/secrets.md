@@ -30,6 +30,7 @@ predates this inventory — it is not a value.
 | `GITHUB_APP_WEBHOOK_SECRET` | verifies App webhooks | production `.env` | random 32 bytes | owner | unknown | `openssl rand -hex 32` in both the App and `.env` | redeliver one webhook and confirm it is accepted | unknown |
 | `INBOUND_EMAIL_SECRET` | shared secret with the inbound Email Worker | production `.env` and the worker | random 32 bytes | owner | unknown | `openssl rand -hex 32` in both places | reply to one digest mail and confirm it lands | unknown |
 | `METRICS_TOKEN` | `/metrics` outside loopback | production `.env` | random 32 bytes | owner | unknown | `openssl rand -hex 32` then restart | `curl -H "Authorization: Bearer …" /metrics` returns 200 | unknown |
+| `RELEASE_DISPATCH_TOKEN` | superadmin one-click release workflow dispatch | production `.env` | repo-scoped token with `Actions: write` on `HugoXK/fledge` only; fine-grained preferred, and no contents/PR write is needed | owner | unknown | mint a repo-scoped token, replace it in the server `.env`, restart Fledge | the release preview is `ready` and a `workflow_dispatch` run appears on `main` | unknown |
 | `NOTIFY_WEBHOOK_SECRET` | outbound notification webhook | production `.env` | random 32 bytes | owner | unknown | `openssl rand -hex 32` in both places | one event delivers with a valid signature | unknown |
 
 ## What is deliberately not in this table

@@ -30,6 +30,15 @@ export interface Config {
   }
   // How long a GitHub re-authentication stays "recent" for destructive actions.
   recentAuthMinutes: number
+  // #897: the superadmin release action dispatches the existing release
+  // workflow. The token only needs Actions: write on the Fledge repository; it
+  // is a server secret and is never rendered or logged.
+  release: {
+    dispatchToken: string
+    repo: string
+    workflow: string
+    ref: string
+  }
   // #690: how long after its `trial.expired` row a never-used rejected account is
   // erased. The sweep's purge phase reads this; 72 hours is the host-side cron it
   // replaces.
@@ -307,6 +316,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
+    release: {
+      dispatchToken: text('RELEASE_DISPATCH_TOKEN'),
+      repo: text('RELEASE_DISPATCH_REPO', 'HugoXK/fledge'),
+      workflow: text('RELEASE_DISPATCH_WORKFLOW', 'daily-release.yml'),
+      ref: text('RELEASE_DISPATCH_REF', 'main'),
+    },
     trialPurgeGraceHours: Math.max(1, number('TRIAL_PURGE_GRACE_HOURS', 72)),
     autoPromoteDiscovery: bool('AUTO_PROMOTE_DISCOVERY', false),
     autoPromoteDiscoveryDailyCap: Math.max(0, number('AUTO_PROMOTE_DISCOVERY_DAILY_CAP', 3)),
