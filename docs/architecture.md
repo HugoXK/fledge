@@ -2357,8 +2357,34 @@ grants and the legacy `repos.user_id` owner. `maintainer`, `developer` and
 `admin` gets `grants.manage` and repository capabilities only through a
 membership or grant. `GET /api/auth/me` is the first read surface: it requires an
 approved session and returns the user summary, tenant/project roles,
-capabilities and platform capabilities without a token or key column. Enforcement
-on read and write routes remains a later slice.
+capabilities and platform capabilities without a token or key column.
+
+## Shared repository read path (#105, slice 1)
+
+Repository membership reaches the product surfaces here. `Store.listRepos`,
+`listReposPage` and `countReposForViewer` include every repository with an active
+`repo_members` row for the viewer, so the dashboard and its total describe what
+the person can see rather than what they connected. The owner-only
+`countReposForUser` stays the connection-limit count, because a shared repository
+is the owner's connection and must not consume a member's own repository limit.
+
+Every `/repos/:id` route resolves the viewer through `ownedRepo`: the connection
+owner is the maintainer of last resort, an active member row supplies its own
+role, and a missing repository and a non-member answer the same 404 so an id does
+not leak. A `viewer` reads but any mutating route answers 403; repository
+settings (merge policy, target branch, role gate, auto-merge) require
+`maintainer`, and so do the routes that are settings in effect or can end the
+connection: `POST /repos/:id/role` (it writes the same `repo_role` column as the
+settings form and clears `auto_merge`), `/delete`, `/release`, `/enable`,
+`/disable`, `/instance`, `/instance/stop` and `/models/apply`. A `developer`
+keeps the work routes — `/work`, `/run`, `/plan`, `/triage`, `/review` and the
+job actions — and `/run` is resolved through `ownedRepo` like the other starts,
+so it answers for a member instead of the 404 a stranger gets. The member write path — `addRepoMember`, `setRepoMemberRole`,
+`removeRepoMember` — validates the capability vocabulary and refuses to remove
+the connection owner, which is what keeps a repository with a maintainer.
+Invitations, accept/leave/transfer, the audit rows for each membership change and
+member-aware controls in the views are the following slices; no route shown to a
+viewer writes yet.
 
 ## Notification webhook egress
 
