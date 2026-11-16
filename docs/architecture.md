@@ -116,9 +116,11 @@ link to the public GitHub repository with a Star call-to-action. An unexpected
 HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
 is rendered; the page shows the data scope, requires the consent checkbox, then
 offers one POST to `/errors/:ref/report`, which claims the row atomically and
-mails the same address. The error row keeps only method, pathname, status, error
-name, redacted message, redacted stack, version, commit, the signed-in login and
-the consent version/time — never the query, body, headers, cookies or a token.
+mails the same address. The error row keeps only the method, the matched route
+pattern (so a capability in the path, such as an approval token, is never
+stored), status, error name, redacted message, redacted stack, version, commit,
+the signed-in login and the consent version/time — never the query, body,
+headers, cookies or a token.
 Both routes carry a route-level limiter, and a 4xx never offers the report button.
 
 The feedback lifecycle is one triage row per ref (`feedback_triage`) plus
@@ -614,12 +616,15 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   transaction still makes the instant single-dispatch; a distributed worker
   (`#387`) must move the count inside that claim, or two workers could each spend
   the last slot.
-- **The notification outbox** (#544, slice 7): every notification is a durable
-  row (`notification_outbox`) instead of a call whose failure lived only in a log
-  line. The digests, question mails, ops alerts and per-job/PR webhooks are
-  queued with an idempotency key, so a replayed callback or a second tick keeps
-  one row rather than sending twice. A tick pass sweeps lapsed `sending` leases
-  into `unknown`, then attempts the due `pending`/`retry` rows one at a time.
+- **The notification outbox** (#544, slice 7): the notifications it covers are
+  durable rows (`notification_outbox`) instead of a call whose failure lived only
+  in a log line — the digests, question mails, ops alerts and per-job/PR webhooks
+  are queued with an idempotency key, so a replayed callback or a second tick
+  keeps one row rather than sending twice. Per-job success/failure mail and the
+  transactional approval, quota, trial and feedback mail still send inline in
+  this slice; they are not queued rows yet. A tick pass sweeps lapsed `sending`
+  leases into `unknown`, then attempts the due `pending`/`retry` rows one at a
+  time.
   The states are deliberately not interchangeable: a 429/5xx webhook or a 4xx
   SMTP greeting is `retry` with exponential backoff (one minute, doubling,
   capped at an hour); a 4xx webhook answer or a 5xx SMTP rejection is `dead`; a
@@ -1340,7 +1345,15 @@ open work it returns `none` with reason `idle`: the scheduler writes
 discovery interval is due, it may instead run one `discover` job; that job may
 create at most one concrete issue (never a PR/branch), and if it finds nothing
 concrete it creates nothing. The callback refuses a discovery result that carries
-a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). The job goal gets a bounded
+a branch or pull request (`DISCOVERY_PR_FORBIDDEN`). A discovered issue does not
+create a work item by default; with `AUTO_PROMOTE_DISCOVERY` enabled, a
+`succeeded` discovery whose result is a concrete issue creates one `proposed`
+work item through `promoteDiscoveredIssue`, deduped by issue URL and capped per
+repository per UTC day: the counter is keyed `discover-promote:<repoId>:<day>`,
+while the cap's value comes from the deployment-wide
+`AUTO_PROMOTE_DISCOVERY_DAILY_CAP`. A result the run digest classifies as a backlog report
+is not promoted, and a failed run never promotes. It never creates a branch or a
+pull request. The job goal gets a bounded
 `Carry-over` block with the last three run digests and up to four open items; the
 block is data, not an instruction, and is capped well below the 4000-character
 goal limit. Every line that names an issue or a pull request is checked once
@@ -1506,9 +1519,15 @@ maintainer can see what the agent was told. The bridge prompt tells the agent to
 push to the same branch and update the existing PR, never open a second PR. The
 follow-up is deduped by delivery id and by repo + PR + head SHA + a fingerprint
 of the reason with that instruction, and is skipped while the repository has an
-active job; requests are parked per fingerprint, so two different reviews on one
-commit are two follow-ups rather than one overwritten entry. A follow-up does not
-receive a second automation comment; the job list labels it "Follow-up".
+active job. When the running job is a review of the same pull request and head,
+updates merge into ONE parked request — one per pull request and head — and each
+contributes its own trigger (kind, comment id, actor); the release pass then
+queues one job whose `Reviewer asked:` line names every request, so two updates
+that arrive before the agent's first model call become one job, not two. A
+running review is never cancelled: an update that arrives after that point is not
+injected into its current turn, it waits in the same merged request and continues
+the session in the next task. A follow-up does not receive a second automation
+comment; the job list labels it "Follow-up".
 
 ### Default-branch failure intake
 
@@ -1596,6 +1615,47 @@ apply to is refused in the thread and creates nothing, so a command can never
 manufacture work. Each action reuses the existing audit strings (`job.retried`,
 `job.paused`, `job.resumed`, `job.cancelled`) and their timeline kinds rather
 than adding a second naming scheme.
+
+### Mention triggers
+
+`@fledge` in a comment is a second trigger on the same surface, not a second
+router. `parseMentionTrigger` sits beside `parseIssueCommand`; it takes the names
+from `FLEDGE_MENTION_NAMES` (default `fledge`), matches case-insensitively at a
+word boundary, and reuses the command path's trusted set
+(`OWNER`/`MEMBER`/`COLLABORATOR`), its created-only rule and its claim keyed by
+the comment id, so a replayed delivery starts nothing. The bot's own comment is
+never a trigger, and neither is an edited, deleted or closed one.
+
+The kind of job follows the target's kind. A mention on a pull request starts a
+`review` of that pull request at its head: the job reads the diff and comments
+and never writes to the branch. A mention on an issue starts a follow-up for
+that issue, which may cut one branch and open one pull request under the
+one-issue-one-branch-one-PR rule. `Jobs.mention` decides, and the rule itself is
+`src/lib/mentionGovernance.ts` so every case is a pure function.
+
+A mention is identified by `(target kind, target number, head sha)`. The same
+target at the same head never opens a second job: while one is queued or running
+the mention is recorded as a `job.mention_recorded` event on that job. A newer
+mention supersedes a **queued** job, because that job has not run — but only once
+the replacement is admitted. The queued row is retired first, then the
+replacement is enqueued, and only then do the `job.superseded` event and the one
+`trigger.mention_superseded` row name both. Admission can still refuse for
+reasons that have nothing to do with the slot (a full queue, a budget, a
+disabled repository); on that path the row returns to `queued` and one
+`trigger.mention_restored` row records that nobody was left without a job. A
+**running** job is never interrupted: the mention is recorded on it and parks in
+`pending_mention:<repo>`, and the newest parked mention starts after the running
+job finishes. The park keeps its place across a platform stop, a full queue or an
+exhausted budget — those clear themselves and the thread already promised the
+mention would run — so only the target itself refusing (a draft pull request, a
+closed issue) drops it. A parked mention is replayed exactly as recorded: its
+comment id, actor and head SHA are the ones captured when it parked, and it is
+not re-read from GitHub when the slot frees. A draft pull request or a closed
+target writes `trigger.mention_ignored`;
+a target the installation cannot read writes one `trigger.mention_refused` row
+and starts nothing. Every accepted trigger writes `trigger.mention` with the
+comment id, the head SHA, the actor and the outcome (`started`, `recorded`,
+`parked`), and answers in the thread.
 
 The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.
 The server reuses the cached inbox snapshot, sends the server-rendered inbox HTML
@@ -1780,7 +1840,10 @@ row total and the per-currency spend — the aggregate never folds buckets, beca
 The superadmin deletion (#691) sits on the same delete path. `GET
 /admin/users/:id/delete` is a read-only preview: it counts the account's
 repositories, jobs (all, running and queued), FlyBot instances, API tokens and
-GitHub installations and names the backup window, and it writes no audit row.
+GitHub installation records, names the backup window, and says that the GitHub
+App installation itself is not uninstalled — it keeps its repository access and
+its webhooks until an operator removes it on GitHub; the preview writes no audit
+row.
 `POST /admin/users/:id/delete` is superadmin-only, CSRF-guarded,
 `destructiveLimit`-rated and re-authenticated with
 `requireRecentAuth(..., 'admin.user.delete')`; it refuses self-deletion, the last

@@ -56,7 +56,7 @@ function audits(store: Store, action: string): string[] {
 
 // -- the table -------------------------------------------------------------
 
-test('the occurrence table is part of the schema at user_version 43', () => {
+test('the occurrence table is part of the schema at user_version 44', () => {
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')

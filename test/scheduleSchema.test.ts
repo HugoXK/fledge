@@ -7,7 +7,7 @@ import { makeUser } from './helpers.js'
 // the version boundary, the columns the planner reads, and the one-row-per-
 // repository rule the tick relies on.
 
-test('the schedule table is part of the schema at user_version 43', () => {
+test('the schedule table is part of the schema at user_version 44', () => {
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')

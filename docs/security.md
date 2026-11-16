@@ -201,9 +201,12 @@ message, optional page) and mails `FEEDBACK_EMAIL`, which falls back to
 notice; the audit row records only the id, kind and character count.
 
 The error handler writes an `error_reports` row only for HTML 5xx responses. The
-row carries a random `ref`, method, pathname, status, error name, redacted and
-truncated message, a redacted and truncated stack, version, commit, and the
-signed-in login when there is one. It never carries the query string, request
+row carries a random `ref`, method, the matched route pattern rather than the
+concrete path, status, error name, redacted and truncated message, a redacted and
+truncated stack, version, commit, and the signed-in login when there is one. The
+pattern matters for a route whose path is a capability — `/approve/:token` is
+stored as that pattern, so the live token from the link never reaches the row,
+the maintainer mail or the audit row. It never carries the query string, request
 body, headers, cookies, email address or token. The error page shows what the
 report contains and requires a consent checkbox before it exposes the `ref` as a
 capability: one POST to `/errors/:ref/report` marks it reported atomically,
@@ -412,8 +415,11 @@ per day. Test mail is rate-limited to one per minute.
 
 ### Notification outbox
 
-Job, digest and question mail and the operator webhook are queued in
-`notification_outbox` instead of being sent inline. A queued email stores its
+Digest mail, job-attention (question) mail and the operator webhook are queued
+in `notification_outbox` instead of being sent inline. Two classes are not
+queued rows in this slice and still send inline: the per-job success/failure
+mail (`sendJobEmail`) and the transactional approval, quota, trial and feedback
+mail. A queued email stores its
 subject, plain-text body and HTML beside the account, never a token, key or
 bridge secret; `redact()` runs on the source text before the row is written. The
 address is resolved again at delivery from the account's current `notify_email`

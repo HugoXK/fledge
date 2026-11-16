@@ -916,6 +916,49 @@ How it works and how to read it:
   take to produce a verified copy. **RPO** is the age of the copy that restored:
   how much data a real loss would cost. Record both after every drill.
 
+### Previous-release restore check
+
+`db:restore-drill` proves that a copy *this* build wrote can be restored; it
+cannot prove that a database the *previous release* wrote still opens here. A
+column that is renamed or dropped without a migration passes the drill and
+breaks a real upgrade, so a small fixture written by an older release is kept and
+restored on every run.
+
+- Fixture: `test/fixtures/prev-release/fledge.db.gz` (one user, one repository,
+  one finished job; 696,320 bytes of SQLite gzipped to ~14 KB) with
+  `provenance.json` beside it.
+- The check: `npm run build && npm run db:prev-release:restore`. The suite runs
+  the same function on every `npm run check`, so it also runs on every PR and on
+  `main`; the command is for an operator who wants the sentence without the whole
+  suite. It exits 0 with `previous-release restore: ok <tag> schema <from> ->
+  <to>, N tables, M rows` and exits 1 with `FAIL (<code>) — <reason>` otherwise.
+- What it proves: the fixture decompresses to the bytes `provenance.json`
+  records; its schema version is **older** than `SCHEMA_VERSION` (a fixture
+  regenerated from the current build is refused as `not-older`, because it would
+  prove nothing); the current `Store` opens it and migrates it to exactly
+  `SCHEMA_VERSION`; every table and every column the fixture recorded still
+  exists (`schema-lost` names the first five that do not, which is what a rename
+  without a migration looks like); the row counts do not shrink (`rows-lost`);
+  and the repository's encrypted credential decrypts with the fixture key
+  (`key-mismatch` otherwise — a wrong or lost key never reports a pass).
+- The fixture key is not a secret: `Buffer.alloc(32, 7)`, base64-encoded, named in
+  `src/lib/prevRelease.ts`. The fixture holds no real token, no production data
+  and no live database; it is generated from a release tag's own `Store`, never
+  from a backup.
+- Regenerate it when a release is cut, so the newest tag becomes the fixture's
+  tag and the check exercises the migration from that schema:
+
+  ```sh
+  npm run db:prev-release:fixture -- --tag v0.3.6
+  ```
+
+  That command creates a git worktree at the tag, copies
+  `scripts/fixtures/build-prev-release-db.ts` into it, links this clone's
+  `node_modules`, writes the database with *that* build, compacts it to one
+  journal-delete file, gzips it, and rewrites `provenance.json` (tag, commit,
+  sha256 of the decompressed bytes, schema version, row counts, column lists).
+  It writes only those two files and removes its worktree afterwards.
+
 ### Restore drill log
 
 Both numbers are specific to this host, this database size and this disk: a

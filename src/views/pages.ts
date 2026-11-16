@@ -288,6 +288,7 @@ function statusLabel(t: Translate, status: string): string {
     onboarding: t('待申请', 'Onboarding'),
     idle: t('空闲', 'Idle'),
     quota_exhausted: t('额度用完', 'Quota exhausted'),
+    superseded: t('已被取代', 'Superseded'),
     paused: t('已暂停', 'Paused'),
     cancelled: t('已取消', 'Cancelled'),
     ready: t('就绪', 'Ready'),
@@ -2836,7 +2837,7 @@ export function adminPage(input: {
     <div class="row between"><h2>${escapeHtml(t('运维工具', 'Operations'))}</h2><span class="fine">${escapeHtml(t('独立运维页面', 'separate operator pages'))}</span></div>
     <div class="admin-modules">
       ${superadmin ? `<a class="admin-module" href="/admin/metrics"><strong>${escapeHtml(t('产品指标', 'Product metrics'))}</strong><small>${escapeHtml(t('用户、任务、成本、失败分类和告警。', 'Users, jobs, cost, failure breakdown and alerts.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
-      <a class="admin-module" href="/admin/webhooks"><strong>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</strong><small>${escapeHtml(t('出站通知投递状态、重试和详情。', 'Outbound notification delivery state, retries and detail.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
+      <a class="admin-module" href="/admin/webhooks"><strong>${escapeHtml(t('入站 Webhook 投递', 'Inbound webhook deliveries'))}</strong><small>${escapeHtml(t('GitHub 推送事件的处理记录、失败重试和详情。', 'Inbound GitHub webhook deliveries: records, retries and detail.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
       <a class="admin-module" href="/admin/notifications"><strong>${escapeHtml(t('通知发件箱', 'Notification outbox'))}</strong><small>${escapeHtml(t('待发送、已送达、重试、结果未知和受阻的通知。', 'Queued, delivered, retrying, unknown and blocked notifications.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>` : ''}
       <a class="admin-module" href="/admin/deployments"><strong>${escapeHtml(t('部署与漂移', 'Deployments and drift'))}</strong><small>${escapeHtml(t('已记录的部署、漂移、canary 和回滚计划。', 'Recorded deployments, drift, canary and rollback plans.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
       <a class="admin-module" href="/admin/search"><strong>${escapeHtml(t('审计与任务', 'Audit and jobs'))}</strong><small>${escapeHtml(t('按用户、状态、类型和时间筛选并导出任务/审计。', 'Filter and export jobs/audit by user, status, kind and time.'))}</small><span class="admin-module-go">${escapeHtml(t('打开', 'Open'))} →</span></a>
@@ -4267,7 +4268,7 @@ export function adminSupportPage(input: {
   // #691: the account's danger zone is a link, not an inline form — the preview
   // names the blast radius before the confirm asks for the exact login.
   const danger = viewer.user.role === 'superadmin'
-    ? `<section class="card" id="danger"><h2>${escapeHtml(t('危险操作', 'Danger zone'))}</h2><p class="muted">${escapeHtml(t('删除账号会取消其任务、停止并移除实例、撤销 token、删除仓库与全部关联数据，并写入一条不含登录名、邮箱、token 或用户 ID 的删除记录；备份仍会在保留窗口内保留该账号。', 'Deleting the account cancels its jobs, stops and removes its instances, revokes its tokens, erases its repositories and related rows, and writes one record with no login, email, token or user id; backups keep the account until their retention window ends.'))}</p>${user.id === viewer.user.id ? `<p class="fine">${escapeHtml(t('不能删除自己的账号。', 'You cannot delete your own account.'))}</p>` : `<a class="btn btn-danger" href="/admin/users/${escapeHtml(user.id)}/delete">${escapeHtml(t('删除账号…', 'Delete account…'))}</a>`}</section>`
+    ? `<section class="card" id="danger"><h2>${escapeHtml(t('危险操作', 'Danger zone'))}</h2><p class="muted">${escapeHtml(t('删除账号会取消其任务、停止并移除实例、撤销 token、删除仓库与全部关联数据，并写入一条不含登录名、邮箱、token 或用户 ID 的删除记录；备份仍会在保留窗口内保留该账号。这里只删除 Fledge 自己的记录：不会卸载 GitHub App，GitHub 上已有的安装仍然保持、保留仓库访问权限并继续发送 webhook——如需移除，请在 GitHub 的 Settings → Applications → Installed GitHub Apps 中操作。', 'Deleting the account cancels its jobs, stops and removes its instances, revokes its tokens, erases its repositories and related rows, and writes one record with no login, email, token or user id; backups keep the account until their retention window ends. It deletes Fledge\'s own records only: it does not uninstall the GitHub App, so an installation that exists on GitHub stays installed with its repository access and keeps sending webhooks — remove it on GitHub under Settings → Applications → Installed GitHub Apps.'))}</p>${user.id === viewer.user.id ? `<p class="fine">${escapeHtml(t('不能删除自己的账号。', 'You cannot delete your own account.'))}</p>` : `<a class="btn btn-danger" href="/admin/users/${escapeHtml(user.id)}/delete">${escapeHtml(t('删除账号…', 'Delete account…'))}</a>`}</section>`
     : ''
   const repoRows = repos.length === 0
     ? stateCell(4, { kind: 'empty', title: t('没有仓库。', 'No repositories.'), body: t('这个用户还没有接入仓库。', 'This user has not connected a repository.'), action: { href: '/admin#users', label: t('查看用户', 'View users') } })
@@ -4311,7 +4312,8 @@ export function adminDeleteUserPage(input: {
     countRow(t('排队中的任务', 'Queued jobs'), counts.queued),
     countRow(t('FlyBot 实例', 'FlyBot instances'), counts.instances),
     countRow(t('API token', 'API tokens'), counts.tokens),
-    countRow(t('GitHub 安装', 'GitHub installations'), counts.installations),
+    // #841: the row is Fledge's own record; the confirm makes no GitHub call.
+    countRow(t('GitHub 安装记录', 'GitHub installation records'), counts.installations),
   ].join('')
   const empty = counts.repos + counts.jobs + counts.instances + counts.tokens + counts.installations === 0
   const form = blocked === null
@@ -4330,7 +4332,8 @@ export function adminDeleteUserPage(input: {
       <div class="banner warn">${escapeHtml(t('备份仍会在保留窗口内保留这个账号（本地加密副本 30 天，GitHub 14 天）；本次删除不会擦除备份。', 'Backups keep this account until their retention window ends (local encrypted copies 30 days, GitHub 14); this deletion does not erase backups.'))}</div>
       <h2>${escapeHtml(t('将要移除的内容', 'What will be removed'))}</h2>
       <div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('项目', 'Item'))}</th><th>${escapeHtml(t('数量', 'Count'))}</th></tr></thead><tbody>${rows}</tbody></table></div>
-      ${empty ? `<p class="fine">${escapeHtml(t('这个账号没有仓库、任务、实例、token 或安装；确认只会删除账号行和凭据。', 'This account has no repositories, jobs, instances, tokens or installations; confirming removes only the account row and its credentials.'))}</p>` : ''}
+      ${counts.installations === 0 ? '' : `<p class="muted">${escapeHtml(t('上表中的 GitHub 安装记录只是 Fledge 自己的行。这里不会卸载 GitHub App：安装在账号或组织上仍然保持，保留仓库访问权限，并继续向本部署发送 webhook。如需移除，请在 GitHub 的 Settings → Applications → Installed GitHub Apps 中操作。', 'The GitHub installation records above are Fledge\'s own rows. This does not uninstall the GitHub App: the installation stays installed on the account or organization, keeps its repository access and keeps sending its webhooks to this deployment. Remove it on GitHub under Settings → Applications → Installed GitHub Apps.'))}</p>`}
+      ${empty ? `<p class="fine">${escapeHtml(t('这个账号没有仓库、任务、实例、token 或安装记录；确认只会删除账号行和凭据。', 'This account has no repositories, jobs, instances, tokens or installation records; confirming removes only the account row and its credentials.'))}</p>` : ''}
       <p class="muted">${escapeHtml(t('确认会先取消任务、停止并移除实例、撤销 token，然后用与试用清理相同的事务删除账号行和关联数据，最后写入一条不含登录名、邮箱、token 或用户 ID 的记录，其中包含花费汇总。任何步骤失败都会记录失败的步骤名，账号保持可见，再次提交同一确认即可重试。', 'Confirm first cancels jobs, stops and removes instances and revokes tokens, then erases the account row and its related data with the same transaction the trial purge uses, and finally writes one record with no login, email, token or user id that carries the spend aggregate. A failed step is recorded by name, the account stays visible, and submitting the same confirmation again retries it.'))}</p>
       ${form}
     </section>`
