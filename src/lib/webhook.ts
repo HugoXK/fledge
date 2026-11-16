@@ -174,10 +174,10 @@ export class NotificationWebhookError extends Error {
 const AMBIGUOUS_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'])
 
 function webhookErrorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || error === null) return undefined
+  if (typeof error !== 'object' || !error) return undefined
   const record = error as { code?: unknown; cause?: unknown }
   if (typeof record.code === 'string') return record.code
-  if (typeof record.cause === 'object' && record.cause !== null) {
+  if (typeof record.cause === 'object' && record.cause) {
     const cause = record.cause as { code?: unknown }
     if (typeof cause.code === 'string') return cause.code
   }
@@ -185,7 +185,7 @@ function webhookErrorCode(error: unknown): string | undefined {
 }
 
 function isAmbiguousWebhookFailure(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false
+  if (typeof error !== 'object' || !error) return false
   const record = error as { name?: unknown }
   if (record.name === 'TimeoutError' || record.name === 'AbortError') return true
   const code = webhookErrorCode(error)
