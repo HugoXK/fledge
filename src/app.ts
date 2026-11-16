@@ -59,7 +59,8 @@ import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type Wo
 import { parseStageMode } from './lib/stages.js'
 import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
 import { parseIssueCommand, parseMentionTrigger, type IssueCommandInput, type MentionTriggerInput } from './lib/issueCommands.js'
-import { untrustedAuditDetail, untrustedIssueGoal } from './lib/untrusted.js'
+import { untrustedAuditDetail, untrustedIssueGoal, untrustedMeta, type UntrustedText } from './lib/untrusted.js'
+import { scanUntrusted, UNTRUSTED_EVENT_KIND } from './lib/firewall.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
@@ -5899,6 +5900,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // event is handled. The comment id is both the claim key and the idempotency key:
   // the claim absorbs a duplicate delivery, and if a delivery is retaken the
   // receipt answers the replay instead of queueing a second job.
+  // #370 slice 2: the fence marks the text as data; this record says what the
+  // text tried to do. Only rule ids and the body hash are written — the job page
+  // and the audit log never receive the issue text itself.
+  const recordUntrustedInput = (outcome: CommandOutcome, untrusted: UntrustedText, payload: string, itemId: string): void => {
+    const firewall = scanUntrusted(payload)
+    const queuedJobId = commandJobId(outcome)
+    store.audit(repo.user_id, 'job.untrusted_input', untrustedAuditDetail(queuedJobId ?? itemId, untrusted, firewall.directives))
+    // The event is the job page's source; without a job there is no page to put
+    // it on, and an event keyed by a work item id would never be read back.
+    if (queuedJobId === null) return
+    store.recordJobEvent({ jobId: queuedJobId, repoId: repo.id, userId: repo.user_id, kind: UNTRUSTED_EVENT_KIND, meta: untrustedMeta(untrusted, firewall.directives) })
+  }
+
   const runChatCreate = async (kind: JobKind, goal: string, itemId: string): Promise<CommandOutcome> => {
     const actor = managementActor({ userId: repo.user_id, repo, channel: 'chat', requestId: `issue_command:${source.commentId}` })
     return management.run(actor, {
@@ -5994,14 +6008,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return
     }
     if (command === 'plan') {
-      const { goal, untrusted } = untrustedIssueGoal({
+      const { goal, untrusted, payload } = untrustedIssueGoal({
         issueUrl,
         title,
         detail,
         instruction: 'Produce one concrete plan only; do not write code, create a branch or open a PR.',
       })
       const outcome = await runChatCreate('plan', goal, item.id)
-      if (outcome.ok) store.audit(repo.user_id, 'job.untrusted_input', untrustedAuditDetail(commandJobId(outcome) ?? item.id, untrusted))
+      if (outcome.ok) recordUntrustedInput(outcome, untrusted, payload, item.id)
       await reply(outcome.ok ? `Plan job ${commandJobId(outcome) ?? ''} queued.` : `Could not queue a plan: ${outcome.message}`)
       return
     }
@@ -6009,14 +6023,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       await reply('This repository requires an approved plan first. Run /fledge plan, then /fledge approve.')
       return
     }
-    const { goal, untrusted } = untrustedIssueGoal({
+    const { goal, untrusted, payload } = untrustedIssueGoal({
       issueUrl,
       title,
       detail,
       instruction: 'Implement one focused fix for this issue.',
     })
     const outcome = await runChatCreate('iterate', goal, item.id)
-    if (outcome.ok) store.audit(repo.user_id, 'job.untrusted_input', untrustedAuditDetail(commandJobId(outcome) ?? item.id, untrusted))
+    if (outcome.ok) recordUntrustedInput(outcome, untrusted, payload, item.id)
     await reply(outcome.ok ? `Implementation job ${commandJobId(outcome) ?? ''} queued.` : `Could not queue a fix: ${outcome.message}`)
   }
 

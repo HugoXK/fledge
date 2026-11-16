@@ -1629,6 +1629,10 @@ and approves the latest completed plan. The issue title and body are external, s
 `plan` and `fix` build their goal with `untrustedIssueGoal()`
 (`src/lib/untrusted.ts`): the text is fenced as `UNTRUSTED ISSUE TEXT`, a forged
 fence is escaped, and the job audit records the label and a hash, never the body.
+`scanUntrusted()` (`src/lib/firewall.ts`) then names the instruction-like
+directives in that same text as rule ids; the job event `job.untrusted_input`
+carries `blocked=<ids|none>` and the job page shows the count and the ids, while
+the body stays out of the event, the log and the page.
 
 Four verbs act on the job the work item already has: `/fledge retry`,
 `/fledge pause`, `/fledge resume` and `/fledge cancel`. Retry goes through the
