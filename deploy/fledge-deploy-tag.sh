@@ -4,8 +4,10 @@
 # A release tag is the deploy unit. A main-only commit waits for the next tag;
 # this script never rolls production back to an older tag and never pushes,
 # bypasses the merge gate or merges. It builds from a detached tag worktree,
-# stops/starts the host service, checks `/healthz`, restores the previous dist
-# on failure, and then asks the verifier to write release-status.json.
+# stops/starts the host service, then runs `scripts/rollout-check.mjs` against
+# the release it built (#658: the process, the page it renders and the bytes it
+# serves must all be that tag), restores the previous dist when the rollout is
+# refused, and then asks the verifier to write release-status.json.
 #
 # Environment (defaults are the current host layout):
 #   FLEDGE_APP_DIR       /home/xuke/work/fledge
@@ -15,6 +17,7 @@
 #   FLEDGE_STOP_CMD      /home/xuke/work/fledge-stop.sh
 #   FLEDGE_START_CMD     /home/xuke/work/fledge-start.sh
 #   FLEDGE_HEALTH_URL    http://127.0.0.1:8095/healthz
+#   FLEDGE_ROLLOUT_URL   the origin the rollout check reads (default: FLEDGE_HEALTH_URL without /healthz)
 set -eu
 
 APP=${FLEDGE_APP_DIR:-/home/xuke/work/fledge}
@@ -79,15 +82,38 @@ fi
 printf "GIT_SHA=%s\nBUILD_TIME=%s\n" "$TARGET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$APP/.build-identity"
 chmod 644 "$APP/.build-identity"
 
+# #658: the rollout is gated on the release it claims, not on a version string.
+# `/healthz` alone said `0.3.2` while the page and the served app.css came from
+# another tree, so a stale process could be blessed as healthy. The check
+# compares the process (version and commit), the page it renders (footer version
+# and the ?v= token on app.css), the bytes it serves, and the running public/
+# against the tag worktree — the artifact this deploy built from. A failure is a
+# refused rollout: the previous dist and identity go back and the service is
+# restarted on them.
 "$STOP" >> "$LOG" 2>&1 || true
 "$START" >> "$LOG" 2>&1 || true
+ROLLOUT_URL=${FLEDGE_ROLLOUT_URL:-$(printf '%s' "$HEALTH" | sed 's#/healthz$##')}
+ROLLOUT_OUT=/tmp/fledge-rollout-$$.txt
+rollout() {
+  if [ -f "$APP/.env" ]; then
+    node --env-file="$APP/.env" "$APP/scripts/rollout-check.mjs" "$@"
+  else
+    node "$APP/scripts/rollout-check.mjs" "$@"
+  fi
+}
 ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS --max-time 3 "$HEALTH" | grep -q "\"version\":\"${TAG_VERSION}\""; then ok=1; break; fi
+  if rollout --version "$TAG_VERSION" --commit "$TARGET" --base-url "$ROLLOUT_URL" \
+    --release-dir "$DEPLOY" --public-dir "$APP/public" > "$ROLLOUT_OUT" 2>&1; then
+    ok=1
+    break
+  fi
   sleep 2
 done
+cat "$ROLLOUT_OUT" >> "$LOG" 2>/dev/null || true
+rm -f "$ROLLOUT_OUT"
 if [ "$ok" != "1" ]; then
-  log "health failed for $TAG; rolling back dist"
+  log "rollout refused for $TAG; rolling back dist"
   rm -rf "$APP/dist"
   mv "$APP/dist.bak-$ts" "$APP/dist" 2>/dev/null || true
   mv "$APP/.build-identity.bak" "$APP/.build-identity" 2>/dev/null || true
@@ -97,6 +123,15 @@ fi
 log "healthy $TAG"
 printf "%s %s\n" "$TAG" "$(date -u +%FT%TZ)" > "${FLEDGE_DATA_DIR:-/home/xuke/work/fledge-data}/deployed-tag"
 VERIFY=${FLEDGE_VERIFY_SCRIPT:-$APP/deploy/fledge-verify-release.sh}
-[ -x "$VERIFY" ] && "$VERIFY" >> "$LOG" 2>&1 || true
+if [ -x "$VERIFY" ]; then
+  # The chain snapshot is not the rollout gate — the gate above already answered.
+  # A red verifier is logged by name here so it cannot disappear into `|| true`,
+  # and it does not roll back a release that passed the gate.
+  if "$VERIFY" >> "$LOG" 2>&1; then
+    log "release-status: recorded for $TAG"
+  else
+    log "release-status: not released for $TAG; the rows above name the link"
+  fi
+fi
 git worktree remove --force "$DEPLOY" >> "$LOG" 2>&1 || true
 ls -1dt "$APP"/dist.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -rf

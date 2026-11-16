@@ -42,3 +42,29 @@ test('the deploy runbook names both tracked scripts and their cron cadence', () 
   assert.match(doc, /\*\/10 \* \* \* \*/)
   assert.match(doc, /\*\/30 \* \* \* \*/)
 })
+
+// #658: a version string in /healthz is not proof of a rollout. Production
+// answered 0.3.2 while the page and the asset directory were another tree, so
+// the deploy has to be gated on the release artifact it built.
+test('the deploy gates the rollout on the release it built, not on a version string', () => {
+  assert.match(deploy, /scripts\/rollout-check\.mjs/)
+  assert.match(deploy, /--release-dir "\$DEPLOY"/)
+  assert.match(deploy, /--public-dir "\$APP\/public"/)
+  assert.match(deploy, /rollout refused for \$TAG/)
+  assert.match(deploy, /FLEDGE_ROLLOUT_URL/)
+  // The old gate: read /healthz and shell out to grep for the version.
+  assert.doesNotMatch(deploy, /grep -q "\\"version\\"/)
+})
+
+test('a red release-status snapshot is logged by name, not swallowed', () => {
+  assert.match(deploy, /release-status: not released for \$TAG/)
+  assert.doesNotMatch(deploy, /\[ -x "\$VERIFY" \] && "\$VERIFY"[^\n]*\|\| true/)
+})
+
+test('the runbook names the gate, its expected line and the skipped-restart drill', () => {
+  assert.match(doc, /scripts\/rollout-check\.mjs/)
+  assert.match(doc, /rollout-check: ok v0\.3\.5 commit/)
+  assert.match(doc, /rollout-check: refused/)
+  assert.match(doc, /--expect-css-sha256/)
+  assert.match(doc, /59,354 bytes/)
+})
