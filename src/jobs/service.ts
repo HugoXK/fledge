@@ -46,6 +46,7 @@ import { evaluateTestEvidence, type VerificationResult } from '../lib/verificati
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
 import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
+import { DEFAULT_MAX_REVISIONS, decideRevision, maxRevisionsSettingKey, parseMaxRevisions, revisionCounterKey, type ReviewAuthor } from '../lib/revisionBudget.js'
 import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
@@ -126,7 +127,9 @@ function scheduleAnchor(row: ScheduleRow, repo: RepoRow): number {
 // A follow-up is refused by its own duplicate key before it reaches `enqueue`, so
 // its result is the enqueue shape plus that one local code. The command-level
 // codes stay out of this union: an enqueue refusal keeps its own code and detail.
-export type FollowUpResult = Omit<EnqueueResult, 'code'> & { code?: EnqueueRefusalCode | 'DUPLICATE_FOLLOWUP' }
+// #637: `REVISION_BUDGET` is the second local refusal: a review-triggered fix
+// that the review budget will not admit, decided before `enqueue`.
+export type FollowUpResult = Omit<EnqueueResult, 'code'> & { code?: EnqueueRefusalCode | 'DUPLICATE_FOLLOWUP' | 'REVISION_BUDGET' }
 
 // #283: the whole platform stop is one `settings` row, and every reader goes back
 // to the row instead of to a field on this object. A cached copy is exactly how a
@@ -230,6 +233,12 @@ export interface FollowUpRequest {
   headSha: string
   instruction?: string
   trigger?: FollowUpTrigger
+  /**
+   * #637: who asked for this fix. Absent means the request did not come from a
+   * review (a check failure, a manual retry), which is not counted against any
+   * review budget.
+   */
+  reviewAuthor?: ReviewAuthor
 }
 
 // #637: one mention, as the webhook read it. The target is what decides the kind
@@ -253,6 +262,7 @@ interface ParkedFollowUpRequest {
   reason: string
   instruction?: string
   trigger?: FollowUpTrigger
+  reviewAuthor?: ReviewAuthor
 }
 
 // One pull request at one head has ONE parked request, whatever arrived while the
@@ -281,9 +291,9 @@ function mergeParkedFollowUp(existingJson: string | undefined, input: FollowUpRe
     try {
       const parsed = JSON.parse(existingJson) as Partial<ParkedFollowUpRequest> & { requests?: ParkedFollowUpRequest[] }
       if (Array.isArray(parsed.requests)) {
-        for (const request of parsed.requests) requests.push({ reason: request.reason, ...(request.instruction === undefined ? {} : { instruction: request.instruction }), ...(request.trigger === undefined ? {} : { trigger: request.trigger }) })
+        for (const request of parsed.requests) requests.push({ reason: request.reason, ...(request.instruction === undefined ? {} : { instruction: request.instruction }), ...(request.trigger === undefined ? {} : { trigger: request.trigger }), ...(request.reviewAuthor === undefined ? {} : { reviewAuthor: request.reviewAuthor }) })
       } else if (typeof parsed.reason === 'string') {
-        requests.push({ reason: parsed.reason, ...(parsed.instruction === undefined ? {} : { instruction: parsed.instruction }), ...(parsed.trigger === undefined ? {} : { trigger: parsed.trigger }) })
+        requests.push({ reason: parsed.reason, ...(parsed.instruction === undefined ? {} : { instruction: parsed.instruction }), ...(parsed.trigger === undefined ? {} : { trigger: parsed.trigger }), ...(parsed.reviewAuthor === undefined ? {} : { reviewAuthor: parsed.reviewAuthor }) })
       }
     } catch {
       // A corrupt parked row is replaced by the request in hand: losing the
@@ -294,6 +304,7 @@ function mergeParkedFollowUp(existingJson: string | undefined, input: FollowUpRe
     reason: input.reason,
     ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
     ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
+    ...(input.reviewAuthor === undefined ? {} : { reviewAuthor: input.reviewAuthor }),
   }
   const duplicate = requests.some((request) =>
     request.reason === incoming.reason &&
@@ -2983,6 +2994,21 @@ export class Jobs {
     const fingerprint = followUpFingerprint(input.reason, input.instruction)
     const key = `followup:${repo.id}:${fingerprint}:${input.prUrl}:${input.headSha}`.slice(0, 300)
     if (this.store.getSetting(key) !== undefined) return { ok: false, error: '这个失败已经跟进过', code: 'DUPLICATE_FOLLOWUP' }
+    // #637: the review budget answers after the fingerprint, so a repeated
+    // request never spends it. A person is never refused here.
+    if (input.reviewAuthor !== undefined) {
+      const budget = this.revisionBudget(repo, input, input.reviewAuthor)
+      if (!budget.allow) {
+        this.store.audit(repo.user_id, 'trigger.revision_refused', `${input.prUrl} ${input.headSha} author=${input.reviewAuthor} used=${budget.used} reason=${budget.reason}`)
+        return {
+          ok: false,
+          error: budget.reason === 'bot-once'
+            ? '另一个机器人的评审在这个 PR 上已经触发过一次修复。'
+            : `这个 head 的自动评审修复已达到上限（${budget.used}）。`,
+          code: 'REVISION_BUDGET',
+        }
+      }
+    }
     const activeJob = this.store.activeJobForRepo(repo.id)
     if (activeJob !== undefined) {
       if (activeJob.kind === 'review') {
@@ -3005,7 +3031,27 @@ export class Jobs {
     ].join('\n')
     const result = await this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl, baseBranch: input.baseBranch })
     if (!result.ok) this.store.deleteSetting(key)
+    // The count follows the fix that actually started. A parked request is
+    // counted when it is replayed through this method, not when it parks, so a
+    // merge of several updates into one job is one fix and one count.
+    if (result.ok && input.reviewAuthor !== undefined) this.recordRevision(repo, input, input.reviewAuthor)
     return result
+  }
+
+  // #637: the review budget is read from one place, the settings table, so it
+  // survives a restart and a parked request is counted when it actually starts.
+  private revisionBudget(repo: RepoRow, input: FollowUpRequest, author: ReviewAuthor): ReturnType<typeof decideRevision> {
+    if (author === 'human') return decideRevision({ author, used: 0, limit: DEFAULT_MAX_REVISIONS })
+    const used = Number(this.store.getSetting(revisionCounterKey(author, repo.id, input.prUrl, input.headSha)) ?? '0')
+    const limit = parseMaxRevisions(this.store.getSetting(maxRevisionsSettingKey(repo.id)))
+    return decideRevision({ author, used: Number.isInteger(used) ? used : 0, limit })
+  }
+
+  private recordRevision(repo: RepoRow, input: FollowUpRequest, author: ReviewAuthor): void {
+    if (author === 'human') return
+    const key = revisionCounterKey(author, repo.id, input.prUrl, input.headSha)
+    const used = Number(this.store.getSetting(key) ?? '0')
+    this.store.setSetting(key, String((Number.isInteger(used) ? used : 0) + 1))
   }
 
   // #637: a mention is the third way a job starts, beside the scheduler and the
