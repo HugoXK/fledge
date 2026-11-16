@@ -2704,3 +2704,39 @@ repository page renders them with their links, so the page and the body cannot
 disagree about what the release contains. A stored value that is missing or
 malformed renders no sources rather than an error — the draft Release is the
 record of what shipped, the column is its explanation.
+
+## The strategy bundle (#433 slice 1)
+
+A repository's development strategy is one artifact, not a set of settings spread
+over the playbook, the rule overrides and the goal. `src/strategy/bundle.ts` keys
+each part independently (`rules:<path>`, `playbook:team`, `goal:guidance`, and
+later the rubric, task templates and routing), and every value is a reference to
+where the content lives — a rule override revision, the playbook version plus the
+fingerprint of the goal it was built from, the hash of the goal text — never a
+copy of a moving path. The bundle's name is `sha256` over the canonically ordered
+section map, so the same strategy always hashes the same and any change produces a
+new bundle.
+
+`strategy_bundles` stores one row per version (`UNIQUE(repo_id, version)` and
+`UNIQUE(repo_id, hash)`, so the same content cannot be stored twice), with its
+parent version and the actor who froze it. `strategy_pointers` holds `candidate`,
+`canary` and `stable`, but slice 1 writes only `candidate`: `stable` and `canary`
+need the promotion decision of a later slice, and a freeze that could move them
+would ship a strategy without the human approval this epic requires.
+
+`GET /repos/:id/strategy` (owner only) renders the three pointers, the sections of
+the current candidate and their sources, and the version history. The form it
+carries includes the candidate version it rendered, and `POST /repos/:id/strategy`
+(owner only, CSRF, maintainer role) compares that base with the current candidate
+inside one transaction: a stale form is refused naming both versions and writes
+nothing, because two tabs must not silently replace each other's candidate. When
+the assembled content already has a bundle — the repository's sources came back to
+something frozen before — the freeze writes no second row, because the hash is the
+identity, but it still moves `candidate` onto that bundle inside that transaction
+and reports that version: the pointer always names the content the page assembled.
+The sections are assembled from sources that already exist — `repo_rule_overrides`
+by revision, the role playbook by version and goal fingerprint, the goal by hash —
+and a path or key under a frozen family (`evaluator`, `evidence`, `ci`, `gate`,
+`auth`, `gateway`, `capability`) is refused before the store is asked to write.
+Recording `strategy_hash` and `strategy_version` on every job, the job-page diff,
+canary promotion with rollback, and the global bundle are later slices.

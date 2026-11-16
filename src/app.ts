@@ -12,6 +12,9 @@ import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } f
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
 import { readReleaseReadiness } from './releases/readiness.js'
+import { currentStrategySections } from './strategy/sources.js'
+import { strategyRefusal } from './strategy/bundle.js'
+import { strategyPage } from './views/strategy.js'
 import { releaseReadinessPage } from './views/releaseReadiness.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
@@ -2365,6 +2368,54 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // rendered with, and a branch that moved is a refusal rather than a tag on a
   // tree the maintainer never saw on that page. Slice boundary: the annotated tag
   // only — no Release object and no draft notes, which are slice 3.
+  // #433 slice 1: the strategy a repository is on, and one write that freezes the
+  // current strategy as a new candidate. The page carries the candidate version it
+  // rendered; the store compares it under one transaction, so a second tab cannot
+  // replace a candidate that landed in between. `stable` and `canary` are read and
+  // shown but never written here: promotion is a later slice with a human decision.
+  app.get('/repos/:id/strategy', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const pointers = store.strategyPointers(repo.id)
+    const bundles = store.listStrategyBundles(repo.id)
+    return reply.type('text/html').send(strategyPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      repoId: repo.id,
+      repoLabel: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
+      pointers,
+      bundles,
+      ...(request.flash?.notice?.text === undefined ? {} : { notice: request.flash.notice.text }),
+      ...(request.flash?.error?.text === undefined ? {} : { refused: request.flash.error.text }),
+    }))
+  })
+
+  app.post('/repos/:id/strategy', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const back = `/repos/${repo.id}/strategy`
+    const fail = (message: string) => reply.redirect(`${back}?error=${encodeURIComponent(message)}`)
+    const ok = (message: string) => reply.redirect(`${back}?notice=${encodeURIComponent(message)}`)
+    if (repo.repo_role !== 'maintainer') return fail('只有上游仓库的 maintainer 可以冻结策略。 / Only a maintainer of the upstream repository can freeze a strategy')
+    const body = form(request)
+    if (body.confirm !== '1') return fail('冻结候选需要确认。 / the candidate must be confirmed')
+    const base = Number(String(body.base ?? '').trim())
+    if (!Number.isInteger(base) || base < 0) return fail('页面没有带上它渲染时的候选版本；请重新读取策略页。 / the page did not carry the candidate version it rendered; re-read the strategy page')
+    const assembled = currentStrategySections(store, repo)
+    // A frozen family (evaluator, evidence, CI, merge gate, auth, gateway,
+    // capability) is refused before the store is asked to write anything.
+    if (!assembled.ok) return fail(strategyRefusal(assembled))
+    const frozen = store.freezeStrategyCandidate({ repoId: repo.id, sections: assembled.sections, createdBy: viewer.user.login, expectedBase: base })
+    if (!frozen.ok) {
+      return fail(`策略在上次读取后已经变化：页面显示 base v${String(frozen.base)}，仓库当前候选是 v${String(frozen.candidate)}；没有冻结任何内容。请重新读取策略页后再冻结。 / the candidate moved since this page was read: the page showed base v${String(frozen.base)} and the repository is on candidate v${String(frozen.candidate)}; nothing was frozen. Re-read the strategy page and freeze again`)
+    }
+    store.audit(viewer.user.id, 'strategy.frozen', `${repo.id}: v${String(frozen.version)} ${frozen.hash.slice(0, 12)}`)
+    // The content was already a bundle, so no row was written — but the candidate
+    // moved onto it, which is what the button froze. The notice says the pointer
+    // moved rather than "nothing was written".
+    if (frozen.duplicate) return ok(`当前策略已经冻结为 v${String(frozen.version)}（${frozen.hash.slice(0, 12)}）；候选指针已改指该版本，没有写入新的 bundle。 / the current strategy is already frozen as v${String(frozen.version)} (${frozen.hash.slice(0, 12)}); the candidate now points at it and no new bundle was written`)
+    return ok(`已冻结候选 v${String(frozen.version)}（${frozen.hash.slice(0, 12)}）；stable 未改动。 / froze candidate v${String(frozen.version)} (${frozen.hash.slice(0, 12)}); stable was not changed`)
+  })
+
   app.post('/repos/:id/release-readiness/tag', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const back = `/repos/${repo.id}/release-readiness`
