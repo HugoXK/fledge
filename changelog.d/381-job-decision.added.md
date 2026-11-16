@@ -1,0 +1,1 @@
+A job can now stop and ask instead of guessing: a terminal callback may carry one bounded `decision`, the job waits as `paused`, the question appears in the existing inbox marked with its job, and the first answer starts exactly one retry whose goal carries the question and the answer.

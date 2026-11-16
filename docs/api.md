@@ -580,6 +580,19 @@ branch/PR:
 { "status": "succeeded", "summary": "Reviewed 6 PRs; average 78.", "reviewScore": 78 }
 ```
 
+A terminal callback may carry one `decision` instead of finishing:
+
+```json
+{ "status": "succeeded", "decision": { "question": "Ship the migration now?", "why": "It changes the schema and needs a person.", "options": ["Ship it", "Wait"] } }
+```
+
+`question` is at most 300 characters, `why` at most 500, and `options` at most
+four entries of 80 characters each. The job moves to `paused` with `error` equal
+to `why`, the question becomes an inbox card, and the first answer starts exactly
+one retry whose goal carries the question and the answer. A second decision on
+the same job is refused (`one decision per job`), a `running` heartbeat cannot
+carry one, and a malformed decision is refused instead of stored.
+
 `status` may be `running`, `succeeded` or `failed`. A `running` callback is a
 progress heartbeat: it updates `summary`, `checkpoint` and optionally `branch`,
 `attribution` or `evidence` without finishing the job or extending

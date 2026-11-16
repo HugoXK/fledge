@@ -30,6 +30,7 @@ import { levelFromRank, priorityRank, validatePriorityClaim, type PriorityLevel 
 import { validateRelationClaim, type RelationKind } from '../lib/relations.js'
 import { DEFAULT_DECISION, isDecisionKind, repairDecision, validateDecision, type DecisionKind } from '../lib/taskDecision.js'
 import { reviewMergeBlock } from '../lib/mergeReview.js'
+import { decisionAnswerGoal, parseJobDecision, type JobDecision } from '../lib/uncertainty.js'
 import {
   MAX_DIFF_CHARS,
   adversarialMergeBlock,
@@ -335,6 +336,9 @@ export interface CallbackPayload {
   attribution?: unknown
   evidence?: unknown
   checkpoint?: unknown
+  // #381: a terminal report may carry one decision instead of a result; the job
+  // pauses with the reason and the question becomes an inbox card.
+  decision?: unknown
   followUps?: unknown
   triage?: unknown
 }
@@ -577,7 +581,7 @@ export class Jobs {
   // until #360, which is exactly the second-place-to-disagree shape this codebase
   // keeps paying for. The caller names the actor so the audit row is the same
   // `job.retried` action either way.
-  async retryJob(jobId: string, actorUserId: string, options: { workItemId?: string } = {}): Promise<{ ok: boolean; job?: JobRow; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
+  async retryJob(jobId: string, actorUserId: string, options: { workItemId?: string; decisionAnswer?: { question: string; answer: string } } = {}): Promise<{ ok: boolean; job?: JobRow; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, error: '任务不存在。' }
     if (job.status === 'queued' || job.status === 'running') return { ok: false, error: '这个任务还在运行；请先暂停或取消。' }
@@ -588,7 +592,13 @@ export class Jobs {
     // may write, and the same expression sat in the resume path.
     const kind = reenqueueKind(job)
     const declared = reenqueueWorkType(job, kind)
-    const goal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    const baseGoal = job.checkpoint === null || job.checkpoint === '' ? job.goal : `${job.goal}\n\nResume from checkpoint:\n${job.checkpoint}`
+    // #381: the retry that answers a decision carries what was asked and what a
+    // person decided, so the resumed run starts from the answer instead of
+    // re-deriving the same uncertainty.
+    const goal = options.decisionAnswer === undefined
+      ? baseGoal
+      : decisionAnswerGoal(baseGoal, options.decisionAnswer.question, options.decisionAnswer.answer)
     const resumePr = kind === 'iterate' && job.pr_url !== null
     const result = await this.enqueue(repo, resumePr ? 'followup' : 'manual', goal, kind, {
       // #636: the retry continues the same budget, so it names the attempt it
@@ -3432,11 +3442,55 @@ export class Jobs {
     return this.withJobLock(jobId, () => this.applyCallback(jobId, payload))
   }
 
+  // #381: the question is a wait, not a failure. The row keeps the question and
+  // the reason, the lease is released so the reaper does not read the pause as a
+  // stale running job, and the platform token is revoked like any other stop. The
+  // inbox card comes from `listJobDecisionsForRepo`; the retry is `retryJob`.
+  private pauseForDecision(job: JobRow, decision: JobDecision): void {
+    const reason = redact(decision.why).slice(0, 1000)
+    const token = job.platform_token_hash === null ? undefined : this.store.findApiToken(job.platform_token_hash)
+    if (token !== undefined) this.store.revokeApiToken(token.id, token.user_id)
+    this.store.updateJob(job.id, {
+      status: 'paused',
+      error: reason,
+      decision_json: JSON.stringify(decision),
+      lease_owner: null,
+      lease_until: null,
+    })
+    this.store.updateRepo(job.repo_id, { last_status: 'paused', ...(job.kind === 'review' ? { last_review_status: 'paused' } : {}) })
+    this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.decision', step: job.kind, meta: decision.question })
+  }
+
+  // #381: the asking case of a callback, in one place. It answers nothing at all
+  // when the payload carries no decision (`undefined`), so a normal finish or
+  // heartbeat goes straight to the terminal path. The refusals are ordered so a
+  // finished or timed-out job cannot be paused, and that ordering runs once per
+  // callback rather than once per route.
+  private decisionAnswer(job: JobRow, status: CallbackPayload['status'], raw: unknown): { ok: boolean; status?: number; error?: string } | undefined {
+    if (raw === undefined) return undefined
+    if (status === 'running') return { ok: false, status: 400, error: 'a running callback cannot carry a decision' }
+    if (job.decision_json !== null) return { ok: false, status: 409, error: 'one decision per job' }
+    if (job.status !== 'queued' && job.status !== 'running') return { ok: false, status: 409, error: 'job already finished' }
+    if (this.pastHardTimeout(job)) return { ok: false, status: 409, error: 'job timed out' }
+    const parsed = parseJobDecision(raw)
+    if (!parsed.ok) return { ok: false, status: 400, error: parsed.message }
+    this.pauseForDecision(job, parsed.decision)
+    return { ok: true }
+  }
+
   private async applyCallback(jobId: string, payload: CallbackPayload): Promise<{ ok: boolean; status?: number; error?: string; duplicate?: boolean }> {
     const job = this.store.getJob(jobId)
     if (job === undefined) return { ok: false, status: 404, error: 'job not found' }
     const status = payload.status
     if (status !== 'succeeded' && status !== 'failed' && status !== 'running') return { ok: false, status: 400, error: 'invalid status' }
+    // #381: a decision is the other way a run can end. The callback either
+    // finishes, asks or reports progress; `decisionAnswer` owns the asking case
+    // and returns undefined for the other two, so the terminal path below never
+    // sees a decision and this branch only carries that answer back. Keeping the
+    // ask in its own method is also what the guard wants: the presence of one
+    // callback field must not look like the check in front of the merge path.
+    const asked = this.decisionAnswer(job, status, payload.decision)
+    if (asked !== undefined) return asked
     const repoRow = this.store.getRepo(job.repo_id)
     // A callback link is stored only when it belongs to this job's repository.
     // prOrigin() derives that origin from the row (recorded html_url first, else
