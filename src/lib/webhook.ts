@@ -17,6 +17,14 @@ export interface WebhookSafetyOptions {
   fetch?: typeof fetch
 }
 
+/** A destination refusal (`blocked`) is terminal; a resolution failure is transient. */
+export class WebhookAddressError extends Error {
+  constructor(message: string, readonly kind: 'blocked' | 'retry') {
+    super(message)
+    this.name = 'WebhookAddressError'
+  }
+}
+
 const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308])
 const MAX_REDIRECTS = 5
 
@@ -29,16 +37,16 @@ function parseWebhookUrl(raw: string): URL {
   try {
     url = new URL(raw)
   } catch {
-    throw new Error('Refusing notification webhook: not an absolute URL')
+    throw new WebhookAddressError('Refusing notification webhook: not an absolute URL', 'blocked')
   }
   if (url.username !== '' || url.password !== '') {
-    throw new Error(`Refusing notification webhook: host "${normalizeHost(url.hostname)}" must not include credentials`)
+    throw new WebhookAddressError(`Refusing notification webhook: host "${normalizeHost(url.hostname)}" must not include credentials`, 'blocked')
   }
   if (url.protocol !== 'https:' && url.protocol !== 'http:') {
-    throw new Error(`Refusing notification webhook: host "${normalizeHost(url.hostname)}" must use http:// or https://`)
+    throw new WebhookAddressError(`Refusing notification webhook: host "${normalizeHost(url.hostname)}" must use http:// or https://`, 'blocked')
   }
   if (url.hostname === '') {
-    throw new Error('Refusing notification webhook: missing host')
+    throw new WebhookAddressError('Refusing notification webhook: missing host', 'blocked')
   }
   return url
 }
@@ -47,7 +55,7 @@ async function resolveWebhookHost(host: string, resolve: WebhookResolver): Promi
   try {
     return await resolve(host)
   } catch {
-    throw new Error(`Refusing notification webhook: cannot resolve host "${host}"`)
+    throw new WebhookAddressError(`Refusing notification webhook: cannot resolve host "${host}"`, 'retry')
   }
 }
 
@@ -58,16 +66,16 @@ export async function assertSafeWebhookUrl(raw: string, options: WebhookSafetyOp
   const allowlisted = allowedHosts.includes(host)
 
   if (allowedHosts.length > 0 && !allowlisted) {
-    throw new Error(`Refusing notification webhook: host "${host}" is not in NOTIFY_WEBHOOK_ALLOWED_HOSTS`)
+    throw new WebhookAddressError(`Refusing notification webhook: host "${host}" is not in NOTIFY_WEBHOOK_ALLOWED_HOSTS`, 'blocked')
   }
   if (allowlisted) return url
 
   if (url.protocol !== 'https:') {
-    throw new Error(`Refusing notification webhook: host "${host}" must use https://`)
+    throw new WebhookAddressError(`Refusing notification webhook: host "${host}" must use https://`, 'blocked')
   }
   if (isIP(host) !== 0) {
     if (isBlockedIpAddress(host)) {
-      throw new Error(`Refusing notification webhook: host "${host}" is a private or reserved address`)
+      throw new WebhookAddressError(`Refusing notification webhook: host "${host}" is a private or reserved address`, 'blocked')
     }
     return url
   }
@@ -75,11 +83,11 @@ export async function assertSafeWebhookUrl(raw: string, options: WebhookSafetyOp
   const resolve = options.resolve ?? ((name: string) => lookup(name, { all: true }))
   const addresses = await resolveWebhookHost(host, resolve)
   if (addresses.length === 0) {
-    throw new Error(`Refusing notification webhook: cannot resolve host "${host}"`)
+    throw new WebhookAddressError(`Refusing notification webhook: cannot resolve host "${host}"`, 'retry')
   }
   for (const entry of addresses) {
     if (isBlockedIpAddress(entry.address)) {
-      throw new Error(`Refusing notification webhook: host "${host}" resolves to a private or reserved address`)
+      throw new WebhookAddressError(`Refusing notification webhook: host "${host}" resolves to a private or reserved address`, 'blocked')
     }
   }
   return url
@@ -112,9 +120,10 @@ async function postWebhook(
     try {
       safeUrl = await assertSafeWebhookUrl(current.toString(), options)
     } catch (error) {
-      // A destination the safety rule refuses is not transient: retrying it
-      // forever would never change the answer, so the outbox records it blocked.
-      throw new NotificationWebhookError(String(error), 'blocked')
+      // A policy refusal is terminal; a resolver failure is transient. The
+      // address layer says which one this is, so a DNS blip is retried instead
+      // of losing the notification as `blocked`.
+      throw new NotificationWebhookError(String(error), error instanceof WebhookAddressError ? error.kind : 'blocked')
     }
     let response: Response
     try {
@@ -164,11 +173,22 @@ export class NotificationWebhookError extends Error {
 // Connection refused, DNS and TLS-setup failures are not.
 const AMBIGUOUS_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'])
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
+function webhookErrorCode(error: unknown): string | undefined {
+  if (!isRecord(error)) return undefined
+  if (typeof error.code === 'string') return error.code
+  if (isRecord(error.cause) && typeof error.cause.code === 'string') return error.cause.code
+  return undefined
+}
+
 function isAmbiguousWebhookFailure(error: unknown): boolean {
-  if (typeof error !== 'object' || error === null) return false
-  const record = error as { name?: unknown; code?: unknown }
-  if (record.name === 'TimeoutError' || record.name === 'AbortError') return true
-  return typeof record.code === 'string' && AMBIGUOUS_CODES.has(record.code)
+  if (!isRecord(error)) return false
+  if (error.name === 'TimeoutError' || error.name === 'AbortError') return true
+  const code = webhookErrorCode(error)
+  return code !== undefined && AMBIGUOUS_CODES.has(code)
 }
 
 /**
