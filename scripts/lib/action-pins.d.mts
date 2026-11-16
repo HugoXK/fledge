@@ -1,7 +1,7 @@
 // Types for the action-pin checker, so the TypeScript suite can call the real
 // implementation and build its fixtures in a temporary directory instead of
 // restating the rules.
-export type ActionPinProblem = 'not-pinned' | 'missing-tag-comment'
+export type ActionPinProblem = 'not-pinned' | 'missing-tag-comment' | 'not-allowed'
 
 export interface ActionPinFinding {
   file: string
@@ -16,9 +16,23 @@ export interface ActionPinReport {
   files: string[]
 }
 
-export declare function checkWorkflow(text: string, file: string): ActionPinFinding[]
+// `allowlist` is the reviewed owner/repo list; omitting it skips the allowlist
+// half of the gate, which the CLI never does.
+export declare function checkWorkflow(text: string, file: string, allowlist?: string[]): ActionPinFinding[]
 
-export declare function scanWorkflows(dir: string): ActionPinReport
+export declare function scanWorkflows(dir: string, allowlist?: string[]): ActionPinReport
+
+/** Where the reviewed list lives, relative to the repository root. */
+export declare const ALLOWLIST_FILE: string
+
+/** Resolves the list next to this module, so a base-branch copy reads its own. */
+export declare function defaultAllowlistPath(): string
+
+/** Throws on a malformed file: an unreadable list must not allow everything. */
+export declare function readAllowlist(path?: string): string[]
+
+/** `github/codeql-action/init@sha` -> `github/codeql-action`. */
+export declare function repositoryOf(value: string): string
 
 // One per reason the gate refuses: an ungated privileged job, an event it cannot
 // classify, a privileged job whose triggers it could not read, and every shape it

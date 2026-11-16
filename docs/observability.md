@@ -87,11 +87,13 @@ and the bridge success rate. The GitHub 429 rate and the open-alert count read a
 real `0` on the same window and keep printing it.
 
 The job success rate counts only `succeeded` and `failed` jobs. The other terminal
-states — `cancelled`, `paused` and `quota_exhausted` — are excluded from the
-numerator and from the denominator alike, so the percentage is a rate over jobs
-that ran to success or failure, not over every job Fledge accepted: a surge of
-quota refusals or cancellations shrinks that population without moving the rate,
-and the report does not show how many jobs it left out. The set itself is decided
+states — `cancelled`, `paused`, `quota_exhausted` and `superseded` — are excluded
+from the numerator and from the denominator alike, so the percentage is a rate
+over jobs that ran to success or failure, not over every job Fledge accepted: a
+surge of quota refusals, cancellations or superseded queued jobs shrinks that
+population without moving the rate, and the report does not show how many jobs it
+left out. A `superseded` job is one a newer trigger replaced before it started, so
+it neither failed nor ran. The set itself is decided
 in [decisions/0008](decisions/0008-slo-denominator.md).
 
 ## Traces

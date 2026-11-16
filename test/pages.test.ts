@@ -9,6 +9,7 @@ import { flashOf, formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessi
 import { adminSearchPage, appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
+import { WORK_ITEM_STATES } from '../src/lib/workItems.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 
 test('healthz reports the package version', async () => {
@@ -1163,6 +1164,34 @@ test('the repository page shows a delivery board grouped by work-item state', ()
     assert.match(page, /Fix the board/)
     assert.doesNotMatch(page, /Other work/)
     assert.match(page, /Clear filter/)
+    assert.match(page, /data-open-dialog="new-work-item"/, 'the create form is behind a header button')
+    assert.match(page, /id="new-work-item"/, 'the create form is a dialog')
+    assert.match(page, /data-work-queue/, 'the page names why an item is waiting')
+    assert.match(page, /<details class="work-actions">[\s\S]*name="state"/, 'the row actions are folded into one disclosure')
+  } finally {
+    store.close()
+  }
+})
+
+test('an empty delivery board shows a dash, not a confident zero share', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'board-empty', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_board_empty', userId: user.id, owner: 'o', name: 'empty-board', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = repoPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      jobs: [],
+      workItems: [],
+    })
+    const summary = /<div class="work-summary" id="board"[^>]*>([\s\S]*?)<\/div>/.exec(page)?.[1] ?? ''
+    assert.ok(summary !== '', 'the empty board still renders its state links')
+    assert.equal((summary.match(/—/g) ?? []).length, WORK_ITEM_STATES.length, 'every state has no denominator, so every state shows a dash')
+    assert.doesNotMatch(summary, /0%/, 'a board with no items must not print a confident zero share')
+    assert.doesNotMatch(page, /NaN/)
   } finally {
     store.close()
   }
@@ -1883,39 +1912,42 @@ test('a job stopped by its budget names the action and the next step, in both la
   }
 })
 
-test('admin search links every later page and keeps the filters per section', () => {
+test('admin search links every later page and keeps the active tab filters', () => {
   const config = testConfig()
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'search-pager', status: 'approved' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
-    const filters = { q: 'x', status: 'failed', kind: 'iterate', priority: '', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31' }
-    const page = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    const filters = { q: 'x', status: 'failed', kind: 'iterate', priority: '', action: 'repo.settings', from: '2026-01-01', to: '2026-01-31', view: 'jobs' as const }
+    const jobsPage = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
 
-    const jobsNext = page.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)
-    assert.ok(jobsNext, 'the jobs section links to its own second page')
+    const jobsNext = jobsPage.match(/href="([^"]*jobsPage=2[^"]*)"/)?.at(1)
+    assert.ok(jobsNext, 'the jobs tab links to its own second page')
     assert.match(jobsNext, /q=x/, 'the jobs link keeps the keyword')
     assert.match(jobsNext, /status=failed/, 'the jobs link keeps the status filter')
     assert.match(jobsNext, /kind=iterate/, 'the jobs link keeps the kind filter')
-    assert.match(jobsNext, /auditPage=2/, 'the jobs link keeps the audit section on its page')
+    assert.match(jobsNext, /view=jobs/, 'the jobs link keeps the active tab')
     assert.doesNotMatch(jobsNext, /action=/, 'the jobs link carries no audit-only filter')
+    assert.doesNotMatch(jobsNext, /auditPage=/, 'the jobs link carries no audit page')
 
-    const auditNext = page.match(/href="([^"]*auditPage=3[^"]*)"/)?.at(1)
-    assert.ok(auditNext, 'the audit section links to its own next page')
+    const auditPage = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map([[user.id, user.login]]), filters: { ...filters, view: 'audit' as const }, jobsPage: 1, jobsTotal: 45, auditPage: 2, auditTotal: 60, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    const auditNext = auditPage.match(/href="([^"]*auditPage=3[^"]*)"/)?.at(1)
+    assert.ok(auditNext, 'the audit tab links to its own next page')
     assert.match(auditNext, /q=x/, 'the audit link keeps the keyword')
     assert.match(auditNext, /action=repo\.settings/, 'the audit link keeps the action filter')
     assert.match(auditNext, /from=2026-01-01/, 'the audit link keeps the date range')
-    assert.match(auditNext, /jobsPage=1/, 'the audit link keeps the jobs section on its page')
+    assert.match(auditNext, /view=audit/, 'the audit link keeps the active tab')
     assert.doesNotMatch(auditNext, /status=/, 'the audit link carries no jobs-only filter')
+    assert.doesNotMatch(auditNext, /jobsPage=/, 'the audit link carries no jobs page')
 
-    const short = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
-    assert.doesNotMatch(short, /jobsPage=2/, 'a section that fits one page renders no jobs pager')
-    assert.doesNotMatch(short, /auditPage=2/, 'a section that fits one page renders no audit pager')
+    const shortJobs = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    assert.doesNotMatch(shortJobs, /jobsPage=2/, 'a tab that fits one page renders no jobs pager')
+    const shortAudit = adminSearchPage({ config, locale: 'en', viewer, jobs: [], audit: [], usersById: new Map(), filters: { ...filters, view: 'audit' as const }, jobsPage: 1, jobsTotal: 20, auditPage: 1, auditTotal: 20, perPage: 20, lastJobsExport: null, lastAuditExport: null })
+    assert.doesNotMatch(shortAudit, /auditPage=2/, 'a tab that fits one page renders no audit pager')
   } finally {
     store.close()
   }
 })
-
 // #453 review: the settings page linked its zero-token empty state at `#tokens`
 // while the card carrying that anchor did not exist, so the visual matrix's
 // `getElementById('tokens')` returned null and its "section clears the sticky
@@ -2060,6 +2092,86 @@ test('both repository lists translate the reviewer badge', () => {
     const english = workspacePage({ config, locale: 'en', viewer, repos: [repo], jobs: [] })
     assert.match(english, /<span class="badge">Reviewer<\/span>/, 'the English console capitalises the reviewer badge like its neighbours')
     assert.doesNotMatch(english, />reviewer</, 'the English console never prints the lowercase literal')
+  } finally {
+    store.close()
+  }
+})
+
+// #805: the status decides the sentence; `last_error` only explains a failure.
+// `Instances.stop()` keeps the previous error and a starting instance has none, so
+// every non-ready state must say what it is doing, in both languages, with its own
+// action — and only `failed` may report a health failure.
+test('every FlyBot instance state names itself, its own action and never calls a non-ready instance healthy', () => {
+  const config = testConfig({ flybot: { ...testConfig().flybot, instanceImage: 'image' } })
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'instance-health-user', status: 'approved', superadmin: true })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_instance_health', userId: user.id, owner: 'o', name: 'health', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const saveInstance = (status: string, lastError: string | null): void => {
+      store.saveRepoInstance({
+        repo_id: repo.id, user_id: user.id, container: 'fledge-health', network: 'n', data_dir: '/tmp/health', bridge_script: '/tmp/bridge',
+        dsh_port: 1, bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image', status, chief_session: 'c',
+        team_json: null, bridge_token_enc: 'x', bridge_pid: null, log_pid: null, last_error: lastError,
+        created_at: '2026-11-15T08:00:00.000Z', updated_at: '2026-11-15T08:00:00.000Z', last_health_at: '2026-11-15T08:00:00.000Z',
+      })
+    }
+    const instanceCard = (html: string): string => {
+      const start = html.indexOf('data-instance-health')
+      assert.notEqual(start, -1, 'the Team section has the structured instance card')
+      const end = html.indexOf('</section>', start)
+      assert.notEqual(end, -1, 'the instance card closes')
+      return html.slice(start, end)
+    }
+    const summaryLine = (html: string): string => {
+      const card = instanceCard(html)
+      const end = card.indexOf('</p>')
+      assert.notEqual(end, -1, 'the instance card has a summary line')
+      return card.slice(0, end)
+    }
+    const cases = [
+      { status: 'ready', lastError: null, zhBadge: '就绪', enBadge: 'Ready', zhReason: '健康检查正常', enReason: 'Health check ok', zhAction: '停止 FlyBot', enAction: 'Stop FlyBot', action: 'instance/stop' },
+      { status: 'failed', lastError: 'TypeError: fetch failed', zhBadge: '失败', enBadge: 'Failed', zhReason: 'Bridge 无法连接', enReason: 'Bridge unreachable', zhAction: '启动 FlyBot', enAction: 'Start FlyBot', action: 'instance' },
+      { status: 'failed', lastError: null, zhBadge: '失败', enBadge: 'Failed', zhReason: '健康检查失败', enReason: 'Health check failed', zhAction: '启动 FlyBot', enAction: 'Start FlyBot', action: 'instance' },
+      { status: 'stopped', lastError: 'health check failed: stopped from the console', zhBadge: '已停止', enBadge: 'Stopped', zhReason: '实例已停止，不会接受新任务', enReason: 'The instance is stopped and takes no new jobs', zhAction: '启动 FlyBot', enAction: 'Start FlyBot', action: 'instance' },
+      { status: 'starting', lastError: null, zhBadge: '启动中', enBadge: 'Starting', zhReason: '实例正在创建，还未就绪', enReason: 'The instance is being created and is not ready yet', zhAction: '重新初始化 FlyBot', enAction: 'Reinitialize FlyBot', action: 'instance' },
+      { status: 'provisioning', lastError: 'TypeError: fetch failed', zhBadge: '初始化中', enBadge: 'Provisioning', zhReason: '实例正在初始化，还未就绪', enReason: 'The instance is being provisioned and is not ready yet', zhAction: '重新初始化 FlyBot', enAction: 'Reinitialize FlyBot', action: 'instance' },
+    ]
+    for (const state of cases) {
+      saveInstance(state.status, state.lastError)
+      const instance = store.getRepoInstance(repo.id)!
+      const zh = repoPage({ config, locale: 'zh', viewer, repo, instance, jobs: [] })
+      const en = repoPage({ config, locale: 'en', viewer, repo, instance, jobs: [] })
+      const name = `${state.status} (${state.lastError === null ? 'no error' : 'an old error on the row'})`
+      assert.ok(instanceCard(zh).includes(state.zhBadge), `${name}: the zh card carries the status badge`)
+      assert.ok(instanceCard(en).includes(state.enBadge), `${name}: the en card carries the status badge`)
+      assert.ok(instanceCard(zh).includes(state.zhReason), `${name}: the zh card names the state`)
+      assert.ok(instanceCard(en).includes(state.enReason), `${name}: the en card names the state`)
+      assert.ok(instanceCard(zh).includes(state.zhAction), `${name}: the zh card offers its own action`)
+      assert.ok(instanceCard(en).includes(state.enAction), `${name}: the en card offers its own action`)
+      assert.ok(instanceCard(zh).includes(`action="/repos/${repo.id}/${state.action}"`), `${name}: the zh action posts its own form`)
+      assert.ok(instanceCard(en).includes(`action="/repos/${repo.id}/${state.action}"`), `${name}: the en action posts its own form`)
+      if (state.status === 'ready') {
+        assert.ok(!en.includes('FlyBot instance:'), 'a ready instance raises no page-level message')
+        assert.ok(!en.includes('Health check failed'), 'a ready instance never reports a failure')
+        continue
+      }
+      assert.ok(summaryLine(zh).includes(state.zhReason), `${name}: the zh summary line carries the reason, not the raw error`)
+      assert.ok(!instanceCard(zh).includes('健康检查正常'), `${name}: a non-ready instance is never called healthy in zh`)
+      assert.ok(!instanceCard(en).includes('Health check ok'), `${name}: a non-ready instance is never called healthy in en`)
+      assert.ok(!zh.includes('健康检查正常'), `${name}: the zh page never calls a non-ready instance healthy`)
+      assert.ok(!en.includes('Health check ok'), `${name}: the en page never calls a non-ready instance healthy`)
+      assert.ok(zh.includes(`FlyBot 实例：${state.zhBadge} · ${state.zhReason}`), `${name}: the zh page message repeats the status and the reason`)
+      assert.ok(en.includes(`FlyBot instance: ${state.enBadge} · ${state.enReason}`), `${name}: the en page message repeats the status and the reason`)
+      if (state.lastError !== null && state.status !== 'failed') {
+        assert.ok(!summaryLine(en).includes(state.lastError), `${name}: an old error is not the reason of a non-failed state`)
+      }
+      if (state.lastError !== null) {
+        assert.ok(instanceCard(en).includes('Technical detail'), `${name}: the raw error stays behind the disclosure`)
+        assert.ok(instanceCard(en).includes(state.lastError), `${name}: the disclosure keeps the original text`)
+        assert.ok(!en.slice(0, en.indexOf('data-instance-health')).includes(state.lastError), `${name}: the raw error is not the page-level message`)
+      }
+    }
   } finally {
     store.close()
   }

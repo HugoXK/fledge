@@ -5,11 +5,21 @@
 // be read (fail closed).
 import { readAllowlist, scanWorkflows } from './lib/workflow-injection.mjs'
 
-const directory = '.github/workflows'
+// #640: the checker comes from the base branch, the workflows and the allowlist
+// paths are arguments: the workflows are the data under test, and the allowlist
+// must be the base copy so a pull request cannot allowlist its own injection.
+function argument(name, fallback) {
+  const index = process.argv.indexOf(name)
+  if (index === -1) return fallback
+  return process.argv[index + 1] ?? fallback
+}
+
+const directory = argument('--workflows', '.github/workflows')
+const allowlistPath = argument('--allowlist', '')
 
 let allowlist
 try {
-  allowlist = readAllowlist()
+  allowlist = allowlistPath === '' ? readAllowlist() : readAllowlist(allowlistPath)
 } catch (error) {
   console.error(`workflow-injection: cannot read the allowlist: ${error.message}`)
   process.exit(1)

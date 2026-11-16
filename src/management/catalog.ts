@@ -52,6 +52,15 @@ export interface OperationResult {
   afterCommit?: () => void
 }
 
+// #540 slice 5: what a probe of an `unknown` command may answer. `applied` means
+// the effect is already there and the command must not run again; `absent` means
+// it provably did not happen, so resending is safe; `still-unknown` means the
+// probe itself could not decide, and the receipt has to stay `unknown`.
+export type ReconcileVerdict =
+  | { state: 'applied'; result?: Record<string, unknown> }
+  | { state: 'absent' }
+  | { state: 'still-unknown' }
+
 export interface Operation {
   readonly kind: 'command'
   readonly capabilities: readonly Capability[]
@@ -61,6 +70,12 @@ export interface Operation {
   readonly revisionTarget: keyof CommandTarget
   readonly revisionType: string
   execute(context: OperationContext, target: CommandTarget, args: Record<string, unknown>): Promise<OperationResult>
+  /**
+   * Optional: how to find out, from a stable marker, whether an external write
+   * whose response was lost actually happened. An operation without one keeps
+   * its `unknown` receipts unknown instead of being resent blind.
+   */
+  reconcile?(context: OperationContext, target: CommandTarget, args: Record<string, unknown>): Promise<ReconcileVerdict>
 }
 
 function stringArgument(args: Record<string, unknown>, name: string): string | undefined {
@@ -130,6 +145,18 @@ const taskCancel: Operation = {
     const prepared = await context.jobs.prepareCancel(job.id, stringArgument(args, 'reason') ?? '用户取消任务')
     if (!prepared.ok) return { status: 'failed', errorCode: 'job_not_cancellable', errorMessage: prepared.error }
     return { status: 'succeeded', result: { jobId: job.id, stopped: prepared.stop.stopped ?? 0 }, commit: prepared.apply, afterCommit: prepared.afterCommit }
+  },
+  // #540 slice 5: the bridge stop above is the external step whose response can
+  // be lost. The job row is the stable marker — once it is no longer queued or
+  // running, the stop this command wanted has happened, whoever wrote it, and
+  // cancelling again would only write a second audit row. While it is still live
+  // the effect is provably absent, and the resend is safe because `prepareCancel`
+  // and the local write are both repeatable.
+  async reconcile(context, target) {
+    const job = context.store.getJob(target.jobId ?? '')
+    if (job === undefined) return { state: 'applied', result: { jobId: target.jobId ?? '', reconciled: true } }
+    if (job.status === 'queued' || job.status === 'running') return { state: 'absent' }
+    return { state: 'applied', result: { jobId: job.id, status: job.status, reconciled: true } }
   },
 }
 

@@ -514,6 +514,26 @@ p { margin: 0 0 12px; }
    inner-id offset, so the two cannot drift apart. */
 .repo-page { --subnav-h: calc(var(--touch) + 2 * var(--space-2) + 1px); }
 .repo-page [id] { scroll-margin-top: calc(var(--header-h) + var(--subnav-h) + var(--space-4)); }
+.work-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(110px, 1fr)); gap: 8px; margin: 12px 0 8px; }
+.work-summary a { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--field); color: var(--text); text-decoration: none; }
+.work-summary a:hover, .work-summary a.is-active { border-color: var(--accent); }
+.work-summary strong { font-size: var(--text-md); font-variant-numeric: tabular-nums; }
+.work-summary span { font-size: var(--text-sm); color: var(--muted); }
+.work-summary small { font-size: var(--text-sm); color: var(--muted-2); }
+.work-actions summary { cursor: pointer; color: var(--accent); font-size: var(--text-sm); font-weight: 650; }
+.work-actions .row { margin-top: 8px; }
+@media (max-width: 680px) { .work-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+.repo-head { align-items: flex-start; }
+.repo-head-main { display: grid; gap: 8px; min-width: 0; }
+.repo-status-strip { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; min-width: 0; }
+.repo-status { display: inline-flex; align-items: baseline; gap: 6px; min-width: 0; padding: 4px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--field); color: var(--text); font-size: var(--text-sm); text-decoration: none; }
+.repo-status .fine { color: var(--muted); }
+.repo-status b { font-weight: 650; }
+a.repo-status:hover { border-color: var(--accent); }
+@media (max-width: 680px) {
+  .repo-status-strip { gap: 6px; }
+  .repo-status { flex: 1 1 calc(50% - 6px); }
+}
 .repo-subnav {
   position: sticky; top: var(--header-h); z-index: 15;
   display: flex; gap: var(--space-2); margin: 0 0 var(--space-4); min-height: var(--subnav-h);
@@ -707,6 +727,15 @@ textarea { resize: vertical; min-height: 70px; }
 .admin-control-row .link { white-space: nowrap; }
 .admin-actions { gap: 12px; }
 .admin-users-table th:last-child, .admin-users-table td:last-child { min-width: 320px; }
+.admin-summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; margin-top: 14px; }
+.admin-summary a { display: grid; gap: 2px; min-width: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--field); color: var(--text); text-decoration: none; }
+.admin-summary a:hover { border-color: var(--accent); }
+.admin-summary strong { font-size: var(--text-md); font-variant-numeric: tabular-nums; }
+.admin-summary span { color: var(--muted); font-size: var(--text-sm); overflow-wrap: anywhere; }
+.admin-adjust-details { min-width: 0; }
+.admin-adjust-details > summary { cursor: pointer; color: var(--accent); font-size: var(--text-sm); font-weight: 650; }
+.admin-adjust-details[open] > summary { margin-bottom: 8px; }
+@media (max-width: 680px) { .admin-summary { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 /* issue 232: the job filters. The state is the URL, so the form is a plain GET
    and every control keeps the 44px target; below 641px the three selects stack
    in one column and the actions share a row. */
@@ -714,6 +743,34 @@ textarea { resize: vertical; min-height: 70px; }
 .job-filters label { display: grid; gap: 4px; flex: 1 1 170px; min-width: 0; font-size: 12px; color: var(--muted); }
 .job-filters select { width: 100%; min-height: var(--touch); }
 .job-filter-actions { display: flex; align-items: center; gap: 10px; }
+
+/* Admin search: one toolbar, tabs, and a readable audit detail cell. */
+.search-head { align-items: flex-start; gap: 18px; flex-wrap: wrap; }
+.search-tabs { display: flex; align-items: center; gap: 6px; padding: 3px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--field); }
+.search-tab { display: inline-flex; align-items: center; gap: 6px; padding: 6px 12px; border-radius: var(--radius-pill); color: var(--muted); font-size: 13px; text-decoration: none; }
+.search-tab.is-active { background: var(--panel); color: var(--text); box-shadow: 0 1px 0 var(--line); }
+.search-tab .count { font-variant-numeric: tabular-nums; color: var(--muted-2); font-size: 12px; }
+.search-filters { display: grid; gap: 12px; margin: 14px 0 10px; }
+.filter-grid { display: grid; grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(140px, 1fr)); gap: 12px; align-items: end; }
+.filter-grid label { display: grid; gap: 6px; min-width: 0; font-size: 13px; color: var(--muted); }
+.filter-grid input, .filter-grid select { width: 100%; }
+.filter-actions { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+.filter-actions .btn { flex: 0 0 auto; }
+.filter-export { margin-left: auto; }
+.audit-detail { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 8px; min-width: 0; }
+.audit-detail > span { min-width: 0; overflow-wrap: anywhere; }
+.kv { display: inline-flex; align-items: baseline; gap: 4px; padding: 1px 7px; border: 1px solid var(--line); border-radius: var(--radius-pill); background: var(--surface-raised); font-size: 12px; }
+.kv b { font-weight: 600; color: var(--muted-2); }
+.audit-more { flex-basis: 100%; }
+.audit-more summary { cursor: pointer; color: var(--muted-2); font-size: 12px; }
+.audit-more pre { margin: 6px 0 0; font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+@media (max-width: 900px) { .filter-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 680px) {
+  .search-head { flex-direction: column; }
+  .search-tabs { width: 100%; justify-content: space-between; }
+  .filter-grid { grid-template-columns: minmax(0, 1fr); }
+  .filter-export { margin-left: 0; }
+}
 
 .pager { display: flex; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 14px; }
 .pager-info { color: var(--muted-2); font-size: 12px; font-variant-numeric: tabular-nums; }
@@ -1093,6 +1150,9 @@ a.list-row:hover strong { color: var(--accent); }
   border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper);
 }
 .workspace-toolbar { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+[data-instance-health] .badge { vertical-align: baseline; }
+[data-instance-health] details { margin-top: 8px; }
+[data-instance-health] pre { margin: 6px 0 0; font-size: var(--text-sm); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 .add-choice { border: 1px solid var(--line); border-radius: var(--radius-md); padding: 14px; margin-bottom: 12px; }
 .add-choice h3 { margin: 0 0 6px; font-size: 15px; }
@@ -1259,13 +1319,10 @@ html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }
 }
 /* Admin module tiles: the operations pages are one entry in the admin hub, not
    a sentence of inline links. A tile is a link and keeps the 44px target. */
-.admin-modules { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: var(--space-3); margin-top: var(--space-3); }
-.admin-module {
-  display: flex; flex-direction: column; gap: 6px; min-height: var(--touch);
-  padding: var(--space-4); border: 1px solid var(--line); border-radius: var(--radius-md);
-  background: var(--surface-sunken); color: var(--text); text-decoration: none;
-}
-.admin-module:hover { background: var(--surface-raised); border-color: var(--accent); text-decoration: none; }
-.admin-module strong { font-size: var(--text-md); }
-.admin-module small { color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
-.admin-module-go { margin-top: auto; color: var(--accent); font-size: var(--text-sm); font-weight: 650; }
+.admin-modules { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; margin-top: var(--space-2); border-top: 1px solid var(--line); }
+.admin-module { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: auto auto; column-gap: 16px; align-items: center; padding: 10px 0; border: 0; border-bottom: 1px solid var(--line); border-radius: 0; background: transparent; }
+.admin-module:hover { background: transparent; border-color: var(--line); text-decoration: none; }
+.admin-module:hover strong { color: var(--accent); }
+.admin-module strong { grid-column: 1; font-size: var(--text-md); }
+.admin-module small { grid-column: 1; color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
+.admin-module-go { grid-column: 2; grid-row: 1 / span 2; margin: 0; color: var(--accent); font-size: var(--text-sm); font-weight: 650; }

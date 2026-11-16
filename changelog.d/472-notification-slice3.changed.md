@@ -1,0 +1,1 @@
+Page-level notices on the dashboard, workspace, repository and admin pages now render inside the single dismissible message stack instead of a second banner elsewhere on the page, and a release outcome (refused, tagged, re-tagged, checked) is delivered once after the redirect and no longer repeats when the page is reloaded.

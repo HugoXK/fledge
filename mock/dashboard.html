@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
   <title>仓库 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=cc2f0835c794" />
+  <link rel="stylesheet" href="assets/app.css?v=b77a91a74e2c" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -55,7 +55,6 @@
       <p class="muted">接入仓库、设置迭代目标，并查看最近任务。</p>
     </div>
   </section>
-  
   <div class="card notices"><h2>通知</h2><div class="notice"><span>平台额度剩余 ¥50.00；首次运行可能不够用时，建议配置自己的模型。</span><small>2026-11-15 12:00:00 UTC</small></div><div class="notice"><span>PR #742 等待合并</span><small>2026-11-15 12:00:00 UTC</small></div><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="link" type="submit">全部标为已读</button></form></div>
   <section class="card" id="next-action" data-next-action="alert" aria-labelledby="next-action-title">
     <div class="eyebrow">下一步</div>
@@ -159,7 +158,7 @@
     <form method="get" action="#" class="job-filters" data-job-filter data-mock-inert onsubmit="return false;">
     
     <label>仓库<select name="repo"><option value="" selected>全部仓库</option><option value="repo_fledge">HugoXK/fledge</option><option value="repo_demo">HugoXK/demo-app</option></select></label>
-    <label>状态<select name="status"><option value="" selected>全部状态</option><option value="queued">排队中</option><option value="running">运行中</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option><option value="paused">已暂停</option><option value="quota_exhausted">额度用尽</option></select></label>
+    <label>状态<select name="status"><option value="" selected>全部状态</option><option value="queued">排队中</option><option value="running">运行中</option><option value="succeeded">成功</option><option value="failed">失败</option><option value="cancelled">已取消</option><option value="paused">已暂停</option><option value="quota_exhausted">额度用尽</option><option value="superseded">已被取代</option></select></label>
     <label>类型<select name="kind"><option value="" selected>全部类型</option><option value="iterate">迭代</option><option value="review">审核</option><option value="plan">计划</option><option value="scope">范围</option><option value="verify">验证</option><option value="triage">分诊</option></select></label>
     <label>优先级<select name="priority"><option value="" selected>全部级别</option><option value="P0">P0</option><option value="P1">P1</option><option value="P2">P2</option><option value="P3">P3</option></select></label>
     <div class="job-filter-actions">
@@ -234,7 +233,8 @@
       <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
       <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
       <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
-      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="settings.html#feedback">反馈</a>
+      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">★ 在 GitHub 上加星</a>
     </nav>
   </footer>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">

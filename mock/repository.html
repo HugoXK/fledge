@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
   <title>HugoXK/fledge · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=cc2f0835c794" />
+  <link rel="stylesheet" href="assets/app.css?v=b77a91a74e2c" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -47,13 +47,22 @@
   <main class="wrap" id="main">
 <div class="banner" data-mock-snapshot>静态快照 · 由 <code>npm run mock:snapshot</code> 从真实视图生成；表单和链接不会提交。Static snapshot generated from the real views; forms and links are inert.</div>
     
-    
+    <section class="banner-stack" aria-live="polite" data-notification-stack><div class="banner" data-notification data-level="info"><span class="banner-text">这个部署没有启用每仓库 FlyBot 实例，任务由全局 mock/runner 处理。</span><button type="button" class="banner-dismiss" data-dismiss aria-label="关闭消息" title="关闭消息">×</button></div></section>
     <div class="repo-page"><section class="card">
-    <div class="row between">
-      <div>
+    <div class="row between repo-head">
+      <div class="repo-head-main">
         <div class="eyebrow">仓库</div>
         <h1>HugoXK/fledge</h1>
-        <p class="muted">目标分支 <code>main</code> · 自动迭代已开启 · 自动间隔 <b>每天</b> · 下次约 <span data-next-run data-next-source="schedule">2026-11-16 01:00:00 UTC</span> · <a href="schedule-console.html">排期控制台</a> · <span class="badge">空闲</span></p>
+        <p class="fine">目标分支 <code>main</code></p>
+        <div class="repo-status-strip">
+          <span class="repo-status"><span class="fine">自动迭代</span><b>自动迭代已开启</b></span>
+          <span class="repo-status"><span class="fine">自动间隔</span><b>每天</b></span>
+          <span class="repo-status"><span class="fine">下次约</span><span data-next-run data-next-source="schedule">2026-11-16 01:00:00 UTC</span></span>
+          <a class="repo-status" href="schedule-console.html">排期控制台</a>
+          <span class="repo-status"><span class="fine">FlyBot</span>未启用</span>
+          <span class="repo-status"><span class="fine">GitHub 凭据</span><span class="badge good">正常</span></span>
+          <span class="badge">空闲</span>
+        </div>
         <p class="fine">上游 <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">HugoXK/fledge</a> · 自有仓库，无需 fork · GitHub 权限 <code>管理员</code> · 你的角色 <code>维护者</code> · 审核已启用</p>
       </div>
       <div class="row">
@@ -113,6 +122,11 @@
     <h2>仓库规则覆盖</h2>
     <p class="muted">仓库文件优先；没有仓库文件时，可以用控制台覆盖三个规则文件。</p>
     <p><a class="link" href="#">打开规则覆盖</a></p>
+  </section><section class="card" id="security">
+    <h2>安全发现</h2>
+    <p class="muted">这些是任务上报的 id，不是 GitHub 的告警库；某个 id 在后续任务里没出现，不能当作已修复。</p>
+    <p class="fine">Open 0 · Fixed 0 · Regressed 0 · Dismissed 0</p>
+    <p class="muted">还没有任务上报过安全发现。</p>
   </section></section><section class="repo-section" id="delivery" data-repo-section="delivery" aria-labelledby="repo-tab-delivery"><section class="card" id="release">
     <div class="eyebrow">发布</div>
     <h2>给这个仓库打版本标签</h2>
@@ -144,7 +158,6 @@
     <div class="table-scroll"><table><thead><tr><th>窗口</th><th>审核数</th><th>平均分</th><th>要求修改率</th><th>PR→审核</th><th>PR→合并</th><th>模型</th></tr></thead><tbody><tr data-trend-window="week"><th scope="row">7 天</th><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr data-trend-window="month"><th scope="row">30 天</th><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table></div>
     <p class="fine"><small class="muted" data-trend-empty="week">最近 7 天没有审核，所以显示 —，不是 0。</small> <small class="muted" data-trend-empty="month">最近 30 天没有审核，所以显示 —，不是 0。</small></p>
   </section><section class="card"><h2>待处理 PR</h2>
-    
     <p class="muted">合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。</p>
     <form method="post" action="#" data-confirm="逐个重新检查并合并所有 clean PR？有阻塞的会跳过。" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">合并所有 clean PR</button></form>
     <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>状态</th><th>核实</th><th>审核分</th><th>成本</th><th>创建</th><th></th></tr></thead><tbody><tr><td data-label="PR"><a href="https://github.com/HugoXK/fledge/pull/742" target="_blank" rel="noreferrer">#742</a></td><td data-label="状态"><span class="badge good">成功</span></td><td data-label="核实"><span class="badge busy">未核实</span><br /><small class="muted">Not verified yet: neither the path guard nor the evidence verification has run.</small></td><td data-label="审核分">88</td><td data-label="成本">¥3.02</td><td data-label="创建">2026-11-13 12:00:00 UTC</td><td data-label="操作"><div class="row"><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost btn-small" type="submit">重新核实</button></form><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost btn-small" type="submit">合并</button></form></div></td></tr></tbody></table></div></section>  <section class="card" id="jobs">
@@ -167,66 +180,78 @@
         <td data-job-summary class="job-summary" data-priority="low" data-label="摘要"><span data-job-summary-text title="Fixed the release verifier missing digest link and added a regression test. · $0.4200">Fixed the release verifier missing digest link and added a regression test. · $0.4200</span></td>
       </tr></tbody></table></div>
     
-  </section></section><section class="repo-section" id="work" data-repo-section="work" aria-labelledby="repo-tab-work"><section class="card" id="board">
-    <div class="row between"><h2>交付看板</h2><span class="fine">按工作项状态汇总；点击状态可筛选下面的列表。</span></div>
-    <div class="table-scroll"><table class="table-cards table-cards-head"><thead><tr><th><a class="link" href="repository.html#work">待分诊</a></th><th><a class="link" href="repository.html#work">已分诊</a></th><th><a class="link" href="repository.html#work">已分配</a></th><th><a class="link" href="repository.html#work">进行中</a></th><th><a class="link" href="repository.html#work">PR 已就绪</a></th><th><a class="link" href="repository.html#work">审核中</a></th><th><a class="link" href="repository.html#work">需要修改</a></th><th><a class="link" href="repository.html#work">已批准</a></th><th><a class="link" href="repository.html#work">已合并</a></th><th><a class="link" href="repository.html#work">已关闭</a></th></tr></thead><tbody><tr><td data-label="待分诊"><strong>0</strong></td><td data-label="已分诊"><strong>1</strong></td><td data-label="已分配"><strong>0</strong></td><td data-label="进行中"><strong>1</strong></td><td data-label="PR 已就绪"><strong>1</strong></td><td data-label="审核中"><strong>0</strong></td><td data-label="需要修改"><strong>0</strong></td><td data-label="已批准"><strong>0</strong></td><td data-label="已合并"><strong>0</strong></td><td data-label="已关闭"><strong>0</strong></td></tr></tbody></table></div>
-  </section><section class="card">
-    <div class="row between"><h2>工作项</h2><span class="fine">Issue / PR / 状态 / 优先级</span></div>
-    <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
-      <input type="hidden" name="csrf" value="mock-csrf" />
-      <div class="row">
-        <label class="grow">标题 <input name="title" required maxlength="200" /></label>
-        <label>优先级 <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
+  </section></section><section class="repo-section" id="work" data-repo-section="work" aria-labelledby="repo-tab-work"><section class="card">
+    <div class="row between">
+      <div>
+        <h2>工作项</h2>
+        <p class="fine">按状态汇总；点击状态可筛选下面的列表。</p>
       </div>
-      <div class="row">
-        <label class="grow">Issue URL（可选） <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
-      </div>
-      <label>说明 <textarea name="detail" rows="3" placeholder="用户问题、现状、验收标准。"></textarea></label>
-      <button class="btn" type="submit">创建工作项</button>
-    </form>
-    <div class="table-scroll mt-14"><table class="table-cards"><thead><tr><th>工作项</th><th>状态</th><th>优先级</th><th>Issue / PR</th><th>任务</th><th></th></tr></thead><tbody><tr>
+      <button class="btn" type="button" data-open-dialog="new-work-item" aria-haspopup="dialog" aria-controls="new-work-item">新建工作项</button>
+    </div>
+    <div class="row between"><h3 class="mt-16">交付看板</h3><span class="fine">按状态汇总</span></div>
+    <div class="work-summary" id="board" data-work-summary><a class="link" href="repository.html#work" data-work-state="proposed"><strong>0</strong><span>待分诊</span><small>0%</small></a><a class="link" href="repository.html#work" data-work-state="triaged"><strong>1</strong><span>已分诊</span><small>33%</small></a><a class="link" href="repository.html#work" data-work-state="assigned"><strong>0</strong><span>已分配</span><small>0%</small></a><a class="link" href="repository.html#work" data-work-state="in_progress"><strong>1</strong><span>进行中</span><small>33%</small></a><a class="link" href="repository.html#work" data-work-state="pr_ready"><strong>1</strong><span>PR 已就绪</span><small>33%</small></a><a class="link" href="repository.html#work" data-work-state="in_review"><strong>0</strong><span>审核中</span><small>0%</small></a><a class="link" href="repository.html#work" data-work-state="changes_requested"><strong>0</strong><span>需要修改</span><small>0%</small></a><a class="link" href="repository.html#work" data-work-state="approved"><strong>0</strong><span>已批准</span><small>0%</small></a><a class="link" href="repository.html#work" data-work-state="merged"><strong>0</strong><span>已合并</span><small>0%</small></a><a class="link" href="repository.html#work" data-work-state="closed"><strong>0</strong><span>已关闭</span><small>0%</small></a></div>
+    <p class="fine" data-work-queue>工作项会在可运行时开始。</p>
+    <dialog id="new-work-item" class="add-repo-dialog" aria-labelledby="new-work-item-title">
+      <div class="row between"><h2 id="new-work-item-title">新建工作项</h2><button class="link" type="button" data-close-dialog>关闭</button></div>
+      <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
+        <input type="hidden" name="csrf" value="mock-csrf" />
+        <div class="row">
+          <label class="grow">标题 <input name="title" required maxlength="200" /></label>
+          <label>优先级 <input name="priority" type="number" min="0" max="100" value="0" class="w-90" /></label>
+        </div>
+        <div class="row">
+          <label class="grow">Issue URL（可选） <input name="issueUrl" placeholder="https://github.com/owner/repo/issues/1" /></label>
+        </div>
+        <label>说明 <textarea name="detail" rows="3" placeholder="用户问题、现状、验收标准。"></textarea></label>
+        <button class="btn" type="submit">创建工作项</button>
+      </form>
+    </dialog>
+    <noscript><style>#new-work-item{display:block;position:static;width:auto;max-width:none;max-height:none;margin:12px 0;padding:0;border:0;background:none;box-shadow:none} [data-open-dialog="new-work-item"]{display:none}</style></noscript>
+    <div class="table-scroll mt-14"><table class="table-cards"><thead><tr><th>工作项</th><th>状态</th><th>优先级</th><th>Issue / PR</th><th>任务</th><th>操作</th></tr></thead><tbody><tr>
           <td data-label="工作项"><strong>Give the schedule facts a real console layout</strong><br /><small class="muted">Replace the browser-default definition list.</small></td>
           <td data-label="状态"><span class="badge kind">PR 已就绪</span><br /><small class="muted">验证</small></td>
           <td data-label="优先级">2</td>
           <td data-label="Issue / PR"><a href="https://github.com/HugoXK/fledge/pull/745" target="_blank" rel="noreferrer">PR</a></td>
           <td data-label="任务">—</td>
-          <td data-label="操作"><div class="row">
+          <td data-label="操作"><details class="work-actions"><summary>操作</summary><div class="row">
             <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-small" type="submit">开始工作</button></form>
             <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-ghost btn-small" type="submit">Product 范围</button></form>
             <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-ghost btn-small" type="submit">Test 验证</button></form>
             <form method="post" action="#" class="row" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><select name="state" aria-label="新状态"><option value="in_review">审核中</option><option value="changes_requested">需要修改</option><option value="merged">已合并</option><option value="closed">已关闭</option></select><button class="btn btn-ghost btn-small" type="submit">更新状态</button></form>
-          </div></td>
+          </div></details></td>
         </tr><tr>
           <td data-label="工作项"><strong>Audit the schedule console after the planner change</strong><br /><small class="muted">Check the row-vs-interval answer on the page, dashboard and digest.</small></td>
           <td data-label="状态"><span class="badge kind">已分诊</span><br /><small class="muted">范围</small></td>
           <td data-label="优先级">2</td>
           <td data-label="Issue / PR"><a href="https://github.com/HugoXK/fledge/issues/544" target="_blank" rel="noreferrer">Issue</a></td>
           <td data-label="任务">—</td>
-          <td data-label="操作"><div class="row">
+          <td data-label="操作"><details class="work-actions"><summary>操作</summary><div class="row">
             <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-small" type="submit">开始工作</button></form>
             <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-ghost btn-small" type="submit">Product 范围</button></form>
             
             <form method="post" action="#" class="row" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><select name="state" aria-label="新状态"><option value="assigned">已分配</option><option value="closed">已关闭</option></select><button class="btn btn-ghost btn-small" type="submit">更新状态</button></form>
-          </div></td>
+          </div></details></td>
         </tr><tr>
           <td data-label="工作项"><strong>Make the digest print the scheduled next run</strong><br /><small class="muted">Use the same next-run choice as the repository page.</small></td>
           <td data-label="状态"><span class="badge kind">进行中</span><br /><small class="muted">实现</small></td>
           <td data-label="优先级">1</td>
           <td data-label="Issue / PR"><a href="https://github.com/HugoXK/fledge/issues/713" target="_blank" rel="noreferrer">Issue</a></td>
           <td data-label="任务"><a href="job.html"><code>job_mock_failed</code></a></td>
-          <td data-label="操作"><div class="row">
+          <td data-label="操作"><details class="work-actions"><summary>操作</summary><div class="row">
             <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-small" type="submit">开始工作</button></form>
             <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-ghost btn-small" type="submit">Product 范围</button></form>
             
             <form method="post" action="#" class="row" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><select name="state" aria-label="新状态"><option value="pr_ready">PR 已就绪</option><option value="triaged">已分诊</option><option value="changes_requested">需要修改</option><option value="closed">已关闭</option></select><button class="btn btn-ghost btn-small" type="submit">更新状态</button></form>
-          </div></td>
+          </div></details></td>
         </tr></tbody></table></div>
-  </section></section><section class="repo-section" id="team" data-repo-section="team" aria-labelledby="repo-tab-team"><div class="banner">这个部署没有启用每仓库 FlyBot 实例，任务由全局 mock/runner 处理。</div><section class="card">
+  </section></section><section class="repo-section" id="team" data-repo-section="team" aria-labelledby="repo-tab-team"><section class="card" data-instance-health>
     <div class="row between">
       <div>
         <div class="eyebrow">每仓库 FlyBot</div>
         <h2>FlyBot 状态</h2>
-        <p class="muted">未创建</p>
+        <p class="muted"><span class="badge busy">未启用</span> · 这个部署没有启用每仓库 FlyBot 实例。</p>
+        <p class="fine">最近检查 未知</p>
+        
       </div>
       
     </div>
@@ -291,6 +316,24 @@
         </div>
         <p class="fine">本月已用 ¥0.00 / ¥200.00</p>
         <div class="row">
+          <label>仓库预算（元）<button type="button" class="info-tip" aria-label="这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。" aria-expanded="false" data-tip="这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。">!</button> <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
+          <label>超出仓库预算时
+            <select name="repoBudgetAction"><option value="alert" selected>只提醒（默认）</option><option value="pause">暂停任务，可从断点恢复</option><option value="cancel">取消任务</option></select>
+          </label>
+        </div>
+        <div class="row">
+          <label>用户预算（元）<button type="button" class="info-tip" aria-label="这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。" aria-expanded="false" data-tip="这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。">!</button> <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
+          <label>超出用户预算时
+            <select name="principalBudgetAction"><option value="alert" selected>只提醒（默认）</option><option value="pause">暂停任务，可从断点恢复</option><option value="cancel">取消任务</option></select>
+          </label>
+        </div>
+        <div class="table-scroll"><table class="list budget-scopes">
+          <caption class="fine">预算作用域（最近 30 天）</caption>
+          <thead><tr><th>作用域</th><th>预算</th><th>30 天已用</th></tr></thead>
+          <tbody><tr><td>仓库 HugoXK/fledge</td><td>未设置</td><td>¥0.00</td></tr><tr><td>用户 @HugoXK</td><td>未设置</td><td>¥0.00</td></tr></tbody>
+        </table></div>
+        
+        <div class="row">
           <label class="grow">可用模型<button type="button" class="info-tip" aria-label="提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。" aria-expanded="false" data-tip="提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。">!</button>
             <span class="list"><div class="mb-6"><strong>DeepSeek</strong><br /><label class="check"><input type="checkbox" name="modelIds" value="pvm_mock" checked /> DeepSeek Chat <small class="muted">deepseek-chat</small></label></div></span>
           </label>
@@ -324,6 +367,7 @@
   </section></section><section class="repo-section" id="danger" data-repo-section="danger" aria-labelledby="repo-tab-danger"><section class="card">
     <h2>危险操作</h2>
     <p class="muted">这里的操作只影响 Fledge 连接，不会删除 GitHub 仓库。停止调度会保留实例和历史；停止 FlyBot 会停止容器；删除会移除连接、实例、任务和 token。</p>
+    
     <div class="row">
       <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">停止调度</button></form>
       
@@ -340,7 +384,8 @@
       <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
       <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
       <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
-      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="settings.html#feedback">反馈</a>
+      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">★ 在 GitHub 上加星</a>
     </nav>
   </footer>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">

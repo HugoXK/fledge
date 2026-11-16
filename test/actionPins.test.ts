@@ -1,9 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { checkActorGates, checkWorkflow, scanActorGates, scanWorkflows } from '../scripts/lib/action-pins.mjs'
+import { ALLOWLIST_FILE, checkActorGates, checkWorkflow, readAllowlist, repositoryOf, scanActorGates, scanWorkflows } from '../scripts/lib/action-pins.mjs'
 
 // A real pin, the one this repository uses for actions/checkout.
 const PIN = '11d5960a326750d5838078e36cf38b85af677262'
@@ -337,4 +337,79 @@ test('an event the gate cannot classify is a finding until it is classified', ()
   for (const safe of ['push', 'schedule', 'workflow_dispatch']) {
     assert.deepEqual(checkActorGates(workflow(`  ${safe}:`, privilegedJob('repair', null)), 'fixture.yml'), [], `${safe} cannot be started by an outside account`)
   }
+})
+
+// #650: a pin stops a tag from moving; it says nothing about who wrote the
+// action. The policy also allows only the actions this project has reviewed, and
+// the list is data in the tree so a new action is a reviewable one-line addition
+// rather than something a pull request grants itself.
+test('an action outside the allowlist is refused even when it is fully pinned', () => {
+  const text = `      - uses: stranger/exfiltrate@${PIN} # v1.0.0\n`
+  assert.deepEqual(checkWorkflow(text, 'fixture.yml', ['actions/checkout']), [
+    { file: 'fixture.yml', line: 1, value: `stranger/exfiltrate@${PIN}`, problem: 'not-allowed' },
+  ])
+})
+
+test('an allowlisted action passes, and a sub-path belongs to its repository', () => {
+  const text = [
+    `      - uses: actions/checkout@${PIN} # v4.4.0`,
+    `      - uses: github/codeql-action/init@${PIN} # v3.28.1`,
+  ].join('\n')
+  assert.deepEqual(checkWorkflow(text, 'fixture.yml', ['actions/checkout', 'github/codeql-action']), [])
+})
+
+test('the list is what admits an action, so widening it is a visible one-line change', () => {
+  const text = `      - uses: newvendor/tool@${PIN} # v2.0.0\n`
+  assert.equal(checkWorkflow(text, 'fixture.yml', ['actions/checkout']).length, 1)
+  assert.deepEqual(checkWorkflow(text, 'fixture.yml', ['actions/checkout', 'newvendor/tool']), [])
+})
+
+test('the workflow tree in this repository passes the allowlist, not just the pin check', () => {
+  const allowlist = readAllowlist()
+  assert.ok(allowlist.length >= 10, `the reviewed list has shrunk to ${allowlist.length} entries`)
+  assert.deepEqual(scanWorkflows('.github/workflows', allowlist).findings, [])
+})
+
+// The list is the policy, so drift in either direction is a defect: an action in
+// the tree that nobody added to the list (the gate would red the night after the
+// merge) and an entry nobody uses (the next reader cannot tell whether it is a
+// leftover or a mistake). Both are cheap to assert here and invisible otherwise.
+test('the allowlist and the workflow tree name exactly the same repositories', () => {
+  const directory = '.github/workflows'
+  const used = new Set<string>()
+  for (const name of readdirSync(directory)) {
+    if (!/\.ya?ml$/i.test(name)) continue
+    for (const line of readFileSync(join(directory, name), 'utf8').split(/\r?\n/)) {
+      const match = /^\s*(?:-\s*)?uses:\s*(\S+)/.exec(line)
+      if (match === null) continue
+      const value = match[1]?.replace(/^(['"])(.*)\1$/, '$2') ?? ''
+      if (value.startsWith('./') || value.startsWith('docker://')) continue
+      used.add(repositoryOf(value))
+    }
+  }
+  const listed = new Set<string>(readAllowlist())
+  assert.deepEqual([...used].filter((repo) => !listed.has(repo)), [], 'a workflow uses an action the list does not name')
+  assert.deepEqual([...listed].filter((repo) => !used.has(repo)), [], 'the list names an action no workflow uses')
+})
+
+test('a malformed allowlist refuses to load instead of allowing everything', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'action-allow-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const write = (name: string, body: string): string => {
+    const path = join(dir, name)
+    writeFileSync(path, body)
+    return path
+  }
+
+  assert.deepEqual(readAllowlist(write('ok.json', JSON.stringify({ allowed_actions: ['actions/checkout'] }))), ['actions/checkout'])
+  // A wildcard is the hole this list exists to close, so it is not "any action".
+  assert.throws(() => readAllowlist(write('wildcard.json', JSON.stringify({ allowed_actions: ['actions/*'] }))), /wildcards are not allowed/)
+  assert.throws(() => readAllowlist(write('empty.json', JSON.stringify({ allowed_actions: [] }))), /non-empty array/)
+  assert.throws(() => readAllowlist(write('dupe.json', JSON.stringify({ allowed_actions: ['actions/checkout', 'actions/checkout'] }))), /appears more than once/)
+  assert.throws(() => readAllowlist(write('missing.json', '')), /must be a JSON file/)
+})
+
+test('the shipped allowlist file is where the checker looks by default', () => {
+  assert.match(ALLOWLIST_FILE, /^\.github\/agent\/[a-z-]+\.json$/)
+  assert.ok(readAllowlist().includes('actions/checkout'), 'the default path must resolve to the reviewed list in this tree')
 })

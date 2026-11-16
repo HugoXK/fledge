@@ -50,6 +50,7 @@ test('a stale session is refused with a re-auth redirect and an audit row', asyn
     const location = String(refused.headers.location)
     assert.match(location, /^\/auth\/github\/reauthorize\?next=/, 'the refusal must ask GitHub to confirm')
     assert.match(decodeURIComponent(location), new RegExp(`/repos/${repo.id}`), 'the redirect must return to the form it came from')
+    assert.match(decodeURIComponent(location), /#danger/, 'the redirect must return to the danger section, not the page top')
     assert.match(decodeURIComponent(location), /notice=/, 'the form must explain why it came back')
     assert.notEqual(store.getRepo(repo.id), undefined, 'a refused delete must not remove the repository')
     const audit = store.listAudit(20).find((row) => row.action === 'recent_auth_required')
@@ -576,6 +577,42 @@ test('the role check still answers 403 before the recency check on the three rou
     })
     assert.equal(foreign.statusCode, 404, 'a provider owned by someone else must still be a 404, not a re-auth bounce')
     assert.notEqual(store.modelProviderById(provider.id, owner.id), undefined)
+  } finally {
+    await built.close()
+  }
+})
+
+
+test('a stale session sees the danger-zone confirmation banner before deleting', async () => {
+  const { built, store } = await build()
+  try {
+    const user = makeUser(store, { login: 'stale-danger-banner', status: 'approved' })
+    const repo = repoFor(store, user.id)
+    const { raw, cookie } = sessionFor(built, user)
+    clearRecentAuth(store, raw)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}#danger`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /需要 GitHub 确认/, 'the danger card names the fresh-auth requirement')
+    assert.match(page.body, /先用 GitHub 确认/, 'the danger card offers the confirmation link')
+    const href = /href="(\/auth\/github\/reauthorize\?next=[^"]+)"/.exec(page.body)?.[1]
+    assert.ok(href !== undefined)
+    const decoded = decodeURIComponent(href)
+    assert.match(decoded, new RegExp(`/repos/${repo.id}`), 'the link returns to this repository')
+    assert.match(decoded, /#danger/, 'the link returns to the danger section')
+  } finally {
+    await built.close()
+  }
+})
+
+test('a fresh session does not render the stale-confirmation banner', async () => {
+  const { built, store } = await build()
+  try {
+    const user = makeUser(store, { login: 'fresh-danger-banner', status: 'approved' })
+    const repo = repoFor(store, user.id)
+    const { cookie } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}#danger`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.doesNotMatch(page.body, /需要 GitHub 确认/)
   } finally {
     await built.close()
   }

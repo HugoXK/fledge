@@ -1,21 +1,49 @@
 #!/usr/bin/env node
 // Supply-chain gate 1, wired into CI: scan the real workflow tree and fail the
-// job on any action reference that is not a 40-hex pin with its tag comment.
-import { scanActorGates, scanWorkflows } from './lib/action-pins.mjs'
+// job on any action reference that is not a 40-hex pin with its tag comment, or
+// that names an action outside the reviewed allowlist.
+import { ALLOWLIST_FILE, defaultAllowlistPath, readAllowlist, scanActorGates, scanWorkflows } from './lib/action-pins.mjs'
 
-const directory = '.github/workflows'
-const report = scanWorkflows(directory)
+// #640: the checker runs from the base branch, but the workflows it reads are
+// the pull request's own — they are the data under test, so the directory is an
+// argument.
+function argument(name, fallback) {
+  const index = process.argv.indexOf(name)
+  if (index === -1) return fallback
+  return process.argv[index + 1] ?? fallback
+}
+
+const directory = argument('--workflows', '.github/workflows')
+// #650: the list is read relative to this script, which in CI is the base
+// checkout, so a pull request cannot add its own action to the list.
+const allowlistPath = argument('--allowlist', defaultAllowlistPath())
+let allowlist
+try {
+  allowlist = readAllowlist(allowlistPath)
+} catch (error) {
+  console.error(`action-pins: ${error.message}`)
+  process.exit(1)
+}
+
+const report = scanWorkflows(directory, allowlist)
 
 for (const finding of report.findings) {
   const hint =
     finding.problem === 'not-pinned'
       ? 'pin it to a 40-character commit sha and keep the tag as a trailing comment'
-      : 'add the tag it was pinned from as a trailing comment'
+      : finding.problem === 'not-allowed'
+        ? `this action is not on the reviewed list; adding it needs a separate reviewed change to ${ALLOWLIST_FILE} before a workflow may use it`
+        : 'add the tag it was pinned from as a trailing comment'
   console.error(`${finding.file}:${finding.line}: ${finding.value}: ${hint}`)
 }
 
 if (report.findings.length > 0) {
-  console.error(`action-pins: ${report.findings.length} action reference(s) are not pinned`)
+  const notAllowed = report.findings.filter((finding) => finding.problem === 'not-allowed').length
+  const notPinned = report.findings.length - notAllowed
+  const parts = []
+  if (notPinned > 0) parts.push(`${notPinned} action reference(s) are not pinned`)
+  if (notAllowed > 0) parts.push(`${notAllowed} action reference(s) are not on the allowlist`)
+  console.error(`action-pins: ${parts.join('; ')}`)
   process.exit(1)
 }
 
@@ -45,4 +73,4 @@ if (gates.findings.length > 0) {
   process.exit(1)
 }
 
-console.log(`action-pins: ok (${report.checked} pinned references across ${report.files.length} workflow files; ${gates.checked} actions: write job(s) gated on the actor)`)
+console.log(`action-pins: ok (${report.checked} pinned references across ${report.files.length} workflow files, all on the ${allowlist.length}-action allowlist; ${gates.checked} actions: write job(s) gated on the actor)`)

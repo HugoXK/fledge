@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
   <title>设置 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=cc2f0835c794" />
+  <link rel="stylesheet" href="assets/app.css?v=b77a91a74e2c" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -54,6 +54,7 @@
     <a href="#notifications" data-allow-overflow>通知</a>
     <a href="#tokens" data-allow-overflow>API token</a>
     <a href="#sessions" data-allow-overflow>登录设备</a>
+    <a href="#feedback" data-allow-overflow>反馈</a>
   </nav>
   <section class="card" id="account">
     <div class="eyebrow">账户</div>
@@ -176,6 +177,40 @@
       <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">轮换当前会话</button></form>
     </div>
   </section>
+
+  <section class="card" id="feedback">
+    <div class="eyebrow">反馈</div>
+    <h2>反馈给开发者</h2>
+    <p class="muted">遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。</p>
+    <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
+      <input type="hidden" name="csrf" value="mock-csrf" />
+      <div class="row">
+        <label>类型
+          <select name="kind">
+            <option value="feedback">建议 / 一般反馈</option>
+            <option value="bug">Bug</option>
+            <option value="other">其他</option>
+          </select>
+        </label>
+        <label class="grow">相关页面（可选） <input name="page" maxlength="200" placeholder="/settings 或 /dashboard" /></label>
+      </div>
+      <label>内容<textarea name="message" rows="4" maxlength="2000" required placeholder="发生了什么？你期望什么？"></textarea></label>
+      <label class="check"><input type="checkbox" name="publishConsent" value="1" /> 我同意 Fledge 在公开 GitHub issue 中 @ 我的账号，并引用脱敏后的反馈摘要。</label>
+      <p class="fine">不要粘贴 token、密码或他人的隐私信息。反馈会保存并邮件通知开发者。</p>
+      <button class="btn" type="submit">发送反馈</button>
+    </form>
+    
+  </section>
+
+  <section class="card">
+    <div class="eyebrow">关于</div>
+    <h2>关于 Fledge</h2>
+    <p class="muted">Fledge 是开源的自托管平台；如果它对你的仓库有帮助，可以在 GitHub 上加星支持。</p>
+    <div class="actions">
+      <a class="btn" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">★ 在 GitHub 上加星</a>
+      <a class="btn btn-ghost" href="#feedback">反馈</a>
+    </div>
+  </section>
   </main>
   <footer class="foot">
     <div>Fledge · 让托管的仓库自己长大 · 由 FlyBot 驱动 · <span class="foot-release">v0.0.0-mock</span></div>
@@ -183,7 +218,8 @@
       <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
       <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
       <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
-      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">GitHub</a>
+      <a href="settings.html#feedback">反馈</a>
+      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">★ 在 GitHub 上加星</a>
     </nav>
   </footer>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">

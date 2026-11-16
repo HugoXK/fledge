@@ -53,11 +53,6 @@ const at = (ms: number): string => new Date(FIXED_NOW + ms).toISOString()
 const minutesAgo = (minutes: number): string => at(-minutes * 60_000)
 const daysAgo = (days: number): string => at(-days * 86_400_000)
 
-function arg(name: string): string | undefined {
-  const index = process.argv.indexOf(name)
-  return index === -1 ? undefined : process.argv[index + 1]
-}
-
 interface Seed {
   userId: string
   repoMainId: string
@@ -313,7 +308,6 @@ function localPage(path: string, seedRow: Seed): string {
   if (clean === '/console') return 'console.html'
   if (clean === '/repos') return 'dashboard.html'
   if (clean === '/repos/new') return 'add-repository.html'
-  if (clean === '/repos/new') return 'add-repository.html'
   if (clean === `/repos/${seedRow.repoMainId}`) return 'repository.html'
   if (clean === `/repos/${seedRow.repoSecondId}`) return 'repository-demo.html'
   if (clean === `/repos/${seedRow.repoMainId}/schedule`) return 'schedule-console.html'
@@ -519,12 +513,11 @@ async function generate(output: string): Promise<number> {
 }
 
 const check = process.argv.includes('--check')
-const explicitOutput = arg('--output')
-const output = explicitOutput === undefined
-  ? check
-    ? mkdtempSync(join(tmpdir(), 'fledge-mock-check-'))
-    : MOCK_DIR
-  : resolve(explicitOutput)
+// The target is always one this script owns: `mock/` for a regeneration, a fresh
+// temporary directory for a check. There is no `--output`: `generate()` clears
+// its target first, so a flag that took any path would give a typo the power to
+// delete a directory the script did not create.
+const output = check ? mkdtempSync(join(tmpdir(), 'fledge-mock-check-')) : MOCK_DIR
 
 if (check) {
   const expectedCount = await generate(output)
@@ -539,7 +532,9 @@ if (check) {
       console.log(`mock-snapshot: ok (${String(expectedCount)} files)`)
     }
   } finally {
-    if (explicitOutput === undefined) rmSync(output, { recursive: true, force: true })
+    // A check always writes into a fresh temporary directory, so it always
+    // removes it; a regeneration wrote into `mock/` and leaves it in place.
+    rmSync(output, { recursive: true, force: true })
   }
 } else {
   const count = await generate(output)

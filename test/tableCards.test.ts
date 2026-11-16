@@ -2,11 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Store } from '../src/db.js'
-import { WORK_ITEM_STATES, workItemStateLabel } from '../src/lib/workItems.js'
 import { adminPage, adminSupportPage, dashboardPage, repoPage } from '../src/views/pages.js'
 import { lastValue, parseRules, pxValue } from './cssRules.js'
 import { makeUser, testConfig } from './helpers.js'
-import { translator } from '../src/i18n.js'
 
 // #130: the tables the phone matrix measured as clipped inside `.table-scroll`
 // reuse the mechanism #116 built for the job table — a `data-label` on every
@@ -182,20 +180,12 @@ for (const locale of ['en', 'zh'] as const) {
     try {
       const expected = locale === 'en' ? EN_LABELS : ZH_LABELS
       const pages = pagesOf(input, locale)
-      const boardLabels = WORK_ITEM_STATES.map((state) => workItemStateLabel(translator(locale), state))
       for (const page of pages) {
         const tables = cardTables(page.html)
         const wanted = expected[page.name] ?? []
-        // The board adds one carded table (its stage filter row plus five cells).
-        const extra = page.name === 'repos' ? 1 : 0
-        assert.equal(tables.length, wanted.length + extra, `the ${page.name} page must render ${String(wanted.length + extra)} carded table(s), got ${String(tables.length)}`)
+        assert.equal(tables.length, wanted.length, `the ${page.name} page must render ${String(wanted.length)} carded table(s), got ${String(tables.length)}`)
         for (const table of tables) {
           assert.equal(unlabelledCells(table), 0, `every cell of every ${page.name} carded table must carry data-label`)
-        }
-        if (page.name === 'repos') {
-          const board = tables.find((table) => table.includes('table-cards-head')) ?? ''
-          assert.notEqual(board, '', 'the board keeps its own class so its filter row can stay in the flow')
-          assert.deepEqual(labelsOf(board), boardLabels, 'the board prints the stage name above each count')
         }
         for (const labels of wanted) {
           const match = tables.find((table) => labelsOf(table).slice(0, labels.length).every((label, index) => label === labels[index]))

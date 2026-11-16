@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
-import type { JobRow, RepoRow, Store, UserRow } from '../db.js'
+import type { JobRow, RepoRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
 import type { Mailer } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
@@ -13,6 +13,9 @@ import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
 import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
+import { applyReport, findingId, type FindingState } from '../lib/securityFindings.js'
+import { budgetScopeWordZh, budgetStop, type BudgetScopeCandidate } from '../lib/budgetScope.js'
+import { identityPrincipalId } from '../identity/authorization.js'
 import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type FailureCode } from '../lib/failure.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
@@ -40,14 +43,17 @@ import {
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { reviewInstructionLine } from '../lib/followUpInstruction.js'
+import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
 import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
 import { decryptSecret, encryptSecret, randomId, randomToken, safeEqual, sha256Hex } from '../lib/secrets.js'
 import { addMinutes, nowIso } from '../lib/time.js'
 import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from '../repos/github.js'
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES } from './continuity.js'
+import { promoteDiscoveredIssue } from './discoveryPromotion.js'
+import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
+import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
@@ -205,6 +211,107 @@ function followUpFingerprint(reason: string, instruction: string | undefined): s
   return createHash('sha256').update(`${reason}\n${instruction ?? ''}`).digest('hex').slice(0, 16)
 }
 
+// #637: a trigger is the update that asked for the review. It travels with the
+// request so a merged park can say who asked, not just what was asked.
+export interface FollowUpTrigger {
+  kind: string
+  commentId?: string
+  actor?: string
+}
+
+export interface FollowUpRequest {
+  prUrl: string
+  branch: string
+  baseBranch?: string
+  reason: string
+  headSha: string
+  instruction?: string
+  trigger?: FollowUpTrigger
+}
+
+// #637: one mention, as the webhook read it. The target is what decides the kind
+// of job, and `commentId` is what makes two deliveries of the same comment one
+// trigger rather than two.
+export interface MentionRequest {
+  target: MentionTarget
+  commentId: string
+  actor: string
+}
+
+export type MentionResult =
+  | { ok: true; action: 'start'; jobId: string; kind: 'review' | 'iterate' }
+  // Superseded: the queued job ended and this one started in its place.
+  | { ok: true; action: 'supersede'; jobId: string; kind: 'review' | 'iterate' }
+  | { ok: true; action: 'record'; jobId: string }
+  | { ok: true; action: 'park'; jobId: string }
+  | { ok: false; action: 'refuse' | 'start'; code: string; error: string }
+
+interface ParkedFollowUpRequest {
+  reason: string
+  instruction?: string
+  trigger?: FollowUpTrigger
+}
+
+// One pull request at one head has ONE parked request, whatever arrived while the
+// review was running: the second update merges into the first, and the release
+// pass then queues one job carrying both. Keying the park by the request's
+// fingerprint turned two updates into two rows and later two jobs.
+// #637: the identity a mention job was started for, so a second mention with the
+// same identity is recognised without reading the job's goal.
+function mentionJobKey(jobId: string): string {
+  return `mention_job:${jobId}`.slice(0, 300)
+}
+
+// One parked mention per repository: the newest one is what starts next, so a
+// second mention replaces the first instead of queueing behind it.
+function pendingMentionKey(repoId: string): string {
+  return `pending_mention:${repoId}`.slice(0, 300)
+}
+
+function pendingFollowUpKey(repoId: string, prUrl: string, headSha: string): string {
+  return `pending_followup:${repoId}:${prUrl}:${headSha}`.slice(0, 300)
+}
+
+function mergeParkedFollowUp(existingJson: string | undefined, input: FollowUpRequest): string {
+  const requests: ParkedFollowUpRequest[] = []
+  if (existingJson !== undefined) {
+    try {
+      const parsed = JSON.parse(existingJson) as Partial<ParkedFollowUpRequest> & { requests?: ParkedFollowUpRequest[] }
+      if (Array.isArray(parsed.requests)) {
+        for (const request of parsed.requests) requests.push({ reason: request.reason, ...(request.instruction === undefined ? {} : { instruction: request.instruction }), ...(request.trigger === undefined ? {} : { trigger: request.trigger }) })
+      } else if (typeof parsed.reason === 'string') {
+        requests.push({ reason: parsed.reason, ...(parsed.instruction === undefined ? {} : { instruction: parsed.instruction }), ...(parsed.trigger === undefined ? {} : { trigger: parsed.trigger }) })
+      }
+    } catch {
+      // A corrupt parked row is replaced by the request in hand: losing the
+      // trigger that is arriving is worse than losing a row nobody can read.
+    }
+  }
+  const incoming: ParkedFollowUpRequest = {
+    reason: input.reason,
+    ...(input.instruction === undefined ? {} : { instruction: input.instruction }),
+    ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
+  }
+  const duplicate = requests.some((request) =>
+    request.reason === incoming.reason &&
+    (request.instruction ?? '') === (incoming.instruction ?? '') &&
+    (request.trigger?.commentId ?? '') === (incoming.trigger?.commentId ?? ''))
+  if (!duplicate) requests.push(incoming)
+  const reasons = [...new Set(requests.map((request) => request.reason))]
+  const instructions = requests.flatMap((request) => (request.instruction === undefined || request.instruction === '' ? [] : [request.instruction]))
+  const merged = {
+    prUrl: input.prUrl,
+    branch: input.branch,
+    ...(input.baseBranch === undefined ? {} : { baseBranch: input.baseBranch }),
+    reason: reasons.join(', '),
+    headSha: input.headSha,
+    ...(instructions.length === 0 ? {} : { instruction: instructions.join(' — also: ') }),
+    ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
+    requests,
+  }
+  return JSON.stringify(merged)
+}
+
 export interface ReviewFollowUp {
   prUrl: string
   branch: string
@@ -285,6 +392,9 @@ export class Jobs {
   // `adversarialPass`. Null means "use the configured platform model, or skip
   // the pass when there is none".
   adversarialModel: AdversarialModel | null = null
+  // Tests inject a fake; production reads the repository's live state through
+  // `carryOverReader`. Null means "use the GitHub-backed reader".
+  carryOverReaderOverride: ((repo: RepoRow) => CarryOverReader) | null = null
 
   constructor(
     private readonly store: Store,
@@ -965,6 +1075,31 @@ export class Jobs {
     return options.ownerStarted ?? trigger === 'manual'
   }
 
+  // #365: the carry-over block may only carry work that is still live, and the
+  // read that proves it uses the same installation token the rest of the job
+  // uses. The client is built on the first read, so a block that names no link
+  // costs no token call, and a failure is per line: the reader throws, the line
+  // stays and is counted unverified rather than dropped on a failed read.
+  private carryOverReader(repo: RepoRow): CarryOverReader {
+    let client: GithubClient | null = null
+    return {
+      read: async (link: string) => {
+        const ref = parseCarryOverLink(link)
+        if (ref === null) throw new Error('carry-over link is not a GitHub issue or pull request')
+        if (client === null) {
+          const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
+          client = new GithubClient(token, this.config.github.apiBase)
+        }
+        const active = client
+        if (ref.kind === 'issue') {
+          return (await active.issueIsClosed(ref.owner, ref.name, ref.number)) ? 'closed' : 'open'
+        }
+        const pull = await active.getPullRequest(ref.owner, ref.name, ref.number)
+        return pull.merged ? 'merged' : 'open'
+      },
+    }
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
@@ -1050,8 +1185,15 @@ export class Jobs {
     }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'triage' ? DEFAULT_TRIAGE_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
+    // #365: a scheduled or follow-up run may only carry what is still live, so
+    // the block is built with one live read per linked line. Nothing about the
+    // block changes when a line names no issue or PR.
     const carryOver = trigger === 'schedule' || trigger === 'followup'
-      ? buildCarryOver({ recent: this.store.listJobsForRepo(repo.id, 3), openWork: this.store.listOpenWorkItems(repo.id) })
+      ? (await buildCarryOver({
+        recent: this.store.listJobsForRepo(repo.id, 3),
+        openWork: this.store.listOpenWorkItems(repo.id),
+        read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
+      })).text
       : ''
     const goal = ((preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`)
       + (carryOver === '' ? '' : `\n\n${carryOver}`)).slice(0, 4000)
@@ -1309,6 +1451,7 @@ export class Jobs {
       })
       return
     }
+    if (job.kind === 'discover') return
     if (result.status !== 'succeeded' || (result.prUrl === null && result.issueUrl === null)) return
     const title = (result.prUrl ?? result.issueUrl ?? job.goal).slice(0, 160)
     this.store.createWorkItem({
@@ -1324,6 +1467,32 @@ export class Jobs {
       jobId: job.id,
       prState: result.prUrl === null ? null : 'open',
     })
+  }
+
+  // #803: one work item for a successful discovery whose result is a concrete
+  // issue. `DISCOVERY_PR_FORBIDDEN` finishes the run `failed`, so the status
+  // guard also covers the run that broke discovery's issue-only contract.
+  private settleDiscoveryPromotion(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; issueUrl: string | null; summary: string }, outputKind: OutputKind): void {
+    if (result.status !== 'succeeded') {
+      this.store.audit(job.user_id, 'job.discovery_promotion_skipped', `${job.id}: not-succeeded:${result.status}`)
+      return
+    }
+    if (outputKind === 'meta') {
+      this.store.audit(job.user_id, 'job.discovery_promotion_skipped', `${job.id}: meta-issue`)
+      return
+    }
+    const promotion = promoteDiscoveredIssue(this.store, this.config, {
+      repoId: job.repo_id,
+      userId: job.user_id,
+      issueUrl: result.issueUrl,
+      title: result.summary,
+      priority: job.priority,
+    })
+    this.store.audit(
+      job.user_id,
+      promotion.status === 'promoted' ? 'job.discovery_promoted' : 'job.discovery_promotion_skipped',
+      `${job.id}: ${promotion.status}${promotion.workItemId === undefined ? '' : ` ${promotion.workItemId}`}`,
+    )
   }
 
   // Returns whether this call moved the row to a terminal state. Callers that
@@ -1358,6 +1527,25 @@ export class Jobs {
       finished_at: nowIso(),
     })
     if (!claimed) return false
+    // #379: the finding ledger is written inside the guarded transition, so a
+    // replayed callback never reaches this line and the counts it produces are
+    // the ones the ledger stored. The transition has already committed, so a
+    // failed ledger write (a locked file, a constraint the report trips) must
+    // not fail the callback, hold the lease or lose the job result: the rows
+    // roll back to what they were, which can never make a finding read as
+    // fixed, and the failure gets a durable row so it cannot vanish.
+    if (evidence !== null) {
+      try {
+        this.recordSecurityFindings(job, evidence)
+      } catch (error) {
+        log.warn('security finding ledger write failed', { trace: jobId, error: String(error) })
+        try {
+          this.store.audit(job.user_id, 'security_finding.write_failed', `${job.id}: ${String(error)}`.slice(0, 600))
+        } catch (auditError) {
+          log.warn('security finding ledger failure could not be audited', { trace: jobId, error: String(auditError) })
+        }
+      }
+    }
     this.store.releaseJobLease(jobId)
     this.clearLeaseHeartbeat(jobId)
     incCounter('fledge_jobs_total', { status: result.status, kind: job.kind }, 1, 'Jobs by terminal status')
@@ -1369,6 +1557,10 @@ export class Jobs {
     const digest = buildRunDigest(finalJob, { status: result.status, summary, issueUrl, prUrl })
     this.store.updateJob(jobId, { continuity_json: JSON.stringify(digest), output_kind: digest.output_kind })
     incCounter('fledge_job_output_total', { kind: job.kind, output: digest.output_kind }, 1, 'Scheduled output classification')
+    // #803: promotion runs on the classification, not before it. A result the
+    // digest calls a backlog report must not spend a cap slot or audit a
+    // promotion, and a run that did not succeed must not promote at all.
+    if (job.kind === 'discover') this.settleDiscoveryPromotion(finalJob, { status: result.status, issueUrl, summary }, digest.output_kind)
     if (digest.output_kind === 'meta') {
       incCounter('fledge_meta_issue_total', { kind: job.kind }, 1, 'Inventory/meta issues rejected by classification')
       // Close the tracking row so the next scheduled run does not follow up a
@@ -1425,6 +1617,30 @@ export class Jobs {
         this.store.notify(job.user_id, 'quota', `任务 ${jobId} 成本 ${jobCostCny.toFixed(2)} 元，超过单任务预算 ${repo.job_budget_cny.toFixed(2)} 元。`)
       }
     }
+    // #697: an `alert` scope never stops a job, so it speaks here instead — the
+    // finish notice is the only place an alert-only cap could be heard, and a
+    // cap nobody hears is not a cap.
+    if (repo !== undefined) {
+      const window = new Date(Date.now() - 30 * 86_400_000).toISOString()
+      const principalId = identityPrincipalId(job.user_id)
+      const alertScopes: Array<{ kind: 'repository' | 'principal'; id: string; capCny: number; spentUsd: number }> = []
+      const repoScope = this.store.getBudgetScope('repository', repo.id)
+      if (repoScope !== undefined) alertScopes.push({ kind: 'repository', id: repo.id, capCny: repoScope.cap_cny, spentUsd: this.store.repoUsageSince(repo.id, window) })
+      const principalScope = this.store.getBudgetScope('principal', principalId)
+      if (principalScope !== undefined) alertScopes.push({ kind: 'principal', id: principalId, capCny: principalScope.cap_cny, spentUsd: this.store.principalUsageSince(job.user_id, window) })
+      for (const scope of alertScopes) {
+        const scopeRow = scope.kind === 'repository' ? repoScope : principalScope
+        if (scopeRow === undefined || scopeRow.action !== 'alert') continue
+        // Same rule as the checkpoint: a cap compared with an unpriced call is a
+        // lower bound, and the notice says so rather than reading it as a pass.
+        const unpriced = scope.kind === 'repository' ? this.store.repoUnknownCountSince(scope.id, window) : this.store.principalUnknownCountSince(job.user_id, window)
+        const spentCny = scope.spentUsd * this.config.quota.usdCny
+        if (!(spentCny > scope.capCny)) continue
+        const bound = unpriced > 0 ? `（下界：另有 ${unpriced} 次调用未计价）` : ''
+        this.store.audit(job.user_id, 'job.budget_exceeded', `${jobId}: ${spentCny.toFixed(4)} > ${scope.capCny} (${scope.kind} ${scope.id})`)
+        this.store.notify(job.user_id, 'quota', `任务 ${jobId} 的${budgetScopeWordZh(scope.kind)}成本 ${spentCny.toFixed(2)} 元，超过预算 ${scope.capCny.toFixed(2)} 元${bound}。`)
+      }
+    }
     if (result.status === 'succeeded') {
       this.store.deleteSetting(`ops:repo_failing:${job.repo_id}`)
       this.store.resetRepoFailures(job.repo_id)
@@ -1445,6 +1661,49 @@ export class Jobs {
       void this.captureTeamStats(jobId, attribution).catch((error) => log.warn('team stats capture failed', { trace: jobId, error: String(error) }))
     }
     return true
+  }
+
+  // #379: the finding ledger's only writer, called from the claimed terminal
+  // transition. It touches only the ids this report names: a finding missing
+  // from a later report is not evidence of a fix, so absence cannot move a row.
+  // A dismissal without a reason and a malformed entry are refused here and
+  // counted, never turned into a clean report.
+  private recordSecurityFindings(job: JobRow, evidence: Evidence): void {
+    const findings = evidence.findings ?? []
+    const refused = evidence.findingsDismissedRefused ?? 0
+    const dropped = evidence.findingsDropped ?? 0
+    if (findings.length === 0 && refused === 0 && dropped === 0) return
+    const writes: SecurityFindingWrite[] = []
+    let regressed = 0
+    for (const finding of findings) {
+      const id = findingId(finding)
+      const previous = this.store.getSecurityFinding(job.repo_id, id)
+      const decision = applyReport(
+        previous === undefined
+          ? undefined
+          : { state: previous.state as FindingState, firstSeenJob: previous.first_seen_job, dismissedInJob: previous.dismissed_in_job },
+        finding,
+        job.id,
+      )
+      if (decision === null) continue
+      writes.push({
+        id,
+        state: decision.state,
+        firstSeenJob: previous?.first_seen_job ?? job.id,
+        lastSeenJob: decision.lastSeenJob,
+        reason: previous?.reason ?? null,
+        dismissedInJob: decision.dismissedInJob,
+      })
+      if (decision.state === 'regressed' && previous?.state !== 'regressed') {
+        regressed += 1
+        this.store.audit(job.user_id, 'security_finding.regressed', `${job.id}: ${id} first=${previous?.first_seen_job ?? job.id}`.slice(0, 600))
+      }
+    }
+    this.store.writeSecurityFindings(job.repo_id, writes)
+    if (refused > 0) this.store.audit(job.user_id, 'security_finding.dismissal_refused', `${job.id}: ${refused} dismissed report(s) without a reason`)
+    const summary = `findings=${findings.length} regressed=${regressed} dismissed_refused=${refused} dropped=${dropped}`
+    this.store.event('security_findings', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: summary })
+    this.store.audit(job.user_id, 'job.security_findings', `${job.id}: ${summary}`)
   }
 
   private notePostmortem(jobId: string): void {
@@ -2412,7 +2671,7 @@ export class Jobs {
     const prefix = `pending_followup:${repoId}:`
     for (const row of this.store.listSettings(prefix)) {
       this.store.deleteSetting(row.key)
-      let input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }
+      let input: FollowUpRequest
       try {
         input = JSON.parse(row.value) as typeof input
       } catch {
@@ -2522,12 +2781,36 @@ export class Jobs {
   // or `cancel` it stops the job here, at the checkpoint that first sees a
   // recorded cost, and the terminal callback that follows cannot revive it
   // because a paused or cancelled job answers terminal reports with a 409.
+  //
+  // #697: the same checkpoint enforces the repository and principal scopes, and
+  // it stays one function so a second enforcement point cannot disagree with
+  // this one. The job scope still reads `repos.job_budget_cny`; the two new
+  // scopes read `budget_scopes`. Precedence is job > repository > principal, and
+  // `budgetStop` decides which fire.
   private async enforceJobBudget(job: JobRow, repo: RepoRow | undefined): Promise<void> {
-    if (repo === undefined || repo.job_budget_cny <= 0) return
-    const action = repo.job_budget_action
-    if (action !== 'pause' && action !== 'cancel') return
+    if (repo === undefined) return
+    const since = new Date(Date.now() - 30 * 86_400_000).toISOString()
+    const candidates: BudgetScopeCandidate[] = []
+    if (repo.job_budget_cny > 0) {
+      candidates.push({ kind: 'job', id: job.id, capCny: repo.job_budget_cny, action: repo.job_budget_action, spentUsd: this.store.usageForJobChain(job.id) })
+    }
+    const repoScope = this.store.getBudgetScope('repository', repo.id)
+    if (repoScope !== undefined) {
+      candidates.push({ kind: 'repository', id: repo.id, capCny: repoScope.cap_cny, action: repoScope.action, spentUsd: this.store.repoUsageSince(repo.id, since) })
+    }
+    const principalId = identityPrincipalId(job.user_id)
+    const principalScope = this.store.getBudgetScope('principal', principalId)
+    if (principalScope !== undefined) {
+      candidates.push({ kind: 'principal', id: principalId, capCny: principalScope.cap_cny, action: principalScope.action, spentUsd: this.store.principalUsageSince(job.user_id, since) })
+    }
+    if (candidates.length === 0) return
+    // An `alert` scope is reported at the terminal transition, never here: it is
+    // not a stopping rule, so it must not shadow one that is.
+    if (!candidates.some((entry) => entry.action === 'pause' || entry.action === 'cancel')) return
     // No ledger row is an unknown cost, not a zero one: a provider error
     // deducts nothing, and reading that as "fits the budget" would be a lie.
+    // This guard keeps precedence at every scope, so an unpriced job is never
+    // read as fitting a repository or principal cap either.
     if (this.store.usageCountForJobChain(job.id) === 0) {
       const key = `job_budget_unknown:${job.id}`
       if (this.store.getSetting(key) === undefined) {
@@ -2537,13 +2820,14 @@ export class Jobs {
       }
       return
     }
-    const costCny = this.store.usageForJobChain(job.id) * this.config.quota.usdCny
-    if (!(costCny > repo.job_budget_cny)) return
-    const cancel = action === 'cancel'
-    const code = cancel ? 'JOB_BUDGET_CANCELLED' : 'JOB_BUDGET_PAUSED'
-    const reason = `${code}: 单任务成本 ${costCny.toFixed(2)} 元已超过预算 ${repo.job_budget_cny.toFixed(2)} 元。${cancel ? '提高单任务预算后重新开始任务。' : '提高单任务预算后从断点恢复，或重新开始任务。'}`
-    this.store.audit(job.user_id, cancel ? 'job.budget_cancelled' : 'job.budget_paused', `${job.id}: ${costCny.toFixed(4)} > ${repo.job_budget_cny}`)
-    this.store.notify(job.user_id, 'quota', `任务 ${job.id} 因单任务预算${cancel ? '取消' : '暂停'}：已用 ${costCny.toFixed(2)} 元，预算 ${repo.job_budget_cny.toFixed(2)} 元。提高预算或重新开始任务。`, code)
+    const stop = budgetStop(candidates, this.config.quota.usdCny)
+    if (stop === null) return
+    const cancel = stop.action === 'cancel'
+    const code = stop.code
+    const scopeWord = budgetScopeWordZh(stop.kind)
+    const reason = `${code}: ${scopeWord}成本 ${stop.spentCny.toFixed(2)} 元已超过预算 ${stop.capCny.toFixed(2)} 元。提高${scopeWord}预算后${cancel ? '重新开始任务。' : '从断点恢复，或重新开始任务。'}`
+    this.store.audit(job.user_id, cancel ? 'job.budget_cancelled' : 'job.budget_paused', `${job.id}: ${stop.spentCny.toFixed(4)} > ${stop.capCny.toFixed(4)} (${stop.kind} ${stop.id})`)
+    this.store.notify(job.user_id, 'quota', `任务 ${job.id} 因${scopeWord}预算${cancel ? '取消' : '暂停'}：已用 ${stop.spentCny.toFixed(2)} 元，预算 ${stop.capCny.toFixed(2)} 元。提高预算或重新开始任务。`, code)
     if (cancel) await this.cancelJob(job.id, reason)
     else await this.pauseJob(job.id, reason)
   }
@@ -2596,7 +2880,7 @@ export class Jobs {
     }
   }
 
-  async followUp(repo: RepoRow, input: { prUrl: string; branch: string; baseBranch?: string; reason: string; headSha: string; instruction?: string }): Promise<FollowUpResult> {
+  async followUp(repo: RepoRow, input: FollowUpRequest): Promise<FollowUpResult> {
     const baseBranch = input.baseBranch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch))
     if (!isValidBranchName(input.branch) || input.branch === baseBranch || input.branch === repo.upstream_default_branch || input.branch === repo.default_branch) {
       return { ok: false, error: 'follow-up 分支不能是目标分支。', code: 'BRANCH_INVALID' }
@@ -2609,8 +2893,8 @@ export class Jobs {
     const activeJob = this.store.activeJobForRepo(repo.id)
     if (activeJob !== undefined) {
       if (activeJob.kind === 'review') {
-        const pendingKey = `pending_followup:${repo.id}:${fingerprint}:${input.prUrl}:${input.headSha}`.slice(0, 300)
-        this.store.setSetting(pendingKey, JSON.stringify(input))
+        const pendingKey = pendingFollowUpKey(repo.id, input.prUrl, input.headSha)
+        this.store.setSetting(pendingKey, mergeParkedFollowUp(this.store.getSetting(pendingKey), input))
         return { ok: false, error: '审核结束后会自动跟进', code: 'JOB_ACTIVE' }
       }
       return { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' }
@@ -2629,6 +2913,154 @@ export class Jobs {
     const result = await this.enqueue(repo, 'followup', goal, 'iterate', { branch: input.branch, prUrl: input.prUrl, baseBranch: input.baseBranch })
     if (!result.ok) this.store.deleteSetting(key)
     return result
+  }
+
+  // #637: a mention is the third way a job starts, beside the scheduler and the
+  // command surface. The rule lives in `lib/mentionGovernance.ts`; this method is
+  // only what the rule needs read from the store and what it writes back.
+  async mention(repo: RepoRow, input: MentionRequest): Promise<MentionResult> {
+    const identity = mentionIdentity(input.target)
+    const active = this.store.activeJobForRepo(repo.id)
+    const facts = active === undefined
+      ? undefined
+      : { id: active.id, status: active.status as 'queued' | 'running', mention: this.store.getSetting(mentionJobKey(active.id)) ?? null }
+    const decision = decideMention(input.target, facts)
+    if (decision.action === 'refuse') {
+      this.store.audit(repo.user_id, 'trigger.mention_ignored', `${input.commentId} ${identity} ${decision.reason}`)
+      return {
+        ok: false,
+        action: 'refuse',
+        code: decision.reason === 'draft' ? 'MENTION_DRAFT' : 'MENTION_CLOSED',
+        error: decision.reason === 'draft' ? '草稿 PR 不会启动任务。' : '已关闭的目标不会启动任务。',
+      }
+    }
+    if (decision.action === 'record') {
+      // The same target at the same head, while a job holds it: no second job, one
+      // event on the job that has it. This is the case a reply-to-yourself loop
+      // and a repeated trigger both land in.
+      this.store.recordJobEvent({ jobId: decision.jobId, repoId: repo.id, userId: repo.user_id, kind: 'job.mention_recorded', meta: `${input.commentId} ${identity} actor=${input.actor}` })
+      this.store.audit(repo.user_id, 'trigger.mention', `${input.commentId} ${identity} actor=${input.actor} outcome=recorded job=${decision.jobId}`)
+      return { ok: true, action: 'record', jobId: decision.jobId }
+    }
+    if (decision.action === 'park') {
+      // A running job is never interrupted: it finishes, then the newest mention
+      // is started. The slot holds one mention, replaced, because two mentions on
+      // the same target are one follow-up — the later one.
+      this.store.recordJobEvent({ jobId: decision.jobId, repoId: repo.id, userId: repo.user_id, kind: 'job.mention_recorded', meta: `${input.commentId} ${identity} actor=${input.actor}` })
+      this.store.setSetting(pendingMentionKey(repo.id), JSON.stringify({ target: input.target, commentId: input.commentId, actor: input.actor }))
+      this.store.audit(repo.user_id, 'trigger.mention', `${input.commentId} ${identity} actor=${input.actor} outcome=parked job=${decision.jobId}`)
+      return { ok: true, action: 'park', jobId: decision.jobId }
+    }
+    if (decision.action === 'supersede') {
+      // The queued row is retired only once the replacement is admitted. `enqueue`
+      // refuses for reasons that have nothing to do with the slot (a role change,
+      // a full queue, a budget), and on that path the person was told a newer
+      // mention replaced the old one — so the old one must still be there to run.
+      const previous = this.store.getJob(decision.jobId)
+      this.retireQueuedMention(repo, decision.jobId, input)
+      const started = await this.startMentionJob(repo, input.target, identity, input.commentId, input.actor)
+      if (!started.ok || started.action !== 'start') {
+        if (previous !== undefined) {
+          this.store.updateJob(previous.id, { status: 'queued', error: null, error_code: null, finished_at: null })
+          this.store.audit(repo.user_id, 'trigger.mention_restored', `${input.commentId} ${previous.id} ${started.ok ? 'unknown' : started.code}`)
+        }
+        return started
+      }
+      this.recordQueuedMentionSuperseded(repo, previous, input)
+      return { ok: true, action: 'supersede', jobId: started.jobId, kind: started.kind }
+    }
+    return await this.startMentionJob(repo, input.target, identity, input.commentId, input.actor)
+  }
+
+  // Step one of a supersede: take the slot without writing history yet. A status
+  // write is reversible; a timeline event and an audit row are not, so they wait
+  // for the replacement to be admitted.
+  private retireQueuedMention(_repo: RepoRow, jobId: string, _input: MentionRequest): void {
+    // The queued job has not run yet, so it may end here. It is a status of its
+    // own rather than a cancellation: nothing failed and nobody stopped it — a
+    // newer trigger took the slot before it ran, and the row should say so.
+    this.store.updateJob(jobId, { status: 'superseded', error: '被更新的 mention 取代', error_code: 'MENTION_SUPERSEDED', finished_at: nowIso() })
+  }
+
+  // Step two, once the replacement exists: the queued row really did give way.
+  private recordQueuedMentionSuperseded(repo: RepoRow, previous: JobRow | undefined, input: MentionRequest): void {
+    if (previous === undefined) return
+    this.store.recordJobEvent({ jobId: previous.id, repoId: repo.id, userId: repo.user_id, kind: 'job.superseded', meta: `mention ${input.commentId}` })
+    this.store.audit(repo.user_id, 'trigger.mention_superseded', `${input.commentId} ${previous.id} -> ${mentionIdentity(input.target)}`)
+  }
+
+  private async startMentionJob(repo: RepoRow, target: MentionTarget, identity: string, commentId: string, actor: string): Promise<MentionResult> {
+    const kind = mentionJobKind(target)
+    const goal = target.kind === 'pull_request'
+      ? [
+        `Review the pull request ${target.url} at ${target.headSha} because a trusted comment mentioned the bot.`,
+        'Read the diff and the checks at that head and comment on the pull request with what you find.',
+        'Do not write to the branch, do not push, and do not open another pull request.',
+      ].join('\n')
+      : [
+        `Follow up on the issue ${target.url} because a trusted comment mentioned the bot.`,
+        'Open at most one branch and one pull request for this issue, under the one-issue-one-branch-one-PR rule, and report the branch and PR URL.',
+        'If no change is warranted, report why and create nothing.',
+      ].join('\n')
+    const result = await this.enqueue(repo, 'followup', goal, kind, target.kind === 'pull_request'
+      ? { branch: target.branch ?? '', prUrl: target.url, ...(target.baseBranch === undefined ? {} : { baseBranch: target.baseBranch }) }
+      : {})
+    if (!result.ok || result.job === undefined) {
+      this.store.audit(repo.user_id, 'trigger.mention_refused', `${identity} ${result.code ?? 'unknown'}`)
+      return { ok: false, action: 'start', code: result.code ?? 'MENTION_REFUSED', error: result.error ?? '任务没有启动。' }
+    }
+    if (target.kind === 'issue') this.store.updateJob(result.job.id, { issue_url: target.url })
+    this.store.setSetting(mentionJobKey(result.job.id), identity)
+    this.store.audit(repo.user_id, 'trigger.mention', `${commentId} ${identity} actor=${actor} outcome=started job=${result.job.id} kind=${kind}`)
+    return { ok: true, action: 'start', jobId: result.job.id, kind }
+  }
+
+  // The parked mention starts when the repository's slot frees, whichever job
+  // ended. Called from the release pass and when a job finishes.
+  private async releasePendingMention(repoId: string): Promise<void> {
+    const key = pendingMentionKey(repoId)
+    const raw = this.store.getSetting(key)
+    if (raw === undefined) return
+    const repo = this.store.getRepo(repoId)
+    if (repo === undefined) {
+      this.store.deleteSetting(key)
+      return
+    }
+    // A job still holding the slot keeps the slot; the next pass reads it again.
+    if (this.store.activeJobForRepo(repoId) !== undefined) return
+    let parked: { target: MentionTarget; commentId: string; actor: string }
+    try {
+      parked = JSON.parse(raw) as typeof parked
+    } catch {
+      this.store.deleteSetting(key)
+      return
+    }
+    const result = await this.mention(repo, parked)
+    if (!result.ok) {
+      // A refusal is not always a decision about the mention. A stopped platform,
+      // a full queue, a disabled repository or an exhausted budget all clear
+      // themselves, and the thread already promised the person that this mention
+      // runs when the slot frees — so the slot keeps the mention unless the
+      // target itself refused it.
+      if (result.code === 'MENTION_DRAFT' || result.code === 'MENTION_CLOSED') {
+        log.info('pending mention dropped', { repo: repoId, code: result.code })
+      } else {
+        this.store.setSetting(key, raw)
+        log.warn('pending mention kept', { repo: repoId, code: result.code, error: result.error })
+      }
+    } else {
+      this.store.deleteSetting(key)
+    }
+  }
+
+  // Public so the release pass and a test can drive it the same way.
+  async releaseAllPendingMentions(): Promise<void> {
+    const repoIds = new Set<string>()
+    for (const row of this.store.listSettings('pending_mention:')) {
+      const repoId = row.key.split(':')[1]
+      if (repoId !== undefined && repoId !== '') repoIds.add(repoId)
+    }
+    for (const repoId of repoIds) await this.releasePendingMention(repoId)
   }
 
   async notifyOpsAlerts(): Promise<number> {
@@ -3094,6 +3526,7 @@ export class Jobs {
     if (status === 'succeeded' && followUps.length > 0) {
       await this.queueReviewFollowUps(job, followUps)
       await this.releasePendingFollowups(job.repo_id)
+      await this.releasePendingMention(job.repo_id)
     }
     if (status === 'succeeded' && job.kind === 'triage' && triage !== null) {
       // The board is the record, and its first row is what the scheduler can pick
@@ -3165,8 +3598,11 @@ export class Jobs {
         // a review job.
         ...(follow.instruction === undefined ? {} : { instruction: follow.instruction }),
       }
-      const key = `pending_followup:${repo.id}:${job.id}:${index}`.slice(0, 300)
-      this.store.setSetting(key, JSON.stringify(input))
+      // #637: a follow-up the review itself asked for parks in the same slot as
+      // an update that arrived mid-review, keyed by pull request and head, so the
+      // release pass queues one job carrying both instead of two jobs.
+      const key = pendingFollowUpKey(repo.id, input.prUrl, headSha)
+      this.store.setSetting(key, mergeParkedFollowUp(this.store.getSetting(key), input))
       index += 1
     }
   }
@@ -3541,6 +3977,7 @@ export class Jobs {
     const sweptLeases = this.store.sweepScheduleLeases()
     if (sweptLeases.freed > 0) log.info('schedule leases expired', { freed: sweptLeases.freed })
     await this.releaseAllPendingFollowups().catch((error) => log.warn('pending follow-up recovery failed', { error: String(error) }))
+    await this.releaseAllPendingMentions().catch((error) => log.warn('pending mention recovery failed', { error: String(error) }))
     await this.releaseDueRetries().catch((error) => log.warn('due retry release failed', { error: String(error) }))
     await this.reconcileAutoMerge().catch((error) => log.warn('auto-merge reconcile failed', { error: String(error) }))
     await this.notifyQuestions().catch((error) => log.warn('question notification pass failed', { error: String(error) }))
@@ -3601,6 +4038,18 @@ export class Jobs {
         // instant — is a no-op.
         if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
         continue
+      }
+      // #544 slice 6: the schedule layer of the run budget. The instant is
+      // charged to its own logical UTC day, so a late or recovered run spends the
+      // day it was scheduled for and crossing midnight grants no fresh allowance.
+      // At the limit the instant is decided — a skipped row naming the reason —
+      // rather than left due, or every tick would re-decide it.
+      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined && scheduleRow.daily_runs !== null) {
+        const used = this.store.countScheduleDispatchesBetween(scheduleRow.id, utcDayStart(plan.dueAt), utcDayEnd(plan.dueAt))
+        if (used >= scheduleRow.daily_runs) {
+          this.skipScheduledOccurrence(repo, plan, 'budget-exceeded')
+          continue
+        }
       }
       if (this.store.activeJobForRepo(repo.id) !== undefined) {
         // A due instant that cannot run now is the misfire case: skip it with a
@@ -3893,10 +4342,14 @@ export class Jobs {
   // #265: the preview-trial sweep runs on its own clock rather than inside the
   // job tick, which can be skipped while a dispatch is in flight. The first
   // scheduled run is one interval after boot; an operator who needs it now runs
-  // `npm run trial:sweep`.
+  // `npm run trial:sweep`. #690: the purge phase shares this clock — one writer,
+  // so an account cannot be rejected and erased by two different schedulers.
   async runTrialSweep(now: Date = new Date()): Promise<TrialSweepResult> {
     const result = await sweepExpiredTrials(this.store, this.mailer, this.config, { now })
     if (result.rejected.length > 0) log.info('preview trials ended', { rejected: result.rejected.length, emailed: result.emailed })
+    if (result.purge.purged.length > 0 || result.purge.skipped.length > 0) {
+      log.info('trial purges', { purged: result.purge.purged.length, skipped: result.purge.skipped.length, failed: result.purge.failed.length })
+    }
     return result
   }
 

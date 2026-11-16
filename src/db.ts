@@ -24,6 +24,7 @@ export interface UsageDetail {
   known?: boolean
 }
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
+import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
@@ -56,9 +57,15 @@ interface Database {
 
 const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => Database }
 
+// The schema version this build writes. Exported because the previous-release
+// restore check (#652) has to prove a fixture written by an older build still
+// migrates to exactly this number, and a literal in two places would let the
+// check and the migration disagree.
+export const SCHEMA_VERSION = 43
+
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
-export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted'
+export type JobStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'paused' | 'quota_exhausted' | 'superseded'
 
 // #361: a repository's review history, read from rows that already exist.
 // A window is one `since`; the page asks for two. The outcome of a review is
@@ -133,6 +140,8 @@ export interface RepoRow {
   job_mode: string
   repo_role: string | null
   auto_merge: number
+  /** #425: 1 when the repository consented to its jobs entering an evolution dataset. */
+  evolution_consent: number
   role_checked_at: string | null
   plan_required: number
   allow_paths: string
@@ -262,6 +271,12 @@ export interface ScheduleRow {
    * bound, which is the behaviour every schedule had before this column existed.
    */
   grace_ms: number | null
+  /**
+   * #544 slice 6: at most this many instants may be dispatched in one logical
+   * UTC day. Null means unbounded, which is the behaviour every schedule had
+   * before this column existed.
+   */
+  daily_runs: number | null
   last_occurrence_at: number | null
   created_at: string
   updated_at: string
@@ -899,6 +914,94 @@ export interface TrialCandidate {
   expired_at: string | null
 }
 
+// #690: what the purge phase reads. The counts are part of the row on purpose:
+// an expired account that gained a repository, job, instance or installation is
+// skipped and the skip record names the blocking resource, so an operator can
+// see why the account is still there instead of guessing. Reading this deletes
+// nothing.
+export interface TrialPurgeCandidate {
+  id: string
+  login: string
+  expired_at: string
+  repos: number
+  jobs: number
+  instances: number
+  installations: number
+}
+
+// #689 option 2: the retention row keeps the account's spend as one bucket per
+// currency, never one summed number. `cost_usd` holds the amount in the row's own
+// currency, so folding CNY into USD would invent a rate, and the per-row detail
+// is cascaded away by the purge — this is the only figure left to audit.
+export interface SpendBucket {
+  currency: string
+  amount: number
+  requests: number
+}
+
+export interface SpendAggregate {
+  buckets: SpendBucket[]
+  unknownRequests: number
+}
+
+// #690: what one purge removed. The counts are the blast radius recorded in the
+// retention row; the function is the single delete path (#691 calls it with its
+// own reason and operator), so nothing else describes what went.
+export interface PurgeUserRowsResult {
+  removed: boolean
+  rows: Record<string, number>
+  spend: SpendAggregate
+}
+
+export interface PurgeEvent {
+  reason: string
+  operator: string
+  /** Audit action for the retention row. Defaults to `trial.purged`. */
+  action?: string
+}
+
+// #690: the delete set, split by the column that names the account. The first
+// list cascades from `users`, the second from `repos`; both are counted before
+// the delete so the retention row can say what went. Module constants, because
+// the count and the delete must not drift apart.
+const PURGE_USER_TABLES = [
+  'sessions',
+  'approval_tokens',
+  'repos',
+  'jobs',
+  'repo_instances',
+  'api_tokens',
+  'quota_ledger',
+  'notifications',
+  'github_installations',
+  'work_items',
+  'user_models',
+  'model_providers',
+  'principals',
+  'postmortems',
+  'repo_members',
+] as const
+
+// Rows that name one of the account's repositories but no account id: they go
+// with `repos` through the cascade, except `artifact_versions`, whose plain
+// `repo_id` column would otherwise leave a repo's artifacts behind.
+const PURGE_REPO_TABLES = [
+  'repo_models',
+  'repo_model_selection',
+  'repo_bot_models',
+  'task_relations',
+  'job_contexts',
+  'repo_rule_overrides',
+  'repo_releases',
+  'workflow_failures',
+  'project_memories',
+  'gate_sessions',
+  'projects',
+  'schedules',
+  'schedule_occurrences',
+  'artifact_versions',
+] as const
+
 export interface AlertView {
   kind: string
   level: 'info' | 'warning' | 'critical'
@@ -1228,6 +1331,19 @@ CREATE TABLE IF NOT EXISTS quota_ledger (
 );
 CREATE INDEX IF NOT EXISTS quota_ledger_user_idx ON quota_ledger(user_id, at DESC);
 
+-- #697: one stored cap per scope, keyed by scope kind and scope id. The
+-- repository and principal scopes read this table; repos.job_budget_cny keeps
+-- its meaning and is not overloaded. A missing row means "no cap at this scope",
+-- never a zero cap, so an absent row can never stop a job.
+CREATE TABLE IF NOT EXISTS budget_scopes (
+  kind TEXT NOT NULL CHECK (kind IN ('job', 'repository', 'principal')),
+  id TEXT NOT NULL,
+  cap_cny REAL NOT NULL DEFAULT 0,
+  action TEXT NOT NULL DEFAULT 'alert' CHECK (action IN ('alert', 'pause', 'cancel')),
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (kind, id)
+);
+
 CREATE TABLE IF NOT EXISTS notifications (
   id TEXT PRIMARY KEY,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -1435,6 +1551,26 @@ CREATE TABLE IF NOT EXISTS repo_rule_overrides (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (repo_id, path)
 );
+
+-- #379: the per-repository security-finding ledger. The id is rule + path +
+-- line, so a finding that comes back is the same row. Only an operator decision
+-- may write 'dismissed' or 'fixed', and the CHECK below refuses either without
+-- the written reason (a dismissal) or evidence (a fix) it rests on; the report
+-- path can only move a row to open/regressed.
+CREATE TABLE IF NOT EXISTS security_findings (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  id TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('open', 'dismissed', 'fixed', 'regressed')),
+  first_seen_job TEXT NOT NULL,
+  last_seen_job TEXT NOT NULL,
+  reason TEXT,
+  dismissed_in_job TEXT,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, id),
+  CHECK (state NOT IN ('dismissed', 'fixed') OR (reason IS NOT NULL AND trim(reason) != ''))
+);
+CREATE INDEX IF NOT EXISTS security_findings_repo_idx ON security_findings(repo_id, state, updated_at DESC);
+CREATE INDEX IF NOT EXISTS security_findings_job_idx ON security_findings(last_seen_job);
 
 -- #384: one postmortem per failed/stalled/cancelled job, plus a ledger row per
 -- recurrence key. The job_id unique constraint is the idempotency guard: a
@@ -1818,6 +1954,11 @@ CREATE TABLE IF NOT EXISTS schedules (
   timing_revision INTEGER NOT NULL DEFAULT 1,
   misfire TEXT NOT NULL DEFAULT 'skip',
   grace_ms INTEGER,
+  -- #544 slice 6: the schedule layer of the run budget, in dispatches per
+  -- logical UTC day. Null is unbounded, the behaviour of every schedule written
+  -- before the column existed; the count itself is read from the occurrence
+  -- rows, so a database restored without them cannot invent usage.
+  daily_runs INTEGER,
   last_occurrence_at INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -1862,6 +2003,81 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
 CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrences(state, lease_expires_at);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_repo_idx ON schedule_occurrences(repo_id, logical_time DESC);
 CREATE INDEX IF NOT EXISTS schedule_occurrences_schedule_idx ON schedule_occurrences(schedule_id, logical_time DESC);
+
+-- #786: feedback and unexpected-error reports. Both are additive; no existing
+-- table or row is rewritten. The error ref is the unguessable capability the
+-- error page carries; the row is written with redacted, bounded fields before
+-- the page is rendered.
+CREATE TABLE IF NOT EXISTS feedback (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  kind TEXT NOT NULL,
+  message TEXT NOT NULL,
+  page TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_created_idx ON feedback(created_at DESC);
+CREATE INDEX IF NOT EXISTS feedback_user_idx ON feedback(user_id, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS error_reports (
+  ref TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  user_login TEXT,
+  status TEXT NOT NULL DEFAULT 'captured',
+  method TEXT NOT NULL,
+  path TEXT NOT NULL,
+  status_code INTEGER NOT NULL,
+  error_name TEXT NOT NULL,
+  error_message TEXT NOT NULL,
+  error_stack TEXT NOT NULL DEFAULT '',
+  build_version TEXT NOT NULL,
+  build_commit TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  reported_at TEXT,
+  consent_version TEXT,
+  consented_at TEXT
+);
+CREATE INDEX IF NOT EXISTS error_reports_created_idx ON error_reports(created_at DESC);
+CREATE INDEX IF NOT EXISTS error_reports_status_idx ON error_reports(status, created_at DESC);
+
+-- #814: the triage lifecycle, keyed by the feedback id / error ref. The user's
+-- raw text stays in feedback/error_reports; this row holds the decision,
+-- links, versions, consent and notification state.
+CREATE TABLE IF NOT EXISTS feedback_triage (
+  ref TEXT PRIMARY KEY,
+  user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+  user_login TEXT,
+  kind TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'new',
+  publish_consent INTEGER NOT NULL DEFAULT 0,
+  publish_consent_at TEXT,
+  public_summary TEXT,
+  user_message TEXT,
+  issue_url TEXT,
+  pr_url TEXT,
+  fixed_version TEXT,
+  released_version TEXT,
+  released_at TEXT,
+  last_notified_status TEXT,
+  notified_at TEXT,
+  lead_delivered_at TEXT,
+  lead_attempts INTEGER NOT NULL DEFAULT 0,
+  lead_last_error TEXT,
+  lead_next_attempt_at TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_triage_status_idx ON feedback_triage(status, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS feedback_events (
+  id TEXT PRIMARY KEY,
+  ref TEXT NOT NULL REFERENCES feedback_triage(ref) ON DELETE CASCADE,
+  status TEXT NOT NULL,
+  detail TEXT,
+  actor TEXT,
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS feedback_events_ref_idx ON feedback_events(ref, created_at DESC);
 `
 
 function clean(params: unknown[]): unknown[] {
@@ -1938,6 +2154,114 @@ export interface ReleaseTrackingPatch {
   lastCheckedAt: string
 }
 
+// #379: one row per reported finding id, per repository. `first_seen_job` and
+// `last_seen_job` are job ids kept as text, not foreign keys: the ledger is the
+// record of what a job reported, and it must outlive the job row if one is ever
+// pruned. `state` is checked by the table, and a decision state requires the
+// written reason it rests on.
+export interface SecurityFindingRow {
+  repo_id: string
+  id: string
+  state: string
+  first_seen_job: string
+  last_seen_job: string
+  reason: string | null
+  dismissed_in_job: string | null
+  updated_at: string
+}
+
+// #697: one stored cap for one scope. `kind` and `id` are the key; `id` is a
+// repository id or an `identityPrincipalId()`. A row exists only while a cap is
+// set, so an absent row means "no cap" and never "a cap of zero".
+export interface BudgetScopeRow {
+  kind: string
+  id: string
+  cap_cny: number
+  action: string
+  updated_at: string
+}
+
+export interface SecurityFindingWrite {
+  id: string
+  state: string
+  firstSeenJob: string
+  lastSeenJob: string
+  reason: string | null
+  dismissedInJob: string | null
+}
+
+// #786: a user-authored note for the maintainer. The row is the durable record;
+// the mail is the notification. Neither carries a token, a cookie or a request
+// body.
+export interface FeedbackRow {
+  id: string
+  user_id: string
+  kind: string
+  message: string
+  page: string
+  created_at: string
+}
+
+// #786: a captured 5xx. The ref is the capability the error page carries; the
+// row is written before the page is rendered, so the user can report it with one
+// click even when signed out. The fields are already redacted and bounded.
+export interface ErrorReportRow {
+  ref: string
+  user_id: string | null
+  user_login: string | null
+  status: 'captured' | 'reported'
+  method: string
+  path: string
+  status_code: number
+  error_name: string
+  error_message: string
+  error_stack: string
+  build_version: string
+  build_commit: string
+  created_at: string
+  reported_at: string | null
+  consent_version: string | null
+  consented_at: string | null
+}
+
+// #814: the lifecycle record for one feedback/error ref. It is separate from
+// `feedback` and `error_reports` so the user text is never rewritten by a
+// triage update, and an anonymous error report can carry a lifecycle without a
+// users row.
+export interface FeedbackTriageRow {
+  ref: string
+  user_id: string | null
+  user_login: string | null
+  kind: string
+  status: string
+  publish_consent: number
+  publish_consent_at: string | null
+  public_summary: string | null
+  user_message: string | null
+  issue_url: string | null
+  pr_url: string | null
+  fixed_version: string | null
+  released_version: string | null
+  released_at: string | null
+  last_notified_status: string | null
+  notified_at: string | null
+  lead_delivered_at: string | null
+  lead_attempts: number
+  lead_last_error: string | null
+  lead_next_attempt_at: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface FeedbackEventRow {
+  id: string
+  ref: string
+  status: string
+  detail: string | null
+  actor: string | null
+  created_at: string
+}
+
 export class Store {
   readonly db: Database
 
@@ -1948,11 +2272,12 @@ export class Store {
     this.db.exec('PRAGMA foreign_keys = ON;')
     this.db.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-    if (previousVersion > 39) {
+    if (previousVersion > SCHEMA_VERSION) {
       this.db.close()
-      throw new Error(`database schema version ${previousVersion} is newer than this build supports (39)`)
+      throw new Error(`database schema version ${previousVersion} is newer than this build supports (${String(SCHEMA_VERSION)})`)
     }
     this.db.exec(SCHEMA)
+    this.migrateFeedbackTriageColumns()
     this.migrateColumns()
     this.migrateRepoColumns()
     this.migrateProviderColumns()
@@ -1961,6 +2286,7 @@ export class Store {
     this.migrateManagementColumns()
     this.migrateScheduleOccurrenceColumns()
     this.migrateScheduleMisfireColumns()
+    this.migrateScheduleBudgetColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -1973,7 +2299,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, 39)};`)
+    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, SCHEMA_VERSION)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -1988,6 +2314,13 @@ export class Store {
   private migrateScheduleMisfireColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
     if (!columns.includes('grace_ms')) this.db.exec('ALTER TABLE schedules ADD COLUMN grace_ms INTEGER')
+  }
+
+  // #544 slice 6: the run budget adds one nullable column. A row written before
+  // it keeps no limit, which is the behaviour it had; nothing else is rewritten.
+  private migrateScheduleBudgetColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
+    if (!columns.includes('daily_runs')) this.db.exec('ALTER TABLE schedules ADD COLUMN daily_runs INTEGER')
   }
 
   private migrateScheduleOccurrenceColumns(): void {
@@ -2182,6 +2515,16 @@ export class Store {
     }
   }
 
+  // #814 follow-up: the triage row existed before the Lead delivery outbox, so
+  // an older database gains the retry columns in place.
+  private migrateFeedbackTriageColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(feedback_triage)').map((column) => column.name)
+    if (!columns.includes('lead_delivered_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_delivered_at TEXT')
+    if (!columns.includes('lead_attempts')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_attempts INTEGER NOT NULL DEFAULT 0')
+    if (!columns.includes('lead_last_error')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_last_error TEXT')
+    if (!columns.includes('lead_next_attempt_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_next_attempt_at TEXT')
+  }
+
   private migrateColumns(): void {
     const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(users)').map((row) => row.name))
     const additions: Array<[string, string]> = [
@@ -2215,6 +2558,7 @@ export class Store {
       ['job_mode', "TEXT NOT NULL DEFAULT 'iterate'"],
       ['repo_role', 'TEXT'],
       ['auto_merge', 'INTEGER NOT NULL DEFAULT 0'],
+      ['evolution_consent', 'INTEGER NOT NULL DEFAULT 0'],
       ['role_checked_at', 'TEXT'],
       ['plan_required', 'INTEGER NOT NULL DEFAULT 0'],
       ['allow_paths', "TEXT NOT NULL DEFAULT ''"],
@@ -2649,6 +2993,194 @@ export class Store {
     )
   }
 
+  // #690: accounts the purge phase reads. The `trial.expired` audit row is the
+  // clock (owner option 2 keeps no state column), and the counts are read here so
+  // a used account is skipped with a named reason rather than silently left
+  // behind. This deletes nothing.
+  trialPurgeCandidates(nowAt: string, graceHours: number): TrialPurgeCandidate[] {
+    const now = Date.parse(nowAt)
+    const cutoff = new Date((Number.isFinite(now) ? now : Date.now()) - graceHours * 3_600_000).toISOString()
+    return this.all<TrialPurgeCandidate>(
+      `SELECT u.id, u.login,
+              (SELECT MAX(a.at) FROM audit_log a WHERE a.user_id = u.id AND a.action = 'trial.expired') AS expired_at,
+              (SELECT COUNT(*) FROM repos r WHERE r.user_id = u.id) AS repos,
+              (SELECT COUNT(*) FROM jobs j WHERE j.user_id = u.id) AS jobs,
+              (SELECT COUNT(*) FROM repo_instances i WHERE i.user_id = u.id) AS instances,
+              (SELECT COUNT(*) FROM github_installations g WHERE g.user_id = u.id) AS installations
+         FROM users u
+        WHERE u.status = 'rejected'
+          AND u.role = 'user'
+          AND EXISTS (SELECT 1 FROM audit_log a
+                       WHERE a.user_id = u.id AND a.action = 'trial.expired' AND a.at <= ?)
+        ORDER BY u.created_at ASC`,
+      cutoff,
+    )
+  }
+
+  // #690: the re-check the purge phase makes immediately before it deletes. The
+  // selection above already carries counts, but a repository or a job can arrive
+  // between the two reads, and the phase must not erase an account that became
+  // used in that window.
+  purgeBlockers(id: string): { repos: number; jobs: number; instances: number; installations: number } {
+    const row = this.get<{ repos: number; jobs: number; instances: number; installations: number }>(
+      `SELECT (SELECT COUNT(*) FROM repos r WHERE r.user_id = ?) AS repos,
+              (SELECT COUNT(*) FROM jobs j WHERE j.user_id = ?) AS jobs,
+              (SELECT COUNT(*) FROM repo_instances i WHERE i.user_id = ?) AS instances,
+              (SELECT COUNT(*) FROM github_installations g WHERE g.user_id = ?) AS installations`,
+      id,
+      id,
+      id,
+      id,
+    )
+    return {
+      repos: Number(row?.repos ?? 0),
+      jobs: Number(row?.jobs ?? 0),
+      instances: Number(row?.instances ?? 0),
+      installations: Number(row?.installations ?? 0),
+    }
+  }
+
+  // #690/#689: the spend aggregate is computed before the rows go, because
+  // `quota_ledger.user_id` cascades and the retention row is then the only
+  // accounting record. The buckets follow `costByCurrency`: priced rows only, one
+  // bucket per `COALESCE(currency,'USD')`, and the unpriced count is
+  // `cost_known = 0` — never `currency IS NULL`, which is every pre-#636 row.
+  private spendForPurge(userId: string): SpendAggregate {
+    const rows = this.all<{ currency: string; total: number | null; n: number }>(
+      `SELECT COALESCE(currency, 'USD') AS currency, SUM(cost_usd) AS total, COUNT(*) AS n
+         FROM quota_ledger WHERE user_id = ? AND cost_known = 1
+        GROUP BY COALESCE(currency, 'USD')`,
+      userId,
+    )
+    const buckets = rows
+      .map((row) => ({ currency: row.currency, amount: Number(row.total ?? 0), requests: Number(row.n) }))
+      .sort((a, b) => a.currency.localeCompare(b.currency))
+    const unknown = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE user_id = ? AND cost_known = 0', userId)
+    return { buckets, unknownRequests: Number(unknown?.n ?? 0) }
+  }
+
+  // #690: the six `settings` shapes that carry the account in the key or the
+  // value. The table has no foreign key and no user column, so neither the
+  // cascade nor the column sweep can see them. Key-carried: `quota_notified:`,
+  // `digest_sent:` and `email_test:`; value-carried: `email_reply:` and
+  // `github_app_state:` hold the account id in the first segment,
+  // `installation_sender:` holds the login.
+  private purgeSettingsFilter(userId: string, login: string): { where: string; args: unknown[] } {
+    const firstSegment = "substr(value, 1, instr(value || ':', ':') - 1)"
+    return {
+      where: `(key = ? OR key LIKE ? OR key = ? OR (key LIKE ? AND ${firstSegment} = ?) OR (key LIKE ? AND ${firstSegment} = ?) OR (key LIKE ? AND ${firstSegment} = ?))`,
+      args: [
+        `quota_notified:${userId}`,
+        `digest_sent:${userId}:%`,
+        `email_test:${userId}`,
+        'email_reply:%',
+        userId,
+        'github_app_state:%',
+        userId,
+        'installation_sender:%',
+        login,
+      ],
+    }
+  }
+
+  private purgeRowCounts(userId: string, repoIds: string[], login: string): Record<string, number> {
+    const counts: Record<string, number> = {}
+    for (const table of PURGE_USER_TABLES) {
+      counts[table] = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE user_id = ?`, userId)?.n ?? 0)
+    }
+    const marks = repoIds.map(() => '?').join(', ')
+    if (repoIds.length > 0) {
+      for (const table of PURGE_REPO_TABLES) {
+        counts[table] = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table} WHERE repo_id IN (${marks})`, ...repoIds)?.n ?? 0)
+      }
+      counts.job_events = Number(
+        this.get<{ n: number }>('SELECT COUNT(*) AS n FROM job_events WHERE job_id IN (SELECT id FROM jobs WHERE user_id = ?)', userId)?.n ?? 0,
+      )
+      counts.job_context_files = Number(
+        this.get<{ n: number }>(
+          `SELECT COUNT(*) AS n FROM job_context_files WHERE job_id IN (SELECT job_id FROM job_contexts WHERE repo_id IN (${marks}))`,
+          ...repoIds,
+        )?.n ?? 0,
+      )
+    }
+    counts.audit_log = Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM audit_log WHERE user_id = ?', userId)?.n ?? 0)
+    // #697: `budget_scopes` is keyed by a scope id, not by `user_id`, and no
+    // cascade reaches it. Count both shapes the purge deletes: the principal
+    // row and one row per repository.
+    counts.budget_scopes =
+      Number(
+        this.get<{ n: number }>("SELECT COUNT(*) AS n FROM budget_scopes WHERE kind = 'principal' AND id = ?", identityPrincipalId(userId))?.n ?? 0,
+      ) +
+      (repoIds.length === 0
+        ? 0
+        : Number(
+            this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM budget_scopes WHERE kind = 'repository' AND id IN (${marks})`, ...repoIds)?.n ?? 0,
+          ))
+    const settings = this.purgeSettingsFilter(userId, login)
+    counts.settings = Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM settings WHERE ${settings.where}`, ...settings.args)?.n ?? 0)
+    return counts
+  }
+
+  // #690 (delete-set choice (a), inherited by #691): the single path that erases
+  // an account. It does not decide eligibility — the caller asserts the account
+  // is dead — so #691 reuses it while the trial sweep keeps its own candidate
+  // query. One transaction: the counts and the spend are read, the rows go, and
+  // the retention row (#689 option 2) is written with `user_id` NULL so it
+  // survives the delete it describes.
+  purgeUserRows(id: string, event: PurgeEvent): PurgeUserRowsResult {
+    return this.transaction(() => {
+      const user = this.userById(id)
+      const spend = this.spendForPurge(id)
+      if (user === undefined) return { removed: false, rows: {}, spend }
+      const repoIds = this.all<{ id: string }>('SELECT id FROM repos WHERE user_id = ?', id).map((row) => row.id)
+      const rows = this.purgeRowCounts(id, repoIds, user.login)
+      const marks = repoIds.map(() => '?').join(', ')
+
+      const settings = this.purgeSettingsFilter(id, user.login)
+      this.run(`DELETE FROM settings WHERE ${settings.where}`, ...settings.args)
+
+      // `events` and `audit_log` carry plain id columns, so no cascade reaches
+      // them. The account's audit rows go with it and the retention row below is
+      // the record that the purge ran.
+      this.run('DELETE FROM events WHERE user_id = ?', id)
+      this.run('DELETE FROM events WHERE job_id IN (SELECT id FROM jobs WHERE user_id = ?)', id)
+      if (repoIds.length > 0) this.run(`DELETE FROM events WHERE repo_id IN (${marks})`, ...repoIds)
+      this.run('DELETE FROM audit_log WHERE user_id = ?', id)
+
+      // The one repo-scoped table the cascade misses: its `repo_id` is plain, and
+      // `artifact_pointers`, `evaluations` and `promotions` cascade only once the
+      // version row is gone.
+      if (repoIds.length > 0) this.run(`DELETE FROM artifact_versions WHERE repo_id IN (${marks})`, ...repoIds)
+
+      // #697: the budget scopes name the account twice and no cascade reaches
+      // this table either — `principal:user:<id>` survives on its own, and a
+      // repository row is left behind once its repository is gone.
+      this.run("DELETE FROM budget_scopes WHERE kind = 'principal' AND id = ?", identityPrincipalId(id))
+      if (repoIds.length > 0) this.run(`DELETE FROM budget_scopes WHERE kind = 'repository' AND id IN (${marks})`, ...repoIds)
+
+      // The account row itself: sessions, jobs, instances, tokens, ledger rows,
+      // installations and every repo-scoped table go through the cascade.
+      this.run('DELETE FROM users WHERE id = ?', id)
+
+      this.audit(null, event.action ?? 'trial.purged', JSON.stringify({
+        reason: event.reason,
+        operator: event.operator,
+        rows,
+        spend,
+      }))
+      return { removed: true, rows, spend }
+    })
+  }
+
+  // #690: what the admin page shows under the trial table. Both actions carry no
+  // login, email or token, so the page can render them as they are.
+  recentPurgeAudits(limit = 20): AuditRow[] {
+    return this.all<AuditRow>(
+      "SELECT * FROM audit_log WHERE action IN ('trial.purged', 'trial.purge_skipped') ORDER BY id DESC LIMIT ?",
+      limit,
+    )
+  }
+
   userActivity(id: string): { repos: number; jobs: number; lastJobAt: string | null } {    const row = this.get<{ repos: number; jobs: number; last_job_at: string | null }>(
       `SELECT (SELECT COUNT(*) FROM repos WHERE user_id = ?) AS repos,
               (SELECT COUNT(*) FROM jobs WHERE user_id = ?) AS jobs,
@@ -2935,6 +3467,22 @@ export class Store {
       nowIso(),
       id,
     )
+    return this.getGateSession(id)
+  }
+
+  // #543: creating the gate pull request must happen once per confirmed plan,
+  // even when two requests arrive together. The compare-and-set is one SQL
+  // statement, so exactly one caller wins the transition and the loser reads no
+  // row; a read-then-update here would let both callers open a PR.
+  claimGateSession(id: string, from: GateSessionStatus, to: GateSessionStatus): GateSessionRow | undefined {
+    const changed = this.runChanges(
+      'UPDATE gate_sessions SET status = ?, updated_at = ? WHERE id = ? AND status = ?',
+      to,
+      nowIso(),
+      id,
+      from,
+    )
+    if (changed === 0) return undefined
     return this.getGateSession(id)
   }
 
@@ -4345,8 +4893,29 @@ export class Store {
     this.run(`UPDATE repos SET ${sets} WHERE id = ?`, ...entries.map(([, value]) => value), id)
   }
 
+  // #425: consent is per repository, off by default, and the only way on is an
+  // audited operator action. The exporter reads `evolution_consent` and nothing
+  // else, so a repository that never opted in cannot appear in a dataset.
+  setRepoEvolutionConsent(repoId: string, on: boolean, actorUserId: string | null): void {
+    this.run('UPDATE repos SET evolution_consent = ? WHERE id = ?', on ? 1 : 0, repoId)
+    this.audit(actorUserId, 'evolution.consent', `${repoId}: ${on ? 'on' : 'off'}`)
+  }
+
+  listEvolutionConsent(): Array<{ repoId: string; repo: string; consent: boolean }> {
+    return this.all<{ id: string; owner: string; name: string; upstream_owner: string; upstream_name: string; evolution_consent: number }>(
+      'SELECT id, owner, name, upstream_owner, upstream_name, evolution_consent FROM repos ORDER BY created_at DESC',
+    ).map((row) => ({
+      repoId: row.id,
+      repo: `${row.upstream_owner || row.owner}/${row.upstream_name || row.name}`,
+      consent: row.evolution_consent === 1,
+    }))
+  }
+
   deleteRepo(id: string): void {
     this.run('DELETE FROM repos WHERE id = ?', id)
+    // #697: the repository cap is keyed by the repository id and no cascade
+    // reaches it, so deleting the repository has to take its scope row with it.
+    this.run("DELETE FROM budget_scopes WHERE kind = 'repository' AND id = ?", id)
   }
 
   listAutoMergeRepos(): RepoRow[] {
@@ -4386,6 +4955,8 @@ export class Store {
     endAt?: number | null
     misfire?: string
     graceMs?: number | null
+    /** #544 slice 6: dispatches allowed per logical UTC day; null is unbounded. */
+    dailyRuns?: number | null
   }): ScheduleRow {
     const existing = this.scheduleForRepo(input.repoId)
     const timingChanged = existing !== undefined && (
@@ -4399,19 +4970,20 @@ export class Store {
     const at = nowIso()
     if (existing === undefined) {
       this.run(
-        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, grace_ms, last_occurrence_at, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, NULL, ?, ?)`,
+        `INSERT INTO schedules (id, repo_id, kind, expression, every_ms, timezone, start_at, end_at, timing_revision, misfire, grace_ms, daily_runs, last_occurrence_at, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?, ?, NULL, ?, ?)`,
         input.id, input.repoId, input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
-        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', input.graceMs ?? null, at, at,
+        input.startAt ?? null, input.endAt ?? null, input.misfire ?? 'skip', input.graceMs ?? null, input.dailyRuns ?? null, at, at,
       )
     } else {
       this.run(
         `UPDATE schedules SET kind = ?, expression = ?, every_ms = ?, timezone = ?, start_at = ?, end_at = ?,
-           timing_revision = ?, misfire = ?, grace_ms = ?, updated_at = ? WHERE repo_id = ?`,
+           timing_revision = ?, misfire = ?, grace_ms = ?, daily_runs = ?, updated_at = ? WHERE repo_id = ?`,
         input.kind, input.expression ?? null, input.everyMs ?? null, input.timezone ?? null,
         input.startAt ?? null, input.endAt ?? null,
         timingChanged ? existing.timing_revision + 1 : existing.timing_revision,
-        input.misfire ?? existing.misfire, input.graceMs === undefined ? existing.grace_ms : input.graceMs, at, input.repoId,
+        input.misfire ?? existing.misfire, input.graceMs === undefined ? existing.grace_ms : input.graceMs,
+        input.dailyRuns === undefined ? existing.daily_runs : input.dailyRuns, at, input.repoId,
       )
     }
     const row = this.scheduleForRepo(input.repoId)
@@ -4526,6 +5098,21 @@ export class Store {
       'SELECT * FROM schedule_occurrences WHERE repo_id = ? ORDER BY logical_time DESC, decided_at DESC LIMIT ?',
       repoId, limit,
     )
+  }
+
+  // #544 slice 6: how much of a schedule's daily budget a logical day has
+  // already spent. Only `dispatched` rows count — a skipped instant did not run,
+  // and a claimed one has not dispatched yet — and the window is half-open, so
+  // neighbouring days cannot both charge the boundary instant. The logical time
+  // is the key, not the dispatch time: a late or recovered run stays in the day
+  // it was scheduled for.
+  countScheduleDispatchesBetween(scheduleId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences
+        WHERE schedule_id = ? AND state = 'dispatched' AND logical_time >= ? AND logical_time < ?`,
+      scheduleId, from, to,
+    )
+    return Number(row?.count ?? 0)
   }
 
   // #544 slice 3B-B2. Claiming is one transaction so two workers cannot both
@@ -4814,6 +5401,77 @@ export class Store {
 
   getJobContextFile(jobId: string, path: string): JobContextFileRow | undefined {
     return this.get<JobContextFileRow>('SELECT * FROM job_context_files WHERE job_id = ? AND path = ?', jobId, path)
+  }
+
+  // #379: the ledger write is one transaction per report, so a report that names
+  // several findings is recorded whole or not at all. The state machine that
+  // decides each row lives in src/lib/securityFindings.ts; this method stores
+  // the decision it returns.
+  writeSecurityFindings(repoId: string, rows: SecurityFindingWrite[]): void {
+    if (rows.length === 0) return
+    const updatedAt = nowIso()
+    this.transaction(() => {
+      for (const row of rows) {
+        this.run(
+          `INSERT INTO security_findings (repo_id, id, state, first_seen_job, last_seen_job, reason, dismissed_in_job, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+           ON CONFLICT(repo_id, id) DO UPDATE SET
+             state = excluded.state,
+             last_seen_job = excluded.last_seen_job,
+             reason = excluded.reason,
+             dismissed_in_job = excluded.dismissed_in_job,
+             updated_at = excluded.updated_at`,
+          repoId,
+          row.id,
+          row.state,
+          row.firstSeenJob,
+          row.lastSeenJob,
+          row.reason,
+          row.dismissedInJob,
+          updatedAt,
+        )
+      }
+    })
+  }
+
+  getSecurityFinding(repoId: string, id: string): SecurityFindingRow | undefined {
+    return this.get<SecurityFindingRow>('SELECT * FROM security_findings WHERE repo_id = ? AND id = ?', repoId, id)
+  }
+
+  //: Newest first, so the page lists the findings a maintainer is most likely
+  //: to act on before the older ones.
+  listSecurityFindings(repoId: string): SecurityFindingRow[] {
+    return this.all<SecurityFindingRow>('SELECT * FROM security_findings WHERE repo_id = ? ORDER BY updated_at DESC, id ASC', repoId)
+  }
+
+  //: The job page shows the findings whose last report was this job. One table
+  //: keeps the ledger from recording a second, per-job link table; the page
+  //: says "last reported by this job" rather than claiming the full history.
+  listSecurityFindingsForJob(jobId: string): SecurityFindingRow[] {
+    return this.all<SecurityFindingRow>('SELECT * FROM security_findings WHERE last_seen_job = ? ORDER BY id ASC', jobId)
+  }
+
+  //: The only write that may set `dismissed` or `fixed`. A blank reason is
+  //: refused here as well as at the route, so a caller that forgets the check
+  //: cannot put the ledger into a state that reads as verified without evidence.
+  setSecurityFindingState(repoId: string, id: string, state: 'dismissed' | 'fixed', reason: string): boolean {
+    const clean = reason.trim().slice(0, 500)
+    if (clean === '') return false
+    const row = this.getSecurityFinding(repoId, id)
+    if (row === undefined) return false
+    // `dismissed_in_job` names the job the finding was last seen in when the
+    // operator decided, which is what the regression line reads back.
+    const dismissedInJob = state === 'dismissed' ? row.last_seen_job : row.dismissed_in_job
+    this.run(
+      'UPDATE security_findings SET state = ?, reason = ?, dismissed_in_job = ?, updated_at = ? WHERE repo_id = ? AND id = ?',
+      state,
+      clean,
+      dismissedInJob,
+      nowIso(),
+      repoId,
+      id,
+    )
+    return true
   }
 
   listRepoRuleOverrides(repoId: string): RepoRuleOverrideRow[] {
@@ -5477,6 +6135,59 @@ export class Store {
     return Number(row?.total ?? 0)
   }
 
+  // #697: one cap per scope. A zero cap deletes the row rather than storing a
+  // zero, because "no cap" and "a cap of zero" must not be the same thing: a
+  // stored zero would stop every job that spent anything at all.
+  setBudgetScope(input: { kind: string; id: string; capCny: number; action: string }): void {
+    if (!isBudgetScopeKind(input.kind)) throw new Error(`budget scope kind must be one of ${BUDGET_SCOPE_KINDS.join(', ')}: ${input.kind}`)
+    if (!isBudgetScopeAction(input.action)) throw new Error(`budget scope action must be one of ${BUDGET_SCOPE_ACTIONS.join(', ')}: ${input.action}`)
+    if (!Number.isFinite(input.capCny) || input.capCny < 0) throw new Error(`budget scope cap must be a non-negative number: ${String(input.capCny)}`)
+    const id = input.id.slice(0, 200)
+    if (id === '') throw new Error('budget scope id is required')
+    if (input.capCny <= 0) {
+      this.run('DELETE FROM budget_scopes WHERE kind = ? AND id = ?', input.kind, id)
+      return
+    }
+    this.run(
+      `INSERT INTO budget_scopes (kind, id, cap_cny, action, updated_at) VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(kind, id) DO UPDATE SET cap_cny = excluded.cap_cny, action = excluded.action, updated_at = excluded.updated_at`,
+      input.kind, id, input.capCny, input.action, nowIso(),
+    )
+  }
+
+  getBudgetScope(kind: string, id: string): BudgetScopeRow | undefined {
+    return this.get<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes WHERE kind = ? AND id = ?', kind, id)
+  }
+
+  listBudgetScopes(kind?: string): BudgetScopeRow[] {
+    if (kind === undefined) return this.all<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes ORDER BY kind, id')
+    return this.all<BudgetScopeRow>('SELECT kind, id, cap_cny, action, updated_at FROM budget_scopes WHERE kind = ? ORDER BY id', kind)
+  }
+
+  // #697: the principal scope sums the same rolling window the repository scope
+  // uses, and the same USD-only rule: a row priced in another currency cannot
+  // move a CNY cap.
+  principalUsageSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE user_id = ? AND at >= ? AND ${usdBilled()}`, userId, sinceIso)
+    return Number(row?.total ?? 0)
+  }
+
+  // A cap compared against spend that could not be priced would be a lie, so each
+  // scope reports how many calls in its window went unpriced; the console turns
+  // that into a lower-bound caveat.
+  repoUnknownCountSince(repoId: string, sinceIso: string): number {
+    const row = this.get<{ n: number }>(
+      `SELECT COUNT(*) AS n FROM quota_ledger q LEFT JOIN jobs j ON j.id = q.job_id WHERE COALESCE(q.repo_id, j.repo_id) = ? AND q.at >= ? AND q.cost_known = 0`,
+      repoId, sinceIso,
+    )
+    return Number(row?.n ?? 0)
+  }
+
+  principalUnknownCountSince(userId: string, sinceIso: string): number {
+    const row = this.get<{ n: number }>('SELECT COUNT(*) AS n FROM quota_ledger WHERE user_id = ? AND at >= ? AND cost_known = 0', userId, sinceIso)
+    return Number(row?.n ?? 0)
+  }
+
   usageAttribution(sinceIso: string): { unattributedCount: number; unattributedUsd: number; attributedUsd: number } {
     const unattributed = this.get<{ n: number; total: number | null }>(`SELECT COUNT(*) AS n, SUM(cost_usd) AS total FROM quota_ledger WHERE repo_id IS NULL AND job_id IS NULL AND at >= ? AND ${usdBilled()}`, sinceIso)
     const attributed = this.get<{ total: number | null }>(`SELECT SUM(cost_usd) AS total FROM quota_ledger WHERE (repo_id IS NOT NULL OR job_id IS NOT NULL) AND at >= ? AND ${usdBilled()}`, sinceIso)
@@ -5559,6 +6270,103 @@ export class Store {
 
   notify(userId: string, kind: string, message: string, code: string | null = null): void {
     this.run('INSERT INTO notifications (id, user_id, kind, message, code, created_at) VALUES (?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, nowIso())
+  }
+
+  createFeedback(input: { id: string; userId: string; kind: string; message: string; page: string; createdAt?: string }): FeedbackRow {
+    const at = input.createdAt ?? nowIso()
+    this.run('INSERT INTO feedback (id, user_id, kind, message, page, created_at) VALUES (?, ?, ?, ?, ?, ?)', input.id, input.userId, input.kind, input.message, input.page, at)
+    return this.get<FeedbackRow>('SELECT * FROM feedback WHERE id = ?', input.id)!
+  }
+
+  listFeedback(limit = 20): FeedbackRow[] {
+    return this.all<FeedbackRow>('SELECT * FROM feedback ORDER BY created_at DESC, rowid DESC LIMIT ?', Math.max(1, Math.min(100, limit)))
+  }
+
+  createErrorReport(input: Omit<ErrorReportRow, 'status' | 'reported_at' | 'created_at' | 'consent_version' | 'consented_at'> & { createdAt?: string }): ErrorReportRow {
+    const at = input.createdAt ?? nowIso()
+    this.run(
+      'INSERT INTO error_reports (ref, user_id, user_login, status, method, path, status_code, error_name, error_message, error_stack, build_version, build_commit, created_at, reported_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)',
+      input.ref, input.user_id, input.user_login, 'captured', input.method, input.path, input.status_code, input.error_name, input.error_message, input.error_stack, input.build_version, input.build_commit, at,
+    )
+    return this.errorReportByRef(input.ref)!
+  }
+
+  errorReportByRef(ref: string): ErrorReportRow | undefined {
+    return this.get<ErrorReportRow>('SELECT * FROM error_reports WHERE ref = ?', ref)
+  }
+
+  claimErrorReport(ref: string, consentVersion: string): boolean {
+    const at = nowIso()
+    return this.runChanges("UPDATE error_reports SET status = 'reported', reported_at = ?, consent_version = ?, consented_at = ? WHERE ref = ? AND status = 'captured'", at, consentVersion, at, ref) === 1
+  }
+
+  listErrorReports(limit = 20): ErrorReportRow[] {
+    return this.all<ErrorReportRow>('SELECT * FROM error_reports ORDER BY created_at DESC, rowid DESC LIMIT ?', Math.max(1, Math.min(100, limit)))
+  }
+
+  feedbackById(id: string): FeedbackRow | undefined {
+    return this.get<FeedbackRow>('SELECT * FROM feedback WHERE id = ?', id)
+  }
+
+  createFeedbackTriage(input: {
+    ref: string
+    userId: string | null
+    userLogin: string | null
+    kind: string
+    publishConsent: boolean
+    createdAt?: string
+  }): FeedbackTriageRow {
+    const at = input.createdAt ?? nowIso()
+    this.run(
+      'INSERT INTO feedback_triage (ref, user_id, user_login, kind, status, publish_consent, publish_consent_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      input.ref, input.userId, input.userLogin, input.kind, 'new', input.publishConsent ? 1 : 0, input.publishConsent ? at : null, at, at,
+    )
+    return this.feedbackTriageByRef(input.ref)!
+  }
+
+  feedbackTriageByRef(ref: string): FeedbackTriageRow | undefined {
+    return this.get<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE ref = ?', ref)
+  }
+
+  updateFeedbackTriage(ref: string, patch: Partial<Pick<FeedbackTriageRow, 'status' | 'public_summary' | 'user_message' | 'issue_url' | 'pr_url' | 'fixed_version' | 'released_version' | 'released_at' | 'last_notified_status' | 'notified_at'>>): void {
+    const entries = Object.entries(patch).filter(([, value]) => value !== undefined)
+    if (entries.length === 0) return
+    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
+    this.run(`UPDATE feedback_triage SET ${sets}, updated_at = ? WHERE ref = ?`, ...entries.map(([, value]) => value), nowIso(), ref)
+  }
+
+  addFeedbackEvent(ref: string, status: string, detail: string | null = null, actor: string | null = null): void {
+    this.run('INSERT INTO feedback_events (id, ref, status, detail, actor, created_at) VALUES (?, ?, ?, ?, ?, ?)', `fev_${randomBytes(6).toString('hex')}`, ref, status, detail, actor, nowIso())
+  }
+
+  listFeedbackEvents(ref: string, limit = 50): FeedbackEventRow[] {
+    return this.all<FeedbackEventRow>('SELECT * FROM feedback_events WHERE ref = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', ref, Math.max(1, Math.min(100, limit)))
+  }
+
+  listFeedbackTriageForUser(userId: string, limit = 10): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE user_id = ? ORDER BY updated_at DESC, rowid DESC LIMIT ?', userId, Math.max(1, Math.min(50, limit)))
+  }
+
+  markLeadDelivered(ref: string): void {
+    const at = nowIso()
+    this.run('UPDATE feedback_triage SET lead_delivered_at = ?, lead_last_error = NULL, lead_next_attempt_at = NULL, updated_at = ? WHERE ref = ?', at, at, ref)
+  }
+
+  recordLeadDeliveryFailure(ref: string, error: string, attempts: number, nextAt: string | null): void {
+    this.run('UPDATE feedback_triage SET lead_attempts = ?, lead_last_error = ?, lead_next_attempt_at = ?, updated_at = ? WHERE ref = ?', attempts, error.slice(0, 500), nextAt, nowIso(), ref)
+  }
+
+  listPendingLeadDeliveries(now: string, limit = 20): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>('SELECT * FROM feedback_triage WHERE lead_delivered_at IS NULL AND lead_attempts < 5 AND (lead_next_attempt_at IS NULL OR lead_next_attempt_at <= ?) ORDER BY created_at ASC LIMIT ?', now, Math.max(1, Math.min(100, limit)))
+  }
+
+  listFeedbackForRelease(limit = 50): FeedbackTriageRow[] {
+    return this.all<FeedbackTriageRow>("SELECT * FROM feedback_triage WHERE fixed_version IS NOT NULL AND released_version IS NULL AND user_id IS NOT NULL AND status IN ('fixed','pr_opened') ORDER BY created_at ASC LIMIT ?", Math.max(1, Math.min(100, limit)))
+  }
+
+  markFeedbackReleased(ref: string, version: string): boolean {
+    const at = nowIso()
+    return this.runChanges("UPDATE feedback_triage SET status = 'released', released_version = ?, released_at = ?, updated_at = ? WHERE ref = ? AND released_version IS NULL", version, at, at, ref) === 1
   }
 
   listNotifications(userId: string, limit = 20): NotificationRow[] {

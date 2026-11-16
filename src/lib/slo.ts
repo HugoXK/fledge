@@ -27,7 +27,7 @@ export const SLO_JOB_STATUSES = [SLO_SUCCESS_STATUS, 'failed'] as const satisfie
 // the other half of the definition, exported so the doc that names it
 // (docs/observability.md) is pinned by the same test as the selectors. `queued`
 // and `running` are absent from both lists because they are not terminal.
-export const EXCLUDED_JOB_STATUSES = ['cancelled', 'paused', 'quota_exhausted'] as const satisfies readonly JobStatus[]
+export const EXCLUDED_JOB_STATUSES = ['cancelled', 'paused', 'quota_exhausted', 'superseded'] as const satisfies readonly JobStatus[]
 
 // The six queries the report runs, each paired with the field it fills. The
 // pairing lives here, once, so the CLI cannot label one series with another: it

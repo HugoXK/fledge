@@ -81,7 +81,7 @@ test('planTick reports a schedule that has not started yet without inventing a r
 test('scheduleFromRow refuses a row it cannot schedule instead of guessing a cadence', () => {
   const base: ScheduleRow = {
     id: 'sch_1', repo_id: 'repo_1', kind: 'cron', expression: '0 9 * * *', every_ms: null,
-    timezone: 'UTC', start_at: null, end_at: null, timing_revision: 1, misfire: 'skip', grace_ms: null,
+    timezone: 'UTC', start_at: null, end_at: null, timing_revision: 1, misfire: 'skip', grace_ms: null, daily_runs: null,
     last_occurrence_at: null, created_at: '2026-01-01T00:00:00.000Z', updated_at: '2026-01-01T00:00:00.000Z',
   }
   const parsed = scheduleFromRow(base)

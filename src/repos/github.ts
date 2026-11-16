@@ -61,6 +61,24 @@ export interface PullRequestInfo {
   draft: boolean
   merged: boolean
   changedFiles: number
+  // #373: the body is what the agent already wrote about the change. The job
+  // page shows it; nothing here interprets it.
+  body: string
+}
+
+// #373: the job page shows how large the change is. The per-file walk below
+// already carries `additions` and `deletions`, so the sum is defined once, next
+// to the reader that owns the walk and its cap.
+export function summarizePullRequestFiles(
+  files: ReadonlyArray<{ additions: number; deletions: number }>,
+): { files: number; additions: number; deletions: number } {
+  let additions = 0
+  let deletions = 0
+  for (const file of files) {
+    additions += Number.isFinite(file.additions) ? file.additions : 0
+    deletions += Number.isFinite(file.deletions) ? file.deletions : 0
+  }
+  return { files: files.length, additions, deletions }
 }
 
 export interface CheckRunInfo {
@@ -506,7 +524,7 @@ export class GithubClient {
     name: string,
     input: { title: string; head: string; base: string; body: string },
   ): Promise<PullRequestInfo> {
-    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number }>(
+    const pr = await this.request<{ number: number; html_url: string; title: string; state: string; head: { ref: string; sha: string }; base: { ref: string }; mergeable?: boolean | null; mergeable_state?: string; draft?: boolean; merged?: boolean; changed_files?: number; body?: string | null }>(
       'POST',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls`,
       input,
@@ -524,6 +542,49 @@ export class GithubClient {
       draft: pr.draft === true,
       merged: pr.merged === true,
       changedFiles: Number(pr.changed_files ?? 0),
+      body: typeof pr.body === 'string' ? pr.body : '',
+    }
+  }
+
+  // #543: the gate pull request is the only place Fledge creates a branch and
+  // writes a file, so both writes live here next to the reader that found the
+  // SHA they build on. A branch is created from an explicit commit, never from a
+  // branch name: the plan's base SHA is the thing the human reviewed.
+  async createBranch(owner: string, name: string, branch: string, sha: string): Promise<{ ref: string; sha: string }> {
+    const data = await this.request<{ ref?: string; object?: { sha?: string } }>(
+      'POST',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/git/refs`,
+      { ref: `refs/heads/${branch}`, sha },
+    )
+    return {
+      ref: typeof data.ref === 'string' ? data.ref : `refs/heads/${branch}`,
+      sha: typeof data.object?.sha === 'string' ? data.object.sha : sha,
+    }
+  }
+
+  async putFile(
+    owner: string,
+    name: string,
+    input: { path: string; content: string; message: string; branch: string; sha?: string },
+  ): Promise<{ path: string; sha: string; commitSha: string }> {
+    const encodedPath = input.path.split('/').map(encodeURIComponent).join('/')
+    const body: Record<string, unknown> = {
+      message: input.message,
+      content: Buffer.from(input.content, 'utf8').toString('base64'),
+      branch: input.branch,
+    }
+    // Updating an existing file must name the blob it replaces; creating one
+    // must not, or GitHub refuses the write.
+    if (input.sha !== undefined && input.sha !== '') body.sha = input.sha
+    const data = await this.request<{ content?: { path?: string; sha?: string }; commit?: { sha?: string } }>(
+      'PUT',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/contents/${encodedPath}`,
+      body,
+    )
+    return {
+      path: typeof data.content?.path === 'string' ? data.content.path : input.path,
+      sha: typeof data.content?.sha === 'string' ? data.content.sha : '',
+      commitSha: typeof data.commit?.sha === 'string' ? data.commit.sha : '',
     }
   }
 
@@ -540,6 +601,7 @@ export class GithubClient {
       draft: boolean
       merged: boolean
       changed_files?: number
+      body?: string | null
     }>(
       'GET',
       `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/pulls/${number}`,
@@ -557,6 +619,7 @@ export class GithubClient {
       draft: pr.draft,
       merged: pr.merged,
       changedFiles: Number(pr.changed_files ?? 0),
+      body: typeof pr.body === 'string' ? pr.body : '',
     }
   }
 
@@ -834,6 +897,20 @@ export class GithubClient {
     }
     const complete = reportedFiles > 0 ? files.length >= reportedFiles : !capped
     return { files, complete }
+  }
+
+  // #373: the job page needs the change size, not the file list. A capped walk is
+  // reported as such rather than summed: a total taken from part of the change
+  // would understate it, and the page says the fact is unavailable instead.
+  async pullRequestDiffTotals(
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles = 0,
+  ): Promise<{ totals: { files: number; additions: number; deletions: number } | null; complete: boolean }> {
+    const listed = await this.listPullRequestFiles(owner, name, number, reportedFiles)
+    if (!listed.complete) return { totals: null, complete: false }
+    return { totals: summarizePullRequestFiles(listed.files), complete: true }
   }
 
   async getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null> {

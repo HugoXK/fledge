@@ -132,8 +132,8 @@ test('every card with an id is named by exactly one chip, in document order', ()
 
 test('every nav chip resolves to exactly one section in the same rendered page', () => {
   const pages = [
-    { picker: 'settings' as const, ids: ['account', 'model-providers', 'notifications', 'tokens', 'sessions'] },
-    { picker: 'admin' as const, ids: ['pending', 'users', 'jobs', 'audit', 'release', 'backups'] },
+    { picker: 'settings' as const, ids: ['account', 'model-providers', 'notifications', 'tokens', 'sessions', 'feedback'] },
+    { picker: 'admin' as const, ids: ['pending', 'users', 'jobs', 'audit', 'release', 'backups', 'operations'] },
   ]
   for (const page of pages) {
     const html = render(page.picker)

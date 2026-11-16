@@ -16,8 +16,9 @@ name: Daily minor release
 #            automatic token and opens exactly one release pull request with the
 #            team token (`RELEASE_OPEN_TOKEN`). Without that secret the night is
 #            red, pushes nothing and names the missing secret; it never reports
-#            a green blocked night after pushing a branch. It never merges or
-#            publishes a pull request. A push to `main` is eligible only when
+#            a green blocked night after pushing a branch. It enables GitHub
+#            auto-merge on the mechanical release PR; it never creates or
+#            publishes a pull request itself. A push to `main` is eligible only when
 #            the paths filter below matched a release-shaped change, so an
 #            ordinary feature merge no longer starts a full plan job
 #            (`fetch-depth: 0`, several API calls) just to report
@@ -79,6 +80,12 @@ jobs:
     # comment each depend on its answer.
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' || github.event_name == 'push'
     runs-on: ubuntu-latest
+    # #527: the opener token is an environment secret of `release`, so this job is
+    # the only reader. The `tag` job deliberately has no environment — it uses
+    # only GITHUB_TOKEN. This key may merge only after the environment exists with
+    # its own RELEASE_OPEN_TOKEN and no required reviewers; before that the nightly
+    # fails loudly at the opener step instead of opening its pull request.
+    environment: release
     timeout-minutes: 20
     permissions:
       contents: write
@@ -371,8 +378,9 @@ jobs:
       - name: Open the release pull request
         id: open
         # A dry run and a night that pushed nothing stay out of the write path.
-        # The token is the repository secret, read by the script from the
-        # environment: it never appears in an argument, an output or a log. Its
+        # The token is the `release` environment secret (#527), readable only by
+        # this job and never by the `tag` job: it never appears in an argument, an
+        # output or a log. Its
         # presence is the precondition the step above checks before anything is
         # pushed (#333), so this step runs only with the credential in place; the
         # guard below is the invariant, not a state to report. A refusal by the
@@ -402,9 +410,32 @@ jobs:
           else
             DETAIL="release-open refused: $(jq -r '.reason // "no reason recorded"' "$RUNNER_TEMP/open.json" 2>/dev/null || echo 'unreadable output')"
           fi
-          printf 'state=%s\ndetail=%s\n' "$STATE" "$DETAIL" >> "$GITHUB_OUTPUT"
+          PR="$(jq -r '.pr // ""' "$RUNNER_TEMP/open.json" 2>/dev/null || true)"
+          printf 'state=%s\ndetail=%s\npr=%s\n' "$STATE" "$DETAIL" "$PR" >> "$GITHUB_OUTPUT"
           echo "- release pull request: **${STATE}** — ${DETAIL}" >> "$GITHUB_STEP_SUMMARY"
           exit "$CODE"
+
+      - name: Enable auto-merge on the release pull request
+        # Only the mechanical release PR is auto-merged. The PR is opened by the
+        # team token, and the required checks (ci-ok, review-gate, pr-lint) still
+        # decide when GitHub may squash it; this step only opts it in.
+        if: ${{ inputs.dry_run != true && (steps.open.outputs.state == 'opened' || steps.open.outputs.state == 'reused') }}
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_OPEN_TOKEN }}
+          PR: ${{ steps.open.outputs.pr }}
+          PUSHED: ${{ steps.push.outputs.pushed }}
+        run: |
+          set -euo pipefail
+          if [ -z "$PR" ] || [ -z "$PUSHED" ]; then
+            echo "::error::the release pull request or its head SHA is missing; refusing to enable auto-merge"
+            exit 1
+          fi
+          if gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest != null' | grep -q true; then
+            echo "auto-merge already enabled on #${PR}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          gh pr merge "$PR" --auto --squash --match-head-commit "$PUSHED" --repo "$GITHUB_REPOSITORY"
+          echo "auto-merge enabled on #${PR} at ${PUSHED}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on #80
         # `always()` so a refused opener still says why on #80: the open state is

@@ -30,9 +30,23 @@ export interface Config {
   }
   // How long a GitHub re-authentication stays "recent" for destructive actions.
   recentAuthMinutes: number
+  // #690: how long after its `trial.expired` row a never-used rejected account is
+  // erased. The sweep's purge phase reads this; 72 hours is the host-side cron it
+  // replaces.
+  trialPurgeGraceHours: number
+  /** #803: promote a discovered issue into one proposed work item. Off by default. */
+  autoPromoteDiscovery: boolean
+  /** #803: maximum automatic discovery promotions per UTC day; 0 disables them. */
+  autoPromoteDiscoveryDailyCap: number
   // #708: the per-class windows mutating routes take. A route names its class;
   // the numbers live here so a deployment tightens a limit without a rebuild.
   rateLimit: RateLimitBudgets
+  // #637: the comment names that count as a trigger. `@<name>` in an issue or
+  // pull request comment starts a review; a deployment renames or adds names
+  // here rather than in code, and an empty list disables the trigger.
+  triggers: {
+    mentions: string[]
+  }
   // #540: how far the console adapters go for commands added after slice 1.
   // `off` (the default) is the route that existed before the contract.
   managementService: ManagementServiceMode
@@ -62,6 +76,8 @@ export interface Config {
     transport: MailTransport
     from: string
     adminEmail: string
+    /** #786: feedback and error reports; empty falls back to ADMIN_EMAIL. */
+    feedbackEmail: string
     /** #353: how long one repository's failure mail stays coalesced, in minutes. */
     jobEmailCooldownMinutes: number
     smtp: {
@@ -85,6 +101,16 @@ export interface Config {
     usdCny: number
     /** Below this remaining balance the first-run checklist recommends an own model. */
     comfortCny: number
+  }
+  // #814: the server-deployed FlyBot's Fledge Lead. `leadRepoId` uses a repo
+  // Fledge already manages; the bridge trio targets an externally managed
+  // instance. `publicRepo` is the sanitized issue target the Lead may write to.
+  feedback: {
+    leadRepoId: string
+    leadBridgeUrl: string
+    leadBridgeToken: string
+    leadSessionId: string
+    publicRepo: string
   }
   runner: {
     mode: RunnerMode
@@ -281,6 +307,9 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
+    trialPurgeGraceHours: Math.max(1, number('TRIAL_PURGE_GRACE_HOURS', 72)),
+    autoPromoteDiscovery: bool('AUTO_PROMOTE_DISCOVERY', false),
+    autoPromoteDiscoveryDailyCap: Math.max(0, number('AUTO_PROMOTE_DISCOVERY_DAILY_CAP', 3)),
     rateLimit: {
       login: {
         max: Math.max(1, number('RATE_LIMIT_LOGIN_MAX', DEFAULT_RATE_LIMIT_BUDGETS.login.max)),
@@ -294,6 +323,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         max: Math.max(1, number('RATE_LIMIT_EXPENSIVE_MAX', DEFAULT_RATE_LIMIT_BUDGETS.expensive.max)),
         windowMs: Math.max(1_000, number('RATE_LIMIT_EXPENSIVE_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.expensive.windowMs)),
       },
+    },
+    triggers: {
+      mentions: text('FLEDGE_MENTION_NAMES', 'fledge')
+        .split(',')
+        .map((name) => name.trim())
+        .filter((name) => name !== ''),
     },
     managementService: parseManagementService(text('MANAGEMENT_SERVICE', 'off')),
     tokenEncryptionKey: encryptionKey,
@@ -319,6 +354,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       transport: (text('MAIL_TRANSPORT', 'console') as MailTransport) || 'console',
       from: text('MAIL_FROM', 'no-reply@example.com'),
       adminEmail: text('ADMIN_EMAIL', 'admin@example.com'),
+      feedbackEmail: text('FEEDBACK_EMAIL', '') || text('ADMIN_EMAIL', 'admin@example.com'),
       // #353: the window that keeps a failing repository from mailing once per run.
       jobEmailCooldownMinutes: Math.max(0, number('JOB_EMAIL_COOLDOWN_MINUTES', 60)),
       smtp: {
@@ -340,6 +376,13 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       initialCny: number('INITIAL_QUOTA_CNY', 1),
       usdCny: number('USD_CNY_RATE', 7.2),
       comfortCny: number('PLATFORM_QUOTA_COMFORT_CNY', 50),
+    },
+    feedback: {
+      leadRepoId: text('FLEDGE_LEAD_REPO_ID'),
+      leadBridgeUrl: text('FLEDGE_LEAD_BRIDGE_URL').replace(/\/$/, ''),
+      leadBridgeToken: text('FLEDGE_LEAD_BRIDGE_TOKEN'),
+      leadSessionId: text('FLEDGE_LEAD_SESSION_ID'),
+      publicRepo: text('FEEDBACK_PUBLIC_REPO', 'HugoXK/fledge'),
     },
     runner: {
       mode: (text('RUNNER_MODE', 'mock') as RunnerMode) || 'mock',

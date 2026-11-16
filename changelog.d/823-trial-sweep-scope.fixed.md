@@ -1,0 +1,1 @@
+A trial sweep started with `--login` now keeps its purge phase inside that account: it no longer erases other rejected accounts that are past the purge grace window, and it prints the scope it applies before any deletion runs. The unscoped hourly sweep is unchanged.

@@ -232,6 +232,13 @@ const MESSAGES: Record<string, string> = {
   '这封邮件刚刚发送过，24 小时内不重复发送。': 'This email was sent moments ago; it is not sent again within 24 hours.',
   '重新检查失败。': 'The re-check failed.',
   '验证任务启动失败。': 'Could not start the verification job.',
+  '反馈已保存，但通知邮件发送失败；请稍后再试。': 'Feedback was saved, but the notification email could not be sent; try again later.',
+  '反馈已发送，谢谢。': 'Feedback sent, thank you.',
+  '请填写反馈内容。': 'Enter your feedback message.',
+  '报告已发送': 'Report sent',
+  '这个报告编号不存在。': 'That report reference does not exist.',
+  '需要授权': 'Authorization required',
+  '请先勾选“我已知晓并授权 Fledge 平台读取这些失败数据”，再提交报告。': 'Select “I understand and authorize Fledge to read this failure data” before sending the report.',
 }
 
 export function localizeMessage(locale: Locale, message: string | undefined): string | undefined {
@@ -266,12 +273,22 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   // #409: the per-job budget stop writes its reason with the submitted cost and
   // the repository budget interpolated, and `budgetStop` strips the code prefix
   // afterwards — so the arm has to keep the prefix to stay a drop-in localiser.
-  const jobBudgetStop = /^JOB_BUDGET_(PAUSED|CANCELLED): 单任务成本 ([\d.]+) 元已超过预算 ([\d.]+) 元。提高单任务预算后(从断点恢复，或)?重新开始任务。$/.exec(message)
+  // #697: the same sentence carries the scope that fired, so the word before
+  // 成本 now names it; a row written before this change says 单任务 and still
+  // matches.
+  const jobBudgetStop = /^JOB_BUDGET_(PAUSED|CANCELLED): (单任务|仓库|用户)成本 ([\d.]+) 元已超过预算 ([\d.]+) 元。提高(?:单任务|仓库|用户)预算后(从断点恢复，或)?重新开始任务。$/.exec(message)
   if (jobBudgetStop !== null) {
     const paused = jobBudgetStop[1] === 'PAUSED'
     const action = paused ? 'Resume from the checkpoint once the budget is raised, or start the job again.' : 'Start the job again once the budget is raised.'
-    return `JOB_BUDGET_${jobBudgetStop[1] ?? ''}: this job cost ${jobBudgetStop[2] ?? ''} CNY, over its ${jobBudgetStop[3] ?? ''} CNY per-job budget. ${action}`
+    // The scope word the service wrote, mapped to the English subject. Kept here
+    // rather than imported so a renamed scope word fails this arm loudly.
+    const scope = jobBudgetStop[2] === '仓库' ? 'this repository' : jobBudgetStop[2] === '用户' ? 'this user' : 'this job'
+    return `JOB_BUDGET_${jobBudgetStop[1] ?? ''}: ${scope} cost ${jobBudgetStop[3] ?? ''} CNY, over its ${jobBudgetStop[4] ?? ''} CNY budget. ${action}`
   }
+  const reportAlready = /^这个报告（(.*)）已经发送过了，谢谢。$/.exec(message)
+  if (reportAlready !== null) return `This report (${reportAlready[1]}) was already sent, thank you.`
+  const reportThanks = /^谢谢。编号：(.*)。开发者会查看这个错误的类型、页面和时间；报告不包含你的输入、token 或请求体。$/.exec(message)
+  if (reportThanks !== null) return `Thank you. Reference: ${reportThanks[1]}. The maintainer will see the error type, page and time; the report does not include your input, token or request body.`
   const modelsSaved = /^(\d+) 个模型已通过测试并保存(?:；失败：([\s\S]+))?$/.exec(message)
   if (modelsSaved !== null) {
     const count = modelsSaved[1] ?? '0'

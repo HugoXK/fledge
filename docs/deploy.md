@@ -35,6 +35,10 @@ Key settings:
 | `MAIL_TRANSPORT` | `smtp` in production, `console` for a local demo |
 | `SMTP_HOST/PORT/SECURE/USER/PASS` | For yeah.net: `smtp.yeah.net`, 465, secure |
 | `MAIL_FROM` / `ADMIN_EMAIL` | `fledge@hugoxk.online` / `admin@example.com` |
+| `FEEDBACK_EMAIL` | Optional feedback/error-report destination; defaults to `ADMIN_EMAIL` |
+| `FLEDGE_LEAD_REPO_ID` | Repo connected to Fledge whose FlyBot Lead triages feedback |
+| `FLEDGE_LEAD_BRIDGE_URL/TOKEN/SESSION_ID` | Direct bridge target when the Fledge Lead is external |
+| `FEEDBACK_PUBLIC_REPO` | Sanitized public issue target; defaults to `HugoXK/fledge` |
 | `PLATFORM_LLM_BASE_URL` | OpenAI-compatible `/v1` endpoint |
 | `PLATFORM_LLM_KEY` | Platform key; never commit it |
 | `INITIAL_QUOTA_CNY` | Default 1 |
@@ -95,8 +99,9 @@ The script refuses while a job is active unless `--force` is passed. It updates
 `bridge.env`, `repo_instances.bridge_token_enc` and the matching `api_tokens` row
 and restarts each bridge. The GitHub PAT used by the development routine is not
 managed by this script: create a new classic PAT with `repo` scope in GitHub
-settings, run `NEW_GITHUB_TOKEN=... node scripts/rotate-github-token.mjs`, and
-revoke the old token.
+settings, run `node scripts/rotate-github-token.mjs --token-file <0600 file>`
+(or pipe the token with `--token-file -`), and revoke the old token. The token is
+never passed on the command line or in the environment.
 
 ## 3. SMTP
 
@@ -205,6 +210,16 @@ and approve; 120/min across credential, callback, webhook, inbound and metrics).
 
 The volume `fledge-data` holds the SQLite database and the console outbox.
 
+Both stages of the image pin `node:22-alpine` by digest (`Dockerfile`), so a tag
+that moves cannot change the toolchain under a build whose diff says nothing
+about it. Update the pin deliberately: resolve the digest a fresh pull reports
+for `22-alpine`, replace both `FROM` lines together, and keep the readable tag in
+the reference. `test/dockerfilePins.test.ts` fails on a `FROM` without
+`@sha256:<64 lowercase hex>` and on two stages pinned to different digests, so a
+dropped digest is a red suite rather than a silent tag. Dependabot's Docker
+ecosystem is the next slice; until it lands, the bump is manual and still needs a
+rebuild, the image scan and the smoke check.
+
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
 (`Dockerfile`, runtime stage). The console reads them for the footer version and
 the `/admin` release card, which states the running version, the newest changelog
@@ -246,6 +261,20 @@ release in the same week bumps the patch (`0.4.0 -> 0.4.1`). The planner reads
 the last tag's commit time and the workflow's run time; if either is unreadable
 it falls back to the minor, which is the first-release behaviour.
 
+#### Reliable slot trigger
+
+GitHub's `schedule` event is best-effort: on 2026-11-14 the `14:30Z` slot
+produced a run at `19:24Z`. `scripts/trigger-release.mjs` is the external
+trigger. A host cron or a Cloudflare Worker calls it at `14:30Z` (22:30
+Asia/Shanghai) with `GITHUB_REPOSITORY` and an Actions-write `GITHUB_TOKEN` in a
+`0600` env file; the script calls the `daily-release.yml` workflow_dispatch with
+`dry_run=false` and never prints the token. GitHub's `schedule` and the `15:30Z`
+catch-up stay as the fallback, and `release-trigger` makes a late run a no-op
+once the slot is filled. Install it only on a host whose clock is trustworthy
+(see #758) or on an NTP-backed scheduler; the example is
+`deploy/release-trigger.cron.example`. Raise one alert if no plan exists by
+`15:00Z`.
+
 A release that changes user-facing behaviour updates `README.md`,
 `README.zh.md` and the relevant `docs/` page in the same pull request. The
 documentation site builds from this repository's `README.md`, `README.zh.md` and
@@ -279,11 +308,24 @@ backstop: it dispatches `ci.yml` when an open same-repo pull request has no `CI`
 run at all at its head SHA, and it does not replace opening the PR with a real
 identity.
 
-The opener runs on the repository secret **`RELEASE_OPEN_TOKEN`** (Settings →
-Secrets and variables → Actions). Set it to a token for the team account —
-never the Reviewer's `HugoXK-bot` account — scoped to this repository alone, with
-`Contents: read` and `Pull requests: write` — it does not need push, because the
-workflow pushes `release/v<next>` before the opener runs. The opener reads
+The opener runs on the environment secret **`RELEASE_OPEN_TOKEN`** of the
+`release` environment (Settings → Environments → `release` → Environment
+secrets), not on a repository secret: the `release` job in
+`.github/workflows/daily-release.yml` is the only job that declares
+`environment: release`, so no other workflow on `main` can read the token, and
+the `tag` job gets no environment at all. Set it to a token for the team
+account — never the Reviewer's `HugoXK-bot` account — scoped to this repository
+alone, with `Contents: read` and `Pull requests: write` — it does not need push,
+because the workflow pushes `release/v<next>` before the opener runs.
+
+The environment must carry **no required reviewers**: the nightly runs
+unattended, and a protection rule blocks it exactly like a missing secret. Order
+matters too — the environment and its secret have to exist before the workflow
+change that names it merges, because a job that declares an environment reads
+repository secrets too until an environment secret of the same name overrides
+them. Since the repository secret is deleted in that same owner step, a nightly
+that runs between the two would fail the opener with `RELEASE_OPEN_TOKEN is not
+set`: loudly, before anything is pushed, and with nothing posted on #80. The opener reads
 `GET /user` and
 refuses a credential whose login is the review policy's `requiredPass`, so the
 reviewer account cannot open the release pull request even if it were installed
@@ -353,6 +395,62 @@ before the ruleset existed still falls back to the pull request head.
 
 `--fixtures <file>` replays a recorded chain instead of reading the API, which is
 how the test suite exercises the same code path.
+
+### Release tag provenance
+
+A `v*` tag is a published name: whatever it points at becomes an image, an SBOM,
+a GitHub release and, on a host, the next deployed version. The ruleset
+`release tag protection` (id `27014081`) blocks deletion and non-fast-forward
+updates of `v*`. Those two rules stop a tag being moved or removed; neither
+stops a **new** one being created, so anyone with write access can still push
+`v9.9.9`. Making that half true is a ruleset change — repository state, not a
+commit — so it is recorded here as an owner action, and `release.yml` verifies
+what a commit can.
+
+**The owner action, once.** In Settings → Rules → `release tag protection`,
+target `v*`, add the **Create** rule beside the existing deletion and
+non-fast-forward rules, with a bypass list holding exactly the release identity:
+the GitHub Actions integration (id `15368`) and, if manual tags are still
+wanted, the repository role `Admin`. Nothing else belongs in that list — a bypass
+is what makes a rule stop applying, so every actor there can create a version
+tag. The API form is `PUT /repos/{owner}/{repo}/rulesets/27014081` with the
+current rules, `{ "type": "creation" }` added, and `bypass_actors` naming those
+two. The tag job keeps working because it writes the tag with `GITHUB_TOKEN`,
+which is that integration. Keep the deletion and non-fast-forward rules as they
+are.
+
+**What `release.yml` verifies before it publishes.** The tag object is read from
+the checkout the run already fetched; the one API read is the release pull
+request behind the tag's commit. A tag that fails any check is a red run whose
+message names the field, and the publish stops before anything is built, pushed
+or released:
+
+- the tag is an **annotated object**, not a lightweight ref, so it carries the
+  tagger and message the next two checks read;
+- its tagger is the release routine (`github-actions[bot]`) or a documented owner
+  identity (`HugoXK`, `Day Dreamer` — the names on the tags created by hand
+  before the routine existed, which are still re-published after a bad image);
+- it points at a commit that is an **ancestor of `main`** — this check is
+  unchanged and still refuses a tag off the release line;
+- when the tagger is the routine, that commit is the one a merged pull request
+  titled `release: v<version>` produced: the pull request's `merge_commit_sha`
+  must equal the tag's commit, so a tag made by hand cannot borrow the routine's
+  identity without merging a release pull request.
+
+The tagger field is git text, not an authentication claim — anyone can write
+`Day Dreamer` into a tag object. It is checked because, together with the
+`creation` rule, it records which identity produced a tag that exists. The
+enforcement of *who may create* is the ruleset; this check is what keeps a tag
+that got in another way from publishing.
+
+One reading worth stating: the card asks for a tag that points at "a merge
+commit on `main`". That is verified as "points at the commit its release pull
+request merged", not as "has two parents". Every tag this repository has released
+points at a one-parent squash commit (`v0.3.6` → `aa83dc0`, one parent), so a
+two-parent check would refuse every real release.
+
+Not in this slice: no signed-commit requirement (a non-goal on the card) and no
+change to the release cadence or the tag name.
 
 ### Automatic tag deployment and verification
 
@@ -553,6 +651,17 @@ server {
   }
 }
 ```
+
+CI syntax-checks the example on every diff that touches `deploy/`: `deploy-check`
+runs `scripts/check-nginx-config.sh`, which renders the example with generated
+certificates and loopback listens and parses it with `nginx`. The wrapper it
+renders, `deploy/nginx.check.conf`, declares `pid <tmp>/nginx.pid;` before
+`events {}` because `nginx -t` opens the pid path while it initialises the cycle,
+and an unprivileged runner cannot open nginx's compiled-in `/run/nginx.pid`; the
+result is a failed step and a red `ci-ok` (#795). When nginx is not installed on
+the runner the step writes a gap to the job summary instead of passing silently.
+With nginx installed, `bash scripts/check-nginx-config.sh` runs the same check
+locally and prints the parse output.
 
 The app trusts only the hops named in `TRUST_PROXY`, never every hop.
 `$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually
@@ -813,6 +922,49 @@ How it works and how to read it:
 - **RTO** is the measured restore-and-verify time: how long a real restore would
   take to produce a verified copy. **RPO** is the age of the copy that restored:
   how much data a real loss would cost. Record both after every drill.
+
+### Previous-release restore check
+
+`db:restore-drill` proves that a copy *this* build wrote can be restored; it
+cannot prove that a database the *previous release* wrote still opens here. A
+column that is renamed or dropped without a migration passes the drill and
+breaks a real upgrade, so a small fixture written by an older release is kept and
+restored on every run.
+
+- Fixture: `test/fixtures/prev-release/fledge.db.gz` (one user, one repository,
+  one finished job; 696,320 bytes of SQLite gzipped to ~14 KB) with
+  `provenance.json` beside it.
+- The check: `npm run build && npm run db:prev-release:restore`. The suite runs
+  the same function on every `npm run check`, so it also runs on every PR and on
+  `main`; the command is for an operator who wants the sentence without the whole
+  suite. It exits 0 with `previous-release restore: ok <tag> schema <from> ->
+  <to>, N tables, M rows` and exits 1 with `FAIL (<code>) — <reason>` otherwise.
+- What it proves: the fixture decompresses to the bytes `provenance.json`
+  records; its schema version is **older** than `SCHEMA_VERSION` (a fixture
+  regenerated from the current build is refused as `not-older`, because it would
+  prove nothing); the current `Store` opens it and migrates it to exactly
+  `SCHEMA_VERSION`; every table and every column the fixture recorded still
+  exists (`schema-lost` names the first five that do not, which is what a rename
+  without a migration looks like); the row counts do not shrink (`rows-lost`);
+  and the repository's encrypted credential decrypts with the fixture key
+  (`key-mismatch` otherwise — a wrong or lost key never reports a pass).
+- The fixture key is not a secret: `Buffer.alloc(32, 7)`, base64-encoded, named in
+  `src/lib/prevRelease.ts`. The fixture holds no real token, no production data
+  and no live database; it is generated from a release tag's own `Store`, never
+  from a backup.
+- Regenerate it when a release is cut, so the newest tag becomes the fixture's
+  tag and the check exercises the migration from that schema:
+
+  ```sh
+  npm run db:prev-release:fixture -- --tag v0.3.6
+  ```
+
+  That command creates a git worktree at the tag, copies
+  `scripts/fixtures/build-prev-release-db.ts` into it, links this clone's
+  `node_modules`, writes the database with *that* build, compacts it to one
+  journal-delete file, gzips it, and rewrites `provenance.json` (tag, commit,
+  sha256 of the decompressed bytes, schema version, row counts, column lists).
+  It writes only those two files and removes its worktree afterwards.
 
 ### Restore drill log
 
