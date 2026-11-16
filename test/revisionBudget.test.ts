@@ -4,6 +4,7 @@ import { Store } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
 import { MemoryMailer, makeUser, testConfig } from './helpers.js'
 import { DEFAULT_MAX_REVISIONS, classifyReviewAuthor, decideRevision, parseMaxRevisions, revisionCounterKey } from '../src/lib/revisionBudget.js'
+import { sha256Hex } from '../src/lib/secrets.js'
 
 // #637: a review that requests changes may start a fix, but a review bot that
 // keeps reviewing its own loop must not spend budget without a bound. The rule
@@ -154,4 +155,132 @@ test('the bot counter is per pull request and the reviewer counter is per head',
     revisionCounterKey('reviewer', 'repo_x', pr, 'bbb'),
     'the platform reviewer resets when the head it reviewed moves',
   )
+})
+
+// #637: the reviewer's probe parked a request behind a running review, released
+// it, and the fix started with no counter written. A parked request that replays
+// must be decided and counted exactly like one that starts immediately.
+function activeReview(store: Store, repo: ReturnType<typeof repoFor>, id: string): string {
+  store.createJob({
+    id, repoId: repo.id, userId: repo.user_id, trigger: 'schedule', goal: 'review the pull request',
+    callbackHash: 'review-callback', platformTokenHash: '', kind: 'review',
+  })
+  store.updateJob(id, { status: 'running' })
+  return id
+}
+
+test('a review parked behind a running review counts the fix its replay starts', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), RUNNER, new MemoryMailer())
+  const prUrl = 'https://github.com/o/parked/pull/7'
+  try {
+    const repo = repoFor(store, 'repo_parked_review')
+    const reviewJob = activeReview(store, repo, 'job_parked_review')
+    const parked = await jobs.followUp(repo, {
+      prUrl, branch: 'fledge/parked', reason: 'review requested changes', headSha: 'aaa', reviewAuthor: 'reviewer',
+    })
+    assert.equal(parked.ok, false)
+    assert.equal(parked.code, 'JOB_ACTIVE', 'the request parks behind the running review')
+    assert.equal(store.getSetting(revisionCounterKey('reviewer', repo.id, prUrl, 'aaa')), undefined, 'parking spends nothing')
+
+    store.updateJob(reviewJob, { status: 'succeeded' })
+    await jobs.tick()
+    const fix = store.listJobsPageForUser(repo.user_id, 50, 0).find((job) => job.trigger === 'followup')
+    assert.ok(fix !== undefined, 'the replay starts the fix')
+    assert.equal(
+      store.getSetting(revisionCounterKey('reviewer', repo.id, prUrl, 'aaa')),
+      '1',
+      'the replay counts the fix it started; losing the author made every parked fix free',
+    )
+  } finally {
+    store.close()
+  }
+})
+
+test('a parked review replays through the budget, not around it', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), RUNNER, new MemoryMailer())
+  const prUrl = 'https://github.com/o/parked-over/pull/8'
+  try {
+    const repo = repoFor(store, 'repo_parked_over')
+    const key = revisionCounterKey('reviewer', repo.id, prUrl, 'bbb')
+    store.setSetting(`repo:${repo.id}:max_revisions`, '1')
+    const reviewJob = activeReview(store, repo, 'job_parked_over')
+    const parked = await jobs.followUp(repo, {
+      prUrl, branch: 'fledge/parked-over', reason: 'review requested changes', headSha: 'bbb', reviewAuthor: 'reviewer',
+    })
+    assert.equal(parked.code, 'JOB_ACTIVE', 'the request parks while the counter is still inside the limit')
+    // The ceiling is reached at this head before the parked request replays:
+    // whichever fix spends the last revision, the replay must see it.
+    store.setSetting(key, '1')
+
+    store.updateJob(reviewJob, { status: 'succeeded' })
+    await jobs.tick()
+    assert.equal(
+      store.listJobsPageForUser(repo.user_id, 50, 0).some((job) => job.trigger === 'followup'),
+      false,
+      'the replay must not start a fix the budget refuses',
+    )
+    const refusals = store.listAuditPage(50, 0).filter((row) => row.action === 'trigger.revision_refused')
+    assert.equal(refusals.length, 1, 'the replay records the refusal it decided on')
+    assert.match(refusals[0]?.detail ?? '', /author=reviewer/, 'the refusal names the class the replay recovered')
+  } finally {
+    store.close()
+  }
+})
+
+test('the review job own follow-ups park as the platform reviewer and are counted on replay', async () => {
+  const store = new Store(':memory:')
+  const config = testConfig()
+  const jobs = new Jobs(store, config, RUNNER, new MemoryMailer())
+  const secret = 'review-callback-secret'
+  try {
+    const repo = repoFor(store, 'repo_review_callback')
+    const prUrl = `https://github.com/${repo.owner}/${repo.name}/pull/9`
+    const id = 'job_review_callback'
+    store.createJob({
+      id, repoId: repo.id, userId: repo.user_id, trigger: 'schedule', goal: 'review the pull request',
+      callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', baseBranch: 'main',
+    })
+    store.updateJob(id, { status: 'running', branch: 'fledge/callback', started_at: new Date().toISOString() })
+    const result = await jobs.handleCallback(id, secret, {
+      status: 'succeeded',
+      followUps: [{ prUrl, branch: 'fledge/callback', headSha: 'ccc' }],
+    })
+    assert.equal(result.ok, true, result.error ?? 'no error')
+    const fix = store.listJobsPageForUser(repo.user_id, 50, 0).find((job) => job.trigger === 'followup')
+    assert.ok(fix !== undefined, 'the review follow-up starts its fix')
+    assert.equal(
+      store.getSetting(revisionCounterKey('reviewer', repo.id, prUrl, 'ccc')),
+      '1',
+      'the review job speaks as the platform reviewer, so its follow-up spends the reviewer budget',
+    )
+  } finally {
+    store.close()
+  }
+})
+
+test('a parked row written before the author lived at the top level still replays through the budget', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), RUNNER, new MemoryMailer())
+  const prUrl = 'https://github.com/o/legacy/pull/10'
+  try {
+    const repo = repoFor(store, 'repo_legacy_parked')
+    // The shape the previous release wrote: the author only inside `requests`,
+    // while the replay reads the row as one follow-up request.
+    store.setSetting(`pending_followup:${repo.id}:${prUrl}:ddd`, JSON.stringify({
+      prUrl, branch: 'fledge/legacy', reason: 'review requested changes', headSha: 'ddd',
+      requests: [{ reason: 'review requested changes', reviewAuthor: 'reviewer' }],
+    }))
+    await jobs.tick()
+    const fix = store.listJobsPageForUser(repo.user_id, 50, 0).find((job) => job.trigger === 'followup')
+    assert.ok(fix !== undefined, 'the parked row from before the upgrade still starts its fix')
+    assert.equal(
+      store.getSetting(revisionCounterKey('reviewer', repo.id, prUrl, 'ddd')),
+      '1',
+      'the replay recovers the author from the per-request copies instead of spending nothing',
+    )
+  } finally {
+    store.close()
+  }
 })

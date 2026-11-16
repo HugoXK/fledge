@@ -1703,7 +1703,13 @@ three by default, overridable per repository with the setting
 budget, so a repeated request never spends it; the count follows the fix that
 actually starts, so a request parked behind a running job counts when it is
 replayed rather than when it parks, and several updates merged into one job
-count once. A refusal writes one `trigger.revision_refused` row carrying the
+count once. The parked row carries the author at its top level, and the review
+job's own follow-ups park as the platform reviewer, so a replayed request is
+decided exactly like one that starts on arrival. When several requests merge
+into one row, a person's request wins — a merged fix is never refused by a bot's
+budget — and otherwise the strictest bot class present is charged, so a
+third-party bot's single fix is not hidden behind the platform's larger
+allowance. A refusal writes one `trigger.revision_refused` row carrying the
 actor class, the head and the reason, and no job.
 
 The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.

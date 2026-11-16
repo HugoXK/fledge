@@ -285,6 +285,22 @@ function pendingFollowUpKey(repoId: string, prUrl: string, headSha: string): str
   return `pending_followup:${repoId}:${prUrl}:${headSha}`.slice(0, 300)
 }
 
+// #637: one parked row may hold several requests, but the replay starts one job,
+// so the row carries one author. A person's request wins: merging must never let
+// a budget refuse a job the budget would have allowed on its own. Otherwise the
+// strictest bot class present wins, so a third-party bot's single fix is charged
+// to it rather than hidden behind the platform's own larger allowance.
+function parkedReviewAuthor(requests: ParkedFollowUpRequest[]): ReviewAuthor | undefined {
+  const authors = new Set<ReviewAuthor>()
+  for (const request of requests) {
+    if (request.reviewAuthor !== undefined) authors.add(request.reviewAuthor)
+  }
+  if (authors.has('human')) return 'human'
+  if (authors.has('bot')) return 'bot'
+  if (authors.has('reviewer')) return 'reviewer'
+  return undefined
+}
+
 function mergeParkedFollowUp(existingJson: string | undefined, input: FollowUpRequest): string {
   const requests: ParkedFollowUpRequest[] = []
   if (existingJson !== undefined) {
@@ -313,6 +329,7 @@ function mergeParkedFollowUp(existingJson: string | undefined, input: FollowUpRe
   if (!duplicate) requests.push(incoming)
   const reasons = [...new Set(requests.map((request) => request.reason))]
   const instructions = requests.flatMap((request) => (request.instruction === undefined || request.instruction === '' ? [] : [request.instruction]))
+  const author = parkedReviewAuthor(requests)
   const merged = {
     prUrl: input.prUrl,
     branch: input.branch,
@@ -321,6 +338,10 @@ function mergeParkedFollowUp(existingJson: string | undefined, input: FollowUpRe
     headSha: input.headSha,
     ...(instructions.length === 0 ? {} : { instruction: instructions.join(' — also: ') }),
     ...(input.trigger === undefined ? {} : { trigger: input.trigger }),
+    // #637: the replay reads this row as a `FollowUpRequest`, so the author has
+    // to be at the top level; keeping it only inside `requests` made every
+    // parked fix start with no budget decision and no counter.
+    ...(author === undefined ? {} : { reviewAuthor: author }),
     requests,
   }
   return JSON.stringify(merged)
@@ -2777,7 +2798,12 @@ export class Jobs {
       this.store.deleteSetting(row.key)
       let input: FollowUpRequest
       try {
-        input = JSON.parse(row.value) as typeof input
+        const parsed = JSON.parse(row.value) as FollowUpRequest & { requests?: ParkedFollowUpRequest[] }
+        // #637: a row parked by the previous release carried the author only per
+        // request, and the replay must not lose it: without this a request parked
+        // before the upgrade starts its fix with no budget decision at all.
+        const author = parsed.reviewAuthor ?? (Array.isArray(parsed.requests) ? parkedReviewAuthor(parsed.requests) : undefined)
+        input = author === undefined ? parsed : { ...parsed, reviewAuthor: author }
       } catch {
         continue
       }
@@ -3820,6 +3846,11 @@ export class Jobs {
         // not a type error, it is a silent loss for every follow-up parked behind
         // a review job.
         ...(follow.instruction === undefined ? {} : { instruction: follow.instruction }),
+        // #637: these follow-ups are the platform reviewer's own request — the
+        // review job posts as the installation's `<slug>[bot]` account — so they
+        // spend the reviewer budget like the webhook's request would. Without
+        // this the normal review path never reached `followUp` with an author.
+        reviewAuthor: 'reviewer' as const,
       }
       // #637: a follow-up the review itself asked for parks in the same slot as
       // an update that arrived mid-review, keyed by pull request and head, so the
