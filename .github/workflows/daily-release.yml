@@ -356,6 +356,19 @@ jobs:
           echo "opener=ready version=${DECIDE_VERSION}" >> "$GITHUB_STEP_SUMMARY"
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
+      - name: Check the UI mock snapshot
+        # #777: the mock is a release artifact, not a per-PR gate. The nightly
+        # refuses to plan a release whose views moved without the snapshot; the
+        # release routine regenerates it in a docs pull request.
+        if: ${{ inputs.dry_run != true && steps.opener.outputs.ready == 'true' }}
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          if ! npm run mock:check; then
+            echo "::error::mock/ is stale: run npm run mock:snapshot, commit mock/ in a docs pull request, and re-run the release"
+            exit 1
+          fi
+
       - name: Push the release branch
         id: push
         # A manual dispatch defaults to a dry run: it writes the summary and the
