@@ -462,6 +462,9 @@ export interface JobRow {
   plan_allow_paths: string | null
   plan_deny_paths: string | null
   base_sha: string | null
+  // #366: one run's delta against the previous run's base, as JSON. Additive;
+  // NULL for every run that predates it and for a first run on a repository.
+  temporal_json: string | null
   callback_fingerprint: string | null
   path_guard_json: string | null
   verification_json: string | null
@@ -1308,6 +1311,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   plan_allow_paths TEXT,
   plan_deny_paths TEXT,
   base_sha TEXT,
+  temporal_json TEXT,
   callback_fingerprint TEXT,
   path_guard_json TEXT,
   verification_json TEXT,
@@ -2708,6 +2712,7 @@ export class Store {
     if (!jobColumns.has('plan_allow_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_allow_paths TEXT')
     if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
     if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
+    if (!jobColumns.has('temporal_json')) this.run('ALTER TABLE jobs ADD COLUMN temporal_json TEXT')
     if (!jobColumns.has('callback_fingerprint')) this.run('ALTER TABLE jobs ADD COLUMN callback_fingerprint TEXT')
     if (!jobColumns.has('path_guard_json')) this.run('ALTER TABLE jobs ADD COLUMN path_guard_json TEXT')
     if (!jobColumns.has('verification_json')) this.run('ALTER TABLE jobs ADD COLUMN verification_json TEXT')
@@ -5872,6 +5877,24 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', repoId, limit)
   }
 
+  // #366: the base SHA of the newest finished job that recorded one. A window
+  // over `listJobsForRepo` would answer "no previous run" on a busy repository
+  // whose newest twenty rows are unfinished, so the question is asked directly.
+  //
+  // #839 gives a mention-replaced job `status = 'superseded'` *and* a
+  // `finished_at` even though it never ran, so `finished_at IS NOT NULL` alone
+  // would answer with a base that produced no work — and the goal would print
+  // "N commits ahead" for a run that never happened. A superseded row is not a
+  // previous run in either direction: it is not an answer on its own, and it
+  // does not hide a real finished run beside it.
+  latestFinishedBaseSha(repoId: string): string | null {
+    const row = this.get<{ base_sha: string | null }>(
+      "SELECT base_sha FROM jobs WHERE repo_id = ? AND finished_at IS NOT NULL AND status != 'superseded' AND base_sha IS NOT NULL AND base_sha != '' ORDER BY finished_at DESC, rowid DESC LIMIT 1",
+      repoId,
+    )
+    return row?.base_sha ?? null
+  }
+
   // #360 review: a work item's job is looked up by the item, not through a window
   // of the repository's newest jobs. The window said "no job is attached" for a
   // work item whose job was older than the limit — a false statement, and a
@@ -6090,7 +6113,7 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []
