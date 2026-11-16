@@ -18,7 +18,7 @@ export const THEMES: readonly Theme[] = ['system', 'light', 'dark']
 // A media query cannot read a custom property, so the two palette backgrounds
 // live here as the browser-chrome colour. test/theme.test.ts keeps them equal to
 // `--bg` in each palette, so the meta and the page cannot drift apart.
-export const THEME_COLORS: Record<'light' | 'dark', string> = { light: '#f4f6f9', dark: '#07090d' }
+export const THEME_COLORS: Record<'light' | 'dark', string> = { light: '#f6f1e7', dark: '#0d0c0b' }
 
 export function isTheme(value: unknown): value is Theme {
   return value === 'system' || value === 'light' || value === 'dark'

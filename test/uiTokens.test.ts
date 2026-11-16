@@ -192,3 +192,158 @@ test('the resting field boundary clears the 3:1 non-text minimum in every palett
   assert.ok(fieldRule !== null, 'public/app.css must keep the shared input, textarea, select rule')
   assert.match(fieldRule[1] ?? '', /border:\s*1px solid var\(--field-line\)/, 'the shared field rule must draw its boundary with --field-line, not --line')
 })
+
+// The token blocks carry prose comments, and a comment may contain a semicolon;
+// a line-anchored reader is what sees every token in the block rather than the
+// whole-block split the older assertions use.
+function lineTokens(source: string, pattern: RegExp, label: string): Map<string, string> {
+  const match = pattern.exec(source)
+  assert.ok(match !== null, `public/app.css must keep the ${label} token block`)
+  const tokens = new Map<string, string>()
+  for (const line of (match[1] ?? '').split('\n')) {
+    const declaration = /^\s*(--[a-z0-9-]+):\s*([^;]+);/.exec(line)
+    if (declaration !== null) tokens.set(declaration[1] ?? '', (declaration[2] ?? '').trim())
+  }
+  return tokens
+}
+
+// 7. #858: the warm editorial foundation. The console is not a dark-blue AI
+//    template: charcoal and warm paper surfaces, a copper interactive accent with
+//    a copper/sage brand, a serif display face over system-sans body text, 10/12
+//    radii, no large shadows and no uppercase eyebrows. The token names do not
+//    change, so a view written against them does not move.
+test('the warm editorial palette replaces the periwinkle and lime template', () => {
+  const dark = lineTokens(cssSource, /:root\s*\{([^}]*)\}/, 'dark')
+  const light = lineTokens(cssSource, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')
+  const expected: Array<[string, Map<string, string>, string, string]> = [
+    ['--bg', dark, '#0d0c0b', 'dark charcoal'],
+    ['--panel', dark, '#161412', 'warm charcoal panel'],
+    ['--text', dark, '#f3ede4', 'warm paper text'],
+    ['--accent', dark, '#d97745', 'copper accent'],
+    ['--brand', dark, '#7fae9a', 'sage brand'],
+    ['--brand-2', dark, '#e0b36a', 'sand brand'],
+    ['--good', dark, '#7fae9a', 'sage good'],
+    ['--warn', dark, '#e0b36a', 'sand warn'],
+    ['--bg', light, '#f6f1e7', 'warm paper'],
+    ['--panel', light, '#fffdf8', 'warm white panel'],
+    ['--text', light, '#1d1a16', 'ink'],
+    // #858 section 3 names #b75b35; it measures 4.09:1 on --bg, where the `a`
+    // rule paints link text, so the shipped copper is one step darker and
+    // clears 4.5:1 on --bg (4.53) and --panel (5.02).
+    ['--accent', light, '#ad5530', 'copper accent'],
+  ]
+  const wrong = expected
+    .filter(([token, palette, value]) => palette.get(token) !== value)
+    .map(([token, palette, value, label]) => `${label} ${token} = ${palette.get(token) ?? 'missing'}, expected ${value}`)
+  assert.deepEqual(wrong, [], `the warm palette is not in place:\n${wrong.join('\n')}`)
+
+  // The template colours are gone from every palette, not only replaced in dark.
+  const retired = ['#7b95ff', '#4c66f5', '#5f78ff', '#2b4fd0', '#1d3cb8', '#2646c4', '#b8f34a', '#6ee7a8', '#67e8c7', '#3f7a12', '#0e7a5c']
+  const stale: string[] = []
+  for (const [name, palette] of [['dark', dark], ['light', light]] as const) {
+    for (const [token, value] of palette) {
+      if (retired.includes(value.toLowerCase())) stale.push(`${name} ${token} = ${value}`)
+    }
+  }
+  assert.deepEqual(stale, [], `the periwinkle/lime template is still in the palette:\n${stale.join('\n')}`)
+
+  // Warm means red above blue: a periwinkle accent would fail this even under a
+  // new name. The brand pair is deliberately cool (sage and sand), so only the
+  // interactive accent carries this check.
+  for (const [name, palette] of [['dark', dark], ['light', light]] as const) {
+    const rgb = channels(palette.get('--accent') ?? '#000000') ?? [0, 0, 0]
+    assert.ok(rgb[0] > rgb[2], `${name} --accent = ${palette.get('--accent')} is not warm (r must exceed b)`)
+  }
+
+  // The editorial radius scale: 6 / 8 / 10 / 12 / 12 / 999.
+  assert.equal(dark.get('--radius-xs'), '6px', '--radius-xs must stay 6px')
+  assert.equal(dark.get('--radius-sm'), '8px', '--radius-sm must stay 8px')
+  assert.equal(dark.get('--radius-md'), '10px', '--radius-md must be 10px')
+  assert.equal(dark.get('--radius'), '12px', '--radius must be 12px')
+  assert.equal(dark.get('--radius-lg'), '12px', '--radius-lg must be 12px')
+
+  // Serif display for h1, the wordmark and the hero heading; mono stays.
+  const display = dark.get('--display') ?? ''
+  assert.match(display, /serif/i, '--display must name a serif stack')
+  assert.match(dark.get('--mono') ?? '', /mono/i, '--mono must stay a mono stack')
+  const h1 = /(?:^|\n)h1\s*\{([^}]*)\}/.exec(cssSource)
+  assert.ok(h1 !== null, 'public/app.css must keep an h1 rule')
+  assert.match(h1[1] ?? '', /font-family:\s*var\(--display\)/, 'h1 must use the display face')
+  const brand = /(?:^|\n)\.brand\s*\{([^}]*)\}/.exec(cssSource)
+  assert.ok(brand !== null, 'public/app.css must keep a .brand rule')
+  assert.match(brand[1] ?? '', /font-family:\s*var\(--display\)/, '.brand must use the display face')
+  const hero = /(?:^|\n)\.hero-copy h1\s*\{([^}]*)\}/.exec(cssSource)
+  assert.ok(hero !== null, 'public/app.css must keep a .hero-copy h1 rule')
+  assert.match(hero[1] ?? '', /font-family:\s*var\(--display\)/, '.hero-copy h1 must use the display face')
+
+  // Body 14px/1.55 and the 12-13px meta steps the direction names.
+  const body = /(?:^|\n)body\s*\{([^}]*)\}/.exec(cssSource)
+  assert.ok(body !== null, 'public/app.css must keep a body rule')
+  assert.match(body[1] ?? '', /font:\s*14px\/1\.55\s+-apple-system,/, 'body must be 14px/1.55 in the system sans face')
+  assert.equal(dark.get('--text-xs'), '12px', '--text-xs must stay 12px')
+  assert.equal(dark.get('--text-sm'), '13px', '--text-sm must stay 13px')
+
+  // No uppercase eyebrows: the direction asks for sentence case throughout.
+  assert.doesNotMatch(cssSource, /text-transform:\s*uppercase/, 'the template eyebrows must not stay uppercase')
+
+  // No 80px bloom: only popovers, menus and dialogs still read --shadow, and the
+  // tightest editorial shadow tops out at 0 8px 24px.
+  for (const [name, palette] of [['dark', dark], ['light', light]] as const) {
+    const shadow = palette.get('--shadow') ?? ''
+    assert.match(shadow, /^0 \d+px \d+px rgba\(/, `${name} --shadow must stay a soft rgba shadow, got ${shadow}`)
+    const parts = /^0 (\d+)px (\d+)px/.exec(shadow) ?? []
+    assert.ok(Number(parts[1] ?? '99') <= 8 && Number(parts[2] ?? '99') <= 24, `${name} --shadow is ${shadow}; the warm foundation allows at most 0 8px 24px`)
+  }
+  const consumers = cssSource.split('\n').filter((line) => line.includes('box-shadow: var(--shadow)'))
+  assert.ok(consumers.length > 0, 'the popover and dialog rules must keep reading --shadow')
+  assert.ok(!/\.card\b[^\n]*box-shadow: var\(--shadow\)/.test(cssSource), 'a card keeps a 1px border instead of a drop shadow')
+
+  // The old palette also lived in rgba tints; those are part of the template too.
+  const rgb = /rgba\(\s*(123|184|103|240|255|110|182)\s*,\s*(149|243|232|198|138|231|156)\s*,\s*(255|74|199|116|138|168|255)\s*,/g
+  const tints = [...cssSource.matchAll(rgb)].map((match) => match[0])
+  assert.deepEqual(tints, [], `the template tints survive outside the tokens:\n${tints.join('\n')}`)
+})
+
+// 8. The warm palette still has to be readable: body and secondary text clear
+//    4.5:1 on every surface, the button ink clears it on the accent and on the
+//    stronger hover step, and the components read their colours from the tokens
+//    rather than literals.
+test('the warm palette clears AA for text and control pairs in both schemes', () => {
+  const dark = lineTokens(cssSource, /:root\s*\{([^}]*)\}/, 'dark')
+  const light = lineTokens(cssSource, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')
+  const failures: string[] = []
+  for (const [name, palette] of [['dark', dark], ['light', light]] as const) {
+    const surfaces = ['--bg', '--bg-soft', '--panel', '--panel-2', '--surface-sunken', '--surface-inset', '--surface-raised', '--field']
+    for (const surface of surfaces) {
+      const background = palette.get(surface)
+      const text = palette.get('--text')
+      assert.ok(background !== undefined && text !== undefined, `${name}: missing ${surface} or --text`)
+      const ratio = contrast(text, background)
+      if (ratio < 4.5) failures.push(`${name}: --text on ${surface} = ${ratio.toFixed(2)}:1`)
+    }
+    for (const surface of ['--bg', '--panel', '--panel-2']) {
+      const ink = palette.get('--accent')
+      assert.ok(ink !== undefined, `${name}: missing --accent`)
+      const ratio = contrast(ink, palette.get(surface) ?? '#000')
+      if (ratio < 4.5) failures.push(`${name}: --accent on ${surface} = ${ratio.toFixed(2)}:1`)
+    }
+    for (const background of ['--accent', '--accent-strong', '--accent-hover']) {
+      const ratio = contrast(palette.get('--accent-ink') ?? '#000', palette.get(background) ?? '#000')
+      if (ratio < 4.5) failures.push(`${name}: --accent-ink on ${background} = ${ratio.toFixed(2)}:1`)
+    }
+  }
+  assert.deepEqual(failures, [], `the warm palette is below AA:\n${failures.join('\n')}`)
+
+  // Components take their colour from the tokens, so a future palette change is
+  // one block and not a hunt through the component rules.
+  const checks: Array<[RegExp, string]> = [
+    [/\.btn\s*\{[^}]*background:\s*var\(--accent-strong\)/, '.btn background'],
+    [/\.badge\s*\{[^}]*background:\s*var\(--badge-bg\)/, '.badge background'],
+    [/th\s*\{[^}]*color:\s*var\(--muted-2\)/, 'table header colour'],
+    [/\*:focus-visible\s*\{[^}]*outline:\s*2px solid var\(--accent\)/, 'focus ring'],
+    [/input,\s*textarea,\s*select\s*\{[^}]*border:\s*1px solid var\(--field-line\)/, 'field boundary'],
+  ]
+  for (const [pattern, label] of checks) {
+    assert.match(cssSource, pattern, `${label} must read a token, not a literal`)
+  }
+})

@@ -112,9 +112,9 @@ test('one radius scale, and every corner in the stylesheet takes a step of it', 
   assert.deepEqual(
     [...scale.entries()].sort(),
     [
-      ['--radius', '16px'],
-      ['--radius-lg', '18px'],
-      ['--radius-md', '12px'],
+      ['--radius', '12px'],
+      ['--radius-lg', '12px'],
+      ['--radius-md', '10px'],
       ['--radius-pill', '999px'],
       ['--radius-sm', '8px'],
       ['--radius-xs', '6px'],

@@ -132,7 +132,10 @@ test('Chinese is set in a CJK-first stack and the Latin stack is untouched', () 
   const base = rules.find((rule) => rule.media === null && rule.selectors.includes('body') && rule.declarations.some((declaration) => declaration.property === 'font'))
   assert.ok(base !== undefined, 'public/app.css has no body rule declaring the font shorthand')
   const shorthand = value(base, 'font') ?? ''
-  assert.match(shorthand, /^16px\/[\d.]+ -apple-system,/, 'the base body stack must stay Latin-first with its size and line-height')
+  // #858 moved the base size and line-height to 14px/1.55; the stack is the same
+  // Latin-first system sans, still declared in this one shorthand, so the Chinese
+  // rule above keeps setting font-family only.
+  assert.match(shorthand, /^14px\/1\.55 -apple-system,/, 'the base body stack must stay Latin-first at 14px/1.55')
 })
 
 // 5. The precondition of every rule above: the document has to declare the
