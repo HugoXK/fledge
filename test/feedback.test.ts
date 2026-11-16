@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
+import { randomToken } from '../src/lib/secrets.js'
+import { log } from '../src/lib/log.js'
 import { flashOf, formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
 async function fixture(config = testConfig()) {
@@ -146,6 +148,59 @@ test('a 4xx page does not offer an error report', async () => {
     assert.equal(missing.statusCode, 404)
     assert.doesNotMatch(missing.body, /Report to the maintainer/)
   } finally {
+    await f.built.close()
+  }
+})
+
+// #845: /approve/:token carries the whole approval capability in the path. A 5xx
+// used to store the concrete URL in error_reports.path, which reaches the
+// maintainer mail, the audit row and the triage endpoint, so the route pattern is
+// the only safe capture.
+test('a 5xx on an approval link stores the route pattern, never the live token', async () => {
+  const f = await fixture()
+  const originalFind = f.store.findApprovalToken.bind(f.store)
+  const originalLogError = log.error
+  const logged: Array<Record<string, unknown>> = []
+  try {
+    const token = randomToken(32)
+    Object.defineProperty(f.store, 'findApprovalToken', { value: () => { throw new Error('boom') }, configurable: true })
+    log.error = (message: string, fields?: Record<string, unknown>) => { logged.push({ message, ...fields }) }
+    const broken = await f.built.app.inject({ method: 'GET', url: `/approve/${token}`, headers: { cookie: f.cookie } })
+    assert.equal(broken.statusCode, 500)
+    const ref = /action="\/errors\/([A-Za-z0-9_-]+)\/report"/.exec(broken.body)?.[1]
+    assert.ok(ref, 'the error page carries the report ref')
+    const report = f.store.errorReportByRef(ref)
+    assert.ok(report)
+    assert.equal(report.path, '/approve/:token', 'the stored path must be the matched route pattern')
+    assert.equal(JSON.stringify(report).includes(token), false, 'the report row must not carry the token')
+    assert.deepEqual(logged.filter((fields) => JSON.stringify(fields).includes(token)), [], 'the log line must not carry the token')
+    assert.ok(logged.some((fields) => fields.url === '/approve/:token'), 'the log line must name the pattern')
+
+    const post = await f.built.app.inject({
+      method: 'POST',
+      url: `/approve/${token}`,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({}),
+    })
+    assert.equal(post.statusCode, 500)
+    const postRef = /action="\/errors\/([A-Za-z0-9_-]+)\/report"/.exec(post.body)?.[1]
+    assert.ok(postRef)
+    assert.equal(f.store.errorReportByRef(postRef)?.path, '/approve/:token', 'the POST route stores its pattern too')
+
+    const reported = await f.built.app.inject({
+      method: 'POST',
+      url: `/errors/${ref}/report`,
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ consent: '1' }),
+    })
+    assert.equal(reported.statusCode, 200)
+    const mails = f.mailer.messages.filter((message) => /异常报告/.test(message.subject))
+    assert.ok(mails.length >= 1, 'the report is mailed')
+    for (const mail of mails) assert.equal(mail.text.includes(token), false, 'the mail must not carry the token')
+    assert.equal(JSON.stringify(f.store.listAudit(50)).includes(token), false, 'no audit row may carry the token')
+  } finally {
+    log.error = originalLogError
+    Object.defineProperty(f.store, 'findApprovalToken', { value: originalFind, configurable: true })
     await f.built.close()
   }
 })
