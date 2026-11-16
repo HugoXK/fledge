@@ -128,7 +128,17 @@ test('the release job runs on a push too, and the trigger predicate decides whet
   // the trigger decided, so an ordinary merge that plans nothing is still
   // visible in the run history.
   assert.match(job('release'), /if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'push'/)
-  assert.match(job('tag'), /if: github\.event_name == 'push'/)
+  // #866: the scheduled slot also reaches the tag job, because a release can be
+  // left half-made with no further push. The job decides from the API state
+  // (tag present? release present?), not from the event that woke it.
+  assert.match(job('tag'), /if: github\.event_name == 'push' \|\| github\.event_name == 'schedule'/)
+  assert.doesNotMatch(job('tag'), /workflow_dispatch/, 'a manual dispatch never tags, so a dry run cannot publish')
+  assert.match(job('tag'), /releases\/tags\/\$\{RELEASE_TAG\}/, 'the tag job reads whether the GitHub Release exists')
+  assert.match(job('tag'), /release: JSON\.parse/, 'the release state is an input to the pure decision')
+  const dispatchStep = between('      - name: Dispatch release.yml at the tag', '')
+  assert.match(dispatchStep, /steps\.decide\.outputs\.action == 'create' \|\| steps\.decide\.outputs\.action == 'publish'/, 'a tag without its release dispatches the publish run')
+  const createStep = between('      - name: Create the annotated tag on the merge commit', '      - name: Dispatch release.yml at the tag')
+  assert.match(createStep, /if: \$\{\{ steps\.decide\.outputs\.action == 'create' \}\}/, 'a publish never writes a second tag')
   const step = between('      - name: Trigger', '      - name: Check the opener precondition')
   assert.match(step, /id: trigger/)
   // #548: this was `always()`. The step reads the state the collect step wrote,
@@ -418,4 +428,20 @@ test('release.yml keeps its own concurrency and verifies the tag before publishi
   assert.match(release, /git merge-base --is-ancestor "refs\/tags\/\$\{RELEASE_TAG\}" origin\/main/)
   assert.match(release, /tag:\s*\n\s*description:/)
   assert.match(release, /gh release create "\$RELEASE_TAG"/)
+})
+
+test('the scheduled slot resolves the release merge instead of the tip', () => {
+  // #866: on `schedule` $GITHUB_SHA is main's tip, and the identity check needs
+  // the release pull request's squash commit. A later merge makes those differ,
+  // so the scheduled repair never reached the half-made release. The collect step
+  // resolves the target through the tested helper and publishes it as an output,
+  // and the decision is made about that target — not about the tip.
+  const collect = between('      - name: Collect the pushed commit', '      - name: Decide the tag')
+  assert.match(collect, /id: collect/, 'the collected sha is an output the decide step reads')
+  assert.match(collect, /import \{ resolveTarget \} from "\.\/scripts\/lib\/release-tag\.mjs"/, 'the scheduled target is a tested pure decision, not assembled in shell')
+  assert.match(collect, /gh pr list[^\n]*--state merged/, 'the merged release pull request is what names the target')
+  assert.match(collect, /sha=\$\{TARGET\}/, 'the resolved target is published as the step output')
+  const decide = between('      - name: Decide the tag', '      - name: Create the annotated tag')
+  assert.match(decide, /SHA: \$\{\{ steps\.collect\.outputs\.sha \}\}/, 'the decision is made about the resolved target')
+  assert.equal(decide.includes('github.sha'), false, 'the decide step no longer judges the tip on a scheduled run')
 })

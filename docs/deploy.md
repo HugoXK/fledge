@@ -498,6 +498,51 @@ two-parent check would refuse every real release.
 Not in this slice: no signed-commit requirement (a non-goal on the card) and no
 change to the release cadence or the tag name.
 
+### Finishing a half-made release (#866)
+
+A release is two write moments: the annotated tag, then the publish run
+dispatched at it. When the dispatch failed after the tag was written, the tag job
+used to answer `skip` on every later run — the tag existed, so nothing was owed —
+and the release stayed at `not released` until a human re-dispatched it.
+
+The tag job now decides from three API facts (`scripts/lib/release-tag.mjs`, one
+test per row):
+
+| tag | GitHub Release | action |
+|---|---|---|
+| missing | — | `create` the tag on the release pull request's squash commit |
+| present | missing | `publish`: dispatch `release.yml` at the existing tag, write no tag |
+| present | present | `skip`: nothing to publish |
+
+`publish` is gated by the same identity check as `create`: the commit must be the
+squash of the merged `release: v<version>` pull request from `release/v<version>`,
+so an ordinary push to `main` cannot re-dispatch a release it did not produce.
+`release.yml` re-verifies the tag before publishing, and it asks one question
+before it builds anything: if a GitHub Release already exists for the tag, the run
+records `published` in `Stop when the release already exists` and every step that
+would write is gated on that answer. A repeated dispatch of a complete release
+therefore cannot rebuild and repush the image or rewrite its notes — the claim is
+the step, not a sentence here.
+
+The job still runs on the `push` that merges the release pull request, and it now
+also runs on the scheduled slot: a tag without its release, or a merged release
+pull request without a tag, is repaired by the next daily run instead of waiting
+for someone to notice. A scheduled run acts on the merge commit of the merged
+`release: v<version>` pull request rather than on `main`'s tip, because after any
+later merge the tip is no longer that merge and the identity check would correctly
+refuse it; a scheduled run that cannot name exactly one such pull request keeps
+the tip, and the identity check then refuses it with its own reason rather than
+guessing a release to repair. The release job's drive still reports `tag` (a merged
+release pull request with no tag) — that is the night's summary line, not the
+writer. **The tag job is the only tag writer**: the release job never creates a
+tag, and its `tag` action is documented here rather than executed.
+
+Two recovery steps remain owner actions, unchanged by this slice: an orphan
+`release/vX.Y.Z` branch still cannot be deleted through the `keep release
+branches` ruleset (`bypass_actors: []`), and relaxing that is a ruleset edit, not
+a commit. The runbook is still: delete or adopt the branch after adding the
+identity to the ruleset bypass, then let the next run tag the merge.
+
 ### Automatic tag deployment and verification
 
 The release plan → release pull request → tag half lives in
