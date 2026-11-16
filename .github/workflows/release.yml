@@ -43,10 +43,18 @@ jobs:
       id-token: write
       attestations: write
     steps:
+      # #861: this job holds `contents: write`, `packages: write`,
+      # `id-token: write` and `attestations: write`, and the next step runs
+      # `npm ci` against the tag. `actions/checkout` stores the workflow token in
+      # `.git/config` unless told not to, so a dependency lifecycle script running
+      # during the install could read it and act with publish permissions. The
+      # later steps that need the API pass `secrets.GITHUB_TOKEN` explicitly, so
+      # nothing here relies on the persisted copy.
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           ref: ${{ inputs.tag || github.ref }}
+          persist-credentials: false
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
