@@ -3289,3 +3289,139 @@ test('one blocked tip keeps one audit row and one notification, and a moved head
     await github.close()
   }
 })
+
+// #366 slice 1, the dispatcher half: the pure summariser is tested in
+// test/temporal.test.ts, but the properties that matter at dispatch time are
+// that the previous run's base is the one read, that the line reaches the goal,
+// that the delta is stored, and that a first run reads nothing at all.
+const TEMPORAL_PREVIOUS_SHA = '4f2c1a9e8d3b2a1c0f9e8d7c6b5a4f3e2d1c0b9a'
+
+function temporalServer(requests: string[]) {
+  return startFakeServer((request, response) => {
+    const path = request.url ?? ''
+    requests.push(path)
+    if (path.includes('/pulls?state=open')) return json(response, 200, [])
+    if (path.includes('/compare/')) return json(response, 200, { status: 'ahead', ahead_by: 3 })
+    if (path.includes('/commits/')) return json(response, 200, { sha: TEMPORAL_PREVIOUS_SHA, commit: { committer: { date: '2026-11-10T00:00:00Z' } } })
+    if (path.includes('/pulls?state=closed')) {
+      return json(response, 200, [
+        { number: 815, html_url: 'https://github.com/o/temporal/pull/815', title: 'b', merged_at: '2026-11-10T02:00:00Z', updated_at: '2026-11-10T02:00:00Z' },
+        { number: 812, html_url: 'https://github.com/o/temporal/pull/812', title: 'a', merged_at: '2026-11-10T01:00:00Z', updated_at: '2026-11-10T01:00:00Z' },
+      ])
+    }
+    if (path.includes('/branches/')) return json(response, 200, { name: 'main', commit: { sha: 'base-sha-now' } })
+    if (path.includes('/contents/')) return json(response, 200, [])
+    return json(response, 404, { message: 'Not Found' })
+  })
+}
+
+function temporalRepo(store: Store, userId: string, id: string, key: string): RepoRow {
+  return store.createRepo({
+    id,
+    userId,
+    owner: 'o',
+    name: 'temporal',
+    defaultBranch: 'main',
+    tokenEnc: encryptSecret('gh-token', key),
+    permission: 'admin',
+    repoRole: 'maintainer',
+    goal: '',
+    autoIterate: false,
+    intervalMinutes: 1440,
+  })
+}
+
+test('an iterate job records the delta from the previous finished run, not a fresh read', async () => {
+  const requests: string[] = []
+  const github = await temporalServer(requests)
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'flybot', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'temporal-user', status: 'approved' })
+    const repo = temporalRepo(store, user.id, 'repo_temporal_dispatch', config.tokenEncryptionKey)
+    const previous = store.createJob({
+      id: 'job_temporal_prev',
+      repoId: repo.id,
+      userId: user.id,
+      trigger: 'manual',
+      goal: 'previous run',
+      callbackHash: 'h',
+      platformTokenHash: '',
+      baseSha: TEMPORAL_PREVIOUS_SHA,
+      createdAt: '2026-11-10T00:00:00.000Z',
+    })
+    store.updateJob(previous.id, { status: 'succeeded', finished_at: '2026-11-10T00:05:00.000Z' })
+
+    const result = await jobs.enqueue(repo, 'manual', 'Fix it', 'iterate', {})
+    assert.equal(result.ok, true, result.error ?? 'enqueue failed')
+    const job = store.getJob(result.job!.id)!
+    const delta = JSON.parse(job.temporal_json ?? 'null') as { sinceSha: string | null; status: string; aheadBy: number; mergedPrs: number[]; complete: boolean }
+    assert.equal(delta.sinceSha, TEMPORAL_PREVIOUS_SHA, 'the delta was not built from the previous run base')
+    assert.equal(delta.status, 'ahead')
+    assert.equal(delta.aheadBy, 3)
+    assert.deepEqual(delta.mergedPrs, [815, 812], 'the merged pull requests the walk returned were not stored')
+    assert.match(job.goal, /Since 4f2c1a9: 3 commits ahead, 2 merged PRs \(#812, #815\)/, 'the goal does not carry the delta line')
+    assert.equal(requests.filter((path) => path.includes('/compare/')).length, 1, 'the compare read is not made exactly once')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a first iterate job says there is no previous run and makes no compare call', async () => {
+  const requests: string[] = []
+  const github = await temporalServer(requests)
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'flybot', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'temporal-first', status: 'approved' })
+    const repo = temporalRepo(store, user.id, 'repo_temporal_first', config.tokenEncryptionKey)
+    const result = await jobs.enqueue(repo, 'manual', 'Fix it', 'iterate', {})
+    assert.equal(result.ok, true, result.error ?? 'enqueue failed')
+    const job = store.getJob(result.job!.id)!
+    assert.match(job.goal, /Since: no previous run/)
+    assert.deepEqual(JSON.parse(job.temporal_json ?? 'null'), { sinceSha: null, status: 'ahead', aheadBy: 0, mergedPrs: [], complete: true })
+    assert.equal(requests.filter((path) => path.includes('/compare/')).length, 0, 'a first run compared something')
+    assert.equal(requests.filter((path) => path.includes('/commits/')).length, 0, 'a first run looked up a commit')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a goal near the length cap still carries the temporal line', async () => {
+  const requests: string[] = []
+  const github = await temporalServer(requests)
+  const config = testConfig({ github: { ...testConfig().github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'flybot', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'temporal-long', status: 'approved' })
+    const repo = temporalRepo(store, user.id, 'repo_temporal_long', config.tokenEncryptionKey)
+    const previous = store.createJob({
+      id: 'job_temporal_long_prev',
+      repoId: repo.id,
+      userId: user.id,
+      trigger: 'manual',
+      goal: 'previous run',
+      callbackHash: 'h',
+      platformTokenHash: '',
+      baseSha: TEMPORAL_PREVIOUS_SHA,
+      createdAt: '2026-11-10T00:00:00.000Z',
+    })
+    store.updateJob(previous.id, { status: 'succeeded', finished_at: '2026-11-10T00:05:00.000Z' })
+
+    // A goal that would fill the whole budget: the data line is what has to
+    // survive the cap, because the caller cannot get it back any other way.
+    const result = await jobs.enqueue(repo, 'manual', 'x'.repeat(3990), 'iterate', {})
+    assert.equal(result.ok, true, result.error ?? 'enqueue failed')
+    const job = store.getJob(result.job!.id)!
+    assert.ok(job.goal.length <= 4000, `goal is ${String(job.goal.length)} characters`)
+    assert.match(job.goal, /Since 4f2c1a9: 3 commits ahead, 2 merged PRs \(#812, #815\)/, 'the cap squeezed the delta line out')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})

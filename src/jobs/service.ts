@@ -53,6 +53,7 @@ import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
+import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
@@ -1000,7 +1001,7 @@ export class Jobs {
     }
   }
 
-  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
+  private async preflight(repo: RepoRow, baseBranch: string, trigger: string): Promise<{ ok: boolean; baseSha?: string; warning?: string; temporal?: TemporalDelta; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
     if (this.runner.name !== 'flybot') return { ok: true }
     try {
       const token = await repoGithubToken(repo, this.config, this.githubApp, this.store)
@@ -1022,13 +1023,48 @@ export class Jobs {
           else if (forkBranch.sha !== branch.sha) warning = 'fork is behind upstream'
         }
       }
-      return { ok: true, baseSha: branch.sha, warning }
+      const temporal = await this.temporalDelta(client, repo.id, upstreamOwner, upstreamName, branch.sha)
+      return { ok: true, baseSha: branch.sha, warning, temporal }
     } catch (error) {
       if (error instanceof GithubError && (error.status === 401 || error.status === 403) && !/rate limit/i.test(error.message)) {
         this.markCredentialInvalid(repo, error)
         return { ok: false, error: 'GitHub token 权限不足，请重新授权这个仓库。', code: 'REPO_CREDENTIAL_INVALID' }
       }
       return { ok: false, error: String(error instanceof Error ? error.message : error), code: 'PREFLIGHT_FAILED' }
+    }
+  }
+
+  // #366 slice 1: what changed between the previous finished run's base and this
+  // one. Two bounded reads, and every way they can end short is `partial` rather
+  // than a number the goal would present as complete.
+  private async temporalDelta(client: GithubClient, repoId: string, owner: string, name: string, baseSha: string): Promise<TemporalDelta> {
+    // The newest finished job that recorded a base, asked as one query rather
+    // than as a page of the newest rows: on a busy repository the newest twenty
+    // can all be unfinished, and that must not read as a first run. A rerun at
+    // the same base is still a previous run and says `no new commits`, which is
+    // a fact worth having; only a repository with no such job has none.
+    const sinceSha = this.store.latestFinishedBaseSha(repoId)
+    if (sinceSha === null) return { sinceSha: null, status: 'ahead', aheadBy: 0, mergedPrs: [], complete: true }
+    // No initial value: every path that continues past the compare assigns it,
+    // and the catch returns, so `'unknown'` here was an assignment nothing read.
+    let status: TemporalStatus
+    let aheadBy = 0
+    try {
+      const compare = await client.compareCommits(owner, name, sinceSha, baseSha)
+      status = isTemporalStatus(compare.status) ? compare.status : 'unknown'
+      aheadBy = status === 'unknown' ? 0 : Math.max(0, compare.aheadBy)
+    } catch (error) {
+      log.warn('temporal compare failed', { repo: repoId, error: String(error) })
+      return { sinceSha, status: 'unknown', aheadBy: 0, mergedPrs: [], complete: false }
+    }
+    try {
+      const previous = await client.getCommitMeta(owner, name, sinceSha)
+      if (previous === null) return { sinceSha, status, aheadBy, mergedPrs: [], complete: false }
+      const merged = await client.listMergedPullRequestsSince(owner, name, previous.committedAt)
+      return { sinceSha, status, aheadBy, mergedPrs: merged.pulls.map((pull) => pull.number), complete: merged.complete }
+    } catch (error) {
+      log.warn('temporal merged-PR read failed', { repo: repoId, error: String(error) })
+      return { sinceSha, status, aheadBy, mergedPrs: [], complete: false }
     }
   }
 
@@ -1178,11 +1214,13 @@ export class Jobs {
     }
     let preflightSha: string | null = null
     let preflightWarning = ''
+    let temporal: TemporalDelta | undefined
     if (kind === 'iterate') {
       const preflight = await this.preflight(repo, baseBranch, trigger)
       if (!preflight.ok) return { ok: false, error: preflight.error, code: preflight.code, detail: preflight.detail }
       preflightSha = preflight.baseSha ?? null
       preflightWarning = preflight.warning ?? ''
+      temporal = preflight.temporal
     }
     const baseGoal = kind === 'review' ? DEFAULT_REVIEW_GOAL : kind === 'discover' ? DEFAULT_DISCOVER_GOAL : kind === 'triage' ? DEFAULT_TRIAGE_GOAL : kind === 'scope' ? DEFAULT_SCOPE_GOAL : kind === 'verify' ? DEFAULT_VERIFY_GOAL : (repo.goal !== '' ? repo.goal : DEFAULT_GOAL)
     const rawGoal = goalOverride ?? baseGoal
@@ -1196,8 +1234,14 @@ export class Jobs {
         read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
       })).text
       : ''
-    const goal = ((preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`)
-      + (carryOver === '' ? '' : `\n\n${carryOver}`)).slice(0, 4000)
+    // #366 slice 1: exactly one data line, and only when a previous run exists.
+    // The line is placed before the goal is capped: appending it after the cap
+    // would let a goal that is already near 4000 characters swallow it silently,
+    // so the body is what gets truncated and the data lines keep their room.
+    const temporalLine = temporal === undefined ? '' : summariseDelta(temporal)
+    const dataTail = (temporalLine === '' ? '' : `\n\n${temporalLine}`) + (carryOver === '' ? '' : `\n\n${carryOver}`)
+    const goalBody = preflightWarning === '' ? rawGoal : `${rawGoal}\n\nPreflight: ${preflightWarning}. Sync the fork before creating the working branch.`
+    const goal = `${goalBody.slice(0, Math.max(0, 4000 - dataTail.length))}${dataTail}`.slice(0, 4000)
     const continuityUsed = carryOver !== ''
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
@@ -1298,6 +1342,10 @@ export class Jobs {
       throw error
     }
     if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
+    if (temporal !== undefined) {
+      job.temporal_json = JSON.stringify(temporal)
+      this.store.updateJob(job.id, { temporal_json: job.temporal_json })
+    }
     if (rules !== undefined) {
       this.store.saveJobContext({
         jobId: job.id,

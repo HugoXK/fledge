@@ -17,6 +17,7 @@ import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, type PageNoti
 import { renderState, stateCell, type StateAction } from './states.js'
 import { redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
+import { isTemporalStatus, summariseDelta, type TemporalDelta } from '../lib/temporal.js'
 import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
@@ -3100,6 +3101,27 @@ function changeStoryLabel(t: Translate, key: ChangeStoryFact['key']): string {
   return t('改动规模', 'Diff')
 }
 
+// #366 slice 1: the stored delta is data, so a row written by an older build or a
+// hand-edited value renders nothing instead of failing the page.
+function temporalLine(job: JobRow): string {
+  if (typeof job.temporal_json !== 'string' || job.temporal_json === '') return ''
+  try {
+    const delta = JSON.parse(job.temporal_json) as TemporalDelta
+    // A row can parse and still be unusable: the page only renders a delta whose
+    // every field is the shape the summariser reads, so a hand-edited or older
+    // row shows nothing instead of `undefined commits ahead`.
+    if (typeof delta !== 'object' || delta === null) return ''
+    if (delta.sinceSha !== null && typeof delta.sinceSha !== 'string') return ''
+    if (!isTemporalStatus(delta.status)) return ''
+    if (typeof delta.aheadBy !== 'number' || !Number.isFinite(delta.aheadBy)) return ''
+    if (!Array.isArray(delta.mergedPrs) || !delta.mergedPrs.every((number) => typeof number === 'number')) return ''
+    if (typeof delta.complete !== 'boolean') return ''
+    return summariseDelta(delta)
+  } catch {
+    return ''
+  }
+}
+
 export function jobPage(input: {
   config: Config
   locale: Locale
@@ -3448,7 +3470,7 @@ export function jobPage(input: {
       <div>
         <div class="eyebrow">${escapeHtml(t('任务', 'JOB'))}</div>
         <h1><code>${escapeHtml(job.id)}</code></h1>
-        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}${job.last_callback_at === null ? '' : ` · ${escapeHtml(t('最后心跳', 'Last heartbeat'))} ${escapeHtml(humanTimeShort(job.last_callback_at))}`}</p>
+        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}${job.last_callback_at === null ? '' : ` · ${escapeHtml(t('最后心跳', 'Last heartbeat'))} ${escapeHtml(humanTimeShort(job.last_callback_at))}`}${temporalLine(job) === '' ? '' : ` · <span class="muted" data-temporal>${escapeHtml(temporalLine(job))}</span>`}</p>
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>

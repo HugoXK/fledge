@@ -702,8 +702,8 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   terminal state (`merged` or `closed`) is left exactly as it is: the expiry is
   still recorded in the audit row and in the `plan_expired:<job>` settings key,
   but no "已过期关闭" notice is sent for an item the pass did not end (#408).
-  Iterate jobs preflight the target branch, record the base SHA
-  and warn when the fork is behind. An open work item changes what the next
+  Iterate jobs preflight the target branch, record the base SHA,
+  warn when the fork is behind, and add the temporal delta line described below. An open work item changes what the next
   scheduled run continues; it never blocks a due repository (#219). Work-item
   states do not gate the scheduler; see "Scheduled work, continuity and work
   items" below.
@@ -1363,7 +1363,33 @@ request — so a closed issue or a merged pull request is dropped from the block
 and counted instead of being carried into the next run. The block states what it
 did in its header, `carry-over: 1 used, 1 dropped (closed/merged)`, with an
 `, N unverified` segment when a read failed; a failed read keeps its line rather
-than dropping it silently, and the job page shows the same header line. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
+than dropping it silently, and the job page shows the same header line.
+
+The goal also carries one **temporal delta** line (#366), built by
+`summariseDelta()` in `src/lib/temporal.ts` from two reads plus the commit
+lookup that dates them, all against the previous finished run's base:
+`compareCommits()`, `getCommitMeta()` for that base's `committedAt`, and then
+`listMergedPullRequestsSince()` for that window. The base comes from
+`store.latestFinishedBaseSha()`, one indexed question rather than a page of the
+newest jobs, so a repository whose newest rows are all unfinished is not read as
+a first run. A `superseded` row is never that base: `#839` sets both its `status`
+and its `finished_at` on a mention-replaced job that never ran, so the query
+excludes it in both directions — it is not an answer on its own, and it does not
+hide a real finished run beside it, whichever of the two finished last. The line
+names the short
+previous base, the commit count and the merged pull requests, for example
+`Since 4f2c1a9: 3 commits ahead, 2 merged PRs (#812, #815)`; a first run says
+`Since: no previous run` and makes neither read. A failed compare prints
+`delta unavailable (partial)` and a capped page walk prints `merged PRs partial`
+— never the smaller number that happened to fit — because a delta that
+understates the change is worse than one that admits it is incomplete. The
+result is stored in `jobs.temporal_json` (`sinceSha`, `status`, `aheadBy`,
+`mergedPrs`, `complete`), the additive column that lets a later slice compare two
+deltas, and the job page shows the same line — and renders nothing for a row
+whose fields are not the shape the summariser reads. The line is placed before
+the 4000-character cap is applied to the goal body, so a long goal cannot squeeze
+it out. Nothing reads the delta to make a decision yet; slice 1 only records and
+displays it. Each finished run is classified as `pr`, `issue`, `review`, `zero`,
 `meta` or `failed`. A meta issue
 (`存量/盘点/清账/reconcile/inventory/backlog audit`) is closed on the tracking
 board and notifies the owner instead of counting as a productive run. Two
