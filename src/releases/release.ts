@@ -92,6 +92,12 @@ export const releaseRefusals = {
   // The installation token is what writes the tag. Without Contents: write the
   // write is refused before anything exists, and the operator needs the name of
   // the permission rather than the upstream sentence GitHub returns.
+  // #893: a tag is a ref write, and pushing it runs the workflows committed in
+  // the tagged tree. A target the default branch never contained would make
+  // "this release was built from this repository at this commit" uncheckable, so
+  // ancestry is proven before anything is written.
+  targetNotOnDefault: (sha: string, branch: string, status: string): string => `${sha} is ${status === 'behind' ? 'behind' : 'not on'} the default branch ${branch}; nothing was tagged, because a release is cut from a commit the default branch contains`,
+  ancestryUnreadable: (branch: string): string => `the default branch ${branch} could not be compared with the target commit; nothing was tagged, because ancestry is required before a ref write`,
   tagScopeMissing: (status: number): string => status === 404
     // A 404 does not prove a missing permission: it also means the App cannot see
     // the repository any more. Both causes are named, neither is asserted.
@@ -111,6 +117,10 @@ export interface ReleasePlanInput {
 export type ReleaseRefusalCode =
   | 'invalid_version'
   | 'target_missing'
+  // #893: the target exists but the default branch does not contain it, or the
+  // ancestry compare could not be read (fail closed).
+  | 'target_not_on_default'
+  | 'ancestry_unreadable'
   | 'missing_gate'
   | 'missing_release_workflow'
   | 'tag_exists'
@@ -315,6 +325,11 @@ export interface ReleaseLookupClient {
   getBranchProtection(owner: string, name: string, branch: string): Promise<{ protected: boolean; requiredChecks: string[]; requiredApprovals: number } | null>
 }
 
+// #893: the version scan is capped, because it used to run one compare per tag
+// behind a route with no rate limit; the newest tags are the only ones that can
+// be the previous version, so the cap cannot change which release is legal.
+export const MAX_TAG_COMPARES = 10
+
 // The preflight is read-only: five GETs decide whether a tag may be written, and
 // the answer is the plan a maintainer confirms. Nothing here writes. The commit
 // is checked first because a maintainer types that SHA by hand: a missing object
@@ -327,10 +342,32 @@ export async function releasePreflight(
   if (!commit) {
     return { ok: false, code: 'target_missing', message: `${input.targetSha} is not a commit in this repository` }
   }
+  // #893: the commit exists, but that says nothing about which branch contains
+  // it. `ahead` and `identical` are the only answers that prove the default
+  // branch contains the target; `diverged` and `behind` do not, and a compare
+  // that cannot be read fails closed rather than passing on an assumption.
+  let ancestry: { status: string; aheadBy: number } | null = null
+  try {
+    ancestry = await client.compareCommits(input.owner, input.name, input.defaultBranch, input.targetSha)
+  } catch {
+    ancestry = null
+  }
+  if (ancestry === null) {
+    return { ok: false, code: 'ancestry_unreadable', message: releaseRefusals.ancestryUnreadable(input.defaultBranch) }
+  }
+  if (ancestry.status !== 'ahead' && ancestry.status !== 'identical') {
+    return { ok: false, code: 'target_not_on_default', message: releaseRefusals.targetNotOnDefault(input.targetSha, input.defaultBranch, ancestry.status) }
+  }
   const tags = await client.listTags(input.owner, input.name)
   const candidates: ReleaseTag[] = []
-  for (const tag of tags) {
-    if (parseVersion(tag.name) === null) continue
+  // #893: the previous version is the highest reachable SemVer tag, so the scan
+  // walks the newest tags first and stops there. The cap is the bound: one
+  // POST may not ask GitHub one compare per tag however many tags exist.
+  const semverTags = tags
+    .filter((tag) => parseVersion(tag.name) !== null)
+    .sort((left, right) => compareVersions(right.name, left.name))
+    .slice(0, MAX_TAG_COMPARES)
+  for (const tag of semverTags) {
     const compare = await client.compareCommits(input.owner, input.name, tag.name, input.targetSha)
     candidates.push({
       name: tag.name,

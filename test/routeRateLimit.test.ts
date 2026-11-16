@@ -75,6 +75,13 @@ test('the paced state-changing POST routes refuse the request after their class 
       { name: 'provider delete', url: '/settings/providers/nope/delete', cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf }) },
       { name: 'team stop', url: `/repos/${repo.id}/team/stop`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf, target: 'chief' }) },
       { name: 'job merge', url: `/repos/${repo.id}/jobs/nope/merge`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf }) },
+      // #893: publishing a release is a tag write, i.e. a ref write, and it
+      // scans tags behind one POST. It carries the same class limit as the
+      // routes around it, so a caller cannot turn it into a compare amplifier.
+      { name: 'release', url: `/repos/${repo.id}/release`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf, version: 'v1.0.0', sha: 'a'.repeat(40), confirm: '1' }) },
+      // #893: the readiness page's tag button writes the same ref through the
+      // same preflight, so it carries the same class limit.
+      { name: 'release readiness tag', url: `/repos/${repo.id}/release-readiness/tag`, cookie: ownerCookie, payload: formBody({ csrf: ownerCsrf, version: 'v1.4.0', head: 'a'.repeat(40), confirm: '1' }) },
     ]
 
     for (const route of cases) {

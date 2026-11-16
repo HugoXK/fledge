@@ -2496,11 +2496,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return ok(`已冻结候选 v${String(frozen.version)}（${frozen.hash.slice(0, 12)}）；stable 未改动。 / froze candidate v${String(frozen.version)} (${frozen.hash.slice(0, 12)}); stable was not changed`)
   })
 
-  app.post('/repos/:id/release-readiness/tag', async (request, reply) => {
+  // #893: this route writes the same ref as the release POST below, through the
+  // same preflight, so it takes the same two guards. The maintainer check answers
+  // first because it is the permission boundary; a maintainer whose session has
+  // not confirmed recently is asked to confirm before any version, head or token
+  // is read.
+  app.post('/repos/:id/release-readiness/tag', { config: { rateLimit: destructiveClassLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const back = `/repos/${repo.id}/release-readiness`
     const fail = (message: string) => reply.redirect(`${back}?error=${encodeURIComponent(message)}`)
     if (repo.repo_role !== 'maintainer') return fail('只有上游仓库的 maintainer 可以打标签。 / Only a maintainer of the upstream repository can tag it')
+    if (requireRecentAuth(request, reply, viewer, 'repo.release.tag', back)) return reply
     const body = form(request)
     const version = String(body.version ?? '').trim()
     const headSha = String(body.head ?? '').trim().toLowerCase()
@@ -2537,12 +2543,20 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // #546: a maintainer-supplied version and a confirmed full SHA. The preflight
   // is read-only; only a plan that passes every check reaches the tag write, and
   // the tag is annotated and created through the repository's installation token.
-  app.post('/repos/:id/release', async (request, reply) => {
+  // #893: publishing a release writes a tag ref, and a tag push runs the
+  // workflows in the tagged tree. It therefore carries the destructive class
+  // budget — `destructiveClassLimit` is that class read from config, the shape
+  // #708 added so the ceiling is an operator setting rather than a literal, and
+  // it defaults to the same 60 a minute as `destructiveLimit` — and it proves
+  // presence with `requireRecentAuth` before it resolves a token or compares a
+  // single tag.
+  app.post('/repos/:id/release', { config: { rateLimit: destructiveClassLimit } }, async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
     const body = form(request)
     const version = String(body.version ?? '').trim()
     const targetSha = String(body.sha ?? '').trim().toLowerCase()
     const back = `/repos/${repo.id}?release=1`
+    if (requireRecentAuth(request, reply, viewer, 'repo.release', back)) return reply
     if (!/^[0-9a-f]{40}$/.test(targetSha)) return reply.redirect(`${back}&refused=${encodeURIComponent('confirm the full 40-character commit SHA')}`)
     if (body.confirm !== '1') return reply.redirect(`${back}&refused=${encodeURIComponent('the release must be confirmed')}`)
     const owner = repo.upstream_owner || repo.owner

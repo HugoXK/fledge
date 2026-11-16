@@ -135,9 +135,13 @@ therefore require a GitHub confirmation inside `RECENT_AUTH_MINUTES` (default 15
 tracked as `sessions.recent_auth_at`:
 
 - Gated actions: repository delete, the repository settings POST, the repository
-  role POST, quota changes, API-token creation and revocation, admin
-  approve/reject, stopping a FlyBot instance, promoting a user's platform role,
-  stopping the platform, and deleting a model provider. The settings POST is
+  role POST, publishing a release tag — both the release POST and the
+  release-readiness tag POST, audited as `repo.release` and `repo.release.tag` —
+  quota changes, API-token creation and
+  revocation, admin approve/reject, stopping a FlyBot instance, promoting a
+  user's platform role, stopping the platform, and deleting a model provider. Both
+  tag-writing routes are also paced by the destructive class limit, because a tag
+  is a ref write and its preflight reads tags. The settings POST is
   gated on either of two paths: turning a repository's auto-merge on or off,
   audited as `repo.auto_merge`, and changing the pre-merge policy — branch
   protection, the stage gate, the allowed and denied paths, the target branch and

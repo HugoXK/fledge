@@ -205,6 +205,62 @@ test('a target SHA that is not a commit is refused by name, before any tag is wr
   assert.match((plan as { message: string }).message, /not a commit/)
 })
 
+function ancestryClient(options: { status: string | 'throw'; tagStatus?: string; tags?: number }): { client: never; compares: () => number } {
+  let compares = 0
+  const tagStatus = options.tagStatus ?? 'ahead'
+  const count = options.tags ?? 1
+  const client = {
+    async commitExists() { return true },
+    async listTags() {
+      return Array.from({ length: count }, (_, index) => ({ name: `v1.${String(index)}.0`, sha: 'b'.repeat(40) }))
+    },
+    async compareCommits(_owner: string, _name: string, base: string) {
+      compares += 1
+      if (base === 'main') {
+        if (options.status === 'throw') throw new GithubError(500, 'compare unavailable')
+        return { status: options.status, aheadBy: options.status === 'ahead' ? 3 : 0 }
+      }
+      return { status: tagStatus, aheadBy: tagStatus === 'ahead' ? 2 : 0 }
+    },
+    async getRepoFile() { return "on:\n  push:\n    tags: ['v*']\n" },
+    async getBranchProtection() { return { protected: true, requiredChecks: ['ci-ok'], requiredApprovals: 1 } },
+  }
+  return { client: client as never, compares: () => compares }
+}
+
+// #893: a tag is a ref write, and the tagged tree's workflows run when the tag
+// is pushed. A target the default branch never contained must be refused before
+// anything is written, not after the tag exists.
+test('a target the default branch does not contain is refused', async () => {
+  for (const status of ['diverged', 'behind']) {
+    const { client } = ancestryClient({ status })
+    const plan = await releasePreflight(client, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.50.0', targetSha: target })
+    assert.equal(plan.ok, false, `${status} must be refused`)
+    assert.equal((plan as { code?: string }).code, 'target_not_on_default')
+  }
+})
+
+test('a target that is ahead of or identical to the default branch still releases', async () => {
+  for (const status of ['ahead', 'identical']) {
+    const { client } = ancestryClient({ status })
+    const plan = await releasePreflight(client, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.50.0', targetSha: target })
+    assert.equal(plan.ok, true, `${status} is a legal release target`)
+  }
+})
+
+test('an ancestry compare that cannot be read refuses the release instead of passing it', async () => {
+  const { client } = ancestryClient({ status: 'throw' })
+  const plan = await releasePreflight(client, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.50.0', targetSha: target })
+  assert.equal(plan.ok, false, 'an unreadable compare must fail closed')
+  assert.equal((plan as { code?: string }).code, 'ancestry_unreadable')
+})
+
+test('the version scan compares a bounded number of tags', async () => {
+  const { client, compares } = ancestryClient({ status: 'ahead', tagStatus: 'behind', tags: 25 })
+  await releasePreflight(client, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v2.0.0', targetSha: target })
+  assert.equal(compares(), 11, 'one ancestry compare plus at most ten tag compares, not one per tag')
+})
+
 test('a 422 from the tag-object write is a refusal value, never an exception', async () => {
   const plan = { ok: true as const, tagName: 'v1.5.0', version: 'v1.5.0', targetSha: target, prerelease: false, previousTag: null, commitsAfter: null, message: 'release v1.5.0' }
   const client = {

@@ -617,3 +617,31 @@ test('a fresh session does not render the stale-confirmation banner', async () =
     await built.close()
   }
 })
+
+test('a stale session cannot publish a release without a fresh confirmation', async () => {
+  const { built, store } = await build()
+  try {
+    const user = makeUser(store, { login: 'stale-release', status: 'approved' })
+    const repo = repoFor(store, user.id)
+    const { raw, cookie, csrf } = sessionFor(built, user)
+    clearRecentAuth(store, raw)
+    const refused = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/release`,
+      headers: { cookie, referer: `http://127.0.0.1:9999/repos/${repo.id}?release=1`, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, version: 'v1.0.0', sha: 'a'.repeat(40), confirm: '1' }),
+    })
+    assert.equal(refused.statusCode, 302)
+    assert.match(String(refused.headers.location), /^\/auth\/github\/reauthorize\?next=/, 'a release needs a fresh GitHub confirmation')
+    const audit = store.listAudit(20).find((row) => row.action === 'recent_auth_required')
+    assert.ok(audit !== undefined, 'the refusal must be audited')
+    assert.match(String(audit.detail), /repo\.release/, 'the audit must name the release action')
+    assert.equal(
+      store.listAudit(20).some((row) => row.action === 'release.tagged'),
+      false,
+      'a refused confirmation must not have tagged anything',
+    )
+  } finally {
+    await built.close()
+  }
+})
