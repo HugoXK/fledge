@@ -1813,7 +1813,10 @@ row total and the per-currency spend — the aggregate never folds buckets, beca
 The superadmin deletion (#691) sits on the same delete path. `GET
 /admin/users/:id/delete` is a read-only preview: it counts the account's
 repositories, jobs (all, running and queued), FlyBot instances, API tokens and
-GitHub installations and names the backup window, and it writes no audit row.
+GitHub installation records, names the backup window, and says that the GitHub
+App installation itself is not uninstalled — it keeps its repository access and
+its webhooks until an operator removes it on GitHub; the preview writes no audit
+row.
 `POST /admin/users/:id/delete` is superadmin-only, CSRF-guarded,
 `destructiveLimit`-rated and re-authenticated with
 `requireRecentAuth(..., 'admin.user.delete')`; it refuses self-deletion, the last
