@@ -81,6 +81,10 @@ const EXPENSIVE_ROUTE_LIST = [
   // #544 slice 8: run-now starts a job the moment the maintainer asks, so it is
   // a start of real work like the schedule save beside it.
   'POST /repos/:id/schedule/run-now',
+  // #544 slice 9: pausing stops the cadence and resuming starts it again, which
+  // is the same kind of decision as disabling or enabling a repository.
+  'POST /repos/:id/schedule/pause',
+  'POST /repos/:id/schedule/resume',
   'POST /repos/:id/releases/:releaseId/check',
   'POST /repos/:id/gate/sessions',
   'POST /repos/:id/gate/sessions/:sessionId/confirm',

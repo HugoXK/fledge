@@ -279,6 +279,13 @@ export interface ScheduleRow {
    * before this column existed.
    */
   daily_runs: number | null
+  /**
+   * #544 slice 9: `active` or `paused`. A paused schedule records its instants
+   * as skipped with reason `paused` instead of dispatching them.
+   */
+  status: string
+  /** #544 slice 9: the instant the schedule was paused, or null while active. */
+  paused_at: number | null
   last_occurrence_at: number | null
   created_at: string
   updated_at: string
@@ -2049,6 +2056,14 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- before the column existed; the count itself is read from the occurrence
   -- rows, so a database restored without them cannot invent usage.
   daily_runs INTEGER,
+  -- #544 slice 9: a schedule a person paused stops dispatching until it is
+  -- resumed. 'active' is the default, so every row written before the column
+  -- existed keeps the behaviour it had; paused_at is the instant of the last
+  -- pause and is null while the schedule is active, including before the first
+  -- one. The state is a decision by a maintainer, so a form save never changes
+  -- it.
+  status TEXT NOT NULL DEFAULT 'active',
+  paused_at INTEGER,
   last_occurrence_at INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -2446,6 +2461,7 @@ export class Store {
     this.migrateScheduleOccurrenceColumns()
     this.migrateScheduleMisfireColumns()
     this.migrateScheduleBudgetColumns()
+    this.migrateSchedulePauseColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -2480,6 +2496,15 @@ export class Store {
   private migrateScheduleBudgetColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
     if (!columns.includes('daily_runs')) this.db.exec('ALTER TABLE schedules ADD COLUMN daily_runs INTEGER')
+  }
+
+  // #544 slice 9: the pause state adds two columns. A row written before them is
+  // active with no pause instant, which is the behaviour it had; nothing else is
+  // rewritten, and the default is what makes that true without a backfill.
+  private migrateSchedulePauseColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
+    if (!columns.includes('status')) this.db.exec("ALTER TABLE schedules ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if (!columns.includes('paused_at')) this.db.exec('ALTER TABLE schedules ADD COLUMN paused_at INTEGER')
   }
 
   private migrateScheduleOccurrenceColumns(): void {
@@ -5310,6 +5335,22 @@ export class Store {
   // exists, owns that repository's cadence.
   scheduleForRepo(repoId: string): ScheduleRow | undefined {
     return this.get<ScheduleRow>('SELECT * FROM schedules WHERE repo_id = ?', repoId)
+  }
+
+  // #544 slice 9: the pause state. It is written by a maintainer's button and by
+  // nothing else, so a schedule save keeps whatever state it found: resuming is
+  // an explicit act, not a side effect of editing the expression. Pausing an
+  // already paused schedule keeps the first pause instant, because the window
+  // that was skipped starts when the schedule actually stopped.
+  setScheduleStatus(repoId: string, status: 'active' | 'paused', at: number): ScheduleRow | undefined {
+    const existing = this.scheduleForRepo(repoId)
+    if (existing === undefined) return undefined
+    const pausedAt = status === 'paused' ? (existing.status === 'paused' ? existing.paused_at : at) : null
+    this.run(
+      'UPDATE schedules SET status = ?, paused_at = ?, updated_at = ? WHERE repo_id = ?',
+      status, pausedAt, nowIso(), repoId,
+    )
+    return this.scheduleForRepo(repoId)
   }
 
   listSchedules(): ScheduleRow[] {
