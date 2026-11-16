@@ -49,6 +49,11 @@ a mount or a network:
 - **No host Docker socket.** The arguments never carry `/var/run/docker.sock`;
   the socket is root on the host, so mounting it into a tenant container would
   make every other tenant reachable.
+- **One checked mount source.** The data directory must be an absolute path to an
+  existing directory before it becomes a bind: the builder throws otherwise,
+  because a relative path is resolved by the daemon against its own working
+  directory and a missing one is created by Docker as root — either way the mount
+  would come from outside the tenant's tree.
 - **Seccomp stays on.** The runtime's default profile is what refuses the rare
   syscalls an agent runtime never needs; the isolation check asserts that a
   filter really is loaded (`Seccomp: 2`) rather than replacing the profile with a
