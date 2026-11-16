@@ -4834,13 +4834,36 @@ export class Store {
       .slice(0, limit)
   }
 
-  alerts(input: { now?: string; stallMinutes?: number; prAgeHours?: number; usdCny?: number; budgetRatio?: number; userId?: string } = {}): AlertView[] {
+  // #807 review: what the dispatcher calls "may not run yet" and what the
+  // automation alert calls "idle" have to be the same test, or the console can
+  // say no repository is waiting while the alert lists one the dispatcher has
+  // just cleared as `user_not_ready` or `instance_not_ready`. Both readiness
+  // halves live here, and the dispatcher calls this instead of repeating them.
+  userReadyForScheduling(userId: string): boolean {
+    return this.userById(userId)?.status === 'approved'
+  }
+
+  instanceReadyForScheduling(repoId: string, instancesManaged: boolean): boolean {
+    // An installation without a bridge image does not manage instances at all,
+    // so a missing row is not a reason to refuse anything.
+    if (!instancesManaged) return true
+    return this.getRepoInstance(repoId)?.status === 'ready'
+  }
+
+  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean): 'user_not_ready' | 'instance_not_ready' | null {
+    if (!this.userReadyForScheduling(repo.user_id)) return 'user_not_ready'
+    if (!this.instanceReadyForScheduling(repo.id, instancesManaged)) return 'instance_not_ready'
+    return null
+  }
+
+  alerts(input: { now?: string; stallMinutes?: number; prAgeHours?: number; usdCny?: number; budgetRatio?: number; userId?: string; automationIdleMinutes?: number; instancesManaged?: boolean } = {}): AlertView[] {
     const now = input.now ?? nowIso()
     const nowMs = Date.parse(now)
     const stallMs = (input.stallMinutes ?? 30) * 60_000
     const prAgeMs = (input.prAgeHours ?? 24) * 3_600_000
     const ratio = input.budgetRatio ?? 0.8
     const usdCny = input.usdCny ?? 1
+    const idleMs = (input.automationIdleMinutes ?? 30) * 60_000
     const alerts: AlertView[] = []
     const repos = input.userId === undefined
       ? this.all<RepoRow>('SELECT * FROM repos')
@@ -4889,6 +4912,41 @@ export class Store {
           })
         }
       }
+    }
+    // #807: ready work nobody is working on. The wait is measured from the later
+    // of the oldest ready item and the repository's last run, so a repository that
+    // just finished a job is not reported as idle, and a running job clears the
+    // condition instead of the alert having to be dismissed by hand. Only a
+    // repository the scheduler may dispatch to can be idle: with automatic
+    // iteration off, ready work waiting is the setting the owner chose, and an
+    // unapproved user or an instance that is not up is a reason the dispatcher
+    // reports instead of an idle platform.
+    const readyRows = input.userId === undefined
+      ? this.all<{ repo_id: string; oldest: string }>("SELECT repo_id, MIN(created_at) AS oldest FROM work_items WHERE state NOT IN ('merged', 'closed') GROUP BY repo_id")
+      : this.all<{ repo_id: string; oldest: string }>("SELECT repo_id, MIN(created_at) AS oldest FROM work_items WHERE state NOT IN ('merged', 'closed') AND user_id = ? GROUP BY repo_id", input.userId)
+    const readySince = new Map(readyRows.map((row) => [row.repo_id, Date.parse(row.oldest)]))
+    const runningRepos = new Set(running.map((job) => job.repo_id))
+    const instancesManaged = input.instancesManaged ?? false
+    for (const repo of repos) {
+      if (repo.enabled !== 1 || repo.auto_iterate !== 1) continue
+      if (runningRepos.has(repo.id)) continue
+      if (this.automationDispatchBlocker(repo, instancesManaged) !== null) continue
+      const oldest = readySince.get(repo.id)
+      if (oldest === undefined || !Number.isFinite(oldest)) continue
+      const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
+      const since = Number.isFinite(lastRun) && lastRun > oldest ? lastRun : oldest
+      const waitedMs = nowMs - since
+      if (waitedMs < idleMs) continue
+      const minutes = Math.round(waitedMs / 60_000)
+      const label = repoLabels.get(repo.id) ?? repo.id
+      alerts.push({
+        kind: 'automation_idle_with_work',
+        level: waitedMs >= idleMs * 2 ? 'critical' : 'warning',
+        repoId: repo.id,
+        repoLabel: label,
+        minutes,
+        message: `${label}: ready work has waited ${minutes}m with no active job`,
+      })
     }
     const rank: Record<string, number> = { critical: 0, warning: 1, info: 2 }
     return alerts.sort((a, b) => (rank[a.level] ?? 9) - (rank[b.level] ?? 9))

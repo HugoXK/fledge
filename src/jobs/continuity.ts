@@ -1,5 +1,6 @@
 import type { JobRow, RepoRow, WorkItemRow } from '../db.js'
 import { redact } from '../lib/secrets.js'
+import { readySinceMs } from './automationHealth.js'
 
 //: A scheduled run's product, so a zero-output or meta run cannot look like a
 //: productive one in the aggregate.
@@ -330,7 +331,10 @@ export type NextJob =
   | { kind: 'discover' }
   | { kind: 'followup'; workItemId: string; prUrl?: string; branch?: string }
   | { kind: 'review'; workItemId: string; prUrl: string; branch?: string }
-  | { kind: 'none'; reason: 'not due' | 'idle' }
+  // #807: a ready item that does not start names what held it back, and when it
+  // became dispatchable, so the dispatcher can publish why instead of a gap.
+  | { kind: 'none'; reason: 'not due'; blockedBy: 'cooldown' | 'failure_backoff'; readyAt: number | null }
+  | { kind: 'none'; reason: 'idle' }
 
 export interface SchedulerState {
   repo: RepoRow
@@ -367,7 +371,16 @@ export function decideNextJob(state: SchedulerState, options: { cooldownMs?: num
     return { kind: 'none', reason: 'idle' }
   }
   if (!isDue(state, options.cooldownMs ?? DEFAULT_COOLDOWN_MS)) {
-    return { kind: 'none', reason: 'not due' }
+    // #807: the same test `isDue` applies, named. From the second consecutive
+    // failure the wait is the backoff, so a dashboard can tell a throttle from a
+    // loop that is being held down.
+    const blockedBy = state.failureStreak >= 2 ? 'failure_backoff' : 'cooldown'
+    return {
+      kind: 'none',
+      reason: 'not due',
+      blockedBy,
+      readyAt: readySinceMs({ workCreatedAt: work.map((item) => item.created_at), lastRunAt: state.lastRunAt }),
+    }
   }
   const item = work[0]
   if (item === undefined) return { kind: 'none', reason: 'idle' }
