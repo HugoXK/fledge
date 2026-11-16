@@ -978,7 +978,11 @@ expression in the workflow.
 
 `release.yml` publishes only a tag that is an ancestor of `main`, holds one run
 per ref (`concurrency: release-<ref>`, no cancel), and still runs the checks,
-builds and pushes the image, then creates or edits the GitHub release. It never
+builds and pushes the image, then creates or edits the GitHub release. Its job
+holds the publish scopes, so the checkout that feeds `npm ci` sets
+`persist-credentials: false` (#861): a dependency lifecycle script must not be
+able to read a token from `.git/config`, and the steps that need the API pass
+`secrets.GITHUB_TOKEN` explicitly instead. It never
 deploys: a tag, an image and a release are artefacts, and the live service stays
 owner-only.
 
