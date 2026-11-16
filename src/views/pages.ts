@@ -34,6 +34,8 @@ import { carryOverHeaderFromGoal } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
+import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
+import { parseUntrustedMeta } from '../lib/untrusted.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import { readReleaseNotesSources } from '../releases/notes.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
@@ -3200,6 +3202,15 @@ export function jobPage(input: {
   // DESC`), so the first adversarial event is the newest verdict. Reversing the
   // list would show the first tip's answer forever: a job whose later tip cleared
   // the risk would keep claiming its merge was blocked.
+  // #370 slice 2: the job records the label, the body hash and the rule ids the
+  // firewall matched. The page states the count and the ids — never the text.
+  const untrustedInput = parseUntrustedMeta(events.find((event) => event.kind === UNTRUSTED_EVENT_KIND)?.meta)
+  const untrustedLine = untrustedInput === null
+    ? ''
+    : `<p class="fine" data-untrusted-input><strong>${escapeHtml(t('不受信任输入', 'Untrusted input'))}:</strong> ${escapeHtml(untrustedInput.label)} · sha256 ${escapeHtml(untrustedInput.hash)} · ${escapeHtml(untrustedInput.blocked.length === 0
+      ? t('没有指令式文本', 'no instruction-like text')
+      : t(`按数据处理，拦截 ${untrustedInput.blocked.length} 条指令式文本（${untrustedInput.blocked.join('、')}）`, `${untrustedInput.blocked.length} instruction-like directive${untrustedInput.blocked.length === 1 ? '' : 's'} blocked and treated as data (${untrustedInput.blocked.join(', ')})`))}</p>`
+
   const adversarial = parseAdversarialRecord(events.find((event) => event.kind === 'job.adversarial')?.meta)
   const adversarialText = (record: AdversarialRecord): string => record.status === 'risk'
     ? t(`具体风险 ${record.target ?? ''} — 自动合并已阻止`, `concrete risk ${record.target ?? ''} — the automatic merge was blocked`)
@@ -3521,6 +3532,7 @@ export function jobPage(input: {
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
       ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
       ${modelLine}
+      ${untrustedLine}
       ${providerLine}
       ${carryOverLine}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}

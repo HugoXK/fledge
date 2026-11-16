@@ -432,9 +432,20 @@ stripped, and the payload keeps the 4,000-character cap, so a body cannot close
 the block early or add a second instruction line. The fixed instruction stays
 outside the block. The job audit row records `label=ISSUE TEXT`,
 `sha256=<first 12 hex>` and `truncated=<bool>`; the body is never written to the
-log. This is the labelling slice. The content firewall, confirmation for
-high-risk actions and the bridge change are the follower half of #370, and host
-isolation remains #109.
+log.
+
+The second slice adds the firewall (`src/lib/firewall.ts`). It scans exactly the
+string the fence carries — after control characters are stripped, so a hidden
+newline cannot split a pattern the agent still reads — against a finite, ordered
+rule table (`ignore-previous-instructions`, `push-to-main`, `merge-pull-request`,
+`system-prompt`, `run-command`, `reveal-secret`). A hit is recorded, never
+blocked by itself: the job event `job.untrusted_input` and the audit row carry
+`blocked=<rule ids>` (or `none`) beside the label, hash and truncation flag, and
+the job page states the count and the ids. Matched text and the body never reach
+the event, the log or the page; `parseUntrustedMeta()` refuses any record it did
+not write, so a hand-edited row is not rendered as a claim. Judging whether a
+flagged run may continue, confirming high-risk actions and the `bridge/` change
+remain the follower half of #370, and host isolation remains #109.
 
 ### Job cost, evidence and metrics
 
