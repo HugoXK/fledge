@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
   <title>排期控制台 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=de7b26f8006e" />
+  <link rel="stylesheet" href="assets/app.css?v=b77a91a74e2c" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -63,7 +63,6 @@
         <dt>宽限</dt><dd data-schedule-grace="none">不限（默认）</dd>
         <dt>每日运行上限</dt><dd data-schedule-daily-runs="none">不限（默认） · 今天已运行 0 次</dd>
       </dl>
-      <form method="post" action="#" class="run-now" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="command_key" value="cmd_mock" /><button type="submit">立即运行</button><span class="fine">从当前时刻开始一次，不改动下次运行。</span></form>
     </section>
     <section class="card"><h2>编辑排期</h2>
       <p class="muted">排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。</p>
@@ -105,35 +104,10 @@
       <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
       <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
       <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
-      <a href="settings.html#feedback" data-open-dialog="feedback-dialog" aria-haspopup="dialog" aria-controls="feedback-dialog">反馈</a>
-      <a class="star-link" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer" title="在 GitHub 上加星" aria-label="在 GitHub 上加星"><svg class="star-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17.1l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span>加星</span></a>
+      <a href="settings.html#feedback">反馈</a>
+      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">★ 在 GitHub 上加星</a>
     </nav>
   </footer>
-  <dialog id="feedback-dialog" class="add-repo-dialog feedback-dialog" aria-labelledby="feedback-dialog-title">
-    <div class="row between dialog-head">
-      <h2 id="feedback-dialog-title">反馈给开发者</h2>
-      <button class="link" type="button" data-close-dialog aria-label="关闭">×</button>
-    </div>
-    <p class="muted">遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。</p>
-    <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
-      <input type="hidden" name="csrf" value="mock-csrf" />
-      <input type="hidden" name="returnTo" value="/repos/repo_fledge/schedule" />
-      <div class="row">
-        <label>类型
-          <select name="kind">
-            <option value="feedback">建议 / 一般反馈</option>
-            <option value="bug">Bug</option>
-            <option value="other">其他</option>
-          </select>
-        </label>
-        <label class="grow">相关页面（可选） <input name="page" maxlength="200" value="/repos/repo_fledge/schedule" placeholder="/settings 或 /dashboard" /></label>
-      </div>
-      <label>内容<textarea name="message" rows="4" maxlength="2000" required placeholder="发生了什么？你期望什么？"></textarea></label>
-      <label class="check"><input type="checkbox" name="publishConsent" value="1" /> 我同意 Fledge 在公开 GitHub issue 中 @ 我的账号，并引用脱敏后的反馈摘要。</label>
-      <p class="fine">不要粘贴 token、密码或他人的隐私信息。反馈会保存并邮件通知开发者。</p>
-      <button class="btn" type="submit">发送反馈</button>
-    </form>
-  </dialog>
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
     <form method="dialog" data-mock-inert onsubmit="return false;">
       <h2 id="confirm-dialog-title">请确认</h2>
