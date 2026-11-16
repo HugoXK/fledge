@@ -114,6 +114,12 @@ const EXPENSIVE_ROUTE_LIST = [
   'PUT /repos/:id/workspace/app/*',
   'PATCH /repos/:id/workspace/app/*',
   'DELETE /repos/:id/workspace/app/*',
+  // #797: a feedback or error report is not a write to a row — both routes
+  // deliver the packet to the Lead bot, which spends a model turn on it, so
+  // they start work and are expensive. The triage callback only writes the
+  // triage state and mails the reporter, so it stays ordinary.
+  'POST /feedback',
+  'POST /errors/:ref/report',
   'POST /repos/:id/security-findings/:findingId/fix',
   'POST /admin/webhooks/:id/retry',
 ] as const
@@ -137,6 +143,7 @@ const ORDINARY_ROUTE_LIST = [
   'POST /approve/:token',
   'POST /api/jobs/:id/callback',
   'POST /api/github/webhook',
+  'POST /api/feedback/:ref/triage',
   'POST /api/inbound/email',
 ] as const
 
