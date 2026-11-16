@@ -363,7 +363,7 @@ jobs:
         if: ${{ inputs.dry_run != true && steps.opener.outputs.ready == 'true' }}
         run: |
           set -euo pipefail
-          npm ci --no-audit --no-fund
+          npm ci --ignore-scripts --no-audit --no-fund
           if ! npm run mock:check; then
             echo "::error::mock/ is stale: run npm run mock:snapshot, commit mock/ in a docs pull request, and re-run the release"
             exit 1
