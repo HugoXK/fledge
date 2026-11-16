@@ -6,6 +6,7 @@ import { log } from './lib/log.js'
 import { nowIso } from './lib/time.js'
 import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
+import { canonicalSections, strategyHash } from './strategy/bundle.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
 import { redact } from './lib/secrets.js'
@@ -1637,6 +1638,31 @@ CREATE TABLE IF NOT EXISTS repo_releases (
   updated_at TEXT NOT NULL,
   UNIQUE(repo_id, tag_name)
 );
+-- #433 slice 1: one row per frozen strategy version, content-addressed per
+-- repository. The hash is the identity, so the same strategy cannot be stored
+-- twice, and a version number is only ever appended.
+CREATE TABLE IF NOT EXISTS strategy_bundles (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  version INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  parent_version INTEGER,
+  sections_json TEXT NOT NULL,
+  created_by TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  UNIQUE(repo_id, version),
+  UNIQUE(repo_id, hash)
+);
+-- The three pointers a repository can be on. Slice 1 moves only candidate:
+-- canary and stable need a promotion decision that does not exist yet.
+CREATE TABLE IF NOT EXISTS strategy_pointers (
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  name TEXT NOT NULL,
+  version INTEGER NOT NULL,
+  hash TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (repo_id, name)
+);
 CREATE TABLE IF NOT EXISTS postmortems (
   id TEXT PRIMARY KEY,
   job_id TEXT NOT NULL UNIQUE REFERENCES jobs(id) ON DELETE CASCADE,
@@ -2215,6 +2241,33 @@ export interface ReleaseRow {
   notes_source_json: string | null
   created_at: string
   updated_at: string
+}
+
+export interface StrategyBundleRow {
+  id: string
+  repo_id: string
+  version: number
+  hash: string
+  parent_version: number | null
+  sections_json: string
+  created_by: string
+  created_at: string
+}
+
+export interface StrategyPointerRow {
+  repo_id: string
+  name: string
+  version: number
+  hash: string
+  updated_at: string
+}
+
+// The three pointers a repository can carry. Slice 1 only ever moves `candidate`,
+// and every reader sees a null for a pointer no bundle reached yet.
+export interface StrategyPointers {
+  candidate: StrategyPointerRow | null
+  canary: StrategyPointerRow | null
+  stable: StrategyPointerRow | null
 }
 
 // #546: the workflow-run tracker writes only these fields. Every reconcile is a
@@ -3850,6 +3903,101 @@ export class Store {
   updateReleaseNotes(id: string, notesSourceJson: string | null): ReleaseRow | undefined {
     this.run('UPDATE repo_releases SET notes_source_json = ?, updated_at = ? WHERE id = ?', notesSourceJson, nowIso(), id)
     return this.releaseById(id)
+  }
+
+  // #433 slice 1: freeze the strategy as a new candidate. The declared base is
+  // the candidate version the page rendered, and the compare-and-swap happens in
+  // one transaction with the insert: a form filled in before another candidate
+  // landed is refused with the version that is actually current, and nothing is
+  // written. Content that is already stored is the same bundle (the hash is the
+  // identity), so no second row is written — the candidate pointer still moves to
+  // it, because the button freezes the content the page composes now.
+  // `stable` and `canary` are never touched here — promotion is a later slice with
+  // a human decision, so freezing cannot ship a strategy by accident.
+  freezeStrategyCandidate(input: {
+    repoId: string
+    sections: Record<string, string>
+    createdBy: string
+    expectedBase: number
+  }): { ok: true; version: number; hash: string; parentVersion: number | null; duplicate: boolean } | { ok: false; code: 'stale_base'; base: number; candidate: number } {
+    const hash = strategyHash(input.sections)
+    const sectionsJson = JSON.stringify(canonicalSections(input.sections))
+    return this.transaction(() => {
+      const pointers = this.strategyPointers(input.repoId)
+      const candidate = pointers.candidate?.version ?? 0
+      if (input.expectedBase !== candidate) {
+        return { ok: false as const, code: 'stale_base' as const, base: input.expectedBase, candidate }
+      }
+      const existing = this.strategyBundleByHash(input.repoId, hash)
+      if (existing !== undefined) {
+        // The same content is the same bundle, so it is not stored twice. The
+        // freeze still freezes: after the same compare-and-swap that guards every
+        // freeze, the candidate moves onto that bundle inside this transaction.
+        // Leaving the pointer where it was would keep a candidate whose content is
+        // not what the page's sources assemble now, while the page reports the
+        // older version as the one that was frozen.
+        this.run(
+          `INSERT INTO strategy_pointers (repo_id, name, version, hash, updated_at)
+           VALUES (?, 'candidate', ?, ?, ?)
+           ON CONFLICT(repo_id, name) DO UPDATE SET version = excluded.version, hash = excluded.hash, updated_at = excluded.updated_at`,
+          input.repoId,
+          existing.version,
+          existing.hash,
+          nowIso(),
+        )
+        return { ok: true as const, version: existing.version, hash: existing.hash, parentVersion: existing.parent_version, duplicate: true }
+      }
+      const version = this.nextStrategyVersion(input.repoId)
+      const parentVersion = candidate === 0 ? null : candidate
+      const at = nowIso()
+      this.run(
+        `INSERT INTO strategy_bundles (id, repo_id, version, hash, parent_version, sections_json, created_by, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `stg_${randomBytes(6).toString('hex')}`,
+        input.repoId,
+        version,
+        hash,
+        parentVersion,
+        sectionsJson,
+        input.createdBy,
+        at,
+      )
+      this.run(
+        `INSERT INTO strategy_pointers (repo_id, name, version, hash, updated_at)
+         VALUES (?, 'candidate', ?, ?, ?)
+         ON CONFLICT(repo_id, name) DO UPDATE SET version = excluded.version, hash = excluded.hash, updated_at = excluded.updated_at`,
+        input.repoId,
+        version,
+        hash,
+        at,
+      )
+      return { ok: true as const, version, hash, parentVersion, duplicate: false }
+    })
+  }
+
+  private nextStrategyVersion(repoId: string): number {
+    const row = this.get<{ version: number | null }>('SELECT MAX(version) AS version FROM strategy_bundles WHERE repo_id = ?', repoId)
+    return (row?.version ?? 0) + 1
+  }
+
+  strategyBundle(repoId: string, version: number): StrategyBundleRow | undefined {
+    return this.get<StrategyBundleRow>('SELECT * FROM strategy_bundles WHERE repo_id = ? AND version = ?', repoId, version)
+  }
+
+  strategyBundleByHash(repoId: string, hash: string): StrategyBundleRow | undefined {
+    return this.get<StrategyBundleRow>('SELECT * FROM strategy_bundles WHERE repo_id = ? AND hash = ?', repoId, hash)
+  }
+
+  listStrategyBundles(repoId: string, limit = 20): StrategyBundleRow[] {
+    return this.all<StrategyBundleRow>('SELECT * FROM strategy_bundles WHERE repo_id = ? ORDER BY version DESC LIMIT ?', repoId, limit)
+  }
+
+  // One query for all pointers: an absent row reads as null, so a repository
+  // that never froze a strategy has no pointer rather than a pointer at zero.
+  strategyPointers(repoId: string): StrategyPointers {
+    const rows = this.all<StrategyPointerRow>('SELECT * FROM strategy_pointers WHERE repo_id = ?', repoId)
+    const find = (name: string): StrategyPointerRow | null => rows.find((row) => row.name === name) ?? null
+    return { candidate: find('candidate'), canary: find('canary'), stable: find('stable') }
   }
 
   createPostmortemForJob(jobId: string): PostmortemRecord | undefined {

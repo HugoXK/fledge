@@ -135,6 +135,12 @@ const ORDINARY_ROUTE_LIST = [
   'POST /auth/logout',
   'POST /apply',
   'POST /repos/:id/memory',
+  // #433: freezing a strategy candidate appends a version and moves only the
+  // candidate pointer — stable and canary need the promotion decision of a later
+  // slice — so nothing irreversible happens and no work starts. It is ordinary by
+  // that rule; if a later slice makes jobs run on the candidate, it moves beside
+  // `POST /repos/:id/rules`, which steers every later job.
+  'POST /repos/:id/strategy',
   'POST /repos/:id/rules/delete',
   'POST /repos/:id/team/guidance',
   'POST /repos/:id/jobs/:jobId/priority',

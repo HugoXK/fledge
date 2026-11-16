@@ -1126,3 +1126,18 @@ Scope of this slice: recording and displaying reported ids. Reading the ids from
 GitHub's alerts (or the SARIF the CI gate already parses) and reconciling the two
 sources is a later slice, as is blocking an automatic merge on a `regressed`
 finding.
+
+## Strategy bundles are per repository (#433 slice 1)
+
+A strategy bundle belongs to exactly one repository: `strategy_bundles` and
+`strategy_pointers` are keyed by `repo_id` with the same `ON DELETE CASCADE` as the
+rest of the repository data, every read goes through the owner's repository, and
+the strategy page and its freeze action use the same owner check as the rest of
+the repository console. A second account reading another repository's strategy
+page gets the same 404 as any other repository it does not own, and the store has
+no cross-repository read. Freezing is maintainer-gated and CSRF-protected, and it
+cannot move `stable` or `canary`, so the artifact that later promotes strategies
+cannot be advanced by this write. A strategy that names a frozen section — the
+evaluator, evidence, CI, merge gate, auth, gateway or capability checks — is
+refused before anything is written, which keeps the parts that judge a job out of
+the parts a strategy may evolve.
