@@ -663,6 +663,18 @@ node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` 
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
 writer, and any `risk:T*` label against the computed tier.
 
+Both checks read the pull request's file and commit lists, and both used to stop
+at a fixed page cap. A list longer than the cap was judged from its prefix, which
+is enough to hide the only T3 path — or a reviewer-authored commit — past the cap
+and let the pull request be classified below the tier it needs (#862). Each list
+is now read until the API returns a short page, and both checks prove the read
+list whole against the `changed_files` and `commits` counts the pull request
+object reports. A short read, a count the API does not send, or a list that only
+stops at the absurdity guard is refused by name — "the changed-file list is
+incomplete: read N of M" — instead of being classified. `pr-lint` judges
+completeness before any rule that reads the paths, so a truncated list is reported
+as an incomplete list rather than as a body complaint.
+
 `pr-lint` is its own workflow (`.github/workflows/pr-lint.yml`), so a fixed PR
 body repaints that check and nothing else. Its activity types are `opened`,
 `synchronize`, `reopened`, `ready_for_review` and `edited`; the review gate

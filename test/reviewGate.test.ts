@@ -102,7 +102,10 @@ async function withFakeGitHub(state: FakeState, body: (env: Record<string, strin
       return
     }
     if (path === '/repos/o/r/pulls/7') {
-      json(response, 200, { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch, repo: { full_name: state.headRepo } }, base: { sha: 'base-sha', ref: 'main', repo: { full_name: state.baseRepo } }, user: { login: state.author }, labels: [] })
+      // #862: the real pull request object reports both totals, and the gate now
+      // proves its file and commit lists complete against them, so the fake sends
+      // what the API sends and for the same reason the API sends it.
+      json(response, 200, { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch, repo: { full_name: state.headRepo } }, base: { sha: 'base-sha', ref: 'main', repo: { full_name: state.baseRepo } }, user: { login: state.author }, labels: [], changed_files: state.files.length, commits: state.commits.length })
       return
     }
     if (path === '/repos/o/r/pulls/7/files') {
@@ -227,7 +230,7 @@ function fakeGateApi(state: FakeState): (path: string) => Promise<unknown> {
     const url = new URL(path, 'http://127.0.0.1')
     const pathname = url.pathname
     if (pathname === '/repos/o/r/pulls/7') {
-      return { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch, repo: { full_name: state.headRepo } }, base: { sha: 'base-sha', ref: 'main', repo: { full_name: state.baseRepo } }, user: { login: state.author }, labels: [] }
+      return { number: 7, title: state.title, head: { sha: state.sha, ref: state.branch, repo: { full_name: state.headRepo } }, base: { sha: 'base-sha', ref: 'main', repo: { full_name: state.baseRepo } }, user: { login: state.author }, labels: [], changed_files: state.files.length, commits: state.commits.length }
     }
     if (pathname === '/repos/o/r/pulls/7/files') return state.files.map((file) => (typeof file === 'string' ? { filename: file } : file))
     if (pathname === '/repos/o/r/pulls/7/reviews') return state.reviews
