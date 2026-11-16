@@ -11,13 +11,13 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: number } = {}): { fetch: typeof globalThis.fetch; calls: Array<{ url: string; method: string; body: string }> } {
+function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: number | null; tags?: string[]; packageContent?: string } = {}): { fetch: typeof globalThis.fetch; calls: Array<{ url: string; method: string; body: string }> } {
   const calls: Array<{ url: string; method: string; body: string }> = []
   const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = String(input)
     calls.push({ url, method: String(init?.method ?? 'GET'), body: String(init?.body ?? '') })
     if (url.endsWith('/repos/o/r/commits/main')) return json({ sha: MAIN, commit: { committer: { date: '2026-11-16T07:00:00Z' } } })
-    if (url.endsWith('/repos/o/r/git/matching-refs/tags/v')) return json([{ ref: 'refs/tags/v0.4.0' }])
+    if (url.endsWith('/repos/o/r/git/matching-refs/tags/v')) return json((overrides.tags ?? ['v0.4.0']).map((tag) => ({ ref: `refs/tags/${tag}` })))
     if (url.endsWith('/repos/o/r/commits/v0.4.0')) return json({ sha: TAG_SHA, commit: { committer: { date: '2026-11-16T01:20:00Z' } } })
     if (url.includes('/repos/o/r/compare/v0.4.0...')) {
       const messages = [
@@ -36,8 +36,9 @@ function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: numb
       ]
       return json({ total_commits: messages.length, commits: messages.map((message) => ({ commit: { message } })) })
     }
-    if (url.includes('/repos/o/r/contents/package.json')) return json({ encoding: 'base64', content: base64(JSON.stringify({ version: '0.4.0' })) })
+    if (url.includes('/repos/o/r/contents/package.json')) return json({ encoding: 'base64', content: base64(overrides.packageContent ?? JSON.stringify({ version: '0.4.0' })) })
     if (url.includes('/repos/o/r/contents/changelog.d')) {
+      if (overrides.fragments === null) return json({ message: 'not a directory' })
       const count = overrides.fragments ?? 2
       return json(Array.from({ length: count }, (_, index) => ({ name: `f${index}.fixed.md`, type: 'file' })).concat([{ name: 'README.md', type: 'file' }]))
     }
@@ -45,7 +46,7 @@ function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: numb
       return json({ check_runs: [{ id: 3, name: 'ci-ok', status: 'completed', conclusion: overrides.ci ?? 'success' }] })
     }
     if (url.includes('/repos/o/r/pulls?state=open')) return json(overrides.pulls ?? [])
-    if (url.includes('/repos/o/r/git/ref/heads/release/v0.4.1')) return new Response('', { status: 404 })
+    if (url.includes('/repos/o/r/git/ref/heads/release/')) return new Response('', { status: 404 })
     if (url.includes('/repos/o/r/actions/workflows/daily-release.yml/dispatches')) return new Response('', { status: 202 })
     throw new Error(`unexpected fetch ${url}`)
   }
@@ -96,6 +97,18 @@ test('a release PR, missing fragments or an existing tag each block the action',
   assert.match((await previewRelease(options(open.fetch))).reason, /open-release-pr/)
   const empty = fakeFetch({ fragments: 0 })
   assert.match((await previewRelease(options(empty.fetch))).reason, /no-fragments/)
+})
+
+test('preview handles an unreadable package, no tag and a non-directory fragment listing', async () => {
+  const noTag = await previewRelease(options(fakeFetch({ tags: [] }).fetch))
+  assert.equal(noTag.nextVersion, '0.5.0')
+  assert.match(noTag.reason, /main-is-release/)
+  const badPackage = await previewRelease(options(fakeFetch({ packageContent: 'not-json' }).fetch))
+  assert.equal(badPackage.packageVersion, '')
+  assert.match(badPackage.reason, /package-version-unreadable/)
+  const noFragments = await previewRelease(options(fakeFetch({ fragments: null }).fetch))
+  assert.equal(noFragments.fragments, 0)
+  assert.match(noFragments.reason, /no-fragments/)
 })
 
 test('previewAndDispatch posts dry_run=false only after a fresh eligible preview', async () => {
