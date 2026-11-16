@@ -16,12 +16,14 @@
 // or a recorded sha256 — never from the running tree, because the running tree
 // is the thing that was replaced by hand.
 //
-// It writes nothing and deploys nothing. Exit codes: 0 every link agrees,
-// 1 a link disagrees (refuse the rollout), 2 the command could not read its
-// input (never a green verdict).
+// It writes nothing and deploys nothing: the report is stdout, so keeping it is
+// the caller's redirection (`--json > rollout.json`). The process has no file
+// sink, so no value read from the network can reach one. Exit codes: 0 every link
+// agrees, 1 a link disagrees (refuse the rollout), 2 the command could not read
+// its input (never a green verdict).
 
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { join, relative, sep } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
@@ -31,7 +33,20 @@ const SHA256 = /^[0-9a-f]{64}$/
 const ASSET = '/assets/app.css'
 const USAGE =
   'usage: node scripts/rollout-check.mjs --version X.Y.Z --commit <40-hex> (--base-url URL | --fixtures DIR) ' +
-  '(--release-dir DIR | --expect-css-sha256 <64-hex>) [--public-dir DIR] [--json] [--write FILE]'
+  '(--release-dir DIR | --expect-css-sha256 <64-hex>) [--public-dir DIR] [--json]'
+// Every flag this command reads. Anything else is refused rather than ignored,
+// because an ignored `--write out.json` would silently lose the report.
+const OPTIONS = new Set([
+  '--version',
+  '--commit',
+  '--base-url',
+  '--fixtures',
+  '--release-dir',
+  '--expect-css-sha256',
+  '--public-dir',
+  '--json',
+  '--help',
+])
 const FATAL = 2
 
 class UsageError extends Error {}
@@ -184,6 +199,14 @@ async function main() {
     console.log(USAGE)
     return 0
   }
+  const unknown = process.argv.slice(2).find((arg) => arg.startsWith('--') && !OPTIONS.has(arg))
+  if (unknown !== undefined) {
+    throw new UsageError(
+      unknown === '--write'
+        ? '--write is gone: this check opens no file — keep the report with `--json > rollout.json`'
+        : `unknown option ${unknown}\n${USAGE}`,
+    )
+  }
   const version = argument('--version')
   const commit = argument('--commit')
   if (!VERSION.test(version)) throw new UsageError(`--version "${version}" is not an X.Y.Z version`)
@@ -224,14 +247,6 @@ async function main() {
     runningTree,
   })
   console.log(has('--json') ? JSON.stringify(result, null, 2) : printResult(result))
-  const write = argument('--write')
-  if (write !== '') {
-    try {
-      writeFileSync(write, `${JSON.stringify(result, null, 2)}\n`)
-    } catch (error) {
-      throw new UsageError(`cannot write ${write}: ${error instanceof Error ? error.message : String(error)}`)
-    }
-  }
   return result.ok ? 0 : 1
 }
 

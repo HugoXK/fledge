@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { spawnSync } from 'node:child_process'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -156,4 +156,31 @@ test('a version or commit that is not in the release shape is a usage error', ()
   assert.equal(badVersion.code, 2, `"latest" must exit 2, got ${badVersion.code}: ${badVersion.out}`)
   const badCommit = run(['--fixtures', f.served, '--release-dir', f.release, '--version', VERSION, '--commit', 'HEAD'])
   assert.equal(badCommit.code, 2, `"HEAD" must exit 2, got ${badCommit.code}: ${badCommit.out}`)
+})
+
+// #658 / code-scanning alert #143: the check opens no file for writing, so no
+// value read from the network can reach a file sink. The report is stdout and
+// the caller redirects it; a stale `--write` fails loudly instead of dropping
+// the report on the floor.
+test('the check writes no file: --write is refused and --json carries the report', () => {
+  const f = fixture()
+  const report = join(f.dir, 'rollout.json')
+  const refused = check(f, ['--write', report])
+  assert.equal(refused.code, 2, `--write must exit 2, got ${refused.code}: ${refused.out}`)
+  assert.match(refused.err, /--write is gone/)
+  assert.match(refused.err, /--json > rollout\.json/)
+  assert.equal(existsSync(report), false, 'the refused --write must not leave a file behind')
+
+  const redirected = check(f, ['--json'])
+  assert.equal(redirected.code, 0, `--json must exit 0, got ${redirected.code}: ${redirected.out}`)
+  const parsed = JSON.parse(redirected.out) as { ok: boolean; links: { id: string }[] }
+  assert.equal(parsed.ok, true)
+  assert.ok(parsed.links.length > 0, 'the redirected report must carry the links')
+})
+
+test('an option the command does not know is refused, not ignored', () => {
+  const f = fixture()
+  const result = check(f, ['--quiet'])
+  assert.equal(result.code, 2, `an unknown option must exit 2, got ${result.code}: ${result.out}`)
+  assert.match(result.err, /unknown option --quiet/)
 })

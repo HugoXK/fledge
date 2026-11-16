@@ -654,6 +654,11 @@ $ echo $?
 1
 ```
 
+The check opens no file: the report is stdout, and keeping it is the caller's
+redirection. `--json > rollout.json` writes the same report `--write` used to,
+with the shell owning the path — and `--write` is refused (exit `2`) rather than
+silently dropped, so an old command line cannot lose the record.
+
 Exit codes are the same shape as `verify-release.mjs`, so one habit covers both:
 
 | Exit | Meaning | Action |
