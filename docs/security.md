@@ -666,9 +666,13 @@ deliberately names no code that `secret:scan` cannot produce.
 value, and fails closed: a scan that cannot complete exits non-zero rather than
 looking clean — `2` when a tracked file could not be read, `1` when the scan
 could not start. Only a complete, empty scan exits `0`. The inventory is
-`docs/secrets.md`; the per-line whitelist for the three fake test fixtures is
-`scripts/secret-scan-allowlist.json` (`test/crypto.test.ts:32`,
-`test/transcript.test.ts:52` and `:66`). Never whitelist a directory.
+`docs/secrets.md`; the per-line allowlist is `scripts/secret-scan-allowlist.json`
+and carries exactly two entries, both in `test/transcript.test.ts`: `:52`, a
+fixture user message that carries a token-shaped string, and `:66`, a redaction
+test that needs one. `test/crypto.test.ts` needs no entry because its fixtures
+are assembled from fragments, so the file holds no token-shaped literal. Never
+allowlist a directory, and never let this sentence drift from the file it
+describes — `test/secretsDoc.test.ts` fails when it does.
 
 ### OAuth
 
