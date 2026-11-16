@@ -25,6 +25,14 @@
 //   5  issue-gate: corrupt-body #<N>
 //   6  the gate could not run (arguments, policy, HTTP, no token)
 //   7  issue-gate: hold #<N> <hash>[ (trimmed)]
+//   8  issue-gate: stale-anchor #<N> <hash> ref=<path>:<line>[-<end>] found=<missing-path|last-line-<n>>
+//
+// `stale-anchor` is the second question the gate answers: a body can be the one
+// a PASS named and still cite a `path:line` that does not exist at the sha the
+// body names. It replaces `ok` and nothing else, exactly as `hold` does, so a
+// card refused for a hash reason keeps that line and gains a note naming the
+// stale citation instead: the person about to edit the body sees both facts in
+// one run. The scan and the resolution are `scripts/lib/issue-anchor.mjs`.
 //
 // `hold` means approved but not claimable. It replaces `ok` and nothing else:
 // a held card whose live verdict is CHANGES still prints `changes` (exit 4), a
@@ -46,6 +54,7 @@
 
 import { readFileSync } from 'node:fs'
 import { bodyHashes, trimmedSuffix } from './lib/issue-body-hash.mjs'
+import { anchorsOf, lastLineOf, pinOf, resolvePath, staleFound } from './lib/issue-anchor.mjs'
 
 const DEFAULT_API = 'https://api.github.com'
 const VERDICT = /^Issue-review: (PASS|CHANGES) at issue #(\d+) body ([0-9a-f]{12})$/
@@ -120,7 +129,88 @@ if (issue.body.includes('\uFFFD')) {
   process.exit(5)
 }
 
+// #590: the hash proves the text, not the tree. One tree read per ref and one
+// blob read per cited path, both cached, so a body citing one file twenty times
+// costs one read. A tree that cannot be read, or comes back truncated, is a note
+// and never a refusal: a network hiccup is not a defect in the card, and exit 6
+// would turn an outage into a verdict.
+const treeCache = new Map()
+const contentCache = new Map()
+
+async function tryJson(target) {
+  try {
+    const response = await fetch(target, { headers: requestHeaders(), signal: AbortSignal.timeout(15_000) })
+    if (!response.ok) return null
+    return await response.json()
+  } catch {
+    return null
+  }
+}
+
+async function treeAt(ref) {
+  if (treeCache.has(ref)) return treeCache.get(ref)
+  const value = await tryJson(`${apiBase}/repos/${repo}/git/trees/${encodeURIComponent(ref)}?recursive=1`)
+  const paths = Array.isArray(value?.tree)
+    ? value.tree.map((entry) => (entry?.type === 'blob' ? String(entry?.path ?? '') : '')).filter((path) => path !== '')
+    : null
+  const tree = paths === null ? null : { paths, truncated: value?.truncated === true }
+  treeCache.set(ref, tree)
+  return tree
+}
+
+async function contentsAt(path, ref) {
+  const key = `${ref}:${path}`
+  if (contentCache.has(key)) return contentCache.get(key)
+  const encoded = path.split('/').map((part) => encodeURIComponent(part)).join('/')
+  const value = await tryJson(`${apiBase}/repos/${repo}/contents/${encoded}?ref=${encodeURIComponent(ref)}`)
+  const text = value?.encoding === 'base64' && typeof value?.content === 'string' ? Buffer.from(value.content, 'base64').toString('utf8') : null
+  contentCache.set(key, text)
+  return text
+}
+
+// Every citation the body makes, resolved against the sha the body names.
+// `stale` is the first anchor that does not resolve, in body order; `notes` says
+// why, one line per anchor, at most five, because a body with twenty bad anchors
+// is one problem and not twenty.
+async function anchorCheck(body) {
+  const anchors = anchorsOf(body)
+  if (anchors.length === 0) return { notes: [], stale: null }
+  const note = (message) => `issue-gate: note #${issueNumber} ${message}`
+  const ref = pinOf(body)
+  const tree = await treeAt(ref)
+  if (tree === null) return { notes: [note(`could not read the tree at ${ref}; the citations were not judged`)], stale: null }
+  if (tree.truncated) return { notes: [note(`the tree at ${ref} is truncated; the citations were not judged`)], stale: null }
+
+  const notes = []
+  let stale = null
+  for (const anchor of anchors) {
+    const resolved = resolvePath(anchor.path, tree.paths)
+    if (resolved.kind === 'ambiguous') {
+      notes.push(note(`ambiguous anchor ${anchor.ref} (${String(resolved.candidates.length)} candidates: ${resolved.candidates.join(', ')})`))
+      continue
+    }
+    if (resolved.kind === 'missing') {
+      stale ??= { ref: anchor.ref, found: 'missing-path' }
+      notes.push(note(`stale anchor ${anchor.ref}, no such path at ${ref}`))
+      continue
+    }
+    const contents = await contentsAt(resolved.path, ref)
+    if (contents === null) {
+      notes.push(note(`could not read ${resolved.path} at ${ref}; that citation was not judged`))
+      continue
+    }
+    const lastLine = lastLineOf(contents)
+    const found = staleFound(anchor, lastLine)
+    if (found !== null) {
+      stale ??= { ref: anchor.ref, found }
+      notes.push(note(`stale anchor ${anchor.ref}, last line ${String(lastLine)}`))
+    }
+  }
+  return { notes: notes.slice(0, 5), stale }
+}
+
 const hashes = bodyHashes(issue.body)
+const anchorState = await anchorCheck(issue.body)
 
 // The newest verdict may sit on the last page: a single-page read returns an
 // older one with no error at all.
@@ -146,6 +236,10 @@ const agentReady = labels.includes('agent-ready')
 const held = labels.includes('hold')
 
 function report(code, line, reason) {
+  // The anchor notes are printed on every path: a stale citation is worth seeing
+  // even when the card is refused for a hash reason, and an ambiguous one is a
+  // note that must never become a verdict.
+  for (const note of anchorState.notes) console.error(note)
   console.log(line)
   if (agentReady && code !== 0) console.error(`issue-gate: note #${issueNumber} carries agent-ready while ${reason}`)
   process.exit(code)
@@ -171,6 +265,13 @@ if (latestAtBody !== undefined) {
   }
   if (held) {
     report(7, `issue-gate: hold #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)}`, 'the card carries hold')
+  }
+  if (anchorState.stale !== null) {
+    report(
+      8,
+      `issue-gate: stale-anchor #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)} ref=${anchorState.stale.ref} found=${anchorState.stale.found}`,
+      `a citation (${anchorState.stale.ref}) does not resolve at the sha the body names`,
+    )
   }
   report(0, `issue-gate: ok #${issueNumber} ${latestAtBody.hash}${trimmedSuffix(latestAtBody.form)}`)
 }
