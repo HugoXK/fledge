@@ -13,8 +13,8 @@ import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
 import { readReleaseReadiness } from './releases/readiness.js'
 import { currentStrategySections } from './strategy/sources.js'
-import { strategyRefusal } from './strategy/bundle.js'
-import { strategyPage } from './views/strategy.js'
+import { parseStrategySections, strategyRefusal } from './strategy/bundle.js'
+import { strategyPage, type JobStrategyView } from './views/strategy.js'
 import { releaseReadinessPage } from './views/releaseReadiness.js'
 import { GithubOAuth } from './auth/github.js'
 import { oauthConfigured, tokenLoginEnabled } from './auth/login.js'
@@ -249,6 +249,28 @@ function jobPageLimit(value: string | undefined): number {
   const parsed = value.trim() === '' ? Number.NaN : Number(value)
   if (!Number.isInteger(parsed)) return 50
   return Math.min(100, Math.max(1, parsed))
+}
+
+// #433 slice 2: the strategy block is a read of rows the job already carries plus
+// one earlier row of the same repository — no GitHub call and no bundle lookup
+// that could go missing. A job with no recorded hash renders "no strategy
+// recorded", which is what a row from before the columns means.
+function jobStrategyView(store: Store, repoId: string, job: JobRow): JobStrategyView {
+  const previousRow = job.strategy_hash === null ? undefined : store.previousStrategyJob(repoId, job.id)
+  const previous = previousRow === undefined || previousRow.strategy_hash === null
+    ? undefined
+    : {
+      jobId: previousRow.id,
+      hash: previousRow.strategy_hash,
+      version: previousRow.strategy_version,
+      sections: parseStrategySections(previousRow.strategy_json),
+    }
+  return {
+    hash: job.strategy_hash,
+    version: job.strategy_version,
+    sections: parseStrategySections(job.strategy_json),
+    ...(previous === undefined ? {} : { previous }),
+  }
 }
 
 // The item contract, in one place: these ten fields and nothing else. The row
@@ -3468,6 +3490,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repo,
       job,
       changeStory,
+      strategy: jobStrategyView(store, repo.id, job),
       queued,
       viewerActive: store.listActiveJobsForUser(viewer.user.id),
       repoLabels,
@@ -5088,6 +5111,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       job,
+      strategy: jobStrategyView(store, repo.id, job),
       events: store.listJobEvents(job.id, 200),
       postmortem: store.getPostmortemForJob(job.id) ?? null,
       supportMode: true,

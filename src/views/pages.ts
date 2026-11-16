@@ -14,6 +14,7 @@ import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/rel
 import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/taskDecision.js'
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, starIcon, type PageNotification, type Viewer } from './layout.js'
+import { jobStrategyBlock, type JobStrategyView } from './strategy.js'
 import { renderState, stateCell, type StateAction } from './states.js'
 import { maskEmail, maskIp, redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
@@ -3151,6 +3152,9 @@ export function jobPage(input: {
   // #373 slice 1: the "Why this change" block, read from the pull request. Absent
   // on a surface that has no pull request to read.
   changeStory?: ChangeStory
+  // #433 slice 2: the strategy this job recorded, plus the previous job's when
+  // the two hashes differ. Absent on a caller that does not compute it.
+  strategy?: JobStrategyView
   // #540: the revision this render saw and the key a double submit replays.
   // Absent on surfaces that cannot write (the admin support view).
   cancel?: { revision: number; idempotencyKey: string }
@@ -3513,6 +3517,7 @@ export function jobPage(input: {
   ${supportMode ? '' : workTypeCard}
   ${supportMode ? '' : triageCard}
   ${changeStoryCard}
+  ${input.strategy === undefined ? '' : jobStrategyBlock({ locale, repoId: repo.id, strategy: input.strategy })}
   ${jobSecurityFindingsCard(t, findings)}
   <section class="cols">
     <div class="card">

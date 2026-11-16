@@ -2876,9 +2876,32 @@ The sections are assembled from sources that already exist — `repo_rule_overri
 by revision, the role playbook by version and goal fingerprint, the goal by hash —
 and a path or key under a frozen family (`evaluator`, `evidence`, `ci`, `gate`,
 `auth`, `gateway`, `capability`) is refused before the store is asked to write.
-Recording `strategy_hash` and `strategy_version` on every job, the job-page diff,
-canary promotion with rollback, and the global bundle are later slices.
+Canary promotion with rollback, the accepted-version lineage edge and the global
+bundle are later slices.
 
+## Every job records its strategy (#433 slice 2)
+
+A job row carries `strategy_hash`, `strategy_version` and `strategy_json`, written
+by `Store.createJob` from `currentStrategySections` — the same assembly the
+strategy page reads — so a page a maintainer opens and the strategy a job names
+cannot disagree. The section map is stored on the job rather than as a pointer to
+a bundle row because a job can run a strategy that was never frozen, and because
+history must not change under a later pointer move: the job keeps the exact map it
+was created under. `strategy_version` is NULL for exactly the unfrozen case; the
+page says "not frozen" instead of borrowing the candidate's version number. A
+strategy whose sources name a frozen section is not a bundle the page would
+accept, so that job records none rather than a hash that was never valid.
+
+The job page shows the hash, the version when there is one, and the sections the
+job recorded. When the previous job on the same repository recorded a different
+hash, the page names the section keys that moved — added, changed or removed —
+with the value each key had on both sides; the comparison is
+`Store.previousStrategyJob` (the newest earlier row of that repository that
+recorded a strategy), so a row from before the columns existed is skipped rather
+than reported as "no change". The older job keeps its own hash and its own page;
+a bundle change is a diff between two jobs, never a rewrite of the earlier one. A
+job whose row predates the columns renders "no strategy was recorded" rather than
+an empty strategy.
 ## Run now is an occurrence, not a moved cursor (#544)
 
 A schedule names logical instants; the tick decides which of them run. "Run now"
