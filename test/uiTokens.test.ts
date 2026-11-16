@@ -207,60 +207,58 @@ function lineTokens(source: string, pattern: RegExp, label: string): Map<string,
   return tokens
 }
 
-// 7. #858: the warm editorial foundation. The console is not a dark-blue AI
-//    template: charcoal and warm paper surfaces, a copper interactive accent with
-//    a copper/sage brand, a serif display face over system-sans body text, 10/12
-//    radii, no large shadows and no uppercase eyebrows. The token names do not
-//    change, so a view written against them does not move.
-test('the warm editorial palette replaces the periwinkle and lime template', () => {
+// 7. #547: the flight-deck foundation. The console is not a warm-cream template
+//    and not a periwinkle/lime one: a cool mineral paper, pine/sage action, a
+//    brass decorative note, a serif wordmark over system-sans body text, a
+//    square 4/6/8/10 radius scale and no uppercase labels or card shadows.
+test('the flight-deck palette replaces the warm and periwinkle templates', () => {
   const dark = lineTokens(cssSource, /:root\s*\{([^}]*)\}/, 'dark')
   const light = lineTokens(cssSource, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')
   const expected: Array<[string, Map<string, string>, string, string]> = [
-    ['--bg', dark, '#0d0c0b', 'dark charcoal'],
-    ['--panel', dark, '#161412', 'warm charcoal panel'],
-    ['--text', dark, '#f3ede4', 'warm paper text'],
-    ['--accent', dark, '#d97745', 'copper accent'],
-    ['--brand', dark, '#7fae9a', 'sage brand'],
-    ['--brand-2', dark, '#e0b36a', 'sand brand'],
-    ['--good', dark, '#7fae9a', 'sage good'],
-    ['--warn', dark, '#e0b36a', 'sand warn'],
-    ['--bg', light, '#f6f1e7', 'warm paper'],
-    ['--panel', light, '#fffdf8', 'warm white panel'],
-    ['--text', light, '#1d1a16', 'ink'],
-    // #858 section 3 names #b75b35; it measures 4.09:1 on --bg, where the `a`
-    // rule paints link text, so the shipped copper is one step darker and
-    // clears 4.5:1 on --bg (4.53) and --panel (5.02).
-    ['--accent', light, '#ad5530', 'copper accent'],
+    ['--bg', dark, '#0b100e', 'graphite-green'],
+    ['--panel', dark, '#101814', 'section panel'],
+    ['--text', dark, '#e9efe9', 'cool text'],
+    ['--accent', dark, '#8fbfa8', 'sage accent'],
+    ['--brand', dark, '#c49a5a', 'brass brand'],
+    ['--brand-2', dark, '#8fb39a', 'sage brand'],
+    ['--good', dark, '#8fbfa8', 'sage good'],
+    ['--warn', dark, '#d6a75b', 'amber warn'],
+    ['--bg', light, '#eef1ea', 'cool paper'],
+    ['--panel', light, '#f8faf5', 'cool panel'],
+    ['--text', light, '#18201b', 'ink'],
+    ['--accent', light, '#2f6b57', 'pine accent'],
   ]
   const wrong = expected
     .filter(([token, palette, value]) => palette.get(token) !== value)
     .map(([token, palette, value, label]) => `${label} ${token} = ${palette.get(token) ?? 'missing'}, expected ${value}`)
-  assert.deepEqual(wrong, [], `the warm palette is not in place:\n${wrong.join('\n')}`)
+  assert.deepEqual(wrong, [], `the flight-deck palette is not in place:\n${wrong.join('\n')}`)
 
-  // The template colours are gone from every palette, not only replaced in dark.
-  const retired = ['#7b95ff', '#4c66f5', '#5f78ff', '#2b4fd0', '#1d3cb8', '#2646c4', '#b8f34a', '#6ee7a8', '#67e8c7', '#3f7a12', '#0e7a5c']
+  // Both earlier templates are gone from every palette, not only replaced in dark.
+  const retired = [
+    '#0d0c0b', '#161412', '#f3ede4', '#d97745', '#7fae9a', '#e0b36a', '#ad5530', '#f6f1e7', '#fffdf8', '#1d1a16',
+    '#7b95ff', '#4c66f5', '#5f78ff', '#2b4fd0', '#1d3cb8', '#2646c4', '#b8f34a', '#6ee7a8', '#67e8c7', '#3f7a12', '#0e7a5c',
+  ]
   const stale: string[] = []
   for (const [name, palette] of [['dark', dark], ['light', light]] as const) {
     for (const [token, value] of palette) {
       if (retired.includes(value.toLowerCase())) stale.push(`${name} ${token} = ${value}`)
     }
   }
-  assert.deepEqual(stale, [], `the periwinkle/lime template is still in the palette:\n${stale.join('\n')}`)
+  assert.deepEqual(stale, [], `an earlier template is still in the palette:\n${stale.join('\n')}`)
 
-  // Warm means red above blue: a periwinkle accent would fail this even under a
-  // new name. The brand pair is deliberately cool (sage and sand), so only the
-  // interactive accent carries this check.
+  // A cool accent is the point: the current warm template had red above blue.
   for (const [name, palette] of [['dark', dark], ['light', light]] as const) {
     const rgb = channels(palette.get('--accent') ?? '#000000') ?? [0, 0, 0]
-    assert.ok(rgb[0] > rgb[2], `${name} --accent = ${palette.get('--accent')} is not warm (r must exceed b)`)
+    assert.ok(rgb[2] > rgb[0], `${name} --accent = ${palette.get('--accent')} is not cool (b must exceed r)`)
   }
 
-  // The editorial radius scale: 6 / 8 / 10 / 12 / 12 / 999.
-  assert.equal(dark.get('--radius-xs'), '6px', '--radius-xs must stay 6px')
-  assert.equal(dark.get('--radius-sm'), '8px', '--radius-sm must stay 8px')
-  assert.equal(dark.get('--radius-md'), '10px', '--radius-md must be 10px')
-  assert.equal(dark.get('--radius'), '12px', '--radius must be 12px')
-  assert.equal(dark.get('--radius-lg'), '12px', '--radius-lg must be 12px')
+  // The flight-deck radius scale: square sections, small controls, 999 only for
+  // a circle. The card shell is square and does not take --radius.
+  assert.equal(dark.get('--radius-xs'), '4px', '--radius-xs must be 4px')
+  assert.equal(dark.get('--radius-sm'), '6px', '--radius-sm must be 6px')
+  assert.equal(dark.get('--radius-md'), '8px', '--radius-md must be 8px')
+  assert.equal(dark.get('--radius'), '10px', '--radius must be 10px')
+  assert.equal(dark.get('--radius-lg'), '10px', '--radius-lg must be 10px')
 
   // Serif display for h1, the wordmark and the hero heading; mono stays.
   const display = dark.get('--display') ?? ''
@@ -283,32 +281,29 @@ test('the warm editorial palette replaces the periwinkle and lime template', () 
   assert.equal(dark.get('--text-xs'), '12px', '--text-xs must stay 12px')
   assert.equal(dark.get('--text-sm'), '13px', '--text-sm must stay 13px')
 
-  // No uppercase eyebrows: the direction asks for sentence case throughout.
+  // No uppercase eyebrows and no 80px bloom: sentences and a hairline do the work.
   assert.doesNotMatch(cssSource, /text-transform:\s*uppercase/, 'the template eyebrows must not stay uppercase')
-
-  // No 80px bloom: only popovers, menus and dialogs still read --shadow, and the
-  // tightest editorial shadow tops out at 0 8px 24px.
   for (const [name, palette] of [['dark', dark], ['light', light]] as const) {
     const shadow = palette.get('--shadow') ?? ''
     assert.match(shadow, /^0 \d+px \d+px rgba\(/, `${name} --shadow must stay a soft rgba shadow, got ${shadow}`)
     const parts = /^0 (\d+)px (\d+)px/.exec(shadow) ?? []
-    assert.ok(Number(parts[1] ?? '99') <= 8 && Number(parts[2] ?? '99') <= 24, `${name} --shadow is ${shadow}; the warm foundation allows at most 0 8px 24px`)
+    assert.ok(Number(parts[1] ?? '99') <= 8 && Number(parts[2] ?? '99') <= 24, `${name} --shadow is ${shadow}; the flight deck allows at most 0 8px 24px`)
   }
   const consumers = cssSource.split('\n').filter((line) => line.includes('box-shadow: var(--shadow)'))
   assert.ok(consumers.length > 0, 'the popover and dialog rules must keep reading --shadow')
   assert.ok(!/\.card\b[^\n]*box-shadow: var\(--shadow\)/.test(cssSource), 'a card keeps a 1px border instead of a drop shadow')
 
-  // The old palette also lived in rgba tints; those are part of the template too.
-  const rgb = /rgba\(\s*(123|184|103|240|255|110|182)\s*,\s*(149|243|232|198|138|231|156)\s*,\s*(255|74|199|116|138|168|255)\s*,/g
-  const tints = [...cssSource.matchAll(rgb)].map((match) => match[0])
-  assert.deepEqual(tints, [], `the template tints survive outside the tokens:\n${tints.join('\n')}`)
+  // The old templates also lived in rgba tints; those are part of the template too.
+  const oldTints = /rgba\(\s*(123|184|103|240|255|110|182|217|127|224|232)\s*,\s*(149|243|232|198|138|231|156|119|174|179|138)\s*,\s*(255|74|199|116|138|168|255|69|154|106|125)\s*,/g
+  const tints = [...cssSource.matchAll(oldTints)].map((match) => match[0])
+  assert.deepEqual(tints, [], `an earlier template tint survives outside the tokens:\n${tints.join('\n')}`)
 })
 
-// 8. The warm palette still has to be readable: body and secondary text clear
+// 8. The flight-deck palette still has to be readable: body and secondary text clear
 //    4.5:1 on every surface, the button ink clears it on the accent and on the
 //    stronger hover step, and the components read their colours from the tokens
 //    rather than literals.
-test('the warm palette clears AA for text and control pairs in both schemes', () => {
+test('the flight-deck palette clears AA for text and control pairs in both schemes', () => {
   const dark = lineTokens(cssSource, /:root\s*\{([^}]*)\}/, 'dark')
   const light = lineTokens(cssSource, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')
   const failures: string[] = []
@@ -327,12 +322,12 @@ test('the warm palette clears AA for text and control pairs in both schemes', ()
       const ratio = contrast(ink, palette.get(surface) ?? '#000')
       if (ratio < 4.5) failures.push(`${name}: --accent on ${surface} = ${ratio.toFixed(2)}:1`)
     }
-    for (const background of ['--accent', '--accent-strong', '--accent-hover']) {
+    for (const background of ['--accent-strong', '--accent-hover']) {
       const ratio = contrast(palette.get('--accent-ink') ?? '#000', palette.get(background) ?? '#000')
       if (ratio < 4.5) failures.push(`${name}: --accent-ink on ${background} = ${ratio.toFixed(2)}:1`)
     }
   }
-  assert.deepEqual(failures, [], `the warm palette is below AA:\n${failures.join('\n')}`)
+  assert.deepEqual(failures, [], `the flight-deck palette is below AA:\n${failures.join('\n')}`)
 
   // Components take their colour from the tokens, so a future palette change is
   // one block and not a hunt through the component rules.

@@ -68,7 +68,7 @@ function render(locale: Locale, input: PageInput = {}, seed?: (store: Store, use
 // The block is the only place the page makes one action primary, so every
 // assertion below reads that element rather than the whole page.
 function nextActionBlock(html: string): string {
-  return html.match(/<section class="card" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
+  return html.match(/<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
 }
 
 function targets(section: string): string[] {
