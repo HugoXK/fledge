@@ -29,6 +29,28 @@ Typical layout:
 
 See [../docs/deploy.md](../docs/deploy.md) for the full checklist.
 
+## What CI checks these samples (#882)
+
+A diff that touches `deploy/` runs the `deploy-check` job. It installs nginx and
+then runs `scripts/check-deploy-samples.sh`, which does four things and says in
+the job summary which kind each one is:
+
+1. **real** — parses `nginx.conf.example` with a real `nginx -t`, inside the
+   wrapper `nginx.check.conf`;
+2. **real negative proof** — runs the same invocation on a copy of the example
+   with an unknown directive appended and requires it to be rejected, so a check
+   that accepts every config cannot pass the job;
+3. **static** — parses `fledge.service` with `scripts/check-systemd-unit.mjs`, a
+   static unit parser that runs without systemd. It is used instead of
+   `systemd-analyze verify`, which is absent on a runner and whose output names
+   the runner's own unrelated units;
+4. **static negative proof** — requires that parser to reject a copy of the unit
+   with `ExecStart` removed.
+
+Run the same contract locally with nginx installed: `bash
+scripts/check-deploy-samples.sh`. A runner without nginx is a failed step, never
+a recorded gap, so the samples cannot pass unchecked.
+
 ## Release automation
 
 `fledge-deploy-tag.sh` and `fledge-verify-release.sh` are the host half of the

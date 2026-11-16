@@ -765,15 +765,30 @@ server {
 ```
 
 CI syntax-checks the example on every diff that touches `deploy/`: `deploy-check`
-runs `scripts/check-nginx-config.sh`, which renders the example with generated
-certificates and loopback listens and parses it with `nginx`. The wrapper it
-renders, `deploy/nginx.check.conf`, declares `pid <tmp>/nginx.pid;` before
-`events {}` because `nginx -t` opens the pid path while it initialises the cycle,
-and an unprivileged runner cannot open nginx's compiled-in `/run/nginx.pid`; the
-result is a failed step and a red `ci-ok` (#795). When nginx is not installed on
-the runner the step writes a gap to the job summary instead of passing silently.
-With nginx installed, `bash scripts/check-nginx-config.sh` runs the same check
-locally and prints the parse output.
+installs nginx, then runs `scripts/check-deploy-samples.sh`, which renders the
+example with generated certificates and loopback listens and parses it with a
+real `nginx -t`. The wrapper it renders, `deploy/nginx.check.conf`, declares
+`pid <tmp>/nginx.pid;` before `events {}` because `nginx -t` opens the pid path
+while it initialises the cycle, and an unprivileged runner cannot open nginx's
+compiled-in `/run/nginx.pid`; the result is a failed step and a red `ci-ok`
+(#795). A runner without nginx is a failed step rather than a recorded gap
+(#882): the install is the check's input, so its absence cannot be green.
+
+The contract script also proves the check can fail. It appends an unknown
+directive to a copy of the example and expects `nginx -t` to reject it, so an
+invocation that accepts everything fails the job instead of passing it, and the
+job summary says each check was real (`nginx: real`, `nginx: real negative
+proof`). Locally, `bash scripts/check-deploy-samples.sh` runs the whole contract
+and prints one line per check; `bash scripts/check-nginx-config.sh` is the nginx
+half on its own.
+
+The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
+chosen over `systemd-analyze verify` because that binary is absent on a GitHub
+runner and its output names the runner's unrelated units. It reads the sections,
+the directive shape, duplicate keys — which systemd resolves silently to the last
+value — and the keys that must name an absolute path, and it rejects a copy of
+`deploy/fledge.service` with `ExecStart` removed. The job summary and the script's
+own line call it `static`, so a static parse is never read as a live systemd run.
 
 The app trusts only the hops named in `TRUST_PROXY`, never every hop.
 `$proxy_add_x_forwarded_for` appends `$remote_addr`, so the address nginx actually

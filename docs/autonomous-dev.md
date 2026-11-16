@@ -291,7 +291,7 @@ renames it to `ci-ok-head`. See
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
 - `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
-- `deploy-check` (the `deploy/` worker, alert rules and service samples parse, when the diff reaches `deploy/`)
+- `deploy-check` (the `deploy/` worker, alert rules, the nginx sample against a real `nginx -t`, and the systemd sample through a static unit parser, when the diff reaches `deploy/`)
 
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
@@ -325,8 +325,11 @@ verdict reads it either.
 `deploy` is its own flag because a deploy-only diff is not gate-free: `deploy/`
 ships the Cloudflare worker, the Prometheus rules and the nginx/systemd samples,
 and none of the app gates reads them. `deploy-check` parses the worker, runs
-`promtool check rules`, and checks nginx/systemd where the runner provides them
-(a missing tool is written to the job summary as a gap, never as a pass). The
+`promtool check rules`, installs nginx and parses the sample for real — with a
+negative proof that the same invocation rejects a deliberately broken copy — and
+gates `deploy/fledge.service` through a static unit parser that runs on any
+runner. A missing tool is a failed step, never a gap recorded beside a green job
+(#882). The
 flag is computed from the same path list as `source`, so a diff that mixes
 `deploy/` with `src/` sets both and the code gates still run; the classifier
 cannot answer "deploy-only" for a mixed diff, and `test/ciChanges.test.ts`
