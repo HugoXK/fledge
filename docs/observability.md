@@ -24,6 +24,19 @@ Core series:
 - `fledge_jobs_total{status,kind}`, `fledge_job_seconds`,
   `fledge_job_queue_seconds`, `fledge_job_output_total`, `fledge_jobs_active`,
   `fledge_jobs_queued`
+- `fledge_automation_idle_with_work_seconds{repo}` — how long a repository has
+  had ready work with no active job. The series is **absent** when the repository
+  is not waiting, so an empty panel means "nothing is idle", not "the scheduler
+  is silent".
+- `fledge_automation_dispatch_latency_seconds{kind}` — seconds from ready work
+  to a dispatched job, so a near-zero reading means "the next item started at
+  once" and a 15-minute one means the cooldown held it. It keeps the default
+  bucket list like every other histogram, and `FledgeDispatchLatencyHigh` pages
+  on its p95 above 900s. The console prints the mean in milliseconds.
+- `fledge_automation_blocked_total{reason}` — ready work that did not start, by
+  reason (`cooldown`, `failure_backoff`, `active_job`, `instance_not_ready`,
+  `user_not_ready`, `quota`). A failure shows `failure_backoff` instead of a
+  dispatch, and a repository that is merely throttled shows `cooldown`.
 - `fledge_queue_depth`, `fledge_lease_expired_total`,
   `fledge_admission_rejected_total{reason}`, `fledge_meta_issue_total`,
   `fledge_auto_merge_candidates`, `fledge_ops_alerts_open`
@@ -39,6 +52,27 @@ Core series:
   header, positive when the process clock is ahead. The series is **absent** when
   nothing has been measured, so an empty panel means "unknown", not "aligned"; a
   scrape with no reading removes it rather than publishing a `0`.
+
+The `/admin/metrics` page carries the same three numbers as one `Automation
+health` card — repositories with ready work and no active job, the mean dispatch
+latency since the process started, and the queue depth — so an operator reading
+the page and an operator reading a dashboard are looking at one measurement, not
+two definitions of it.
+
+Automation alerts:
+
+- The store raises `automation_idle_with_work` (warning; critical at twice the
+  threshold) when a repository the scheduler may dispatch to has ready work and
+  no running job for `AUTOMATION_IDLE_ALERT_MINUTES` (default 30) since its last
+  run or its oldest ready item. The alert clears as soon as a job starts, because
+  the condition is recomputed rather than remembered, and the notification pass
+  keeps one per `OPS_ALERT_COOLDOWN_MINUTES` window.
+- `FledgeDispatchLatencyHigh` pages when the p95 dispatch latency is above 15
+  minutes. Thresholds are configured in the rules file; the store threshold is
+  configured by `AUTOMATION_IDLE_ALERT_MINUTES`.
+- Labels carry a `owner/name` repository label, the job kind and the reason. No
+  issue title, URL, token or email reaches a metric label: the dispatcher passes
+  only those three values.
 
 Suggested SLOs:
 

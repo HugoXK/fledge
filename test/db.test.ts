@@ -632,6 +632,50 @@ test('alerts surface stalled jobs, stale PRs and near-budget repositories', () =
   }
 })
 
+test('an idle repository with ready work raises an automation alert that clears when a job starts', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'idle-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_idle', userId: user.id, owner: 'o', name: 'idle', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 60 })
+    const item = store.createWorkItem({ id: 'work_idle', repoId: repo.id, userId: user.id, title: 'A title that must never reach a label', priority: 1 })
+    store.db.exec("UPDATE work_items SET created_at = '2026-11-16T10:00:00.000Z' WHERE id = 'work_idle'")
+    assert.equal(item.state, 'proposed')
+
+    const idle = store.alerts({ usdCny: 1, now: '2026-11-16T12:00:00.000Z', automationIdleMinutes: 30 })
+      .filter((alert) => alert.kind === 'automation_idle_with_work')
+    assert.equal(idle.length, 1)
+    assert.equal(idle[0]?.repoLabel, 'o/idle')
+    assert.equal(idle[0]?.minutes, 120)
+    assert.doesNotMatch(idle[0]?.message ?? '', /A title that must never/)
+
+    // A wait shorter than the threshold is not an alert.
+    assert.equal(
+      store.alerts({ usdCny: 1, now: '2026-11-16T10:05:00.000Z', automationIdleMinutes: 30 })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length,
+      0,
+    )
+    // Automation off is a setting the owner chose, not an idle platform.
+    store.updateRepo(repo.id, { auto_iterate: 0 })
+    assert.equal(
+      store.alerts({ usdCny: 1, now: '2026-11-16T12:00:00.000Z', automationIdleMinutes: 30 })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length,
+      0,
+    )
+    store.updateRepo(repo.id, { auto_iterate: 1 })
+
+    // Work starts: the condition is gone, so the alert clears on its own.
+    store.createJob({ id: 'job_idle', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: 'cb-idle', platformTokenHash: '' })
+    store.updateJob('job_idle', { status: 'running', started_at: '2026-11-16T11:50:00.000Z' })
+    assert.equal(
+      store.alerts({ usdCny: 1, now: '2026-11-16T12:00:00.000Z', automationIdleMinutes: 30 })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length,
+      0,
+    )
+  } finally {
+    store.close()
+  }
+})
+
 test('webhook deliveries are claimed once and can be retried after failure', () => {
   const store = new Store(':memory:')
   try {

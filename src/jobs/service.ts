@@ -55,6 +55,7 @@ import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
 import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
+import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatched, type DispatchBlockReason } from './automationHealth.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
@@ -3247,7 +3248,7 @@ export class Jobs {
   }
 
   async notifyOpsAlerts(): Promise<number> {
-    const alerts = this.store.alerts({ usdCny: this.config.quota.usdCny })
+    const alerts = this.store.alerts({ usdCny: this.config.quota.usdCny, automationIdleMinutes: this.config.ops.automationIdleAlertMinutes })
     const current = new Set<string>()
     let sent = 0
     for (const alert of alerts) {
@@ -4381,15 +4382,31 @@ export class Jobs {
         if (refreshed !== undefined) repo = refreshed
       }
       if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') continue
-      if (!this.userReadyForScheduling(repo.user_id)) continue
-      if (!this.instanceReady(repo.id)) continue
+      // #807: what this repository is waiting on, measured from this dispatcher's
+      // own decision instead of inferred from timestamps. `readyAt` is the later
+      // of its oldest ready item and its last run, so a busy repository is never
+      // reported as idle. Only a repository with ready work can be "blocked".
+      const openWork = this.store.listOpenWorkItems(repo.id)
+      const readyAt = readySinceMs({ workCreatedAt: openWork.map((item) => item.created_at), lastRunAt: repo.last_run_at })
+      const now = Date.now()
+      const blocked = (reason: DispatchBlockReason): void => {
+        if (readyAt === null) return
+        recordBlockedDispatch({ reason, repo, readyAt, now })
+      }
+      if (!this.userReadyForScheduling(repo.user_id)) {
+        blocked('user_not_ready')
+        continue
+      }
+      if (!this.instanceReady(repo.id)) {
+        blocked('instance_not_ready')
+        continue
+      }
       // #544 slice 3A: when a schedule row exists it owns the repository's
       // cadence, and `nextTime` decides when a run is due. A repository without a
       // row keeps `interval_minutes` exactly as before, so nothing changes for
       // every repository that has not opted in.
       const scheduleRow = this.store.scheduleForRepo(repo.id)
       const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
-      const now = Date.now()
       const plan = schedule === null || scheduleRow === undefined
         ? null
         : planTick(schedule, scheduleAnchor(scheduleRow, repo), now, {
@@ -4418,6 +4435,7 @@ export class Jobs {
       if (this.store.activeJobForRepo(repo.id) !== undefined) {
         // A due instant that cannot run now is the misfire case: skip it with a
         // reason rather than queue a second run behind the active one.
+        blocked('active_job')
         if (plan !== null) this.skipScheduledOccurrence(repo, plan, 'active-job')
         continue
       }
@@ -4433,13 +4451,17 @@ export class Jobs {
         intervalMinutes: plan === null ? Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) : 0,
         lastDurationMs: lastDurationMs(recent),
         failureStreak: failureStreak(recent),
-        openWork: this.store.listOpenWorkItems(repo.id),
+        openWork,
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
         lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
         discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
       }, plan === null ? {} : { cooldownMs: 0 })
       if (next.kind === 'none') {
+        // #807: a held-back item names its holder; an empty backlog clears the
+        // idle reading rather than leaving the last wait on the dashboard.
+        if (next.reason === 'not due') blocked(next.blockedBy)
+        else clearIdleWithWork(repo)
         // #478: an empty backlog is not a reason to create a job. Keep the
         // repository idle and do not advance last_run_at, so a newly created
         // work item is picked up after the short cooldown.
@@ -4467,7 +4489,16 @@ export class Jobs {
               ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
               ...(next.branch === undefined ? {} : { branch: next.branch }),
             })
+      if (result.ok) {
+        recordDispatched({
+          repo,
+          kind: next.kind === 'review' ? 'review' : next.kind === 'discover' ? 'discover' : 'iterate',
+          readyAt,
+          now: Date.now(),
+        })
+      }
       if (!result.ok && result.code === 'QUOTA_EXHAUSTED') {
+        blocked('quota')
         // Nothing was decided: release the lease so the next pass can take this
         // instant immediately instead of waiting for it to lapse.
         if (plan !== null && lease !== null) this.releaseScheduledOccurrence(repo, plan, lease, 'quota-exhausted')

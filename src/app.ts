@@ -65,6 +65,7 @@ import { untrustedAuditDetail, untrustedIssueGoal, untrustedMeta, type Untrusted
 import { scanUntrusted, UNTRUSTED_EVENT_KIND } from './lib/firewall.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
+import { automationHealth } from './jobs/automationHealth.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import {
   deploymentFromRow,
@@ -1474,7 +1475,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const windowDays = queryText(request, 'window') === '30' ? 30 : 7
     const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
     const personal = store.personalMetrics(viewer.user.id, since)
-    const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny })
+    const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes })
     const perPage = 10
     const allRepos = store.listRepos(viewer.user.id)
     // #232: the job filters are read from the query on every request and applied
@@ -1604,10 +1605,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         team: store.teamMetrics(since),
         repoCosts: store.repoCostMetrics(since),
         modelCosts: store.modelCostMetrics(since),
-        alerts: store.alerts({ usdCny: config.quota.usdCny }),
+        alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes }),
       }
     }
-    return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny }) }
+    return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes }) }
   })
 
   // #392: the first token-authenticated read route. It sits outside the session
@@ -5038,9 +5039,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repoCosts: store.repoCostMetrics(since),
       modelCosts: store.modelCostMetrics(since),
       currency: store.costByCurrency(since),
-      alerts: store.alerts({ usdCny: config.quota.usdCny }),
+      alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
+      automation: automationHealth(),
       since,
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,
