@@ -55,6 +55,7 @@ import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type Wo
 import { parseStageMode } from './lib/stages.js'
 import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
 import { parseIssueCommand, parseMentionTrigger, type IssueCommandInput, type MentionTriggerInput } from './lib/issueCommands.js'
+import { untrustedAuditDetail, untrustedIssueGoal } from './lib/untrusted.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
@@ -5873,8 +5874,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return
     }
     if (command === 'plan') {
-      const goal = `Issue ${issueUrl}\nTitle: ${title}\n${detail}\n\nProduce one concrete plan only; do not write code, create a branch or open a PR.`
+      const { goal, untrusted } = untrustedIssueGoal({
+        issueUrl,
+        title,
+        detail,
+        instruction: 'Produce one concrete plan only; do not write code, create a branch or open a PR.',
+      })
       const outcome = await runChatCreate('plan', goal, item.id)
+      if (outcome.ok) store.audit(repo.user_id, 'job.untrusted_input', untrustedAuditDetail(commandJobId(outcome) ?? item.id, untrusted))
       await reply(outcome.ok ? `Plan job ${commandJobId(outcome) ?? ''} queued.` : `Could not queue a plan: ${outcome.message}`)
       return
     }
@@ -5882,8 +5889,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       await reply('This repository requires an approved plan first. Run /fledge plan, then /fledge approve.')
       return
     }
-    const goal = `Issue ${issueUrl}\nTitle: ${title}\n${detail}\n\nImplement one focused fix for this issue.`
+    const { goal, untrusted } = untrustedIssueGoal({
+      issueUrl,
+      title,
+      detail,
+      instruction: 'Implement one focused fix for this issue.',
+    })
     const outcome = await runChatCreate('iterate', goal, item.id)
+    if (outcome.ok) store.audit(repo.user_id, 'job.untrusted_input', untrustedAuditDetail(commandJobId(outcome) ?? item.id, untrusted))
     await reply(outcome.ok ? `Implementation job ${commandJobId(outcome) ?? ''} queued.` : `Could not queue a fix: ${outcome.message}`)
   }
 

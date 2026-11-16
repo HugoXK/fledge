@@ -1596,7 +1596,10 @@ on the issue with the work-item/job/PR state. `plan` and `fix` reach the job
 through `ManagementService` (`task.create` on the `chat` channel), so the
 receipt, the revision fence and the refusal codes are the console's, not a
 second copy. `/fledge approve` is maintainer-only
-and approves the latest completed plan.
+and approves the latest completed plan. The issue title and body are external, so
+`plan` and `fix` build their goal with `untrustedIssueGoal()`
+(`src/lib/untrusted.ts`): the text is fenced as `UNTRUSTED ISSUE TEXT`, a forged
+fence is escaped, and the job audit records the label and a hash, never the body.
 
 Four verbs act on the job the work item already has: `/fledge retry`,
 `/fledge pause`, `/fledge resume` and `/fledge cancel`. Retry goes through the
