@@ -34,8 +34,9 @@ See [../docs/deploy.md](../docs/deploy.md) for the full checklist.
 `fledge-deploy-tag.sh` and `fledge-verify-release.sh` are the host half of the
 release flow: deploy the newest SemVer tag (never roll a newer main back), gate
 the rollout on the release it built with `scripts/rollout-check.mjs` (the
-process, the page and the served `app.css` must all be that tag, #658), and
-write `release-status.json` for `/admin`. See
+process, the page and the served `app.css` must all be that tag, #658), put the
+previous release back when the gate refuses it, and write `release-status.json`
+for `/admin`. See
 [`docs/deploy.md`](../docs/deploy.md#automatic-tag-deployment-and-verification)
 and [`docs/deploy.md`](../docs/deploy.md#gate-a-rollout-on-the-release-it-claims)
 for the cron examples, environment overrides, the expected check output and the

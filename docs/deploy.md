@@ -581,8 +581,11 @@ tracked here as host scripts under `deploy/`:
 `fledge-deploy-tag.sh` fetches tags, takes the newest `vX.Y.Z`, and deploys only
 when that version is newer than the running `package.json`. It uses a detached
 tag worktree, builds, stops/starts the configured service, gates the rollout on
-the release it built (below), and restores the previous `dist` and build identity
-when the build or the rollout check fails. It never runs `git push`, `--admin`, a
+the release it built (below), and restores the previous release — `dist`,
+`public/`, `package.json` and `.build-identity` — when the source copy, the build
+or the rollout check fails. A refused rollout leaves the host on the release it
+was running, and the next tick retries the same tag instead of reading the new
+version and exiting as already deployed. It never runs `git push`, `--admin`, a
 merge or a rollback to an older tag. On success it invokes the verifier.
 
 `fledge-verify-release.sh` reads `GITHUB_TOKEN` from the environment or the
@@ -664,7 +667,7 @@ Exit codes are the same shape as `verify-release.mjs`, so one habit covers both:
 | Exit | Meaning | Action |
 |---|---|---|
 | `0` | every link agrees with the target | the rollout is the release; nothing to do |
-| `1` | a link disagrees — the running process, the page, the served bytes or `public/` is another release | fix the cause named in the rows; the deploy script rolls back to the previous `dist` and restarts it, so production stays on the old release rather than on a half-swapped tree |
+| `1` | a link disagrees — the running process, the page, the served bytes or `public/` is another release | fix the cause named in the rows; the deploy script restores the previous release (`dist`, `public/`, `package.json`, `.build-identity`) and restarts it, so production stays on the old release rather than on a half-swapped tree, and the next tick retries the same tag |
 | `2` | the command could not read its input (no release artifact, no `--version`, unreadable fixture, HTTP failure) | never a green verdict: correct the input and re-run |
 
 What the gate does **not** cover, so nobody reads it as more than it is:
@@ -673,6 +676,15 @@ What the gate does **not** cover, so nobody reads it as more than it is:
   gate's guarantee is that a rollout which fails it is rolled back and never
   recorded in `deployed-tag`; a deploy that swaps files and skips the restart
   entirely is caught by `healthz version` before anything is recorded.
+- A refusal restores the whole release, not just `dist/`. The old process serves
+  `public/` and reports the version in `package.json` at startup, so those go back
+  with the build and the identity; restoring `dist/` alone would restart the old
+  build under the new release's name and leave the version check at the top of
+  the script on the target version, so the refusal would never be retried.
+- The `public tree` link compares the release with the tree this deploy just
+  copied into place, so it catches a partial copy but cannot see a web server
+  rooted somewhere else; `served asset` and `page asset` are the links that prove
+  what is actually served.
 - It does not hash `dist/`. The running build is identified by the commit in
   `/healthz`, which comes from `.build-identity` written beside it; `dist/` has
   its own manifest for CI (`scripts/dist-manifest.mjs`).
