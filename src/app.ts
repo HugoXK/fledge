@@ -4336,9 +4336,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // and the lookup above only proves the provider is theirs - a stolen cookie
     // is still theirs. The actor's own scope keeps a refusal local to the owner.
     if (requireRecentAuth(request, reply, viewer, 'model.provider.remove')) return reply
+    // #849: the selection rows for this provider's models disappear with it. Without
+    // the flag those repositories silently fall to the platform default, which spends
+    // platform quota and offers no restart, so mark them dirty before the delete.
+    const affected = store.listRepos(viewer.user.id).filter((repo) =>
+      store.listRepoModelSelection(repo.id).some((selection) => selection.provider_id === provider.id),
+    )
     store.deleteModelProvider(id, viewer.user.id)
-    store.audit(viewer.user.id, 'model.provider.removed', `${id} ${provider.label}`)
-    return reply.redirect(`/settings?notice=${encodeURIComponent('模型提供方已删除。')}#model-providers`)
+    for (const repo of affected) store.updateRepo(repo.id, { models_dirty: 1 })
+    store.audit(viewer.user.id, 'model.provider.removed', `${id} ${provider.label}${affected.length === 0 ? '' : ` repos=${affected.length}`}`)
+    const notice = affected.length === 0
+      ? '模型提供方已删除。'
+      : `模型提供方已删除；${affected.length} 个仓库的模型选择已失效，请重新应用模型并重启工作区。`
+    return reply.redirect(`/settings?notice=${encodeURIComponent(notice)}#model-providers`)
   })
 
   app.post('/settings/providers/:id/models', async (request, reply) => {
@@ -4365,10 +4375,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/settings/providers/:id/models/:modelId/delete', async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     const modelId = String((request.params as Record<string, string>).modelId)
+    // #849: same silent fallback one level down — deleting a single provider model
+    // drops the selections that point at it, so flag the repositories that used it.
+    const affected = store.listRepos(viewer.user.id).filter((repo) =>
+      store.listRepoModelSelection(repo.id).some((selection) => selection.id === modelId),
+    )
     const removed = store.deleteProviderModel(modelId, viewer.user.id)
     if (!removed) return reply.code(404).send({ error: '模型不存在。' })
-    store.audit(viewer.user.id, 'model.removed', modelId)
-    return reply.redirect(`/settings?notice=${encodeURIComponent('模型已删除。')}#model-providers`)
+    for (const repo of affected) store.updateRepo(repo.id, { models_dirty: 1 })
+    store.audit(viewer.user.id, 'model.removed', `${modelId}${affected.length === 0 ? '' : ` repos=${affected.length}`}`)
+    const notice = affected.length === 0
+      ? '模型已删除。'
+      : `模型已删除；${affected.length} 个仓库的模型选择已失效，请重新应用模型并重启工作区。`
+    return reply.redirect(`/settings?notice=${encodeURIComponent(notice)}#model-providers`)
   })
 
   app.post('/settings/notifications', async (request, reply) => {
