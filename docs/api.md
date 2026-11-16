@@ -44,6 +44,8 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/repos/:id/schedule` | owner | Schedule console: the stored schedule, the planner's next run, the newest decided instant (state, reason, attempts, lease) and the last success; an unknown value prints `unknown` |
 | POST | `/repos/:id/schedule` | owner + CSRF | Save the console form (cron or interval, zone, window); audits `schedule.saved` and writes nothing when the form is refused |
 | POST | `/repos/:id/schedule/remove` | owner + CSRF | Delete the schedule so the repository returns to its legacy interval; audits `schedule.removed` |
+| POST | `/repos/:id/schedule/pause` | maintainer + CSRF | Pause the schedule: the worker records passing instants as `skipped` with reason `paused` and dispatches nothing until it is resumed; audits `schedule.pause` |
+| POST | `/repos/:id/schedule/resume` | maintainer + CSRF | Resume the schedule from the next instant, without replaying the paused window; audits `schedule.resume` |
 | POST | `/repos/:id/run` | owner + CSRF, expensive rate limit | Enqueue a manual iterate job; plan-first repositories enqueue a plan |
 | POST | `/repos/:id/rules` | maintainer + CSRF, destructive rate limit | Save one repository rule override against its expected revision |
 | POST | `/repos/:id/work` | owner + CSRF | Create a work item |

@@ -20,7 +20,7 @@ test('the schedule table is part of the schema at user_version 45', () => {
     assert.deepEqual(columns, [
       'id', 'repo_id', 'kind', 'expression', 'every_ms', 'timezone',
       'start_at', 'end_at', 'timing_revision', 'misfire', 'grace_ms', 'daily_runs',
-      'last_occurrence_at', 'created_at', 'updated_at',
+      'status', 'paused_at', 'last_occurrence_at', 'created_at', 'updated_at',
     ])
   } finally {
     store.close()
