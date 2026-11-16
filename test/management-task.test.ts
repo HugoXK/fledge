@@ -240,6 +240,86 @@ test('submitting the same create twice queues one job and records one receipt', 
   }
 })
 
+// #671: the console built the create/resume/retry actors without the store, so
+// `managementActor` took its legacy branch — `tenantId: null` — and a
+// task.create receipt was scoped `principal||repo`, while cancel and pause,
+// which do pass the store, write `principal|github.com:legacy:<owner>|repo`.
+// Two commands of one console, two idempotency scopes for one repository: a
+// retried form that crossed them would write a second receipt instead of
+// replaying the first.
+test('a console create scopes its receipt like a cancel, not with an empty tenant', async () => {
+  const f = await fixture()
+  try {
+    const created = await post(f, `/repos/${f.repoId}/run`, { expected_revision: '1', idempotency_key: 'cmd_scope_create' })
+    assert.ok(created.flash?.notice, `the create answers with a notice: ${created.location}`)
+    const job = f.built.store.listJobsForRepo(f.repoId, 10)[0]
+    assert.ok(job !== undefined, 'the create queued the job the cancel then targets')
+    const cancelled = await post(f, `/repos/${f.repoId}/jobs/${job.id}/cancel`, { expected_revision: '1', idempotency_key: 'cmd_scope_cancel' })
+    assert.ok(cancelled.flash?.notice, `the cancel answers with a notice: ${cancelled.location}`)
+
+    const receipts = f.built.store.listCommandReceipts(50)
+    const create = receipts.find((row) => row.idempotency_key === 'cmd_scope_create')
+    const cancel = receipts.find((row) => row.idempotency_key === 'cmd_scope_cancel')
+    assert.ok(create !== undefined && cancel !== undefined, 'both commands wrote a receipt')
+    assert.equal(create.operation, 'task.create')
+    assert.equal(cancel.operation, 'task.cancel')
+    assert.equal(create.idempotency_scope, cancel.idempotency_scope, 'one repository, one idempotency scope')
+    const segments = create.idempotency_scope.split('|')
+    assert.equal(segments.length, 3)
+    assert.equal(segments[1], 'github.com:legacy:o', 'the tenant segment comes from the database resolver')
+  } finally {
+    await f.close()
+  }
+})
+
+// The other half of #671: the resolver must not be read as a grant. A member
+// holding a task role still fails the owner-only re-check at completion, so the
+// tenant and capability work above cannot widen access on the way past.
+test('a granted member is refused for a console create even with a task role', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const owner = makeUser(store, { login: 'member-owner', status: 'approved' })
+  const member = makeUser(store, { login: 'granted-member', status: 'approved' })
+  const repo = store.createRepo({
+    id: 'repo_member_create',
+    userId: owner.id,
+    owner: 'o',
+    name: 'member',
+    defaultBranch: 'main',
+    tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey),
+    permission: 'admin',
+    repoRole: 'maintainer',
+    goal: '',
+    autoIterate: false,
+    intervalMinutes: 1440,
+  })
+  store.run(
+    'INSERT OR IGNORE INTO repo_members (repo_id, user_id, role, granted_by, created_at, revoked_at) VALUES (?, ?, ?, ?, ?, NULL)',
+    repo.id,
+    member.id,
+    'maintainer',
+    owner.id,
+    new Date().toISOString(),
+  )
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' as const } } }, new MemoryMailer())
+  const management = new ManagementService(store, jobs)
+  try {
+    const actor = managementActor({ store, userId: member.id, repo, channel: 'web', requestId: 'r-member' })
+    const outcome = await management.run(actor, {
+      operation: 'task.create',
+      target: { projectId: repo.id },
+      arguments: { kind: 'iterate' },
+      expectedRevision: 1,
+      idempotencyKey: 'cmd_member_create',
+    })
+    assert.equal(outcome.ok, false, 'a member is not accepted for a create')
+    if (!outcome.ok) assert.equal(outcome.code, 'authorization_revoked')
+    assert.equal(store.listJobsForRepo(repo.id, 10).length, 0, 'no job was queued for the member')
+  } finally {
+    store.close()
+  }
+})
+
 test('a stale revision on create is refused and queues nothing', async () => {
   const f = await fixture()
   try {
