@@ -1,0 +1,1 @@
+The `ci-ok` check that gates a merge is now also published by a `workflow_run` workflow, which GitHub always takes from the default branch, so a pull request can no longer rewrite the aggregate that judges it without losing the merge. The aggregate job inside `ci.yml` keeps publishing `ci-ok` for one step so the change itself can merge; branch protection still requires `ci-ok`.

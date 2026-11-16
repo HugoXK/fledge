@@ -235,6 +235,15 @@ as the checks API reports them, in
 [`.github/agent/required-checks.md`](../.github/agent/required-checks.md); that
 file is the record and not the gate — branch protection is an owner action.
 
+`ci-ok` is also published by `ci-ok-publish.yml`, a `workflow_run` workflow that
+GitHub always takes from the default branch, so the copy that judges a change is
+never the one under test. The aggregate job inside `ci.yml` keeps publishing the
+same context for one step — the pull request that adds the publisher would
+otherwise carry no `ci-ok` and could never merge; every check run at the head sha
+counts, so the head's green cannot retire the publisher's red — and a follow-up
+renames it to `ci-ok-head`. See
+[Gate integrity](#gate-integrity-the-evaluator-runs-from-the-base-branch).
+
 `ci-ok` is green only when all of these are green at the same tip:
 
 - `changes` (the diff classifier; it must succeed before any conditional job)
@@ -353,7 +362,8 @@ the base branch into `base/` and executed from there:
 | `action-pins` | `node base/scripts/action-pins.mjs --workflows .github/workflows` |
 | `workflow-lint` | `node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json` |
 | `codeql-required` | `node base/scripts/codeql-required.mjs` |
-| `ci-ok` | `node base/scripts/ci-ok.mjs` |
+| `ci-ok` (the in-run aggregate, until the follow-up renames it) | `node base/scripts/ci-ok.mjs` |
+| `ci-ok` (the publisher's verdict) | `node base/scripts/ci-ok-run.mjs`, run by `ci-ok-publish.yml` |
 | CodeQL gate | `node base/scripts/codeql-gate.mjs --sarif codeql-results --baseline base/.github/agent/codeql-baseline.json` |
 
 Only the data under test comes from the head: the diff (`--repo .` names the
@@ -362,12 +372,13 @@ supply-chain checks read, and the SARIF the analysis produced. The CodeQL
 baseline and the workflow-injection allowlist are read from `base/`, because a
 pull request that could widen either would grade its own work.
 
-`ci-ok` also prints the blob the base tree holds for the evaluator it is about to
-run: `scripts/ci-ok.mjs from the base tree: blob <sha>`. That line is how a
-reviewer tells the two copies apart in a run log — the sha named there is the
-file the next step executes — so a branch that rewrites `scripts/ci-ok.mjs` is
-visible as a mismatch instead of an invisible substitution. It is evidence, not
-a gate: the verdict still comes from the base file.
+The in-run aggregate also prints the blob the base tree holds for the evaluator
+it is about to run: `scripts/ci-ok.mjs from the base tree: blob <sha>`. That
+line is how a reviewer tells the two copies apart in a run log — the sha named
+there is the file the next step executes — so a branch that rewrites
+`scripts/ci-ok.mjs` is visible as a mismatch instead of an invisible
+substitution. It is evidence, not a gate: the verdict still comes from the base
+file.
 
 The `changes` job also runs `scripts/gate-integrity.mjs`, which writes every
 gate file in the diff into the job summary. It fails closed when the diff cannot
@@ -379,12 +390,32 @@ on the base path, so a diff cannot decide whether the summary runs. Nothing
 about the merge requirement changes — a diff that edits the gate is still T3 and
 still needs a PASS at the tip.
 
-What this does not move: for a `pull_request` event GitHub fetches the workflow
-YAML itself from the pull request, so a job's own `run:` lines are, by
-construction, the head's text. The protection for that shape is the required
-check plus the T3 PASS on a diff the `gate-integrity` summary names, not this
-checkout split. Moving the aggregate onto a `workflow_run` workflow, which always
-executes the default branch's copy, is a separate slice.
+What the checkout split cannot move: for a `pull_request` event GitHub fetches the
+workflow YAML itself from the pull request, so a job's own `run:` lines are, by
+construction, the head's text. That is why the `ci-ok` verdict also comes from
+outside the run. `ci-ok-publish.yml` triggers on the completed `CI` run; GitHub
+always loads a `workflow_run` workflow from the default branch, so the file that
+decides is never the one under test. It reads the finished run's job results from
+the API, re-derives the change flags with the default branch's `ci-changes.mjs`
+over the same diff, evaluates the default branch's `REQUIRED_JOBS` and
+`SKIP_WHEN`, and creates the `ci-ok` check run itself. The in-run aggregate still
+publishes the same context in this step, but it is never read as evidence — the
+publisher matches required jobs by name and answers `null` for both `ci-ok` and
+`ci-ok-head` — so a head that rewrites its `run:` line to `exit 0` changes only
+that job's own result, and every check run at the head sha counts, so the
+publisher's red still blocks. A required job the head deletes or renames is
+reported missing by name, which is red — the same answer as dropping it from
+`needs` inside the run. A run the platform `cancelled` publishes nothing, because
+the run that replaced it owns the verdict, and a run whose evidence cannot be
+read publishes `failure` with the reason rather than silence.
+
+The trigger reaches the script as one integer: `ci-ok-publish.yml` passes
+`CI_OK_RUN_ID` from `github.event.workflow_run.id`, and `runIdFrom` accepts
+digits only before the value can enter a request path. Every other fact about the
+run comes from the API, and the published body's status and conclusion are
+literals from `scripts/lib/ci-ok-run.mjs`, so no file the job can read — the
+event payload included — contributes bytes to the request. That is why the
+script no longer reads `GITHUB_EVENT_PATH` at all.
 
 ### A red `main` reports itself
 

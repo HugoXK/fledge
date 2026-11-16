@@ -16,9 +16,17 @@ The branch protection API currently enforces three contexts directly:
 
 | Context | Workflow | What it proves |
 |---|---|---|
-| `ci-ok` | `ci.yml` | every aggregate job succeeded at the same tip |
+| `ci-ok` | `ci-ok-publish.yml` | every aggregate job succeeded at the same tip |
 | `review-gate` | `review-gate.yml` | a PASS at that tip from the required reviewer |
 | `pr-lint` | `pr-lint.yml` | the PR body, fragment and docs obligations |
+
+`ci-ok` is also published by `ci-ok-publish.yml`, a `workflow_run` workflow that
+GitHub always takes from the default branch, so a head cannot make its own copy
+the only judge. The aggregate job inside `ci.yml` keeps publishing the same
+context for one step, because the pull request that adds the publisher would
+otherwise carry no `ci-ok`; every check run at the head sha counts, so the head's
+green cannot retire the publisher's red. A follow-up renames that job to
+`ci-ok-head`; the publisher never reads it either way.
 
 Two more checks are enforced **inside** `ci-ok` rather than as separate required
 contexts:
@@ -36,7 +44,9 @@ starts), `audit` (runtime and full graph), `changelog`, `version`, `risk`,
 `secret-scan`, `codeql-required`, `deploy-check` (the `deploy/` files, when the
 diff reaches them). The list asserted by the gate is
 `REQUIRED_JOBS` in `scripts/ci-ok.mjs`, and `test/ciOk.test.ts` fails when it and
-`needs:` in `ci.yml` drift apart.
+`needs:` in `ci.yml` drift apart. The publisher matches these names against the
+finished run's job list, so a renamed job is a missing required job — red, not
+silently green — and `test/ciOkPublish.test.ts` pins both halves.
 
 `changes` is a gate too: it classifies the pull request diff and the heavy jobs
 use job-level `if` conditions so an inapplicable job never starts a runner.

@@ -23,8 +23,10 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
 - **Repository:** <https://github.com/HugoXK/fledge>
 - **Release:** <https://github.com/HugoXK/fledge/releases/tag/v0.2.4>
 - **CI:** `ci.yml` (Node 22 + 24, lint, typecheck, tests, build, Docker, audit,
-  changelog, risk), `codeql.yml`, `dependency-review.yml`, `release.yml`; the
-  aggregate check is `ci-ok`.
+  changelog, risk), `ci-ok-publish.yml` (publishes the required `ci-ok` verdict
+  from the default branch), `codeql.yml`, `dependency-review.yml`,
+  `release.yml`; the aggregate job inside `ci.yml` keeps publishing `ci-ok` until
+  a follow-up renames it to `ci-ok-head`.
 - **Stack:** Node 22.9+, TypeScript, Fastify, `node:sqlite`, nodemailer,
   server-rendered HTML.
 - **Service:** <https://fledge.hugoxk.online/> (live; GitHub OAuth login with the
