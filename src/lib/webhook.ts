@@ -173,21 +173,20 @@ export class NotificationWebhookError extends Error {
 // Connection refused, DNS and TLS-setup failures are not.
 const AMBIGUOUS_CODES = new Set(['ECONNRESET', 'ETIMEDOUT', 'EPIPE', 'UND_ERR_SOCKET', 'UND_ERR_CONNECT_TIMEOUT'])
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
+}
+
 function webhookErrorCode(error: unknown): string | undefined {
-  if (typeof error !== 'object' || !error) return undefined
-  const record = error as { code?: unknown; cause?: unknown }
-  if (typeof record.code === 'string') return record.code
-  if (typeof record.cause === 'object' && record.cause) {
-    const cause = record.cause as { code?: unknown }
-    if (typeof cause.code === 'string') return cause.code
-  }
+  if (!isRecord(error)) return undefined
+  if (typeof error.code === 'string') return error.code
+  if (isRecord(error.cause) && typeof error.cause.code === 'string') return error.cause.code
   return undefined
 }
 
 function isAmbiguousWebhookFailure(error: unknown): boolean {
-  if (typeof error !== 'object' || !error) return false
-  const record = error as { name?: unknown }
-  if (record.name === 'TimeoutError' || record.name === 'AbortError') return true
+  if (!isRecord(error)) return false
+  if (error.name === 'TimeoutError' || error.name === 'AbortError') return true
   const code = webhookErrorCode(error)
   return code !== undefined && AMBIGUOUS_CODES.has(code)
 }
