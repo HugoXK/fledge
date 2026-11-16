@@ -4345,9 +4345,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.deleteModelProvider(id, viewer.user.id)
     for (const repo of affected) store.updateRepo(repo.id, { models_dirty: 1 })
     store.audit(viewer.user.id, 'model.provider.removed', `${id} ${provider.label}${affected.length === 0 ? '' : ` repos=${affected.length}`}`)
+    const t = translator(request.locale ?? 'zh')
     const notice = affected.length === 0
-      ? '模型提供方已删除。'
-      : `模型提供方已删除；${affected.length} 个仓库的模型选择已失效，请重新应用模型并重启工作区。`
+      ? t('模型提供方已删除。', 'Model provider deleted.')
+      : t(
+        `模型提供方已删除；${affected.length} 个仓库的模型选择已失效，请重新应用模型并重启工作区。`,
+        `Model provider deleted; the model selection of ${affected.length} repositories is no longer valid. Apply the models and restart the workspace again.`,
+      )
     return reply.redirect(`/settings?notice=${encodeURIComponent(notice)}#model-providers`)
   })
 
@@ -4384,9 +4388,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!removed) return reply.code(404).send({ error: '模型不存在。' })
     for (const repo of affected) store.updateRepo(repo.id, { models_dirty: 1 })
     store.audit(viewer.user.id, 'model.removed', `${modelId}${affected.length === 0 ? '' : ` repos=${affected.length}`}`)
+    const t = translator(request.locale ?? 'zh')
     const notice = affected.length === 0
-      ? '模型已删除。'
-      : `模型已删除；${affected.length} 个仓库的模型选择已失效，请重新应用模型并重启工作区。`
+      ? t('模型已删除。', 'Model deleted.')
+      : t(
+        `模型已删除；${affected.length} 个仓库的模型选择已失效，请重新应用模型并重启工作区。`,
+        `Model deleted; the model selection of ${affected.length} repositories is no longer valid. Apply the models and restart the workspace again.`,
+      )
     return reply.redirect(`/settings?notice=${encodeURIComponent(notice)}#model-providers`)
   })
 

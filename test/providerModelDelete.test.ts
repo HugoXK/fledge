@@ -5,6 +5,7 @@ import { Store, type RepoRow, type UserRow } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { sha256Hex } from '../src/lib/secrets.js'
 import { flashOf, formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { LOCALE_COOKIE } from '../src/i18n.js'
 
 // #849: deleting a model provider (or one of its models) removes the selection
 // rows by cascade, and every repository that used one silently falls to the
@@ -155,6 +156,31 @@ test('the removal audit records how many repositories were affected', async () =
     const audited = input.store.listAudit(50).find((row) => row.action === 'model.provider.removed')
     assert.ok(audited !== undefined, 'the removal must be audited')
     assert.match(String(audited.detail), /repos=1/, 'the audit row must carry the affected repository count')
+  } finally {
+    await input.built.close()
+  }
+})
+
+async function deleteProviderIn(locale: 'zh' | 'en', input: Fixture, cookie: string, csrf: string): Promise<{ notice: string | undefined }> {
+  const response = await input.built.app.inject({
+    method: 'POST',
+    url: `/settings/providers/${input.providerId}/delete`,
+    headers: { cookie: `${cookie}; ${LOCALE_COOKIE}=${locale}`, 'content-type': 'application/x-www-form-urlencoded' },
+    payload: formBody({ csrf }),
+  })
+  assert.equal(response.statusCode, 302)
+  return { notice: flashOf(response)?.notice?.text }
+}
+
+test('the count notice reaches an English viewer in English', async () => {
+  const input = await fixture()
+  try {
+    input.store.setRepoModelSelection(input.repo.id, [input.modelId], input.modelId)
+    input.store.markRepoModelsApplied(input.repo.id)
+    const { cookie, csrf } = actorFor(input.built, input.store, input.user)
+    const result = await deleteProviderIn('en', input, cookie, csrf)
+    assert.match(String(result.notice), /the model selection of 1 repositories is no longer valid/, 'the English viewer must not receive the Chinese count sentence')
+    assert.doesNotMatch(String(result.notice), /个仓库/, 'no Chinese count sentence may survive into an English notice')
   } finally {
     await input.built.close()
   }
