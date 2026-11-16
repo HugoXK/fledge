@@ -283,7 +283,127 @@ export function parseTrustProxy(raw: string): string[] {
       throw new Error(`TRUST_PROXY: "${hop}" is not a trusted hop. Name the proxy address or CIDR that may append X-Forwarded-For (for example 127.0.0.1,::1). true, false, "*", "all" and a /0 range are refused because they trust the caller-supplied left end of the header.`)
     }
   }
+  const ranges = hops.flatMap((hop) => trustedRanges(hop))
+  for (const space of ['ipv4', 'ipv6'] as const) {
+    const covering = coveringSubset(ranges.filter((range) => range.space === space), space === 'ipv4' ? IPV4_SPACE : IPV6_SPACE)
+    if (covering !== null) throw new Error(coveringMessage(covering, space === 'ipv4' ? 'IPv4' : 'IPv6'))
+  }
   return hops
+}
+
+// `true`, `*`, `all` and a literal /0 are refused one entry at a time above, but
+// a list whose union is the whole space trusts every caller just the same. The
+// check below is numeric: host bits are masked, IPv6 uses BigInt, and an
+// IPv4-mapped entry is folded into the IPv4 space because
+// @fastify/proxy-addr canonicalises a mapped candidate to IPv4 and then matches
+// a mapped subnet whose prefix is at least /96.
+const IPV4_SPACE = 1n << 32n
+const IPV6_SPACE = 1n << 128n
+
+interface TrustedRange {
+  space: 'ipv4' | 'ipv6'
+  start: bigint
+  end: bigint
+  label: string
+}
+
+function parseIPv4(address: string): bigint | null {
+  const parts = address.split('.')
+  if (parts.length !== 4) return null
+  let value = 0n
+  for (const part of parts) {
+    if (!/^\d{1,3}$/.test(part)) return null
+    const octet = Number(part)
+    if (octet > 255) return null
+    value = (value << 8n) | BigInt(octet)
+  }
+  return value
+}
+
+function parseIPv6(address: string): bigint | null {
+  const halves = address.replace(/%.*$/, '').split('::')
+  if (halves.length > 2) return null
+  const groupsOf = (part: string): number[] | null => {
+    if (part === '') return []
+    const groups: number[] = []
+    for (const group of part.split(':')) {
+      if (group.includes('.')) {
+        const embedded = parseIPv4(group)
+        if (embedded === null) return null
+        groups.push(Number(embedded >> 16n), Number(embedded & 0xffffn))
+        continue
+      }
+      if (!/^[0-9a-f]{1,4}$/i.test(group)) return null
+      groups.push(Number.parseInt(group, 16))
+    }
+    return groups
+  }
+  const head = groupsOf(halves[0] ?? '')
+  if (head === null) return null
+  if (halves.length === 1) {
+    if (head.length !== 8) return null
+    return head.reduce((value, group) => (value << 16n) | BigInt(group), 0n)
+  }
+  const tail = groupsOf(halves[1] ?? '')
+  if (tail === null) return null
+  const zeros = 8 - head.length - tail.length
+  if (zeros < 1) return null
+  const groups = [...head, ...Array<number>(zeros).fill(0), ...tail]
+  return groups.reduce((value, group) => (value << 16n) | BigInt(group), 0n)
+}
+
+function maskRange(space: 'ipv4' | 'ipv6', value: bigint, prefix: number, label: string): TrustedRange {
+  const bits = space === 'ipv4' ? 32n : 128n
+  const block = 1n << (bits - BigInt(prefix))
+  const start = value & -block
+  return { space, start, end: start + block - 1n, label }
+}
+
+function trustedRanges(hop: string): TrustedRange[] {
+  const [address = '', prefixText] = hop.split('/')
+  const version = isIP(address)
+  if (version === 4) {
+    const value = parseIPv4(address)
+    if (value === null) return []
+    return [maskRange('ipv4', value, prefixText === undefined ? 32 : Number(prefixText), `"${hop}"`)]
+  }
+  if (version !== 6) return []
+  const value = parseIPv6(address)
+  if (value === null) return []
+  const prefix = prefixText === undefined ? 128 : Number(prefixText)
+  // A mapped prefix below the marker matches no candidate at all in
+  // proxy-addr (its cross-family guard only spans IPv4 when range >= 96).
+  if (value >> 32n !== 0xffffn) return [maskRange('ipv6', value, prefix, `"${hop}"`)]
+  if (prefix < 96) return []
+  return [maskRange('ipv4', value & 0xffffffffn, prefix - 96, `"${hop}" (an IPv4-mapped prefix)`)]
+}
+
+// Greedy cover from the bottom of the space. Returns the entries that reach the
+// top when the union is contiguous, or null when a gap remains. Only the subset
+// that does the covering is returned, so a long hop list is not echoed back.
+function coveringSubset(ranges: TrustedRange[], space: bigint): TrustedRange[] | null {
+  const sorted = [...ranges].sort((left, right) => (left.start < right.start ? -1 : left.start > right.start ? 1 : 0))
+  const covering: TrustedRange[] = []
+  let cursor = 0n
+  let index = 0
+  while (cursor < space) {
+    let best: TrustedRange | null = null
+    while (index < sorted.length && sorted[index]!.start <= cursor) {
+      const candidate = sorted[index]!
+      if (best === null || candidate.end > best.end) best = candidate
+      index += 1
+    }
+    if (best === null || best.end < cursor) return null
+    covering.push(best)
+    cursor = best.end + 1n
+  }
+  return covering
+}
+
+function coveringMessage(covering: TrustedRange[], space: 'IPv4' | 'IPv6'): string {
+  const labels = covering.map((range) => range.label)
+  const named = labels.length === 1 ? labels[0]! : `${labels.slice(0, -1).join(', ')} and ${labels[labels.length - 1]!}`
+  return `TRUST_PROXY: ${named} ${labels.length === 1 ? 'covers' : 'together cover'} the whole ${space} space, so the list trusts the caller-supplied left end of X-Forwarded-For. Name the proxy address or its narrow CIDR instead; a set that covers the space is refused like a /0 range.`
 }
 
 export function loadConfig(overrides: Partial<Config> = {}): Config {

@@ -778,6 +778,20 @@ because each of them trusts the caller-supplied left end of the header. A
 not seen, so clients behind that proxy share one rate-limit bucket until the hop
 is corrected.
 
+The entries are also combined, not only checked one at a time: a list whose union
+is the whole IPv4 or IPv6 space is refused, because it trusts every caller
+exactly as a `/0` would. Host bits are masked before the comparison, and an
+IPv4-mapped entry counts as the IPv4 range it actually trusts (proxy-addr matches
+a mapped subnet of `/96` or longer against IPv4 callers), so
+`0.0.0.0/1,128.0.0.0/1`, `::/1,8000::/1` and `::ffff:0:0/96` all fail with
+`TRUST_PROXY: ... together cover the whole IPv4 space` (singular `covers` for a
+single entry) and the service does not boot until the env names the proxy address
+or its narrow CIDR. A list that stops short of the whole space - three quarters of
+IPv4, a bridge gateway, a Cloudflare-sized set - is accepted. A request address
+that cannot be parsed at all, such as the nine-group value a trusted hop can
+forward verbatim, falls into one shared rate-limit bucket instead of answering
+500.
+
 Set `BASE_URL=https://fledge.example.com` so cookies are `Secure` and email links
 are absolute.
 
