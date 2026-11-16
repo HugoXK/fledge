@@ -12,6 +12,7 @@ import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } f
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
 import { readReleaseReadiness } from './releases/readiness.js'
+import { AnalysisTokenUnavailable, analyzeReleaseRun, mintAnalysisToken, releaseAnalysisJson } from './releases/analysis.js'
 import { currentStrategySections } from './strategy/sources.js'
 import { strategyRefusal } from './strategy/bundle.js'
 import { strategyPage } from './views/strategy.js'
@@ -2689,6 +2690,56 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(viewer.user.id, 'release.checked', `${repo.id}: ${release.tag_name} ${result.status}`)
     return reply.redirect(`${back}&checked=${encodeURIComponent(result.message)}`)
+  })
+
+  // #546 slice 4: the optional run analysis. A maintainer asks for the failed
+  // logs of the run this release recorded. The read runs on a read-only
+  // installation token that is revoked when it ends, the excerpt is redacted
+  // before it is cut, and the result is stored beside the tracking fields: this
+  // route never publishes, never reruns and never changes a release state.
+  app.post('/repos/:id/releases/:releaseId/analyze', async (request, reply) => {
+    const params = request.params as Record<string, string>
+    const { viewer, repo } = ownedRepo(request, String(params.id), true)
+    const back = `/repos/${repo.id}?release=1`
+    if (repo.repo_role !== 'maintainer') {
+      return reply.redirect(`${back}&error=${encodeURIComponent('只有 maintainer 可以分析发布运行。')}`)
+    }
+    const release = store.releaseById(String(params.releaseId))
+    if (release === undefined || release.repo_id !== repo.id) throw httpError(404, '发布记录不存在。', 'RELEASE_NOT_FOUND')
+    if (release.run_id === null) {
+      return reply.redirect(`${back}&error=${encodeURIComponent('这条发布记录还没有对应的工作流运行，先点“检查工作流”。')}`)
+    }
+    const owner = repo.upstream_owner || repo.owner
+    const name = repo.upstream_name || repo.name
+    let minted: Awaited<ReturnType<typeof mintAnalysisToken>>
+    try {
+      minted = await mintAnalysisToken(repo, githubApp)
+    } catch (error) {
+      if (error instanceof AnalysisTokenUnavailable) return reply.redirect(`${back}&error=${encodeURIComponent(error.message)}`)
+      throw error
+    }
+    const result = await analyzeReleaseRun({
+      owner,
+      name,
+      run: {
+        id: Number(release.run_id),
+        attempt: release.run_attempt ?? 1,
+        // The row keeps the conclusion, not the run's live status: a null
+        // conclusion is a run that has not finished, which the analysis refuses.
+        status: release.conclusion === null ? 'in_progress' : 'completed',
+        conclusion: release.conclusion,
+      },
+      mint: async () => minted,
+      client: (token) => new GithubClient(token, config.github.apiBase),
+    })
+    if (!result.ok) {
+      store.audit(viewer.user.id, 'release.analysis_refused', `${repo.id}: ${release.tag_name} ${result.code}`)
+      return reply.redirect(`${back}&error=${encodeURIComponent(result.message)}`)
+    }
+    store.updateReleaseAnalysis(release.id, releaseAnalysisJson(result, new Date().toISOString()))
+    store.audit(viewer.user.id, 'release.analyzed', `${repo.id}: ${release.tag_name} run ${release.run_id} jobs=${String(result.jobs.length)}`)
+    const revoked = result.tokenRevoked ? '' : '; the read-only token could not be revoked and is recorded as such'
+    return reply.redirect(`${back}&notice=${encodeURIComponent(`run ${release.run_id}: ${String(result.jobs.length)} failed job(s) analysed${revoked}`)}`)
   })
 
   app.post('/repos/:id/memory', async (request, reply) => {

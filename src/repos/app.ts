@@ -243,6 +243,29 @@ export class GithubApp {
     return result.token
   }
 
+  // #546 slice 4: a short-lived read credential whose whole life is one read.
+  // It is minted outside the cache on purpose — revoking a cached token would
+  // hand the next caller a token that no longer works — and the caller revokes
+  // it itself through `revokeToken` when the read ends.
+  async ephemeralToken(id: number, permissions: Record<string, 'read'>): Promise<string> {
+    const result = await this.appRequest<{ token: string }>('POST', `/app/installations/${id}/access_tokens`, { permissions })
+    if (result === null) throw new Error('无法创建 GitHub App installation token')
+    return result.token
+  }
+
+  // An installation token revokes itself: `DELETE /installation/token` is
+  // authenticated with that token, never with the App JWT. A failed revocation
+  // returns false so the caller can record that the token outlived its read
+  // rather than losing the answer.
+  async revokeToken(token: string): Promise<boolean> {
+    try {
+      await this.request<Record<string, unknown>>('DELETE', '/installation/token', token)
+      return true
+    } catch {
+      return false
+    }
+  }
+
   async installationRepos(id: number): Promise<InstallationRepo[]> {
     const token = await this.installationToken(id)
     const repos: InstallationRepo[] = []

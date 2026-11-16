@@ -82,6 +82,9 @@ const EXPENSIVE_ROUTE_LIST = [
   // a start of real work like the schedule save beside it.
   'POST /repos/:id/schedule/run-now',
   'POST /repos/:id/releases/:releaseId/check',
+  // #546 slice 4: reading a failed log is a read, not a write: it mints a
+  // read-only token, stores an observation and changes no release state.
+  'POST /repos/:id/releases/:releaseId/analyze',
   'POST /repos/:id/gate/sessions',
   'POST /repos/:id/gate/sessions/:sessionId/confirm',
   // Applying a confirmed session writes a branch and opens a gate pull request in
