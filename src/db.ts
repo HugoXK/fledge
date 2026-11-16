@@ -489,6 +489,7 @@ export interface JobRow {
   provider_model: string | null
   output_kind: string | null
   continuity_used: number
+  carry_over_json: string | null
   owner_started: number
   retry_attempt: number
   retry_of: string | null
@@ -1344,6 +1345,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   provider_model TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
+  carry_over_json TEXT,
   owner_started INTEGER NOT NULL DEFAULT 0,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT,
@@ -2810,6 +2812,9 @@ export class Store {
     if (!jobColumns.has('continuity_json')) this.run('ALTER TABLE jobs ADD COLUMN continuity_json TEXT')
     if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
+    // #788: additive; a row that predates it reads back as "the observation was
+    // never recorded", which the job page says plainly instead of borrowing a time.
+    if (!jobColumns.has('carry_over_json')) this.run('ALTER TABLE jobs ADD COLUMN carry_over_json TEXT')
     if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('model_json')) this.run('ALTER TABLE jobs ADD COLUMN model_json TEXT')
     if (!jobColumns.has('provider_id')) this.run('ALTER TABLE jobs ADD COLUMN provider_id TEXT')
@@ -6506,7 +6511,7 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []

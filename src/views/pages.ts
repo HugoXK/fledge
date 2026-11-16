@@ -31,7 +31,7 @@ import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
-import { carryOverHeaderFromGoal } from '../jobs/continuity.js'
+import { carryOverHeaderFromGoal, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversarialReview.js'
@@ -3279,10 +3279,34 @@ export function jobPage(input: {
   // carried. The line is read back from the stored goal, so the page and the
   // prompt cannot spell the same counts two ways, and a job with no block (or a
   // pre-#365 row) shows nothing.
-  const carryOverHeader = job.continuity_used === 1 ? carryOverHeaderFromGoal(job.goal) : ''
+  // #788: the observation is stored with the row, so the page reads it back
+  // instead of re-deriving it. A row that predates the column, or a stored value
+  // that no longer parses, says the observation was not recorded rather than
+  // borrowing a time from somewhere else.
+  const carryOverReport = job.continuity_used === 1 ? parseCarryOverReport(job.carry_over_json) : null
+  const carryOverHeader = job.continuity_used !== 1
+    ? ''
+    : carryOverReport === null
+      ? carryOverHeaderFromGoal(job.goal)
+      : carryOverHeaderText(carryOverReport)
   const carryOverLine = carryOverHeader === ''
     ? ''
     : `<p class="fine" data-carry-over>${escapeHtml(carryOverHeader)}</p>`
+  // Nothing to attach an observation to when the page shows no carry-over line
+  // at all (a pre-#365 row, or a goal that lost the block), so nothing is claimed.
+  const carryOverObservations = job.continuity_used !== 1 || carryOverHeader === ''
+    ? ''
+    : carryOverReport === null
+      ? `<p class="fine" data-carry-over-observation>${escapeHtml(t('观测时间未记录：此行早于该字段。', 'Observation not recorded — this run predates the recorded observation.'))}</p>`
+      : carryOverReport.observations.length === 0
+        ? `<p class="fine" data-carry-over-observation>${escapeHtml(t('本次运行没有需要观测的链接。', 'This run carried no link to observe.'))}</p>`
+        : `<div data-carry-over-observation>${carryOverReport.observations.map((entry) => {
+          // The page outlives the run, so it states the day as well as the time;
+          // the prompt line keeps the short `07:12Z` shape.
+          const when = entry.observedAt === null ? t('未观测', 'not observed') : `${entry.observedAt.slice(0, 16).replace('T', ' ')}Z`
+          const state = entry.state === 'unverified' ? t('未验证', 'unverified') : entry.state
+          return `<p class="fine" data-observation data-state="${escapeHtml(entry.state)}">${escapeHtml(t('观测于', 'Observed'))} ${escapeHtml(`${when} ${state}`)} — ${escapeHtml(entry.link)}</p>`
+        }).join('')}</div>`
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
@@ -3533,6 +3557,7 @@ export function jobPage(input: {
       ${untrustedLine}
       ${providerLine}
       ${carryOverLine}
+      ${carryOverObservations}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
       <p class="fine">${jobLinks(job)}</p>
     </div>
