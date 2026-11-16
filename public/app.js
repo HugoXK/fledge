@@ -399,6 +399,19 @@
     }
   }
 
+  // #471: the server marks the first invalid field and asks for focus. A browser
+  // that ignored the `autofocus` attribute — a control inside a tab that was
+  // hidden while the document parsed — gets the same landing here, and a page
+  // without a script still has the attribute as its fallback. The move waits for
+  // `load`: a focus() during parse is dropped while the document is still
+  // becoming active.
+  const focusInvalidField = () => {
+    const invalidField = document.querySelector('[data-field-error-focus]')
+    if (invalidField !== null && typeof invalidField.focus === 'function') invalidField.focus()
+  }
+  if (document.readyState === 'complete') focusInvalidField()
+  else window.addEventListener('load', focusInvalidField)
+
   document.querySelectorAll('[data-copy]').forEach((el) => {
     el.addEventListener('click', async () => {
       const target = document.querySelector(el.getAttribute('data-copy'))
