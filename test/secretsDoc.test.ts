@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 // The inventory is only worth having if it is complete enough to rotate from and
@@ -96,4 +96,34 @@ test('.env.example keeps no GitHub token placeholder', () => {
 
 test('the inventory is reachable from a command, not only from prose', () => {
   assert.equal(packageJson.scripts?.['secret:scan'], 'node scripts/secret-scan.mjs')
+})
+
+// #59: the runbook told a reader that the allowlist covers "the three fake test
+// fixtures" and named `test/crypto.test.ts:32`, which is a comment explaining
+// why that file needs no entry at all. The scanner is the source of truth, so
+// the sentence is pinned to the file it describes: an entry added, removed or
+// renumbered without the prose following it fails here instead of sending the
+// next rotation after a line that is not allowlisted.
+test('the runbook names exactly the allowlist the scanner enforces', () => {
+  const security = readFileSync(`${root}docs/security.md`, 'utf8')
+  const allowlist = JSON.parse(readFileSync(`${root}scripts/secret-scan-allowlist.json`, 'utf8')) as Array<{
+    file: string
+    line: number
+  }>
+  assert.ok(allowlist.length > 0, 'the allowlist must not be empty')
+  const paragraph = security.split('\n\n').find((block) => block.includes('secret-scan-allowlist.json'))
+  assert.ok(paragraph !== undefined, 'docs/security.md must describe the allowlist the scanner reads')
+  // A bare `:66` belongs to the file named before it, which is how the runbook
+  // writes a second entry of the same file.
+  const named: string[] = []
+  let lastFile = ''
+  for (const token of paragraph.matchAll(/([A-Za-z0-9_./-]+\.test\.ts)|:(\d+)/g)) {
+    if (token[1] !== undefined) lastFile = token[1]
+    else if (lastFile !== '' && token[2] !== undefined) named.push(`${lastFile}:${token[2]}`)
+  }
+  const entries = allowlist.map((entry) => `${entry.file}:${entry.line}`)
+  assert.deepEqual(named.sort(), entries.sort(), 'docs/security.md must name exactly the entries scripts/secret-scan-allowlist.json carries')
+  for (const entry of allowlist) {
+    assert.ok(existsSync(`${root}${entry.file}`), `${entry.file} is allowlisted but does not exist`)
+  }
 })
