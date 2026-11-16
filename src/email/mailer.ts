@@ -1,3 +1,4 @@
+import { randomUUID } from 'node:crypto'
 import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import nodemailer, { type Transporter } from 'nodemailer'
@@ -26,7 +27,11 @@ export class ConsoleMailer implements Mailer {
   async send(message: MailMessage): Promise<void> {
     mkdirSync(this.outbox, { recursive: true })
     const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const file = join(this.outbox, `${stamp}-${message.to.replace(/[^a-z0-9@._-]/gi, '_')}.eml`)
+    // #694: the name is not the recipient. An addressed name means "keep the
+    // newest file" keeps one identifier forever, so no retention window could
+    // ever delete the whole directory. The stamp keeps the lexical order
+    // `scripts/outbox.mjs` reads, and the address stays inside the file.
+    const file = join(this.outbox, `${stamp}-${randomUUID().slice(0, 8)}.eml`)
     const body = [
       `Date: ${new Date().toUTCString()}`,
       `From: Fledge <${this.from}>`,

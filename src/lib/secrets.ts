@@ -4,7 +4,10 @@ const VERSION = 'v1'
 
 // The recogniser lives in one module so a job log, a callback and a URL cannot
 // drift onto different rules. This re-export keeps the existing import path.
-export { redact, registerRedactionSecrets } from './redact.js'
+// `maskEmail` / `maskIp` (#694) are shapes an account is rendered by, not
+// secrets, so they live beside `redact()` and are re-exported here too: the log
+// sink and the pages import from one place.
+export { maskEmail, maskIp, redact, registerRedactionSecrets } from './redact.js'
 
 export function decodeKey(keyBase64: string): Buffer {
   const key = Buffer.from(keyBase64, 'base64')

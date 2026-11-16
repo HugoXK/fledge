@@ -1,3 +1,29 @@
+// #694: an account identifier is not a secret, so `redact()` leaves it alone — a
+// job row, the inbox and the job page keep the real address because that is where
+// an operator acts on it. These two helpers exist for the surfaces that must not
+// carry it: the log sink and the session/list pages. One function per shape, so a
+// page and a log line cannot drift onto different masks.
+export function maskEmail(email: string): string {
+  const at = email.lastIndexOf('@')
+  if (at <= 0) return '***'
+  const local = email.slice(0, at)
+  const domain = email.slice(at + 1)
+  return `${local.slice(0, 1)}***@${domain}`
+}
+
+// #356: a session row is recognisable without handing out the address. The last
+// IPv4 octet and everything past the second IPv6 group are dropped, so a user can
+// tell their own sessions apart but the page never carries a full address.
+export function maskIp(ip: string | null): string {
+  if (ip === null || ip === '') return '—'
+  if (ip.includes(':')) {
+    const groups = ip.split(':').filter((group) => group !== '')
+    return `${groups.slice(0, 2).join(':')}::`
+  }
+  const parts = ip.split('.')
+  return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0` : ip
+}
+
 // Configured secrets (an SMTP password, a model key) have no shape a pattern can
 // recognise, so the config registers its literal values here. The set is
 // replaced per call, not appended: tests call loadConfig() repeatedly, and

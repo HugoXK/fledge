@@ -912,8 +912,28 @@ and settings do not offer a disabled provider as an allowlist entry.
 
 `redact()` removes GitHub tokens, `sk-…` keys, `flg_…` tokens, bearer values and
 Upstream `api_key:` hashes from log messages. Request bodies are never logged.
+
+The log sink (`src/lib/log.ts`) additionally masks **account identifiers**, which
+are not secrets and which `redact()` deliberately leaves alone: an email becomes
+`a***@example.com`, a GitHub login or a `usr_` id keeps its first character, and
+an address loses its last IPv4 octet. Every string field value goes through the
+shape pass — an email or a `usr_` id is masked wherever it appears, including in
+a field whose name the sink does not know — and nested objects and arrays are
+walked rather than copied, so `{ user: { email } }` cannot carry the address
+through. Names still add what shape cannot see: a login has no shape, so the key
+table (`email`, `to`, `login`, `user`, `userId`, `ip`, `admin`, …) masks those
+values by name, and a `repo`/`repository` field keeps the repository name while
+masking the `owner/` login in front of it. The mask lives in the sink, never in
+`redact()`: the stored job row, the inbox and the job page still carry the real
+identifier an operator has to act on, and that difference is asserted in
+`test/logMask.test.ts`. A post-hoc rewrite of `fledge.log` is not a policy; the
+identifier must not be written in the first place.
+
 The development mail outbox is written with mode 0600 and contains approval links;
-treat it as a secret.
+treat it as a secret. A file is named `<stamp>-<opaque id>.eml`, never the
+recipient, so the name alone keeps no account alive, and `npm run mail:outbox`
+expires every `.eml` older than `MAIL_OUTBOX_RETENTION_DAYS` (7 by default)
+before it prints the newest one.
 
 The evolution export uses a read-only database handle and passes every exported
 string through the same `redact()` before serialisation. It reads only

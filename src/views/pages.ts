@@ -15,7 +15,7 @@ import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/task
 import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, starIcon, type PageNotification, type Viewer } from './layout.js'
 import { renderState, stateCell, type StateAction } from './states.js'
-import { redact } from '../lib/secrets.js'
+import { maskEmail, maskIp, redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta } from '../lib/temporal.js'
 import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
@@ -256,27 +256,6 @@ function readinessLabel(t: Translate, state: 'ready' | 'blocked' | 'unknown'): s
 function readinessBadge(t: Translate, state: 'ready' | 'blocked' | 'unknown'): string {
   const cls = state === 'ready' ? 'good' : state === 'blocked' ? 'bad' : 'busy'
   return `<span class="badge ${cls}">${escapeHtml(readinessLabel(t, state))}</span>`
-}
-
-function maskEmail(email: string): string {
-  const at = email.lastIndexOf('@')
-  if (at <= 0) return '***'
-  const local = email.slice(0, at)
-  const domain = email.slice(at + 1)
-  return `${local.slice(0, 1)}***@${domain}`
-}
-
-// #356: a session row is recognisable without handing out the address. The last
-// IPv4 octet and everything past the second IPv6 group are dropped, so a user can
-// tell their own sessions apart but the page never carries a full address.
-function maskIp(ip: string | null): string {
-  if (ip === null || ip === '') return '—'
-  if (ip.includes(':')) {
-    const groups = ip.split(':').filter((group) => group !== '')
-    return `${groups.slice(0, 2).join(':')}::`
-  }
-  const parts = ip.split('.')
-  return parts.length === 4 ? `${parts[0]}.${parts[1]}.${parts[2]}.0` : ip
 }
 
 function agreementHtml(text: string): string {
