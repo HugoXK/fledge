@@ -26,6 +26,41 @@ export const REQUIRED_CHECK = 'ci-ok'
  *  name answers `null` below: the head's own aggregate is never evidence. */
 export const HEAD_AGGREGATE_JOB = 'ci-ok-head'
 
+/** The one status a published check run carries. The API takes a fixed
+ *  vocabulary; this module writes the literal rather than forwarding whatever a
+ *  finished run reported. */
+export const CHECK_STATUS = 'completed'
+
+/** The only conclusions this publisher may send, keyed by its own verdict. */
+export const CHECK_CONCLUSIONS = Object.freeze({ pass: 'success', fail: 'failure' })
+
+// The run id arrives as text (an argument or an env var), so it is parsed here
+// once, as digits only, and never becomes part of a request path unvalidated.
+const RUN_ID = /^[1-9][0-9]{0,17}$/
+
+// Only a plain https URL may be quoted in the summary.
+const RUN_URL = /^https:\/\/[A-Za-z0-9._~:/?#@!$&'()*+,;=%-]{1,300}$/
+
+/**
+ * The run this publisher judges, from `--run <id>` or `CI_OK_RUN_ID`.
+ * `ci-ok-publish.yml` sets the variable from `github.event.workflow_run.id`, so
+ * the ids come from the workflow that started the job and no file is read.
+ */
+export function runIdFrom(input = {}) {
+  const args = Array.isArray(input.args) ? input.args : []
+  const env = input.env ?? {}
+  const index = args.indexOf('--run')
+  const raw = index !== -1 && args[index + 1] !== undefined
+    ? args[index + 1]
+    : typeof env.CI_OK_RUN_ID === 'string' ? env.CI_OK_RUN_ID : ''
+  if (typeof raw !== 'string' || !RUN_ID.test(raw)) {
+    throw new Error(`the triggered run id must be a positive decimal integer, got ${JSON.stringify(String(raw).slice(0, 40))}`)
+  }
+  const id = Number(raw)
+  if (!Number.isSafeInteger(id)) throw new Error('the triggered run id is not a safe integer')
+  return id
+}
+
 // A matrix leg displays as `test (24)` while `needs` calls it `test`.
 const MATRIX_TEST = /^test \(.+\)$/
 
@@ -99,13 +134,23 @@ export function shouldPublish(run) {
   return run.conclusion !== 'cancelled'
 }
 
-/** The check run body: a reader sees the same lines the in-run job used to log. */
+/** The check run body: a reader sees the same lines the in-run job used to log.
+ *  Every field is either a literal from this module, a validated number, or a
+ *  string the evaluator formatted from the API's job results — no file read
+ *  reaches the request. */
 export function checkRunPayload({ headSha, result, runId, runUrl, required = REQUIRED_JOBS }) {
+  if (typeof headSha !== 'string' || !/^[0-9a-f]{40}$/.test(headSha)) {
+    throw new Error('the check run needs the judged head as a 40-character lowercase hex sha')
+  }
+  if (!Number.isSafeInteger(runId) || runId <= 0) {
+    throw new Error('the check run needs the judged run id as a positive integer')
+  }
   const title = result.ok
     ? `every required job passed (${String(required.length)} required)`
     : `${String(result.problems.length)} required job(s) did not pass`
+  const source = typeof runUrl === 'string' && RUN_URL.test(runUrl) ? runUrl : undefined
   const summary = [
-    `Verdict computed from the default branch's copy of the gate, not from the pull request's \`ci.yml\` (run #${String(runId)}${runUrl === undefined ? '' : `, ${runUrl}`}).`,
+    `Verdict computed from the default branch's copy of the gate, not from the pull request's \`ci.yml\` (run #${String(runId)}${source === undefined ? '' : `, ${source}`}).`,
     '',
     '```',
     ...result.lines,
@@ -115,8 +160,8 @@ export function checkRunPayload({ headSha, result, runId, runUrl, required = REQ
   return {
     name: REQUIRED_CHECK,
     head_sha: headSha,
-    status: 'completed',
-    conclusion: result.ok ? 'success' : 'failure',
+    status: CHECK_STATUS,
+    conclusion: result.ok ? CHECK_CONCLUSIONS.pass : CHECK_CONCLUSIONS.fail,
     output: { title, summary },
   }
 }

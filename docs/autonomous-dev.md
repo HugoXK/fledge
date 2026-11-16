@@ -409,6 +409,14 @@ reported missing by name, which is red — the same answer as dropping it from
 the run that replaced it owns the verdict, and a run whose evidence cannot be
 read publishes `failure` with the reason rather than silence.
 
+The trigger reaches the script as one integer: `ci-ok-publish.yml` passes
+`CI_OK_RUN_ID` from `github.event.workflow_run.id`, and `runIdFrom` accepts
+digits only before the value can enter a request path. Every other fact about the
+run comes from the API, and the published body's status and conclusion are
+literals from `scripts/lib/ci-ok-run.mjs`, so no file the job can read — the
+event payload included — contributes bytes to the request. That is why the
+script no longer reads `GITHUB_EVENT_PATH` at all.
+
 ### A red `main` reports itself
 
 `ci-ok` still only computes the commit's health; the job that says so out loud is

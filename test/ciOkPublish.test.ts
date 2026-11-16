@@ -5,11 +5,14 @@ import { fileURLToPath } from 'node:url'
 
 import { REQUIRED_JOBS } from '../scripts/ci-ok.mjs'
 import {
+  CHECK_CONCLUSIONS,
+  CHECK_STATUS,
   HEAD_AGGREGATE_JOB,
   REQUIRED_CHECK,
   checkRunPayload,
   jobKey,
   needsFromJobs,
+  runIdFrom,
   shouldPublish,
   verdict,
 } from '../scripts/lib/ci-ok-run.mjs'
@@ -174,4 +177,47 @@ test('the published check run carries the required context and the failing job n
   const green = checkRunPayload({ headSha: 'c'.repeat(40), result: verdict({ jobs: successJobs(), eventName: 'pull_request', changes: { source: true } }), runId: 8 })
   assert.equal(green.conclusion, 'success')
   assert.match(green.output.title, /every required job passed/)
+})
+
+// CodeQL alert 140 (`js/file-access-to-http`) at `scripts/ci-ok-run.mjs`: the
+// event payload was read with `readFileSync` and its run id became part of the
+// outbound request. The fix removes the file read rather than teaching the
+// analyser to look away, so these tests pin both halves: the workflow hands over
+// an integer, and the script has no file source left.
+test('the trigger names the run as an integer, and the publisher reads no file', () => {
+  assert.match(publish, /CI_OK_RUN_ID: \$\{\{ github\.event\.workflow_run\.id \}\}/, 'the run to judge arrives as the workflow run id')
+  assert.doesNotMatch(publish, /GITHUB_EVENT_PATH/, 'no event file is handed to the publisher')
+  const cli = read('scripts/ci-ok-run.mjs')
+  assert.doesNotMatch(cli, /readFileSync/, 'the publisher reads no file, so file bytes cannot reach the check-run request')
+  assert.doesNotMatch(cli, /GITHUB_EVENT_PATH/, 'the event payload is not a source at all')
+})
+
+test('the run id is a validated integer before it can enter a request path', () => {
+  assert.equal(runIdFrom({ args: ['--run', '42'] }), 42)
+  assert.equal(runIdFrom({ args: [], env: { CI_OK_RUN_ID: '1234' } }), 1234)
+  assert.equal(runIdFrom({ args: ['--run', '7'], env: { CI_OK_RUN_ID: '8' } }), 7, 'the argument wins over the environment')
+  for (const bad of ['', ' 7', '7 ', '12abc', '-1', '1e3', '0', '007', '9007199254740993']) {
+    assert.throws(() => runIdFrom({ env: { CI_OK_RUN_ID: bad } }), /run id/, `${JSON.stringify(bad)} must be refused`)
+  }
+  assert.throws(() => runIdFrom({ args: ['--run'] }), /run id/)
+  assert.throws(() => runIdFrom({}), /run id/)
+})
+
+test('the published body carries only whitelisted enums and a validated head', () => {
+  const red = verdict({ jobs: successJobs().map((job) => (job.name === 'lint' ? { ...job, conclusion: 'failure' } : job)), eventName: 'pull_request', changes: { source: true } })
+  assert.equal(CHECK_STATUS, 'completed')
+  assert.deepEqual(Object.values(CHECK_CONCLUSIONS), ['success', 'failure'])
+  const payload = checkRunPayload({ headSha: 'd'.repeat(40), result: red, runId: 9 })
+  assert.equal(payload.status, CHECK_STATUS, 'the status is the module literal, not a value a run reported')
+  assert.equal(payload.conclusion, CHECK_CONCLUSIONS.fail)
+  const green = checkRunPayload({ headSha: 'e'.repeat(40), result: verdict({ jobs: successJobs(), eventName: 'pull_request', changes: { source: true } }), runId: 10 })
+  assert.equal(green.conclusion, CHECK_CONCLUSIONS.pass)
+
+  assert.throws(() => checkRunPayload({ headSha: 'not-a-sha', result: red, runId: 9 }), /hex/)
+  assert.throws(() => checkRunPayload({ headSha: 'D'.repeat(40), result: red, runId: 9 }), /hex/, 'an uppercase sha is not the form the API returns')
+  assert.throws(() => checkRunPayload({ headSha: 'd'.repeat(40), result: red, runId: 0 }), /positive integer/)
+  assert.throws(() => checkRunPayload({ headSha: 'd'.repeat(40), result: red, runId: 1.5 }), /positive integer/)
+
+  const odd = checkRunPayload({ headSha: 'f'.repeat(40), result: red, runId: 11, runUrl: 'javascript:alert(1)' })
+  assert.doesNotMatch(odd.output.summary, /javascript:/, 'a URL that is not plain https is not quoted')
 })

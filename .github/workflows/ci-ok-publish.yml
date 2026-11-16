@@ -72,5 +72,7 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
-          GITHUB_EVENT_PATH: ${{ github.event_path }}
+          # The run to judge, as an id: the script validates it as an integer and
+          # reads every fact about the run from the API, so no event file is read.
+          CI_OK_RUN_ID: ${{ github.event.workflow_run.id }}
         run: node base/scripts/ci-ok-run.mjs --repo .

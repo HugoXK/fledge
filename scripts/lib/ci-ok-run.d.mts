@@ -35,6 +35,9 @@ export interface CheckRunPayload {
 
 export declare const REQUIRED_CHECK: string
 export declare const HEAD_AGGREGATE_JOB: string
+export declare const CHECK_STATUS: string
+export declare const CHECK_CONCLUSIONS: Readonly<{ pass: string; fail: string }>
+export declare function runIdFrom(input?: { args?: string[]; env?: Record<string, string | undefined> }): number
 export declare function jobKey(name: string, required?: string[]): string | null
 export declare function needsFromJobs(jobs: FinishedJob[], required?: string[]): Record<string, JobResult>
 export declare function verdict(input: AggregateInput): AggregateVerdict

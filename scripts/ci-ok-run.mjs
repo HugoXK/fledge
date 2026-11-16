@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Publish the `ci-ok` check run from the default branch's copy of the gate.
 //
-//   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo GITHUB_EVENT_PATH=... node scripts/ci-ok-run.mjs
+//   GITHUB_TOKEN=... GITHUB_REPOSITORY=owner/repo CI_OK_RUN_ID=... node scripts/ci-ok-run.mjs
 //   ... node scripts/ci-ok-run.mjs --dry-run
 //
 // `ci-ok-publish.yml` runs this on `workflow_run`, after a `CI` run completes,
@@ -10,9 +10,11 @@
 // follow-up renames it to `ci-ok-head`; every check run at the head sha counts,
 // so the head's green cannot retire this verdict.
 //
-// The trigger is a finished run, so this script reads that run's job list, has
-// the base branch's classifier re-derive the change flags from the same diff,
-// evaluates the base branch's required list, and creates the check run itself.
+// The trigger names the finished run as an integer (`CI_OK_RUN_ID`, set from
+// `github.event.workflow_run.id`), and every fact about that run is then read
+// from the API: the job list, the head, the event, the pull requests. No file is
+// read, so nothing a file holds can become part of a request.
+//
 // A superseded (`cancelled`) run is skipped: a newer run for the same head is
 // the one whose verdict counts.
 //
@@ -22,17 +24,15 @@
 // explains itself.
 
 import { spawnSync } from 'node:child_process'
-import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 
 import { REQUIRED_JOBS } from './ci-ok.mjs'
 import { allGateChanges } from './lib/ciChanges.mjs'
-import { checkRunPayload, shouldPublish, verdict } from './lib/ci-ok-run.mjs'
+import { checkRunPayload, runIdFrom, shouldPublish, verdict } from './lib/ci-ok-run.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
 const API = process.env.GITHUB_API_URL ?? 'https://api.github.com'
-const EVENT_PATH = process.env.GITHUB_EVENT_PATH ?? ''
 const DRY_RUN = process.argv.includes('--dry-run')
 const MAX_JOB_PAGES = 50
 
@@ -68,22 +68,15 @@ async function api(path, options = {}) {
   }
 }
 
-// The event payload carries the id of the run that triggered this workflow; the
-// run itself is then read from the API so the facts (head, event, pull requests,
-// conclusion) come from one place rather than from a payload shaped per event.
+// The workflow names the run it was triggered by; the run itself is then read
+// from the API so the facts (head, event, pull requests, conclusion) come from
+// one place rather than from a payload shaped per event.
 function triggeredRunId() {
-  const index = process.argv.indexOf('--run')
-  if (index !== -1 && process.argv[index + 1] !== undefined) return Number(process.argv[index + 1])
-  if (EVENT_PATH === '') fail('no GITHUB_EVENT_PATH and no --run <id>: there is nothing to judge')
-  let payload
   try {
-    payload = JSON.parse(readFileSync(EVENT_PATH, 'utf8'))
+    return runIdFrom({ args: process.argv, env: process.env })
   } catch (error) {
-    fail(`cannot read the event payload: ${error.message}`)
+    fail(error.message)
   }
-  const id = payload?.workflow_run?.id
-  if (typeof id !== 'number') fail('the event payload has no workflow_run.id')
-  return id
 }
 
 async function loadRun(runId) {
