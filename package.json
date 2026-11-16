@@ -37,6 +37,7 @@
     "mock:snapshot": "tsx scripts/mock-snapshot.ts",
     "mock:check": "tsx scripts/mock-snapshot.ts --check",
     "evolution:consent": "tsx scripts/evolution-consent.ts",
+    "isolation:check": "tsx scripts/isolation-check.ts",
     "lint:update": "node scripts/lint-warnings.mjs --update"
   },
   "dependencies": {

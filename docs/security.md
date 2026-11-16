@@ -36,6 +36,41 @@ operator FlyBot is not used for user jobs. A container is limited by CPU,
 memory, PID and filesystem mounts; stopping or deleting a repository affects
 only that container.
 
+The container's run arguments are a security boundary, so they are built in one
+place (`flybotContainerArgs` in `src/flybot/isolation.ts`) and nothing else adds
+a mount or a network:
+
+- **Read-only root.** `--read-only` plus one tmpfs at `/tmp`
+  (`rw,noexec,nosuid,size=64m`). Only the repository's own data directory is a
+  host bind; the container cannot rewrite the image the next job starts from.
+- **No capabilities.** `--cap-drop ALL` with `--security-opt no-new-privileges`
+  and a non-root `--user`, so a process inside cannot gain one back through a
+  setuid binary.
+- **No host Docker socket.** The arguments never carry `/var/run/docker.sock`;
+  the socket is root on the host, so mounting it into a tenant container would
+  make every other tenant reachable.
+- **Seccomp stays on.** The runtime's default profile is what refuses the rare
+  syscalls an agent runtime never needs; the isolation check asserts that a
+  filter really is loaded (`Seccomp: 2`) rather than replacing the profile with a
+  weaker hand-written one.
+- **PID, CPU and memory ceilings** stay as they were, which is what keeps one
+  tenant from starving the host.
+
+`npm run isolation:check` starts a throwaway container with exactly those
+arguments and asserts each fact from inside it: the root refuses a write, the
+effective capability set is empty, a seccomp filter is loaded, the Docker socket
+is absent, exactly one host bind is mounted, and a container on another tenant's
+network cannot be reached. It exits 3 where no Docker daemon exists, because a
+silent pass would hide the boundary it exists to test. CI runs it in the `docker`
+job; a developer can run it on any host with a daemon.
+
+Egress is not restricted yet: the container still reaches the outside network,
+because a fresh data volume installs its profile from `registry.npmmirror.com` on
+first start. Deny-by-default egress with an allowlist is the remaining close
+condition, and it needs a mechanism decision (an egress proxy on an internal
+network, or a warm-store seal before the long-lived container starts) before it
+can land.
+
 ### API tokens
 
 - A personal `flg_` token is a gateway capability with two properties: a `scope`
