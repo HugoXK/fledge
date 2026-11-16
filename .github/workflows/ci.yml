@@ -380,6 +380,18 @@ jobs:
           echo "healthz ok, version ${version}"
           docker rm -f fledge-smoke >/dev/null 2>&1 || true
           cleaned=1
+      # #109: the FlyBot boundary is proven from inside a real container, with the
+      # product's own run arguments, in the one job that has a Docker daemon. The
+      # node test job has none, so `npm test` keeps the argument assertions and
+      # this step carries the container-level proof. A run without a daemon exits
+      # 3 instead of passing, as the check itself does everywhere else.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Prove the FlyBot container boundary from inside a container
+        run: npx tsx scripts/isolation-check.ts --image fledge:ci
 
   audit:
     name: audit

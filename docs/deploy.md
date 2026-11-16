@@ -175,6 +175,36 @@ long runs; lowering it makes that failure more likely, so change it together
 with the agent's own time budget. `JOB_STALL_MINUTES` (default 30) is the
 separate no-heartbeat stall sweep; a heartbeat moves only that one.
 
+### Per-repository FlyBot containers
+
+Each hosted repository gets its own container, started from
+`flybotContainerArgs()` in `src/flybot/isolation.ts`. The flags are the boundary,
+so they are not configurable per repository: `--read-only` with one `/tmp` tmpfs
+(`rw,noexec,nosuid,size=64m`), a single bind of that repository's data directory
+at `/data`, `--cap-drop ALL`, `--security-opt no-new-privileges`, a non-root
+`--user`, and the CPU, memory and PID ceilings. `NARB_DISABLE_NATIVE_CACHE=1` is
+not optional: the DSH native-addon loader copies a binary into the temp directory
+and executes it, so a `noexec` `/tmp` otherwise stops the web profile from
+starting.
+
+Those flags reach production through the normal deploy and take effect the next
+time an instance is provisioned or restarted. Before shipping, prove the boundary
+on a host that runs the containers:
+
+```sh
+npm run isolation:check                       # node:22-bookworm-slim probe
+npm run isolation:check -- --image <flybot image>
+```
+
+The check starts its own throwaway container with exactly those arguments, then
+asserts from inside it that the root refuses a write, the effective capability set
+is empty, a seccomp filter is loaded, the Docker socket is absent, only the
+repository data directory is a host bind, and a container on another tenant's
+network is unreachable. It exits 3 where no Docker daemon exists rather than
+reporting a pass. Egress is not restricted yet: a fresh data volume installs its
+profile from `registry.npmmirror.com` on first start, so deny-by-default egress
+with an allowlist is still open work and not something a deploy changes today.
+
 ## 5. Run
 
 ### Docker

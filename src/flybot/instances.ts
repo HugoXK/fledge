@@ -9,6 +9,7 @@ import { log } from '../lib/log.js'
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from '../lib/secrets.js'
 import { nowIso } from '../lib/time.js'
 import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor } from './playbook.js'
+import { flybotContainerArgs } from './isolation.js'
 import { clearWorkspaceCookie, dshCookie } from './workspace.js'
 import { readZipText } from '../lib/zip.js'
 import { parseChiefTranscript, type ChiefMessage } from '../lib/chiefTranscript.js'
@@ -302,27 +303,18 @@ server.listen(3081, '0.0.0.0')
       const gid = typeof process.getgid === 'function' ? process.getgid() : 1000
       writeFileSync(join(dataDir, 'dsh-web.log'), '')
       clearStaleDshLock(dataDir)
-      await this.docker([
-        'run', '-d',
-        '--name', container,
-        '--network', network,
-        '-p', `127.0.0.1:${dshPort}:3081`,
-        '-v', `${dataDir}:/data`,
-        '--user', `${uid}:${gid}`,
-        '--memory', this.config.flybot.memory,
-        '--cpus', this.config.flybot.cpus,
-        '--pids-limit', '512',
-        '--security-opt', 'no-new-privileges',
-        '--restart', 'no',
-        '--entrypoint', '/bin/sh',
-        '-e', 'HOME=/data',
-        '-e', 'DSH_HOME=/data',
-        '-e', 'NPM_CONFIG_REGISTRY=https://registry.npmmirror.com',
-        '-e', 'npm_config_registry=https://registry.npmmirror.com',
-        '-e', `FLEDGE_MODEL_KEY=${modelKey}`,
-        this.config.flybot.instanceImage,
-        '-c', 'node /opt/flybot/docker/entrypoint.mjs >> /data/dsh-web.log 2>&1 & exec node /data/tcp-proxy.mjs',
-      ], 180_000)
+      await this.docker(flybotContainerArgs({
+        container,
+        network,
+        dataDir,
+        uid,
+        gid,
+        dshPort,
+        memory: this.config.flybot.memory,
+        cpus: this.config.flybot.cpus,
+        image: this.config.flybot.instanceImage,
+        modelKey,
+      }), 180_000)
 
       await this.waitForDsh(dshPort, row)
       if (this.store.getRepo(repo.id) === undefined) throw new Error('仓库已删除，停止初始化')
