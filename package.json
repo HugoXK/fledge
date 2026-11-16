@@ -27,6 +27,8 @@
     "evolution:export": "tsx scripts/evolution-shadow.ts",
     "evolution:report": "tsx scripts/evolution-shadow.ts --report",
     "db:restore-drill:ci": "node scripts/restore-drill-ci.mjs",
+    "db:prev-release:fixture": "node scripts/prev-release-fixture.mjs",
+    "db:prev-release:restore": "node scripts/prev-release-restore.mjs",
     "artifacts:prune": "node scripts/artifact-retention.mjs",
     "secret:scan": "node scripts/secret-scan.mjs",
     "slo:report": "node scripts/slo-report.mjs",
