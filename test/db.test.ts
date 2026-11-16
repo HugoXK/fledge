@@ -151,9 +151,9 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const reopened = new Store(path)
     assert.equal(reopened.getRepo(repo.id)?.repo_role, 'maintainer')
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
-    // The notification outbox moved the build's schema to 44, so the first
-    // refused version is 45.
-    reopened.db.exec('PRAGMA user_version = 45;')
+    // The retired provider model moved the build's schema to 45, so the first
+    // refused version is 46.
+    reopened.db.exec('PRAGMA user_version = 46;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)

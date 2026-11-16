@@ -1805,6 +1805,18 @@ settings form disables the checkbox of a provider whose allowed flag is off.
 existing repository keeps the unrestricted behaviour until an owner sets a
 policy.
 
+A provider can stop offering a model it used to serve. The gateway already
+treated a 404 whose body names the model as retryable so a job could finish on
+another model; it now also writes `provider_models.retired_at` — the first date
+that 404 was seen, never moved by a later one — and marks the attempt in the
+job's `model_json` with `retired: true`. Settings shows the model with its
+retirement date, the repository page marks a retired default and any per-bot
+picker that points at it, and the job's model line names the reason beside the
+status. An apply whose selection still holds a retired model is refused with
+that model's name, so a restart cannot move a workspace onto a model its provider
+no longer serves; saving the selection itself still works. Only a 404 matching the
+retired-model pattern writes the column — a 429, a 5xx and any other 404 never do.
+
 ### Per-job cost, evidence and metrics
 
 The bridge's model proxy normally uses the per-repository instance token. While

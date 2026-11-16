@@ -25,6 +25,14 @@ export function modelOrder(
 const QUOTA_WORDS = /insufficient_quota|quota|billing|payment|budget|额度|余额/i
 const POLICY_WORDS = /content[_ ]?policy|policy[_ ]?violation|safety|refus/i
 
+// #852: the body that makes a 404 retryable is also the body that says the model
+// is gone for good, so the two decisions share one pattern and cannot drift.
+const RETIRED_MODEL_WORDS = /model[^\n]{0,60}(not found|not exist|unavailable|decommission|retired)/i
+
+export function retiredModelFailure(status: number, body: string): boolean {
+  return status === 404 && RETIRED_MODEL_WORDS.test(body)
+}
+
 export function retryableModelFailure(status: number, body: string): boolean {
   // Auth is the repository's credential, not the model's health: another model
   // behind the same key is no more likely to be accepted.
@@ -35,7 +43,7 @@ export function retryableModelFailure(status: number, body: string): boolean {
   if (status === 408) return true
   // A retired model is the one "unavailable" a 404 can mean; any other 404 is a
   // wrong URL, which another model will not repair.
-  if (status === 404) return /model[^\n]{0,60}(not found|not exist|unavailable|decommission|retired)/i.test(body)
+  if (status === 404) return retiredModelFailure(status, body)
   if (status === 500 || status === 502 || status === 503 || status === 504) return true
   return false
 }

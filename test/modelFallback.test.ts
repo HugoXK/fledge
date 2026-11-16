@@ -16,6 +16,7 @@ function row(id: string, isDefault: 0 | 1): RepoProviderModelRow {
     provider_id: 'prov',
     model: `model-${id}`,
     label: `Label ${id}`,
+    retired_at: null,
     created_at: '2026-11-12T00:00:00.000Z',
     provider_label: 'Provider',
     provider_region: 'eu',

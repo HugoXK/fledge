@@ -12,6 +12,8 @@ export interface ModelAttempt {
   label: string
   status: number
   retryable: boolean
+  /** #852: the provider answered that this model does not exist, so it is retired. */
+  retired?: boolean
 }
 
 // The first fallback the job made, kept apart from `attempts` because those are
@@ -40,6 +42,7 @@ function attempt(value: unknown): ModelAttempt | null {
     label: typeof row.label === 'string' && row.label !== '' ? row.label : modelId,
     status,
     retryable: row.retryable === true,
+    ...(row.retired === true ? { retired: true } : {}),
   }
 }
 
