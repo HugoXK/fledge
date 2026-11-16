@@ -961,9 +961,12 @@ export interface PurgeEvent {
 }
 
 // #690: the delete set, split by the column that names the account. The first
-// list cascades from `users`, the second from `repos`; both are counted before
-// the delete so the retention row can say what went. Module constants, because
-// the count and the delete must not drift apart.
+// list is the set counted before the delete so the retention row can say what
+// went; almost all of it cascades from `users`, and #846 adds the two rows that
+// do not (`error_reports`, `feedback_triage` are `ON DELETE SET NULL`, so they
+// are also deleted explicitly in `purgeUserRows`). The second list names the
+// account's repositories. Module constants, because the count and the delete
+// must not drift apart.
 const PURGE_USER_TABLES = [
   'sessions',
   'approval_tokens',
@@ -980,6 +983,8 @@ const PURGE_USER_TABLES = [
   'principals',
   'postmortems',
   'repo_members',
+  'error_reports',
+  'feedback_triage',
 ] as const
 
 // Rows that name one of the account's repositories but no account id: they go
@@ -3157,6 +3162,13 @@ export class Store {
       // repository row is left behind once its repository is gone.
       this.run("DELETE FROM budget_scopes WHERE kind = 'principal' AND id = ?", identityPrincipalId(id))
       if (repoIds.length > 0) this.run(`DELETE FROM budget_scopes WHERE kind = 'repository' AND id IN (${marks})`, ...repoIds)
+
+      // #846: `error_reports` and `feedback_triage` are `ON DELETE SET NULL`, so
+      // the account row would only clear their `user_id` and leave the login, the
+      // path, the error text and the triage message behind. They go explicitly;
+      // `feedback_events` follows the triage row through its own cascade.
+      this.run('DELETE FROM feedback_triage WHERE user_id = ?', id)
+      this.run('DELETE FROM error_reports WHERE user_id = ?', id)
 
       // The account row itself: sessions, jobs, instances, tokens, ledger rows,
       // installations and every repo-scoped table go through the cascade.
@@ -6293,6 +6305,16 @@ export class Store {
 
   errorReportByRef(ref: string): ErrorReportRow | undefined {
     return this.get<ErrorReportRow>('SELECT * FROM error_reports WHERE ref = ?', ref)
+  }
+
+  // #846: the delete preview needs the same two counts the purge reports, and
+  // the rows are `ON DELETE SET NULL`, so neither is visible through the cascade.
+  countErrorReportsForUser(userId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM error_reports WHERE user_id = ?', userId)?.n ?? 0)
+  }
+
+  countFeedbackTriageForUser(userId: string): number {
+    return Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM feedback_triage WHERE user_id = ?', userId)?.n ?? 0)
   }
 
   claimErrorReport(ref: string, consentVersion: string): boolean {

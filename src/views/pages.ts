@@ -4211,7 +4211,7 @@ export function adminDeleteUserPage(input: {
   locale: Locale
   viewer: Viewer
   user: UserRow
-  counts: { repos: number; jobs: number; running: number; queued: number; instances: number; tokens: number; installations: number }
+  counts: { repos: number; jobs: number; running: number; queued: number; instances: number; tokens: number; installations: number; errorReports: number; feedbackTriage: number }
   blocked: 'self' | 'last_superadmin' | null
   notice?: string
   error?: string
@@ -4233,8 +4233,13 @@ export function adminDeleteUserPage(input: {
     countRow(t('API token', 'API tokens'), counts.tokens),
     // #841: the row is Fledge's own record; the confirm makes no GitHub call.
     countRow(t('GitHub 安装记录', 'GitHub installation records'), counts.installations),
+    // #846: these two rows outlive the account on their own — the foreign key
+    // clears their `user_id` instead of deleting them — so the preview names them
+    // rather than promising a teardown it does not perform.
+    countRow(t('错误报告', 'Error reports'), counts.errorReports),
+    countRow(t('反馈分诊记录', 'Feedback triage records'), counts.feedbackTriage),
   ].join('')
-  const empty = counts.repos + counts.jobs + counts.instances + counts.tokens + counts.installations === 0
+  const empty = counts.repos + counts.jobs + counts.instances + counts.tokens + counts.installations + counts.errorReports + counts.feedbackTriage === 0
   const form = blocked === null
     ? `<form method="post" action="/admin/users/${escapeHtml(user.id)}/delete" class="form">
         ${csrf(viewer)}
@@ -4252,7 +4257,7 @@ export function adminDeleteUserPage(input: {
       <h2>${escapeHtml(t('将要移除的内容', 'What will be removed'))}</h2>
       <div class="table-scroll"><table class="table-cards"><thead><tr><th>${escapeHtml(t('项目', 'Item'))}</th><th>${escapeHtml(t('数量', 'Count'))}</th></tr></thead><tbody>${rows}</tbody></table></div>
       ${counts.installations === 0 ? '' : `<p class="muted">${escapeHtml(t('上表中的 GitHub 安装记录只是 Fledge 自己的行。这里不会卸载 GitHub App：安装在账号或组织上仍然保持，保留仓库访问权限，并继续向本部署发送 webhook。如需移除，请在 GitHub 的 Settings → Applications → Installed GitHub Apps 中操作。', 'The GitHub installation records above are Fledge\'s own rows. This does not uninstall the GitHub App: the installation stays installed on the account or organization, keeps its repository access and keeps sending its webhooks to this deployment. Remove it on GitHub under Settings → Applications → Installed GitHub Apps.'))}</p>`}
-      ${empty ? `<p class="fine">${escapeHtml(t('这个账号没有仓库、任务、实例、token 或安装记录；确认只会删除账号行和凭据。', 'This account has no repositories, jobs, instances, tokens or installation records; confirming removes only the account row and its credentials.'))}</p>` : ''}
+      ${empty ? `<p class="fine">${escapeHtml(t('这个账号没有仓库、任务、实例、token、安装记录、错误报告或反馈分诊记录；确认只会删除账号行和凭据。', 'This account has no repositories, jobs, instances, tokens, installation records, error reports or feedback triage records; confirming removes only the account row and its credentials.'))}</p>` : ''}
       <p class="muted">${escapeHtml(t('确认会先取消任务、停止并移除实例、撤销 token，然后用与试用清理相同的事务删除账号行和关联数据，最后写入一条不含登录名、邮箱、token 或用户 ID 的记录，其中包含花费汇总。任何步骤失败都会记录失败的步骤名，账号保持可见，再次提交同一确认即可重试。', 'Confirm first cancels jobs, stops and removes instances and revokes tokens, then erases the account row and its related data with the same transaction the trial purge uses, and finally writes one record with no login, email, token or user id that carries the spend aggregate. A failed step is recorded by name, the account stays visible, and submitting the same confirmation again retries it.'))}</p>
       ${form}
     </section>`

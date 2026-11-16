@@ -472,7 +472,9 @@ per day. Test mail is rate-limited to one per minute.
   other repo-scoped tables the cascade reaches, plus the plain-column rows no
   cascade sees (`artifact_versions.repo_id`, `audit_log.user_id`, `events`, and
   `budget_scopes`, whose `principal:user:<id>` and `repository:<repo_id>` keys
-  name the account without a `user_id` column) and
+  name the account without a `user_id` column), the two rows whose foreign key
+  clears the account instead of deleting the row (`error_reports` and
+  `feedback_triage`, whose `feedback_events` follow it), and
   the six `settings` shapes that carry the account in the key or the value
   (`quota_notified:`, `digest_sent:`, `email_test:`, `email_reply:`,
   `github_app_state:`, `installation_sender:`). An account that gained a
@@ -493,8 +495,9 @@ per day. Test mail is rate-limited to one per minute.
   its own reason and operator.
 - **Superadmin account deletion (#691).** `GET /admin/users/:id/delete` is a
   read-only preview: it counts the account's repositories, jobs (all, running and
-  queued), FlyBot instances, API tokens and GitHub installations and names the
-  backup window, and it writes no audit row. `POST /admin/users/:id/delete` is
+  queued), FlyBot instances, API tokens, GitHub installations, error reports and
+  feedback triage rows and names the backup window, and it writes no audit row.
+  `POST /admin/users/:id/delete` is
   superadmin-only, CSRF-guarded, rate-limited by `destructiveLimit` and
   re-authenticated with `requireRecentAuth(..., 'admin.user.delete')`; it refuses
   self-deletion, the last superadmin and a login that is not the exact GitHub
