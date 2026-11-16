@@ -285,6 +285,16 @@ function queryTextOf(value: unknown): string | undefined {
   return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
+// #845: `error_reports.path` reaches the report mail, the `error.reported` audit
+// row and `GET /api/feedback/:ref`, so it must never carry a live capability.
+// `/approve/:token` puts one in the path, and the matched pattern is the only
+// shape that stays useful for diagnosis and safe to store. An unmatched request
+// has no pattern; the concrete path without a query string is the fallback, as
+// before.
+function routePattern(request: FastifyRequest): string {
+  return (request.routeOptions?.url ?? request.url.split('?')[0] ?? '/').slice(0, 500)
+}
+
 function previewQuery(request: FastifyRequest): Record<string, string | undefined> {
   const query = (request.query as Record<string, unknown> | undefined) ?? {}
   return {
@@ -664,7 +674,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     request.viewer = sessions.read(request) ?? undefined
     request.locale = resolveLocale(request)
     request.flash = decodeFlash(request.cookies[FLASH_COOKIE])
-    otelSpans.set(request, startSpan('http.request', { method: request.method, path: request.url.split('?')[0] ?? request.url }))
+    // #845: a trace attribute is shipped to the exporter, so it takes the same
+    // route pattern as `error_reports.path` for the same reason.
+    otelSpans.set(request, startSpan('http.request', { method: request.method, path: routePattern(request) }))
   })
 
   app.addHook('preParsing', async (request, _reply, payload) => {
@@ -6021,7 +6033,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const status = failure.statusCode ?? 500
     const code = failure.code ?? 'ERROR'
     const message = failure.message ?? 'Unknown error'
-    if (status >= 500) log.error('request failed', { url: request.url.split('?')[0], error: redact(String(error)) })
+    if (status >= 500) log.error('request failed', { url: routePattern(request), error: redact(String(error)) })
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) {
       return reply.code(status).send({ error: { type: code, message } })
     }
@@ -6042,7 +6054,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           user_id: viewer?.user.id ?? null,
           user_login: viewer?.user.login ?? null,
           method: request.method,
-          path: (request.url.split('?')[0] ?? '/').slice(0, 500),
+          path: routePattern(request),
           status_code: status,
           error_name: (error instanceof Error && error.name !== '' ? error.name : 'Error').slice(0, 120),
           error_message: redact(message).slice(0, 1000),

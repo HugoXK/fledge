@@ -116,9 +116,11 @@ link to the public GitHub repository with a Star call-to-action. An unexpected
 HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
 is rendered; the page shows the data scope, requires the consent checkbox, then
 offers one POST to `/errors/:ref/report`, which claims the row atomically and
-mails the same address. The error row keeps only method, pathname, status, error
-name, redacted message, redacted stack, version, commit, the signed-in login and
-the consent version/time — never the query, body, headers, cookies or a token.
+mails the same address. The error row keeps only the method, the matched route
+pattern (so a capability in the path, such as an approval token, is never
+stored), status, error name, redacted message, redacted stack, version, commit,
+the signed-in login and the consent version/time — never the query, body,
+headers, cookies or a token.
 Both routes carry a route-level limiter, and a 4xx never offers the report button.
 
 The feedback lifecycle is one triage row per ref (`feedback_triage`) plus
