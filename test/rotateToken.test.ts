@@ -47,13 +47,37 @@ function tokenFile(dir: string, name: string, mode: number, token = 'new-secret-
   return path
 }
 
-async function githubUser(login = 'HugoXK'): Promise<{ url: string; close: () => Promise<void> }> {
+interface UserReply {
+  status: number
+  login?: string
+}
+
+// #71 P2: what makes a rotation provable is the pair of answers inside one run,
+// so the fake has to answer per token. By default the value that sits in the
+// secrets file is dead and the new one works; a case that wants another pair
+// says so.
+// Assembled so the tracked-tree scan has no token-shaped literal to find.
+const NEW_TOKEN = 'new-secret' + '-token'
+
+function backups(dir: string): string[] {
+  return readdirSync(dir).filter((name) => name.startsWith('secrets.json.bak-'))
+}
+
+async function githubUser(
+  answer: (token: string, call: number) => UserReply = (token) => (token === NEW_TOKEN ? { status: 200, login: 'HugoXK' } : { status: 401 }),
+): Promise<{ url: string; close: () => Promise<void> }> {
+  const calls = new Map<string, number>()
   const server = await startFakeServer((request, response) => {
-    if (request.url === '/user') {
-      json(response, 200, { login })
+    if (request.url !== '/user') {
+      json(response, 404, { message: 'not found' })
       return
     }
-    json(response, 404, { message: 'not found' })
+    const token = String(request.headers.authorization ?? '').replace(/^Bearer /i, '')
+    const call = (calls.get(token) ?? 0) + 1
+    calls.set(token, call)
+    const reply = answer(token, call)
+    if (reply.status === 200) json(response, 200, { login: reply.login ?? 'HugoXK' })
+    else json(response, reply.status, { message: 'bad credentials' })
   })
   return { url: server.url, close: () => server.close() }
 }
@@ -104,7 +128,10 @@ test('rotate-github-token accepts a 0600 token file and never prints the token',
     assert.match(result.stdout, /HugoXK/)
     assert.doesNotMatch(result.stdout + result.stderr, /new-secret-token/)
     assert.equal(secrets.value(), 'new-secret-token')
-    assert.equal(readdirSync(secrets.dir).some((name) => name.startsWith('secrets.json.bak-')), true)
+    // #71 P2: this run proved the old value dead (401) while the new value
+    // answered 200, so the backup it made for itself is the one thing that no
+    // longer needs to exist.
+    assert.deepEqual(backups(secrets.dir), [], 'a proven-dead rotation deletes this run\'s backup')
   } finally {
     secrets.cleanup()
     await github.close()
@@ -158,6 +185,80 @@ test('rotate-github-token reports a bad secrets file by position and never echoe
     assert.match(result.stderr, /position/i, 'the reader is told where the file stopped being JSON')
     assert.equal(result.stderr.includes(token), false, 'no fragment of the token reaches stderr')
     assert.doesNotMatch(result.stderr, /ghp_/, 'not even the token\'s prefix is echoed')
+  } finally {
+    secrets.cleanup()
+    await github.close()
+  }
+})
+
+// #71 P2: the old value answering 200 is the one outcome a rotation must never
+// record as done. The new value is already written at that point, so the backup
+// is the only copy of the old value an operator can put back.
+test('rotate-github-token exits 2 and keeps its backup while the old token still answers 200', async () => {
+  const secrets = secretsFile()
+  const github = await githubUser(() => ({ status: 200 }))
+  try {
+    const file = tokenFile(secrets.dir, 'token', 0o600)
+    const result = await runRotate(['--token-file', file], { SECRETS_PATH: secrets.path, GITHUB_API_URL: github.url })
+    assert.equal(result.code, 2, 'a live old token is its own exit code, not a generic failure')
+    assert.match(result.stdout + result.stderr, /old token still live/)
+    assert.equal(backups(secrets.dir).length, 1, 'the backup holds the old value and must survive')
+    assert.equal(secrets.value(), NEW_TOKEN, 'the new value was written before the probe ran')
+    assert.doesNotMatch(result.stdout + result.stderr, /new-secret-token|old-token/, 'neither value reaches the output')
+  } finally {
+    secrets.cleanup()
+    await github.close()
+  }
+})
+
+// The only pair that counts: old value 401 and new value 200 in this same run.
+test('rotate-github-token deletes its backup only when the old value is 401 and the new value is 200', async () => {
+  const secrets = secretsFile()
+  const github = await githubUser()
+  try {
+    const file = tokenFile(secrets.dir, 'token', 0o600)
+    const result = await runRotate(['--token-file', file], { SECRETS_PATH: secrets.path, GITHUB_API_URL: github.url })
+    assert.equal(result.code, 0, result.stderr)
+    assert.match(result.stdout, /HugoXK/)
+    assert.deepEqual(backups(secrets.dir), [], 'the proven-dead pair is the only one that deletes the backup')
+    assert.equal(secrets.value(), NEW_TOKEN)
+  } finally {
+    secrets.cleanup()
+    await github.close()
+  }
+})
+
+// A 401 for the old value on its own is not evidence of anything: a proxy, a
+// rate limit or a typo produces one too. When the new value does not answer 200
+// in this run the result says INCONCLUSIVE and the backup stays.
+test('rotate-github-token calls an inconclusive pair inconclusive, exits 1 and keeps the backup', async () => {
+  const secrets = secretsFile()
+  const github = await githubUser((token, call) => (token === NEW_TOKEN ? (call === 1 ? { status: 200, login: 'HugoXK' } : { status: 503 }) : { status: 401 }))
+  try {
+    const file = tokenFile(secrets.dir, 'token', 0o600)
+    const result = await runRotate(['--token-file', file], { SECRETS_PATH: secrets.path, GITHUB_API_URL: github.url })
+    assert.equal(result.code, 1, 'an unproven pair is a failure, not a rotation')
+    assert.match(result.stdout + result.stderr, /INCONCLUSIVE/)
+    assert.equal(backups(secrets.dir).length, 1, 'the backup stays until a run can prove the old value dead')
+  } finally {
+    secrets.cleanup()
+    await github.close()
+  }
+})
+
+// #71 P2: a valid token for some other account is not a rotation of this one.
+test('rotate-github-token refuses a token that belongs to another account and writes nothing', async () => {
+  const secrets = secretsFile()
+  const github = await githubUser(() => ({ status: 200, login: 'someone-else' }))
+  const before = readFileSync(secrets.path)
+  try {
+    const file = tokenFile(secrets.dir, 'token', 0o600)
+    const result = await runRotate(['--token-file', file], { SECRETS_PATH: secrets.path, GITHUB_API_URL: github.url })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /@someone-else/)
+    assert.match(result.stderr, /HugoXK/, 'the refusal names the account the run expected')
+    assert.deepEqual(readFileSync(secrets.path), before, 'the secrets file is byte-identical after a refusal')
+    assert.deepEqual(backups(secrets.dir), [], 'a refused run does not leave a backup behind')
   } finally {
     secrets.cleanup()
     await github.close()

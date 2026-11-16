@@ -13,17 +13,32 @@
 // The new token is created in GitHub settings by the owner; this script only
 // validates it, backs up the secrets file, updates the GITHUB_TOKEN entry and
 // never prints the token. The old token must be revoked in GitHub settings.
+//
+// #71: the script itself produces the evidence that the old value is dead, and
+// it only believes the one pair that counts: inside this run the old value
+// answers 401 and the new value answers 200. Exit codes:
+//
+//   0  rotated and proven: the old value is dead, the new one works, and this
+//      run's backup was removed
+//   1  nothing proven: bad input, an account that is not EXPECTED_LOGIN, or an
+//      INCONCLUSIVE pair; the backup stays
+//   2  the old value is still live (200): the new value is written, and the
+//      backup stays because it is the only copy of a token that still works
+//
+// EXPECTED_LOGIN (default HugoXK) names the account the new token must belong to;
+// a valid token for another account is refused before anything is written.
 
-import { closeSync, copyFileSync, fstatSync, openSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { closeSync, copyFileSync, fstatSync, openSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
 const USAGE = 'usage: rotate-github-token.mjs --token-file <path|->'
 const OWNER_ONLY = 0o077
+const EXIT_OLD_TOKEN_LIVE = 2
 
-function fail(message) {
+function fail(message, code = 1) {
   console.error(`rotate-github-token: ${message}`)
-  process.exit(1)
+  process.exit(code)
 }
 
 function argValue(flag) {
@@ -76,12 +91,40 @@ if (token === '') fail(`no token in ${tokenFile === '-' ? 'stdin' : tokenFile}`)
 const path = process.env.SECRETS_PATH ?? join(homedir(), '.dsh/bot/secrets.json')
 const api = (process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/$/, '')
 
-const response = await fetch(`${api}/user`, {
-  headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'fledge-rotate-token' },
-  signal: AbortSignal.timeout(15_000),
-})
-if (!response.ok) fail(`token validation failed with HTTP ${response.status}`)
-const user = await response.json()
+// `probe` answers with the HTTP status the token got, and 0 when the request
+// never reached GitHub. A network failure is not a 401: only an answer counts as
+// evidence that a value is dead.
+async function probe(value) {
+  try {
+    const answer = await fetch(`${api}/user`, {
+      headers: { authorization: `Bearer ${value}`, accept: 'application/vnd.github+json', 'user-agent': 'fledge-rotate-token' },
+      signal: AbortSignal.timeout(15_000),
+    })
+    const text = await answer.text()
+    let login
+    if (answer.ok) {
+      try {
+        login = JSON.parse(text).login
+      } catch {
+        login = undefined
+      }
+    }
+    return { status: answer.status, login: typeof login === 'string' ? login : undefined }
+  } catch {
+    return { status: 0, login: undefined }
+  }
+}
+
+const validation = await probe(token)
+if (validation.status !== 200) fail(`token validation failed with HTTP ${validation.status === 0 ? 'no answer' : validation.status}`)
+const user = { login: validation.login }
+
+const expectedLogin = process.env.EXPECTED_LOGIN ?? 'HugoXK'
+if (user.login !== expectedLogin) {
+  // Fail closed: a valid token for another account would rotate this routine
+  // onto an identity that is not the one the host is documented to use.
+  fail(`the new token belongs to @${user.login}, not @${expectedLogin}; nothing was written`)
+}
 
 // #71: a JSON.parse error quotes the input around the offset, and this file
 // holds the token at this moment — so only the position is reported, never the
@@ -100,10 +143,27 @@ const secrets = Array.isArray(parsed.secrets) ? parsed.secrets : []
 const entry = secrets.find((item) => item?.name === 'GITHUB_TOKEN')
 if (entry === undefined) fail('GITHUB_TOKEN entry not found')
 
+const previous = String(entry.value ?? '')
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-copyFileSync(path, `${path}.bak-${stamp}`)
+const backup = `${path}.bak-${stamp}`
+copyFileSync(path, backup)
 entry.value = token
 entry.updatedAt = new Date().toISOString()
 writeFileSync(`${path}.tmp`, JSON.stringify(parsed, null, 2) + '\n', { mode: 0o600 })
 renameSync(`${path}.tmp`, path)
-console.log(`rotate-github-token: updated GITHUB_TOKEN for @${user.login}; revoke the old token in GitHub settings`)
+
+// #71: the backup is deleted only on the one pair that proves the rotation: the
+// old value is dead (401) and the new value works (200), both answered inside
+// this run. Anything else keeps it, because the file now holds the new value.
+const oldStatus = (await probe(previous)).status
+const newStatus = (await probe(token)).status
+if (oldStatus === 200) {
+  console.error(`rotate-github-token: old token still live (it answers 200 as @${user.login}); the new value is written and ${backup} keeps the old one`)
+  process.exit(EXIT_OLD_TOKEN_LIVE)
+}
+if (oldStatus === 401 && newStatus === 200) {
+  unlinkSync(backup)
+  console.log(`rotate-github-token: updated GITHUB_TOKEN for @${user.login}; the old token is dead and ${backup} was removed`)
+} else {
+  fail(`INCONCLUSIVE: the old value answered ${oldStatus === 0 ? 'no answer' : oldStatus} and the new value answered ${newStatus === 0 ? 'no answer' : newStatus}; ${backup} was kept and the rotation must be re-run`)
+}
