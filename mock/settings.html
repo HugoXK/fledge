@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#f4f6f9" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#07090d" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#f6f1e7" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0d0c0b" media="(prefers-color-scheme: dark)" />
   <title>设置 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=b77a91a74e2c" />
+  <link rel="stylesheet" href="assets/app.css?v=cf958854359d" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -158,7 +158,7 @@
           <option value="jobs:read">任务读取：只读 /api/v1/jobs</option>
         </select>
       </label>
-      <label>有效期{infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
+      <label>有效期<button type="button" class="info-tip" aria-label="个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。" aria-expanded="false" data-tip="个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。">!</button>
         <select name="expiryDays">
           <option value="30">30 天</option><option value="90" selected>90 天</option><option value="365">365 天</option>
           
@@ -184,6 +184,7 @@
     <p class="muted">遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。</p>
     <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
       <input type="hidden" name="csrf" value="mock-csrf" />
+      <input type="hidden" name="returnTo" value="/settings" />
       <div class="row">
         <label>类型
           <select name="kind">
@@ -207,8 +208,7 @@
     <h2>关于 Fledge</h2>
     <p class="muted">Fledge 是开源的自托管平台；如果它对你的仓库有帮助，可以在 GitHub 上加星支持。</p>
     <div class="actions">
-      <a class="btn" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">★ 在 GitHub 上加星</a>
-      <a class="btn btn-ghost" href="#feedback">反馈</a>
+      <a class="btn star-btn" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer"><svg class="star-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17.1l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg>在 GitHub 上加星</a>
     </div>
   </section>
   </main>
@@ -218,10 +218,11 @@
       <a href="https://fledge-docs.hugoxk.online/docs/" target="_blank" rel="noreferrer">文档</a>
       <a href="https://portal.hugoxk.online" target="_blank" rel="noreferrer">Portal</a>
       <a href="https://hugoxk.online/status/" target="_blank" rel="noreferrer">平台状态</a>
-      <a href="settings.html#feedback">反馈</a>
-      <a href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer">★ 在 GitHub 上加星</a>
+      <a href="#feedback">反馈</a>
+      <a class="star-link" href="https://github.com/HugoXK/fledge" target="_blank" rel="noreferrer" title="在 GitHub 上加星" aria-label="在 GitHub 上加星"><svg class="star-icon" viewBox="0 0 24 24" width="14" height="14" aria-hidden="true" focusable="false"><path d="M12 3.2l2.7 5.5 6.1.9-4.4 4.3 1 6.1L12 17.1l-5.4 2.9 1-6.1-4.4-4.3 6.1-.9L12 3.2z" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg><span>加星</span></a>
     </nav>
   </footer>
+  
   <dialog id="confirm-dialog" class="confirm-dialog" aria-labelledby="confirm-dialog-title">
     <form method="dialog" data-mock-inert onsubmit="return false;">
       <h2 id="confirm-dialog-title">请确认</h2>
