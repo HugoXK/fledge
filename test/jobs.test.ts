@@ -8,6 +8,7 @@ import { Jobs } from '../src/jobs/service.js'
 import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
+import { metricsSnapshot } from '../src/lib/metrics.js'
 import { REVIEW_INSTRUCTION_MAX, REVIEW_INSTRUCTION_LABEL } from '../src/lib/followUpInstruction.js'
 import { nextTime } from '../src/schedules/next.js'
 import { scheduleFromRow } from '../src/schedules/tick.js'
@@ -1297,6 +1298,79 @@ test('a running job with no heartbeat is failed as stalled', async () => {
     const job = store.getJob('job_heartbeat')
     assert.equal(job?.status, 'failed')
     assert.match(job?.error ?? '', /停滞/)
+  } finally {
+    store.close()
+  }
+})
+
+test('a repository the dispatcher refuses is reported with its reason, not as idle', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const blocked = (reason: string): number =>
+      metricsSnapshot().counters
+        .filter((entry) => entry.name === 'fledge_automation_blocked_total' && entry.labels.reason === reason)
+        .reduce((sum, entry) => sum + entry.value, 0)
+    const idleAlerts = (): number =>
+      store.alerts({ usdCny: 1, automationIdleMinutes: 30 })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length
+
+    const user = makeUser(store, { login: 'refused-user', status: 'pending' })
+    const repo = store.createRepo({ id: 'repo_refused', userId: user.id, owner: 'o', name: 'refused', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.createWorkItem({ id: 'work_refused', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
+    store.db.exec("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused'")
+    assert.equal(idleAlerts(), 0)
+
+    // The dispatcher names the approval it waits for instead of starting a job.
+    const before = blocked('user_not_ready')
+    await jobs.tick()
+    assert.equal(blocked('user_not_ready'), before + 1)
+    assert.equal(store.listJobsForRepo(repo.id).length, 0)
+    // The alert side reads the same decision: an unapproved user is not idle.
+    assert.equal(idleAlerts(), 0)
+
+    // Approving the user makes the same repository idle, so the silence above
+    // was the refusal and not a broken alert.
+    store.setUserStatus(user.id, 'approved', 'test')
+    assert.equal(idleAlerts(), 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('a repository whose bridge instance is not up is reported as instance_not_ready, not idle', async () => {
+  const base = testConfig()
+  const config = testConfig({ flybot: { ...base.flybot, instanceImage: 'image' } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const blocked = (reason: string): number =>
+      metricsSnapshot().counters
+        .filter((entry) => entry.name === 'fledge_automation_blocked_total' && entry.labels.reason === reason)
+        .reduce((sum, entry) => sum + entry.value, 0)
+    const idleAlerts = (): number =>
+      store.alerts({ usdCny: 1, automationIdleMinutes: 30, instancesManaged: true })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length
+
+    const user = makeUser(store, { login: 'refused-instance-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_refused_instance', userId: user.id, owner: 'o', name: 'starting', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.saveRepoInstance({
+      repo_id: repo.id, user_id: user.id, container: 'c', network: 'n', data_dir: '/tmp/starting', bridge_script: '/tmp/bridge',
+      dsh_port: 1, bridge_port: 2, model_port: 3, model_bind: '127.0.0.1', image: 'image', status: 'starting',
+      chief_session: null, team_json: null, bridge_token_enc: null, bridge_pid: null, log_pid: null, last_error: null,
+      created_at: '2026-11-16T09:00:00.000Z', updated_at: '2026-11-16T09:00:00.000Z', last_health_at: null,
+    })
+    store.createWorkItem({ id: 'work_refused_instance', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
+    store.db.exec("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused_instance'")
+
+    const before = blocked('instance_not_ready')
+    await jobs.tick()
+    assert.equal(blocked('instance_not_ready'), before + 1)
+    assert.equal(store.listJobsForRepo(repo.id).length, 0)
+    assert.equal(idleAlerts(), 0)
+
+    store.updateRepoInstance(repo.id, { status: 'ready' })
+    assert.equal(idleAlerts(), 1)
   } finally {
     store.close()
   }

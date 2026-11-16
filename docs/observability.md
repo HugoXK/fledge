@@ -64,8 +64,13 @@ Automation alerts:
 - The store raises `automation_idle_with_work` (warning; critical at twice the
   threshold) when a repository the scheduler may dispatch to has ready work and
   no running job for `AUTOMATION_IDLE_ALERT_MINUTES` (default 30) since its last
-  run or its oldest ready item. The alert clears as soon as a job starts, because
-  the condition is recomputed rather than remembered, and the notification pass
+  run or its oldest ready item. "May dispatch to" is the dispatcher's own test —
+  enabled, automatic iteration on, the owner approved, the bridge instance ready
+  when the installation runs instances — and it lives in one place,
+  `Store.automationDispatchBlocker`, so the alert cannot call a repository idle
+  after the dispatcher has refused it as `user_not_ready` or
+  `instance_not_ready`. The alert clears as soon as a job starts, because the
+  condition is recomputed rather than remembered, and the notification pass
   keeps one per `OPS_ALERT_COOLDOWN_MINUTES` window.
 - `FledgeDispatchLatencyHigh` pages when the p95 dispatch latency is above 15
   minutes. Thresholds are configured in the rules file; the store threshold is

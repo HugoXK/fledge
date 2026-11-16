@@ -1475,7 +1475,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const windowDays = queryText(request, 'window') === '30' ? 30 : 7
     const since = new Date(Date.now() - windowDays * 86_400_000).toISOString()
     const personal = store.personalMetrics(viewer.user.id, since)
-    const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes })
+    const alerts = store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' })
     const perPage = 10
     const allRepos = store.listRepos(viewer.user.id)
     // #232: the job filters are read from the query on every request and applied
@@ -1605,10 +1605,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         team: store.teamMetrics(since),
         repoCosts: store.repoCostMetrics(since),
         modelCosts: store.modelCostMetrics(since),
-        alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes }),
+        alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }),
       }
     }
-    return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes }) }
+    return { windowDays, since, personal: store.personalMetrics(viewer.user.id, since), alerts: store.alerts({ userId: viewer.user.id, usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }) }
   })
 
   // #392: the first token-authenticated read route. It sits outside the session
@@ -5079,7 +5079,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repoCosts: store.repoCostMetrics(since),
       modelCosts: store.modelCostMetrics(since),
       currency: store.costByCurrency(since),
-      alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes }),
+      alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
       automation: automationHealth(),

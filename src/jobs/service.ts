@@ -3255,7 +3255,7 @@ export class Jobs {
   }
 
   async notifyOpsAlerts(): Promise<number> {
-    const alerts = this.store.alerts({ usdCny: this.config.quota.usdCny, automationIdleMinutes: this.config.ops.automationIdleAlertMinutes })
+    const alerts = this.store.alerts({ usdCny: this.config.quota.usdCny, automationIdleMinutes: this.config.ops.automationIdleAlertMinutes, instancesManaged: this.instancesManaged })
     const current = new Set<string>()
     let sent = 0
     for (const alert of alerts) {
@@ -4400,12 +4400,11 @@ export class Jobs {
         if (readyAt === null) return
         recordBlockedDispatch({ reason, repo, readyAt, now })
       }
-      if (!this.userReadyForScheduling(repo.user_id)) {
-        blocked('user_not_ready')
-        continue
-      }
-      if (!this.instanceReady(repo.id)) {
-        blocked('instance_not_ready')
+      // The readiness test is the store's, so the alert the console lists and the
+      // decision taken here cannot name different reasons for one repository.
+      const notReady = this.store.automationDispatchBlocker(repo, this.instancesManaged)
+      if (notReady !== null) {
+        blocked(notReady)
         continue
       }
       // #544 slice 3A: when a schedule row exists it owns the repository's
@@ -4548,13 +4547,17 @@ export class Jobs {
     }
   }
 
+  /** Whether this installation runs bridge instances at all (#807 review). */
+  private get instancesManaged(): boolean {
+    return this.config.flybot.instanceImage !== ''
+  }
+
   private userReadyForScheduling(userId: string): boolean {
-    return this.store.userById(userId)?.status === 'approved'
+    return this.store.userReadyForScheduling(userId)
   }
 
   private instanceReady(repoId: string): boolean {
-    if (this.config.flybot.instanceImage === '') return true
-    return this.store.getRepoInstance(repoId)?.status === 'ready'
+    return this.store.instanceReadyForScheduling(repoId, this.instancesManaged)
   }
 
   private workDue(repo: RepoRow): boolean {
