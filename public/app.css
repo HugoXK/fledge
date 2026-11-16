@@ -1367,3 +1367,16 @@ html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }
 .admin-module strong { grid-column: 1; font-size: var(--text-md); }
 .admin-module small { grid-column: 1; color: var(--muted); font-size: var(--text-sm); line-height: 1.5; }
 .admin-module-go { grid-column: 2; grid-row: 1 / span 2; margin: 0; color: var(--accent); font-size: var(--text-sm); font-weight: 650; }
+
+/* Issue 264: one card answers review -> merge on the job page. The single action sits
+   above the facts, so a phone reader reaches it without scrolling past the
+   evidence, and the facts drop to one column below the tablet band. */
+.review-merge h2 { margin: 4px 0 0; font-size: clamp(18px, 2.4vw, 22px); line-height: 1.35; text-wrap: balance; }
+.review-merge-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-4) 0 var(--space-2); }
+.review-merge-action form { margin: 0; }
+.review-merge-facts { margin-top: var(--space-3); border-top: 1px solid var(--line); }
+.review-merge-facts .list-row { padding: 10px 0; }
+.review-merge-facts code { overflow-wrap: anywhere; }
+@media (min-width: 641px) {
+  .review-merge-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-5); }
+}
