@@ -524,6 +524,17 @@ would write is gated on that answer. A repeated dispatch of a complete release
 therefore cannot rebuild and repush the image or rewrite its notes — the claim is
 the step, not a sentence here.
 
+Neither workflow guesses when the lookup itself fails. `gh` exits non-zero for
+"not found" and for "forbidden", a server error or a dead network alike, so both
+steps classify the answer in one tested place, `scripts/lib/release-lookup.mjs`: a
+successful read is **present**, a 404 is **absent** ("not released yet"), and
+everything else is **unreadable**. Present and absent gate the run as before; an
+unreadable answer is a non-zero exit with no `published` value, so the publish run
+stops before it builds or pushes anything and the tag job stops before it plans a
+tag — a 403 or a 5xx is never read as "no release yet". The publish run also never
+edits a release it did not create: a release that appears between this lookup and
+the final write is a refusal, not a notes rewrite.
+
 The job still runs on the `push` that merges the release pull request, and it now
 also runs on the scheduled slot: a tag without its release, or a merged release
 pull request without a tag, is repaired by the next daily run instead of waiting

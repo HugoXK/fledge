@@ -601,22 +601,43 @@ jobs:
           gh api "repos/${REPO}/commits/${TARGET}/pulls" > "$RUNNER_TEMP/pulls.json"
           gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" \
             | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/"))' > "$RUNNER_TEMP/tags.json"
-          # #866: the tag and the GitHub Release are two different writes, and the
-          # decision has to tell "tag exists, release missing" from "both exist".
-          # A 404 is the normal "not released yet" answer and is recorded as `{}`;
-          # anything else is an unreadable fact, and a blind `publish` on an
-          # unreadable fact would dispatch a second publish run, so it fails here
-          # as the single report instead.
+          # #866/#909: the tag and the GitHub Release are two different writes,
+          # and the decision has to tell "tag exists, release missing" from "both
+          # exist". The answer comes from the same tested rule release.yml uses
+          # (scripts/lib/release-lookup.mjs): a 404 is the one "not made yet" and
+          # is recorded as `{}`; a 403, a 5xx or a failed connection is
+          # unreadable, and a blind `publish` on an unreadable fact would dispatch
+          # a second publish run, so it fails here as the single report instead.
+          # The rule is a status parser, not a grep of `gh`'s prose, so a
+          # reworded message cannot flip the answer.
           RELEASE_TAG="v$(cat "$RUNNER_TEMP/version.txt")"
-          if gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}" > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release.err"; then
-            echo "GitHub Release ${RELEASE_TAG} exists" >> "$GITHUB_STEP_SUMMARY"
-          elif grep -q 'HTTP 404' "$RUNNER_TEMP/release.err"; then
-            printf '{}\n' > "$RUNNER_TEMP/release.json"
-            echo "no GitHub Release for ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "::error::could not read the GitHub Release state for ${RELEASE_TAG}: $(head -c 300 "$RUNNER_TEMP/release.err")"
-            exit 1
-          fi
+          status=0
+          gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}" \
+            > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release.err" || status=$?
+          STATE="$(STATUS="$status" node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            import { classifyReleaseLookup } from "./scripts/lib/release-lookup.mjs"
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
+            const result = classifyReleaseLookup({
+              status: Number(process.env.STATUS),
+              stderr: readFileSync(`${TMP}/release.err`, "utf8"),
+            })
+            console.error(`release lookup: ${result.state} — ${result.reason}`)
+            process.stdout.write(result.state)
+          ')"
+          case "$STATE" in
+            present)
+              echo "GitHub Release ${RELEASE_TAG} exists" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            absent)
+              printf '{}\n' > "$RUNNER_TEMP/release.json"
+              echo "no GitHub Release for ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::could not read the GitHub Release state for ${RELEASE_TAG}; refusing to plan on it"
+              exit 1
+              ;;
+          esac
 
       - name: Decide the tag
         id: decide
