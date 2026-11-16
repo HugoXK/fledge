@@ -4,8 +4,11 @@
 # A release tag is the deploy unit. A main-only commit waits for the next tag;
 # this script never rolls production back to an older tag and never pushes,
 # bypasses the merge gate or merges. It builds from a detached tag worktree,
-# stops/starts the host service, checks `/healthz`, restores the previous dist
-# on failure, and then asks the verifier to write release-status.json.
+# stops/starts the host service, then runs `scripts/rollout-check.mjs` against
+# the release it built (#658: the process, the page it renders and the bytes it
+# serves must all be that tag), restores the previous release — dist, public/,
+# package.json and build identity — when a build or the rollout is refused, and
+# then asks the verifier to write release-status.json.
 #
 # Environment (defaults are the current host layout):
 #   FLEDGE_APP_DIR       /home/xuke/work/fledge
@@ -15,6 +18,7 @@
 #   FLEDGE_STOP_CMD      /home/xuke/work/fledge-stop.sh
 #   FLEDGE_START_CMD     /home/xuke/work/fledge-start.sh
 #   FLEDGE_HEALTH_URL    http://127.0.0.1:8095/healthz
+#   FLEDGE_ROLLOUT_URL   the origin the rollout check reads (default: FLEDGE_HEALTH_URL without /healthz)
 set -eu
 
 APP=${FLEDGE_APP_DIR:-/home/xuke/work/fledge}
@@ -61,42 +65,117 @@ git worktree prune
 git worktree add --detach "$DEPLOY" "$TAG" >> "$LOG" 2>&1 || { log "worktree failed"; exit 3; }
 
 ts=$(date +%Y%m%d-%H%M%S)
-cp -a "$APP/dist" "$APP/dist.bak-$ts" 2>/dev/null || true
-cp -p "$APP/.build-identity" "$APP/.build-identity.bak" 2>/dev/null || true
+DIST_BAK="$APP/dist.bak-$ts"
+PUBLIC_BAK="$APP/public.bak-$ts"
+MANIFEST_BAK="$APP/package.json.bak-$ts"
+IDENTITY_BAK="$APP/.build-identity.bak-$ts"
+
+# The release a host runs is four things, not one: `dist` is the build, `public/`
+# is what the process serves, `package.json` carries the version it reports at
+# startup (`VERSION` in src/version.ts), and `.build-identity` is the commit
+# `/healthz` answers. The source copy below replaces all of them, so all of them
+# are snapshotted here and restored together on any failure. Restoring `dist`
+# alone would restart the old build under the new release's name, and would leave
+# the version check at the top of this script reading the target version and
+# exiting 0 as "at or ahead", so the tag would never be deployed or gated again.
+snapshot_release() {
+  cp -a "$APP/dist" "$DIST_BAK" 2>/dev/null || true
+  cp -a "$APP/public" "$PUBLIC_BAK" 2>/dev/null || true
+  cp -p "$APP/package.json" "$MANIFEST_BAK" 2>/dev/null || true
+  cp -p "$APP/.build-identity" "$IDENTITY_BAK" 2>/dev/null || true
+}
+
+restore_release() {
+  if [ -d "$DIST_BAK" ]; then
+    rm -rf "$APP/dist"
+    mv "$DIST_BAK" "$APP/dist" || log "could not restore dist from $DIST_BAK"
+  fi
+  if [ -d "$PUBLIC_BAK" ]; then
+    rm -rf "$APP/public"
+    mv "$PUBLIC_BAK" "$APP/public" || log "could not restore public/ from $PUBLIC_BAK"
+  fi
+  if [ -f "$MANIFEST_BAK" ]; then
+    cp -p "$MANIFEST_BAK" "$APP/package.json" || log "could not restore package.json from $MANIFEST_BAK"
+  fi
+  if [ -f "$IDENTITY_BAK" ]; then
+    cp -p "$IDENTITY_BAK" "$APP/.build-identity" || log "could not restore .build-identity from $IDENTITY_BAK"
+  fi
+}
+
+snapshot_release
 if ! rsync -a --delete --exclude .git --exclude .env --exclude node_modules --exclude dist \
   --exclude backups --exclude data --exclude "*.db" --exclude "*.db-wal" --exclude "*.db-shm" \
-  --exclude "*.log" --exclude "dist.bak-*" "$DEPLOY/" "$APP/" >> "$LOG" 2>&1; then
-  log "source copy failed"
+  --exclude "*.log" --exclude "dist.bak*" --exclude "public.bak*" --exclude "package.json.bak*" \
+  --exclude ".build-identity.bak*" "$DEPLOY/" "$APP/" >> "$LOG" 2>&1; then
+  log "source copy failed; restoring the release it replaced"
+  restore_release
   exit 3
 fi
 if ! (cd "$APP" && npm ci --registry=https://registry.npmjs.org --no-audit --no-fund && npm run build) >> "$LOG" 2>&1; then
-  log "build failed; restoring dist"
-  rm -rf "$APP/dist"
-  mv "$APP/dist.bak-$ts" "$APP/dist" 2>/dev/null || true
-  mv "$APP/.build-identity.bak" "$APP/.build-identity" 2>/dev/null || true
+  log "build failed; restoring the release it replaced"
+  restore_release
   exit 3
 fi
 printf "GIT_SHA=%s\nBUILD_TIME=%s\n" "$TARGET" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$APP/.build-identity"
 chmod 644 "$APP/.build-identity"
+# A predictable report path in a world-writable directory is a file another
+# account can point somewhere else before the check writes it.
+if ! ROLLOUT_OUT=$(mktemp "${TMPDIR:-/tmp}/fledge-rollout-XXXXXX"); then
+  log "no temporary path for the rollout report; restoring the release it replaced"
+  restore_release
+  exit 3
+fi
 
+# #658: the rollout is gated on the release it claims, not on a version string.
+# `/healthz` alone said `0.3.2` while the page and the served app.css came from
+# another tree, so a stale process could be blessed as healthy. The check
+# compares the process (version and commit), the page it renders (footer version
+# and the ?v= token on app.css), the bytes it serves, and the running public/
+# against the tag worktree — the artifact this deploy built from. A failure is a
+# refused rollout: the previous release goes back and the service is restarted on
+# it, so the tag is retried on the next tick instead of being recorded deployed.
 "$STOP" >> "$LOG" 2>&1 || true
 "$START" >> "$LOG" 2>&1 || true
+ROLLOUT_URL=${FLEDGE_ROLLOUT_URL:-$(printf '%s' "$HEALTH" | sed 's#/healthz$##')}
+rollout() {
+  if [ -f "$APP/.env" ]; then
+    node --env-file="$APP/.env" "$APP/scripts/rollout-check.mjs" "$@"
+  else
+    node "$APP/scripts/rollout-check.mjs" "$@"
+  fi
+}
 ok=0
 for _ in 1 2 3 4 5 6 7 8 9 10; do
-  if curl -fsS --max-time 3 "$HEALTH" | grep -q "\"version\":\"${TAG_VERSION}\""; then ok=1; break; fi
+  if rollout --version "$TAG_VERSION" --commit "$TARGET" --base-url "$ROLLOUT_URL" \
+    --release-dir "$DEPLOY" --public-dir "$APP/public" > "$ROLLOUT_OUT" 2>&1; then
+    ok=1
+    break
+  fi
   sleep 2
 done
+cat "$ROLLOUT_OUT" >> "$LOG" 2>/dev/null || true
+rm -f "$ROLLOUT_OUT"
 if [ "$ok" != "1" ]; then
-  log "health failed for $TAG; rolling back dist"
-  rm -rf "$APP/dist"
-  mv "$APP/dist.bak-$ts" "$APP/dist" 2>/dev/null || true
-  mv "$APP/.build-identity.bak" "$APP/.build-identity" 2>/dev/null || true
+  log "rollout refused for $TAG; restoring the release it replaced"
+  restore_release
   "$START" >> "$LOG" 2>&1 || true
   exit 3
 fi
 log "healthy $TAG"
 printf "%s %s\n" "$TAG" "$(date -u +%FT%TZ)" > "${FLEDGE_DATA_DIR:-/home/xuke/work/fledge-data}/deployed-tag"
 VERIFY=${FLEDGE_VERIFY_SCRIPT:-$APP/deploy/fledge-verify-release.sh}
-[ -x "$VERIFY" ] && "$VERIFY" >> "$LOG" 2>&1 || true
+if [ -x "$VERIFY" ]; then
+  # The chain snapshot is not the rollout gate — the gate above already answered.
+  # A red verifier is logged by name here so it cannot disappear into `|| true`,
+  # and it does not roll back a release that passed the gate.
+  if "$VERIFY" >> "$LOG" 2>&1; then
+    log "release-status: recorded for $TAG"
+  else
+    log "release-status: not released for $TAG; the rows above name the link"
+  fi
+fi
 git worktree remove --force "$DEPLOY" >> "$LOG" 2>&1 || true
-ls -1dt "$APP"/dist.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -rf
+for family in dist public; do
+  ls -1dt "$APP/$family".bak-* 2>/dev/null | tail -n +6 | xargs -r rm -rf
+done
+ls -1dt "$APP"/package.json.bak-* "$APP"/.build-identity.bak-* 2>/dev/null | tail -n +6 | xargs -r rm -f
