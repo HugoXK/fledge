@@ -33,6 +33,7 @@ import { assertSafeModelUrl, normalizeDataPolicyUrl, normalizeProviderRegion } f
 import { assertSafeNotificationWebhook } from './lib/webhook.js'
 import { quotaView } from './gateway/quota.js'
 import { parseAttributionJson } from './lib/attribution.js'
+import { decisionWithAnswer, jobIdFromQuestionId, jobQuestionId, storedDecision } from './lib/uncertainty.js'
 import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { parseVerification } from './lib/verification.js'
@@ -878,9 +879,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         .filter((question) => question.id !== '' && question.question !== '')
         .map((question) => ({ repoId: repo.id, repoLabel, ...question }))
     }))
-    const questions = settled
+    const teamQuestions = settled
       .flatMap((result) => result.status === 'fulfilled' ? result.value : [])
-      .slice(0, 20)
+    // #381: a paused job that raised a decision is a question in the same list,
+    // marked with the job as its source. It does not need a live instance: the
+    // job is waiting on the person, not on a bot session.
+    const jobQuestions: InboxQuestion[] = []
+    for (const repo of repos) {
+      const repoLabel = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
+      for (const job of store.listJobDecisionsForRepo(repo.id, 10)) {
+        const decision = storedDecision(job.decision_json)
+        if (decision === null || decision.answer !== null) continue
+        jobQuestions.push({
+          id: jobQuestionId(job.id),
+          sessionId: '',
+          question: decision.question,
+          detail: decision.why,
+          options: decision.options,
+          multiSelect: false,
+          repoId: repo.id,
+          repoLabel,
+          source: 'job',
+          jobId: job.id,
+        })
+      }
+    }
+    const questions = [...jobQuestions, ...teamQuestions].slice(0, 20)
     inboxCache.set(userId, { at: Date.now(), questions })
     return questions
   }
@@ -3139,8 +3163,42 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       `${returnTo}${returnTo.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(message)}`
     const fail = (message: string) => wantsJson ? reply.code(400).send({ error: message }) : reply.redirect(withMessage('error', message))
     const t = translator(request.locale ?? 'zh')
+    // #381: an inbox card whose id carries the `job:` prefix is a paused job's
+    // decision, not a live session. The first answer is stored on the job and
+    // starts exactly one retry through `retryJob`; a second POST replays the
+    // stored answer and enqueues nothing.
+    const questionId = text('questionId')
+    const answer = (text('custom').trim() !== '' ? text('custom').trim() : selected.join(', ')).trim()
+    const decisionJobId = jobIdFromQuestionId(questionId)
+    if (decisionJobId !== null) {
+      if (answer === '') return fail(t('请先填写回答。', 'Write an answer first.'))
+      const job = store.getJob(decisionJobId)
+      if (job === undefined || job.repo_id !== repo.id) return fail(t('这个问题已经关闭。', 'This question is already closed.'))
+      const decision = storedDecision(job.decision_json)
+      if (decision === null) return fail(t('这个问题已经关闭。', 'This question is already closed.'))
+      if (decision.answer === null) {
+        // #381 review: the retry is judged first, and the answer is stored only
+        // when that retry was accepted. Storing first left a refused answer on
+        // the row, and an answered row is exactly what removes the card from the
+        // inbox (`inboxForUser`), so an ordinary refusal — JOB_ACTIVE,
+        // QUEUE_FULL, REPO_DISABLED, PLATFORM_PAUSED — dropped the person's
+        // question while no retry existed, and the remaining `Resume` control
+        // reopened the run without the answer.
+        const retried = await jobs.retryJob(job.id, viewer.user.id, { decisionAnswer: { question: decision.question, answer } })
+        if (!retried.ok) return fail(retried.error ?? t('重试失败。', 'The retry failed.'))
+        store.updateJob(job.id, {
+          decision_json: decisionWithAnswer(decision, { text: answer.slice(0, 1000), by: viewer.user.login, at: nowIso() }),
+        })
+      }
+      store.audit(viewer.user.id, 'team.answer', `${repo.owner}/${repo.name} question=${questionId.slice(0, 80)}`)
+      store.event('team_intervention', { userId: viewer.user.id, repoId: repo.id, meta: 'answer' })
+      store.markQuestionNotificationsRead(viewer.user.id)
+      inboxCache.delete(viewer.user.id)
+      if (wantsJson) return { ok: true }
+      return reply.redirect(withMessage('notice', t('答案已发送。', 'Answer sent.')))
+    }
     try {
-      await instances.answerQuestion(repo.id, text('sessionId'), text('questionId'), selected, text('custom'))
+      await instances.answerQuestion(repo.id, text('sessionId'), questionId, selected, text('custom'))
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error))
     }

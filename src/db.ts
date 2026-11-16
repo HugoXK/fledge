@@ -469,6 +469,9 @@ export interface JobRow {
   callback_fingerprint: string | null
   path_guard_json: string | null
   verification_json: string | null
+  // #381: the uncertainty contract. `decision_json` is the question a paused job
+  // waits on, plus the first answer under `answer`; no decision means NULL.
+  decision_json: string | null
   continuity_json: string | null
   model_json: string | null
   provider_id: string | null
@@ -1316,6 +1319,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   callback_fingerprint TEXT,
   path_guard_json TEXT,
   verification_json TEXT,
+  decision_json TEXT,
   continuity_json TEXT,
   model_json TEXT,
   provider_id TEXT,
@@ -2773,6 +2777,8 @@ export class Store {
     if (!jobColumns.has('callback_fingerprint')) this.run('ALTER TABLE jobs ADD COLUMN callback_fingerprint TEXT')
     if (!jobColumns.has('path_guard_json')) this.run('ALTER TABLE jobs ADD COLUMN path_guard_json TEXT')
     if (!jobColumns.has('verification_json')) this.run('ALTER TABLE jobs ADD COLUMN verification_json TEXT')
+    // #381: additive; every older row reads back as "no decision", which is true.
+    if (!jobColumns.has('decision_json')) this.run('ALTER TABLE jobs ADD COLUMN decision_json TEXT')
     if (!jobColumns.has('continuity_json')) this.run('ALTER TABLE jobs ADD COLUMN continuity_json TEXT')
     if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
@@ -6055,6 +6061,13 @@ export class Store {
     return row?.base_sha ?? null
   }
 
+  // #381: the inbox reads the paused jobs that asked a question. Answering one is
+  // a job decision, not a live-session answer, and a row without a decision is
+  // simply a paused job somebody else paused.
+  listJobDecisionsForRepo(repoId: string, limit = 20): JobRow[] {
+    return this.all<JobRow>("SELECT * FROM jobs WHERE repo_id = ? AND status = 'paused' AND decision_json IS NOT NULL ORDER BY created_at DESC, rowid DESC LIMIT ?", repoId, limit)
+  }
+
   // #360 review: a work item's job is looked up by the item, not through a window
   // of the repository's newest jobs. The window said "no job is attached" for a
   // work item whose job was older than the limit — a false statement, and a
@@ -6277,7 +6290,7 @@ export class Store {
   }
 
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []

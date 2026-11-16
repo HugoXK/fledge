@@ -51,6 +51,12 @@ import type { PlatformStopRecord } from '../jobs/service.js'
 export interface InboxQuestion extends TeamQuestionState {
   repoId: string
   repoLabel: string
+  /**
+   * #381: a paused Fledge job can raise a decision. Such a card has no live
+   * session and is answered into the job's retry, so the view marks its source.
+   */
+  source?: 'team' | 'job'
+  jobId?: string
 }
 
 function advancedViewer(viewer: Viewer): boolean {
@@ -540,6 +546,7 @@ export function inboxSection(locale: Locale, viewer: Viewer, questions: InboxQue
       return `<div class="question-card" data-question="${escapeHtml(question.id)}">
         <div class="question-head">
           <strong>${escapeHtml(question.question || t('团队提问', 'Team question'))}</strong>
+          ${question.source === 'job' && question.jobId !== undefined ? `<a class="badge" href="/repos/${escapeHtml(question.repoId)}/jobs/${escapeHtml(question.jobId)}">${escapeHtml(t('来自任务', 'From a job'))}</a>` : ''}
           <a class="badge" href="/repos/${escapeHtml(question.repoId)}${advancedViewer(viewer) ? '/team' : '#inbox'}">${escapeHtml(question.repoLabel)}</a>
         </div>
         ${question.detail === '' ? '' : `<p class="fine">${escapeHtml(question.detail)}</p>`}

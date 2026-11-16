@@ -2180,13 +2180,24 @@ turns the same drift verdict into a release-check link.
 queued ──► running ──► succeeded
    │          │
    │          ├──► failed
-   │          └──► timeout ──► failed
+   │          ├──► timeout ──► failed
+   │          └──► paused (one decision, waiting for an answer)
    └──► quota_exhausted
 ```
 
 - `queued` is written before the runner is called.
 - `running` is set when the bridge accepts the job (or immediately for the mock).
 - `succeeded` / `failed` come from the callback or the mock.
+- A terminal callback that carries one `decision` does not finish the job: it
+  moves to `paused` with `error = decision.why`, stores the bounded question in
+  `jobs.decision_json`, releases its lease and records one `job.decision` event.
+  The question is an inbox card whose id is `job:<jobId>`; the first answer is
+  stored under `decision_json.answer` and starts exactly one retry whose goal
+  carries the question and the answer. The retry is judged first and the answer
+  is written only when it was accepted, so an enqueue refusal (`JOB_ACTIVE`,
+  `QUEUE_FULL`, `REPO_DISABLED`, `PLATFORM_PAUSED`) leaves the card unanswered in
+  the inbox instead of consuming the question. A second decision or a second
+  answer is refused, and only that retry resumes the work (#381).
 - The repo records `last_run_at` and `last_status`; a scheduled job is skipped if
   another job for the repo is active. `jobs.continuity_json` stores the run
   digest, `jobs.output_kind` its classification and `jobs.continuity_used`
