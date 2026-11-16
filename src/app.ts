@@ -52,7 +52,7 @@ import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
 import { decodeFlash, encodeFlash, FLASH_COOKIE, readRedirectMessage } from './lib/flash.js'
-import { normalizeInterval } from './lib/intervals.js'
+import { DISCOVERY_INTERVALS, REVIEW_INTERVALS, intervalSubmissionAccepted, normalizeInterval } from './lib/intervals.js'
 import { JOB_FILTER_STATUSES, parseJobFilters } from './lib/jobFilters.js'
 import { isValidBranchName } from './lib/branches.js'
 import { allowedRepoRoles, parseRepoRole, roleAllowed } from './lib/repoRole.js'
@@ -2415,6 +2415,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal,
         notice: request.flash?.notice?.text,
         error: request.flash?.error?.text,
+        // #471: the refusal names the field it refused; the value rides the
+        // existing redirect and is read only beside an error, so a hand-typed
+        // `?field=` with no refusal marks nothing.
+        errorField: request.flash?.error === undefined ? undefined : queryText(request, 'field'),
         // #546: the release form is on this page, so its outcome has to land here
         // too — a refusal the maintainer cannot see reads as a click that did
         // nothing, and a success that is not confirmed is indistinguishable from
@@ -4358,6 +4362,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const interval = normalizeInterval(body.interval, repo.interval_minutes)
     const reviewInterval = normalizeInterval(body.reviewInterval, repo.review_interval_minutes)
     const t = translator(request.locale ?? 'zh')
+    // #471: a cadence is a choice, not a number to clamp. The `<select>` cannot
+    // produce a value outside its options, so this refusal is only reachable from
+    // a crafted POST — but it still names the field, because the page marks and
+    // focuses the control the sentence is about. The value the form itself carried
+    // is accepted, so a legacy row the reader did not touch stays savable.
+    const refuseField = (field: string): FastifyReply =>
+      reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent(t('设置没有保存。', 'The settings were not saved.'))}&field=${encodeURIComponent(field)}&code=INVALID_FIELD#repo-settings`)
+    if (!intervalSubmissionAccepted(body.interval, DISCOVERY_INTERVALS, Math.max(60, repo.interval_minutes))) return refuseField('interval')
+    if (!intervalSubmissionAccepted(body.reviewInterval, REVIEW_INTERVALS, normalizeInterval(repo.review_interval_minutes))) return refuseField('reviewInterval')
     const currentRole = parseRepoRole(repo.repo_role)
     const requestedRole = parseRepoRole(body.repoRole)
     const repoRole = requestedRole ?? currentRole

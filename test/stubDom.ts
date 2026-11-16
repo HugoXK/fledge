@@ -54,6 +54,7 @@ export interface NavHarness {
   clickPanelLink: () => void
   changeMedia: () => void
   focused: () => number
+  focusedField: () => number
   autoSelectDisabled: () => boolean
   clickDismiss: (index: number) => void
   messageHidden: (index: number) => boolean
@@ -66,6 +67,8 @@ export interface RunAppOptions {
   headerHeight?: number
   /** How many dismissed-capable notification nodes the page stub carries. */
   dismiss?: number
+  /** Whether the page carries the server's first-invalid-field marker. */
+  fieldFocus?: boolean
 }
 
 export function runApp(options: RunAppOptions = {}): NavHarness {
@@ -84,9 +87,13 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
   const observed: unknown[] = []
   const mediaListeners: Array<() => void> = []
   const keydownListeners: Array<Listener> = []
+  const loadListeners: Array<() => void> = []
   const clickListeners: Array<Listener> = []
   let focusCalls = 0
+  let fieldFocusCalls = 0
   toggle.focus = () => { focusCalls += 1 }
+  const invalidField = node({ 'data-field-error-focus': '' })
+  invalidField.focus = () => { fieldFocusCalls += 1 }
   const autoSelect = { disabled: false }
 
   const root = {
@@ -157,6 +164,7 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
       querySelector: (selector: string) => {
         if (selector === '.top') return header
         if (selector === '[data-nav-toggle]') return toggle
+        if (selector === '[data-field-error-focus]') return options.fieldFocus === true ? invalidField : null
         return null
       },
       querySelectorAll: (selector: string) => (selector === '[data-auto-group]' ? [autoGroup] : []),
@@ -167,7 +175,10 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
       },
     },
     window: {
-      addEventListener: (type: string, listener: () => void) => { if (type === 'resize') resizeListeners.push(listener) },
+      addEventListener: (type: string, listener: () => void) => {
+        if (type === 'resize') resizeListeners.push(listener)
+        if (type === 'load') loadListeners.push(listener)
+      },
       matchMedia: () => mediaResult,
       confirm: () => true,
     },
@@ -181,6 +192,9 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
   })
   if (options.resizeObserver !== false) context.ResizeObserver = StubResizeObserver
   runInContext(script, context, { filename: 'public/app.js' })
+  // A deferred script runs before `load`, and the stub page is complete as soon
+  // as the script returns, so the load handlers fire here.
+  for (const listener of loadListeners) listener()
 
   return {
     properties,
@@ -197,6 +211,7 @@ export function runApp(options: RunAppOptions = {}): NavHarness {
     clickPanelLink: () => panel.dispatch('click', { target: makeLink() }),
     changeMedia: () => { for (const listener of mediaListeners) listener() },
     focused: () => focusCalls,
+    focusedField: () => fieldFocusCalls,
     autoSelectDisabled: () => autoSelect.disabled,
     clickDismiss: (index: number) => {
       const target = dismissTargets[index]

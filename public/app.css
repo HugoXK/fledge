@@ -706,6 +706,16 @@ label.check { min-height: var(--touch); }
 
 .form { display: grid; gap: 13px; }
 .form label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+/* 471: a field error sits directly under the control it describes and shifts
+   only what comes after it, so the control the reader was sent to does not move
+   when the message appears. The control also takes the danger border, so the
+   sentence has a visible anchor instead of standing alone. */
+.field-error { margin: 0; font-size: 13px; line-height: 1.5; color: var(--danger); overflow-wrap: anywhere; }
+/* Inside a `.row` the message takes its own line under the pair, so the control
+   above it keeps the place it had before the message existed. */
+.row > .field-error { flex: 0 0 100%; }
+.form [aria-invalid="true"] { border-color: var(--danger-a35); }
+.form [aria-invalid="true"]:focus { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-a14); }
 input, textarea, select {
   width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--field-line);
   border-radius: var(--radius-sm); padding: 10px 12px; font: inherit; font-size: 14px;

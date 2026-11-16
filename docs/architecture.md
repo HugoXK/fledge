@@ -81,6 +81,24 @@ form errors on other pages. `test/flash.test.ts` pins the cookie shape, its caps
 rewrite; `test/oneShotNotice.test.ts` pins redirect → cookie → first page →
 reload.
 
+A refusal that belongs to one field goes one step further (#471). The redirect
+carries the field key beside the sentence — `?error=…&field=interval` — and
+`readRedirectMessage` strips the sentence into the flash while leaving `field` in
+the `Location`, because the key is not a message. The page reads it only while an
+error is in flight, so a hand-typed `?field=` marks nothing, and
+`repoPage` renders the detail with `fieldErrorHtml`/`fieldErrorAttrs` in
+`src/views/pages.ts`: the message sits under its control, the control carries
+`aria-invalid="true"` and an `aria-describedby` that names the message element,
+and the first invalid control the form does not disable takes `autofocus` plus a
+`data-field-error-focus` hook that `public/app.js` focuses on `load` — a disabled
+control cannot take focus, so it is marked but never claimed as the landing. The
+banner keeps only the summary, so the sentence a reader hears once is not
+repeated.
+Server validation stays authoritative: the refusal is reachable only by a
+crafted POST, and a stored cadence the form still carries is accepted so a legacy
+row does not become unsavable. `test/inlineValidation.test.ts` pins the refusal,
+the marking, the single sentence and the legacy-row path.
+
 Every list, panel and live stream renders its non-data states through
 `renderState`/`stateCell` in `src/views/states.ts` — loading, empty, error,
 success and disabled — so the aria contract (`status`, `alert`, `aria-busy`,

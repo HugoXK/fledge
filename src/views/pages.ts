@@ -12,7 +12,7 @@ import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/qu
 import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
 import { DECISION_KINDS, DEFAULT_DECISION, decisionKindLabel } from '../lib/taskDecision.js'
-import { ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
+import { DISCOVERY_INTERVALS, ITERATION_INTERVALS, REVIEW_INTERVALS, intervalLabel, normalizeInterval } from '../lib/intervals.js'
 import { escapeHtml, FLEDGE_GITHUB_URL, layout, money, quotaMoney, starIcon, type PageNotification, type Viewer } from './layout.js'
 import { jobStrategyBlock, type JobStrategyView } from './strategy.js'
 import { renderState, stateCell, type StateAction } from './states.js'
@@ -373,8 +373,6 @@ function permissionLabel(t: Translate, permission: string): string {
   return value === undefined ? permission : t(value[0], value[1])
 }
 
-const DISCOVERY_INTERVALS = ITERATION_INTERVALS.filter((value) => value >= 60)
-
 function intervalOptions(t: Translate, selected = 1440, values = ITERATION_INTERVALS): string {
   const current = normalizeInterval(selected)
   const list = values.includes(current) ? values : [...values, current].sort((a, b) => a - b)
@@ -385,6 +383,27 @@ function intervalOptions(t: Translate, selected = 1440, values = ITERATION_INTER
 
 function reviewIntervalOptions(t: Translate, selected = 1440): string {
   return intervalOptions(t, selected, REVIEW_INTERVALS)
+}
+
+// #471: one field-error pair for every form that refuses one field. The message
+// is rendered by `fieldErrorHtml` and the attributes the control needs come from
+// `fieldErrorAttrs`, so the id the control names and the element that carries it
+// cannot drift apart. Only the first invalid control asks for focus: HTML gives
+// `autofocus` to the first element that has it, and a second one would be dead
+// weight that also puts the reader on the wrong field.
+export interface FieldError {
+  id: string
+  text: string
+}
+
+export function fieldErrorAttrs(error: FieldError | undefined, focus = false): string {
+  if (error === undefined) return ''
+  return ` aria-invalid="true" aria-describedby="${escapeHtml(error.id)}"${focus ? ' autofocus data-field-error-focus' : ''}`
+}
+
+export function fieldErrorHtml(error: FieldError | undefined): string {
+  if (error === undefined) return ''
+  return `<span class="field-error" id="${escapeHtml(error.id)}" role="alert">${escapeHtml(error.text)}</span>`
 }
 
 
@@ -1269,7 +1288,7 @@ export interface BudgetScopeView {
   unknownCount: number
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[] }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; errorField?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[] }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1796,6 +1815,22 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     `已用仓库 ${usage.repos}/${usage.reposCap === 0 ? '∞' : usage.reposCap}，FlyBot 实例 ${usage.instances}/${usage.instancesCap === 0 ? '∞' : usage.instancesCap}`,
     `Repositories used ${usage.repos}/${usage.reposCap === 0 ? '∞' : usage.reposCap}, FlyBot instances ${usage.instances}/${usage.instancesCap === 0 ? '∞' : usage.instancesCap}`,
   ))}</p>`
+  // #471: a settings refusal names the field it refused (`?field=interval`). The
+  // detail belongs beside that control and the banner keeps only the summary, so
+  // the sentence a reader needs appears once. The key rides the existing redirect
+  // and is not read by any other page.
+  const settingsField = (field: 'interval' | 'reviewInterval'): FieldError | undefined =>
+    input.errorField !== field
+      ? undefined
+      : { id: `repo-settings-${field}-error`, text: t('请选择列表中提供的间隔。', 'Choose one of the listed intervals.') }
+  const intervalFieldError = settingsField('interval')
+  const reviewFieldError = settingsField('reviewInterval')
+  // A control the settings script disables cannot take focus: `public/app.js`
+  // disables the interval select while auto-iterate is off and the review select
+  // unless the reviewer is on and permitted. The focus request goes to the first
+  // invalid control that is actually reachable, never to a disabled one.
+  const intervalFocus = intervalFieldError !== undefined && repo.auto_iterate === 1
+  const reviewFocus = reviewFieldError !== undefined && reviewerEnabled && canReview && !intervalFocus
   const settingsCards = `  <section class="cols">
     <div class="card" id="repo-settings">
       <h2>${escapeHtml(t('迭代目标', 'Iteration goal'))}</h2>
@@ -1810,11 +1845,11 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
-          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, Math.max(60, repo.interval_minutes), DISCOVERY_INTERVALS)}</select></label>
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval" id="repo-settings-interval"${fieldErrorAttrs(intervalFieldError, intervalFocus)}>${intervalOptions(t, Math.max(60, repo.interval_minutes), DISCOVERY_INTERVALS)}</select></label>${fieldErrorHtml(intervalFieldError)}
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
-          <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" ${canReview ? '' : 'disabled'}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>
+          <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" id="repo-settings-review-interval" ${canReview ? '' : 'disabled'}${fieldErrorAttrs(reviewFieldError, reviewFocus)}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>${fieldErrorHtml(reviewFieldError)}
         </div>
         <div class="row" data-merge-group>
           <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。', 'Off by default. Only a maintainer can enable it. When on, Fledge squash-merges a PR only after checks are green and no changes are requested. Developers cannot enable it.'))}</label>
