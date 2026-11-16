@@ -48,6 +48,9 @@ const DESTRUCTIVE_ROUTE_LIST = [
   // already takes the destructive window; the class follows the window.
   'POST /repos/:id/rules',
   'POST /repos/:id/role',
+  // #893: a release writes a tag ref, so it takes the destructive window and it
+  // is filed here with the other ref writes rather than with the work starters.
+  'POST /repos/:id/release',
   'POST /repos/:id/release-readiness/tag',
   'POST /repos/:id/security-findings/:findingId/dismiss',
   'POST /admin/deployments/promote',
@@ -78,7 +81,6 @@ const EXPENSIVE_ROUTE_LIST = [
   // #544 slice 8: run-now starts a job the moment the maintainer asks, so it is
   // a start of real work like the schedule save beside it.
   'POST /repos/:id/schedule/run-now',
-  'POST /repos/:id/release',
   'POST /repos/:id/releases/:releaseId/check',
   'POST /repos/:id/gate/sessions',
   'POST /repos/:id/gate/sessions/:sessionId/confirm',

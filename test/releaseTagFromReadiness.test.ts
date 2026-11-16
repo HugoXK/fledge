@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { encryptSecret } from '../src/lib/secrets.js'
+import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { planRelease, releaseRefusals } from '../src/releases/release.js'
 import { flashOf, formBody, json, makeUser, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
@@ -53,7 +53,13 @@ async function harness(options: HarnessOptions = {}) {
       return json(response, 200, options.tags ?? [{ name: 'v1.3.0', sha: TAG_SHA, commit: { sha: TAG_SHA } }])
     }
     if (method === 'GET' && url.startsWith('/repos/o/r/compare/')) {
-      return json(response, 200, { status: 'ahead', ahead_by: 3 })
+      // compare/main...{target} is the tag POST's containment read: `behind` is
+      // what GitHub answers when the default branch contains the target. The
+      // readiness page compares the previous tag with the head, so that one is
+      // `ahead`.
+      return url.includes('compare/main...')
+        ? json(response, 200, { status: 'behind', behind_by: 3 })
+        : json(response, 200, { status: 'ahead', ahead_by: 3 })
     }
     if (method === 'GET' && url.startsWith('/repos/o/r/commits/')) {
       return json(response, 200, { sha: TAG_SHA, commit: { committer: { date: TAG_DATE } } })
@@ -213,6 +219,29 @@ test('an existing tag is refused in the plan words, before any write', async () 
     assert.ok(flash?.error !== undefined)
     assert.ok(flash.error.text.includes((expected as { message: string }).message), `the page does not carry the plan's refusal: ${flash.error.text}`)
     assert.deepEqual(h.writes(), [], 'an existing tag still reached a GitHub write')
+  } finally {
+    await h.close()
+  }
+})
+
+// #893: the readiness route writes the same ref as the release POST, so it asks
+// the same question first. A stale session is refused before the version, the
+// head or a token is read — the assertion is that GitHub was not called at all,
+// not that some function ran.
+test('a stale session cannot tag from the readiness page, and GitHub is never read', async () => {
+  const h = await harness()
+  try {
+    h.store.db.exec(`UPDATE sessions SET recent_auth_at = NULL WHERE id_hash = '${sha256Hex(h.session.raw)}'`)
+    const response = await h.submit()
+    assert.equal(response.statusCode, 302)
+    const location = String(response.headers.location)
+    assert.match(location, /^\/auth\/github\/reauthorize\?next=/, 'a tag needs a fresh GitHub confirmation')
+    assert.match(decodeURIComponent(location), /\/release-readiness/, 'the redirect must return to the readiness page')
+    assert.deepEqual(h.calls, [], 'a refused confirmation must not read the default branch, the tags or anything else from GitHub')
+    assert.equal(h.store.releaseByTag(h.repo.id, 'v1.4.0'), undefined, 'a refused confirmation recorded a release row')
+    const audit = h.store.listAudit(20).find((row) => row.action === 'recent_auth_required')
+    assert.ok(audit !== undefined, 'the refusal must be audited')
+    assert.match(String(audit.detail), /repo\.release\.tag/, 'the audit must name the readiness tag action')
   } finally {
     await h.close()
   }

@@ -2655,12 +2655,39 @@ version tag is the highest SemVer tag whose commit is an ancestor of the target
 order), so "nothing to release" and "not higher than what shipped" are decidable
 from the repository's own history.
 
-The preflight is read-only (five GETs) and checks, in this order: the version
-parses; the confirmed SHA is a commit in the repository; the default branch is
-protected by required checks (the gate onboarding of #543); a tag-triggered
-`.github/workflows/release.yml` exists at the target commit; the tag does not
-exist; there is something to release; the version is higher than the previous
-tag. A not-higher refusal carries the next legal version, and the page shows it.
+The preflight is read-only — every call is a GET — and checks, in this order: the
+version parses; the confirmed SHA is a commit in the repository; the default
+branch contains that commit; the default branch is protected by required checks
+(the gate onboarding of #543); a tag-triggered `.github/workflows/release.yml`
+exists at the target commit; the tag does not exist; there is something to
+release; the version is higher than the previous tag. A not-higher refusal
+carries the next legal version, and the page shows it.
+
+The containment check reads `compare/{defaultBranch}...{target}`, so `behind`
+means the target is an ancestor of the default branch — the branch contains it —
+and `identical` means the same commit; only those two are accepted. `ahead` means
+the target carries commits the default branch lacks, which is the unmerged branch
+this check exists to stop, and `diverged` shares no base with it; both are
+`target_not_on_default`, and a compare that cannot be read is
+`ancestry_unreadable` rather than a pass on an assumption. A tag push runs the
+workflows committed in the tagged tree, so a target the default branch never
+contained would make "this release was built from this repository at this commit"
+uncheckable. The previous-version scan decides ancestry first: it walks the
+SemVer tags newest-first and stops at the first one the target is ahead of or
+equal to, because that is the highest reachable tag. A target older than the
+newest tags therefore still knows its real previous release; capping the walk to
+the ten newest tags before the ancestry test did not, and it silently skipped
+both "nothing to release" and "not higher" for such a target, so a downgrade
+passed. The walk costs one compare per tag newer than the previous release, and
+the destructive class limit on the route is what paces repeats. Both routes that
+write a tag — this release POST and the readiness page's tag button — take the
+destructive class limit and a fresh GitHub confirmation; the release POST is
+filed under the destructive route class, beside the other ref writes. On the
+readiness route the confirmation is checked before the branch is read
+(`src/app.ts:2508-2509`). The release POST parses its own form body — version and
+SHA, no GitHub read — and only then requires the confirmation
+(`src/app.ts:2554-2559`), so on neither route does a GitHub read or a token
+precede it.
 
 A tag-triggered workflow means a `tags:` filter directly under the `push:` event.
 The filter's depth is read from the block instead of assumed to be two spaces, so

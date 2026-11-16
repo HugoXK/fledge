@@ -178,7 +178,7 @@ test('only a tags: entry inside the on: block counts as a tag-triggered workflow
   const client = {
     async commitExists() { return true },
     async listTags() { return [{ name: 'v1.0.0', sha: 'b'.repeat(40) }, { name: 'nightly', sha: 'd'.repeat(40) }] },
-    async compareCommits() { return { status: 'ahead', aheadBy: 5 } },
+    async compareCommits(_owner: string, _name: string, base: string) { return base === 'main' ? { status: 'behind', aheadBy: 0 } : { status: 'ahead', aheadBy: 5 } },
     async getRepoFile() { return 'on:\n  push:\n    tags: [\'v*\']\n' },
     async getBranchProtection() { return { protected: true, requiredChecks: ['ci-ok'], requiredApprovals: 1 } },
   }
@@ -203,6 +203,122 @@ test('a target SHA that is not a commit is refused by name, before any tag is wr
   assert.equal(plan.ok, false)
   assert.equal((plan as { code?: string }).code, 'target_missing')
   assert.match((plan as { message: string }).message, /not a commit/)
+})
+
+function ancestryClient(options: { status: string | 'throw'; tagStatus?: string; tags?: number }): { client: never; compares: () => number } {
+  let compares = 0
+  const tagStatus = options.tagStatus ?? 'ahead'
+  const count = options.tags ?? 1
+  const client = {
+    async commitExists() { return true },
+    async listTags() {
+      return Array.from({ length: count }, (_, index) => ({ name: `v1.${String(index)}.0`, sha: 'b'.repeat(40) }))
+    },
+    async compareCommits(_owner: string, _name: string, base: string) {
+      compares += 1
+      if (base === 'main') {
+        if (options.status === 'throw') throw new GithubError(500, 'compare unavailable')
+        return { status: options.status, aheadBy: options.status === 'ahead' ? 3 : 0 }
+      }
+      return { status: tagStatus, aheadBy: tagStatus === 'ahead' ? 2 : 0 }
+    },
+    async getRepoFile() { return "on:\n  push:\n    tags: ['v*']\n" },
+    async getBranchProtection() { return { protected: true, requiredChecks: ['ci-ok'], requiredApprovals: 1 } },
+  }
+  return { client: client as never, compares: () => compares }
+}
+
+// #893: GitHub's compare is `base...head`, so on
+// `compare/{defaultBranch}...{target}` `behind` means the target is behind the
+// default branch — an ancestor of it, which the default branch therefore
+// contains — and `ahead` means the target carries commits the default branch
+// lacks. Measured on this repository while this was reviewed:
+//   compare/3672754c...b3d5415a -> { status: 'behind', behind_by: 4 }
+//   compare/b3d5415a...3672754c -> { status: 'ahead', ahead_by: 4 }
+// Those two readings are the fixtures below, so the direction cannot invert
+// again silently: the same pair is one contained target and one unmerged one.
+const LIVE_CONTAINED = { status: 'behind', aheadBy: 0 } // behind_by 4 in the live pair
+const LIVE_UNMERGED = { status: 'ahead', aheadBy: 4 } // ahead_by 4 in the live pair
+
+function containmentClient(containment: { status: string; aheadBy: number }) {
+  return {
+    async commitExists() { return true },
+    async listTags() { return [{ name: 'v1.0.0', sha: 'b'.repeat(40) }] },
+    async compareCommits(_owner: string, _name: string, base: string) {
+      return base === 'main' ? containment : { status: 'ahead', aheadBy: 2 }
+    },
+    async getRepoFile() { return "on:\n  push:\n    tags: ['v*']\n" },
+    async getBranchProtection() { return { protected: true, requiredChecks: ['ci-ok'], requiredApprovals: 1 } },
+  }
+}
+
+// #893: a tag is a ref write, and the tagged tree's workflows run when the tag
+// is pushed. A target the default branch never contained must be refused before
+// anything is written, not after the tag exists.
+test('a target the default branch does not contain is refused', async () => {
+  // `ahead` is the live reverse of the live `behind`: the target holds commits
+  // the default branch does not, which is the unmerged branch this guard stops.
+  for (const containment of [LIVE_UNMERGED, { status: 'diverged', aheadBy: 0 }]) {
+    const plan = await releasePreflight(containmentClient(containment) as never, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.50.0', targetSha: target })
+    assert.equal(plan.ok, false, `${containment.status} must be refused`)
+    assert.equal((plan as { code?: string }).code, 'target_not_on_default')
+  }
+})
+
+test('a target the default branch contains still releases', async () => {
+  for (const containment of [LIVE_CONTAINED, { status: 'identical', aheadBy: 0 }]) {
+    const plan = await releasePreflight(containmentClient(containment) as never, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.50.0', targetSha: target })
+    assert.equal(plan.ok, true, `${containment.status} is a legal release target`)
+  }
+})
+
+test('an ancestry compare that cannot be read refuses the release instead of passing it', async () => {
+  const { client } = ancestryClient({ status: 'throw' })
+  const plan = await releasePreflight(client, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.50.0', targetSha: target })
+  assert.equal(plan.ok, false, 'an unreadable compare must fail closed')
+  assert.equal((plan as { code?: string }).code, 'ancestry_unreadable')
+})
+
+// #893 review: the previous release of an old target sits outside the newest
+// tags. Here the target is at or just past v1.2.0's commit and v1.3.0..v1.20.0
+// are newer, so none of them is an ancestor of it.
+const OLD_TARGET_TAGS = Array.from({ length: 21 }, (_, index) => `v1.${String(index)}.0`)
+
+function oldTargetClient(options: { commitsAfterPrevious: number }) {
+  const position = (name: string) => OLD_TARGET_TAGS.indexOf(name)
+  const targetPosition = position('v1.2.0')
+  return {
+    async commitExists() { return true },
+    async listTags() { return OLD_TARGET_TAGS.map((name) => ({ name, sha: 'b'.repeat(40) })) },
+    async compareCommits(_owner: string, _name: string, base: string) {
+      if (base === 'main') return { status: 'behind', aheadBy: 0 }
+      const distance = position(base) - targetPosition
+      if (distance > 0) return { status: 'behind', aheadBy: 0 } // newer than the target: not its ancestor
+      if (distance === 0) {
+        return options.commitsAfterPrevious === 0
+          ? { status: 'identical', aheadBy: 0 }
+          : { status: 'ahead', aheadBy: options.commitsAfterPrevious }
+      }
+      return { status: 'ahead', aheadBy: 2 } // an older tag, an ancestor of the target
+    },
+    async getRepoFile() { return "on:\n  push:\n    tags: ['v*']\n" },
+    async getBranchProtection() { return { protected: true, requiredChecks: ['ci-ok'], requiredApprovals: 1 } },
+  }
+}
+
+test('a target older than the newest tags still refuses a downgrade', async () => {
+  const downgrade = await releasePreflight(oldTargetClient({ commitsAfterPrevious: 2 }) as never, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.1.5', targetSha: target })
+  assert.equal(downgrade.ok, false, 'the previous release is v1.2.0, which is not one of the ten newest tags')
+  assert.equal((downgrade as { code?: string }).code, 'not_higher')
+  const same = await releasePreflight(oldTargetClient({ commitsAfterPrevious: 0 }) as never, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v1.2.1', targetSha: target })
+  assert.equal(same.ok, false, 'the target already carries the previous release')
+  assert.equal((same as { code?: string }).code, 'no_new_commits')
+})
+
+test('the version scan stops at the newest reachable tag', async () => {
+  const { client, compares } = ancestryClient({ status: 'behind', tagStatus: 'ahead', tags: 25 })
+  await releasePreflight(client, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v2.0.0', targetSha: target })
+  assert.equal(compares(), 2, 'one ancestry compare and one tag compare: the newest reachable tag is the previous release')
 })
 
 test('a 422 from the tag-object write is a refusal value, never an exception', async () => {
@@ -262,7 +378,14 @@ async function releaseRouteHarness(options: ReleaseRouteOptions = {}) {
       return json(response, 200, { content: Buffer.from(ROUTE_WORKFLOW).toString('base64') })
     }
     if (method === 'GET' && url.startsWith('/repos/o/r/tags')) return json(response, 200, options.tags ?? [])
-    if (method === 'GET' && url.startsWith('/repos/o/r/compare/')) return json(response, 200, { status: 'ahead', ahead_by: 3 })
+    if (method === 'GET' && url.startsWith('/repos/o/r/compare/')) {
+      // compare/main...{target} is the containment read, and `behind` is what
+      // GitHub answers when the default branch contains the target. The tag
+      // reads put a tag on the left of the `...`.
+      return url.includes('compare/main...')
+        ? json(response, 200, { status: 'behind', behind_by: 3 })
+        : json(response, 200, { status: 'ahead', ahead_by: 3 })
+    }
     if (method === 'GET' && url.startsWith('/repos/o/r/releases/tags/')) {
       return options.existingRelease === undefined
         ? json(response, 404, { message: 'Not Found' })
