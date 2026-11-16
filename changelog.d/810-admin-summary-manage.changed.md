@@ -1,1 +1,0 @@
-The admin page now has a compact summary strip for Pending, Users, Jobs, Audit, Release and Backups, and each user row folds its quota, role, private-model and approve/reject controls behind a Manage disclosure while keeping the existing fields and routes.

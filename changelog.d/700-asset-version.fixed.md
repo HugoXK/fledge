@@ -1,1 +1,0 @@
-Every `/assets/…` URL now carries a version derived from the file's own bytes, so a deploy that changes the stylesheet or a script gives browsers a new URL instead of letting a four-hour cache serve the old file against new markup.

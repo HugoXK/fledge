@@ -1,1 +1,0 @@
-The error handler now stores the matched route pattern instead of the concrete request path, so a 5xx on an approval link can no longer put the live approval token into the stored error report, the maintainer mail, the audit row or the log. An approval link's path is the capability itself; the report keeps `/approve/:token`, which still names the failing route.

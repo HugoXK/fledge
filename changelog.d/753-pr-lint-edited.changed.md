@@ -1,1 +1,0 @@
-An edited pull request body now re-runs `pr-lint` on its own. The check moved out of the review gate into `.github/workflows/pr-lint.yml`, which reads the `edited` activity as well as the default open, sync and reopen, so a body fix repaints `pr-lint` without restarting the review gate or the full CI.

@@ -1,1 +1,0 @@
-The repair step now repaints every required check a verdict can invalidate, not only `review-gate`: `pr-lint` has owned its own workflow since `#753`, so it is re-run through `.github/workflows/pr-lint.yml` instead of being left red at the tip. A pull request whose only wrong check is a stale `pr-lint` no longer stays blocked while the step reports that it found nothing to do.

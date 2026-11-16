@@ -1,1 +1,0 @@
-An oversized request to the FlyBot bridge now answers `413 {"error":"body too large"}` instead of resetting the connection and reporting malformed JSON: `/run`, `/dsh` and `/job-done` keep `400` for a body that really is not JSON, `bridge/README.md` lists every status the bridge answers, and `test/bridgeContract.test.ts` pins them against the real bridge file.

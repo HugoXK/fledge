@@ -1,1 +1,0 @@
-The Work page now shows a compact state summary with counts and shares, keeps row actions behind one disclosure, moves the new-work-item form into a header dialog and names why ready work is waiting; the work-item table stays the compact list it is.

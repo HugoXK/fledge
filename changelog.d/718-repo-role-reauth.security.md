@@ -1,1 +1,0 @@
-A session that has not re-authenticated can no longer change a repository's role. The role form writes the same `repo_role` column as the settings form and clears auto-merge and the reviewer when it demotes to developer, so it now asks for a fresh GitHub confirmation first and audits the attempt; a fresh session still changes the role as before.

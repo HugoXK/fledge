@@ -1,1 +1,0 @@
-A console write whose external step never answered — the bridge stop behind a job cancel — now says the result is unknown and asks for the same action again, instead of reporting a failure or hanging on "still processing". A retry checks the job before anything is resent, so a stop that already happened is recorded once and a stop that never happened runs exactly once.
