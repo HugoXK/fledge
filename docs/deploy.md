@@ -251,6 +251,14 @@ dropped digest is a red suite rather than a silent tag. Dependabot's Docker
 ecosystem is the next slice; until it lands, the bump is manual and still needs a
 rebuild, the image scan and the smoke check.
 
+Both stages install with `npm ci --ignore-scripts` (#868): a dependency install
+script runs inside the build before anything is compiled or copied, so it would
+be a way to rewrite the tree the image is built from. The one package in this
+tree with a postinstall (`esbuild`) resolves its platform binary from the
+`@esbuild/linux-x64` optional dependency, so the build and the test suite run
+with scripts disabled; `test/ciInstallScripts.test.ts` fails on a stage that
+drops the flag.
+
 The runtime stage also copies `CHANGELOG.md` and `changelog.d/` into `/app`
 (`Dockerfile`, runtime stage). The console reads them for the footer version and
 the `/admin` release card, which states the running version, the newest changelog

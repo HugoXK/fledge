@@ -150,7 +150,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run typecheck
 
   test:
@@ -178,7 +178,7 @@ jobs:
         with:
           node-version: ${{ matrix.node }}
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm test
 
   # The floor is a number in package.json (`test:coverage`), measured at the
@@ -203,7 +203,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Measure and enforce the coverage floor
         # `tee` keeps the report for the summary below; the bash shell CI uses is
         # `-eo pipefail`, so the threshold's exit code is still the step's.
@@ -250,7 +250,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       # The drill reuses this artifact instead of building a second tree (#643).
       # The manifest binds every emitted file to the commit that emitted it, so a
@@ -282,7 +282,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run visual:matrix
@@ -389,7 +389,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       - name: Prove the FlyBot container boundary from inside a container
         run: npx tsx scripts/isolation-check.ts --image fledge:ci
 
@@ -407,7 +407,7 @@ jobs:
         with:
           node-version: 22
           cache: npm
-      - run: npm ci
+      - run: npm ci --ignore-scripts
       # The published set first, so a runtime advisory is reported as one.
       - run: npm audit --omit=dev --audit-level=high
       # Then the whole graph: a development dependency runs its install scripts
