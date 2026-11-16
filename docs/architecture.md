@@ -433,8 +433,16 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   (`callback_secret_enc`, `platform_token_enc`) and lets the tick's worker loop
   claim and dispatch the job. A running job renews its five-minute lease every
   minute, and the tick reaper fails a job whose worker stops renewing instead of
-  waiting for the 90-minute job timeout. Queue admission rejects a new job when
-  the global or per-user cap is reached. A partial unique index
+  waiting for the 90-minute job timeout. Each dispatch also records one
+  `job_attempts` row (worker, attempt number, lease epoch, dispatch id, status,
+  error, timestamps) in the same transaction that marks the job running; the
+  job's `lease_epoch` is the fence, so a worker whose lease was taken over
+  cannot finalise the attempt it lost — its late report is refused and recorded
+  on that attempt's row. The three recovery sweeps (stall, timeout, expired
+  lease) close the attempt as `reaped`, a terminal outcome that is visible
+  instead of a silent reset to `queued`, and a retry continues the chain as
+  attempt N+1 with `retry_of` pointing at the attempt it continues. Queue
+  admission rejects a new job when the global or per-user cap is reached. A partial unique index
   (`jobs_one_active_per_repo`) makes the one-active-job-per-repository rule a
   database invariant, not only a read-time check; a database written before the
   index existed is deduped when it opens — keep a running job (else the oldest
@@ -444,7 +452,8 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   same transaction (a legal `in_progress -> triaged` edge in
   `WORK_ITEM_TRANSITIONS`) and its audit row names the item id, because the item
   would otherwise stay `in_progress` behind a job that can never finish. The
-  lease and queue columns are schema version 34.
+  lease and queue columns are schema version 34; `jobs.lease_epoch` and the
+  `job_attempts` table are schema version 46.
 - **Queue tickets**: every job carries a `queue_seq` taken inside its insert, so
   two jobs created at the same instant cannot be handed the same one, and the
   queue is ordered by priority, then `queue_seq`, then `id` — never by a clock

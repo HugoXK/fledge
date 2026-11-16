@@ -7,11 +7,11 @@ import { makeUser } from './helpers.js'
 // the version boundary, the columns the planner reads, and the one-row-per-
 // repository rule the tick relies on.
 
-test('the schedule table is part of the schema at user_version 45', () => {
+test('the schedule table is part of the schema at user_version 46', () => {
   const store = new Store(':memory:')
   try {
     const version = store.get<{ user_version: number }>('PRAGMA user_version')
-    assert.equal(Number(version?.user_version), 45, 'each schema change moves the refusal boundary: 42 triage, 43 Lead delivery, 44 notification outbox, 45 retired provider model')
+    assert.equal(Number(version?.user_version), 46, 'each schema change moves the refusal boundary: 43 Lead delivery, 44 notification outbox, 45 retired provider model, 46 job attempts')
 
     const table = store.get<{ name: string }>("SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'schedules'")
     assert.equal(table?.name, 'schedules')
