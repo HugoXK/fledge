@@ -60,6 +60,7 @@ import { isWorkItemState, MAINTAINER_ONLY_STATES, WORK_ITEM_TRANSITIONS, type Wo
 import { parseStageMode } from './lib/stages.js'
 import { issuePriority, issueState, shouldTriage } from './lib/issueIntake.js'
 import { parseIssueCommand, parseMentionTrigger, type IssueCommandInput, type MentionTriggerInput } from './lib/issueCommands.js'
+import { classifyReviewAuthor, type ReviewAuthor } from './lib/revisionBudget.js'
 import { untrustedAuditDetail, untrustedIssueGoal, untrustedMeta, type UntrustedText } from './lib/untrusted.js'
 import { scanUntrusted, UNTRUSTED_EVENT_KIND } from './lib/firewall.js'
 import { VERSION } from './version.js'
@@ -5953,6 +5954,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // the agent was told "review requested changes" and nothing else.
     let instruction = ''
     let reconcile = false
+    // #637: who reviewed decides whether this fix is counted against a budget.
+    let reviewAuthor: ReviewAuthor | undefined
     if (event === 'check_run') {
       const check = typeof body.check_run === 'object' && body.check_run !== null ? (body.check_run as Record<string, unknown>) : {}
       const conclusion = String(check.conclusion ?? '')
@@ -5973,6 +5976,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       reconcile = review.state === 'approved'
       reason = review.state === 'approved' ? 'review approved' : 'review requested changes'
       instruction = review.state === 'changes_requested' ? normalizeReviewInstruction(review.body) : ''
+      const reviewer = typeof review.user === 'object' && review.user !== null ? (review.user as Record<string, unknown>) : {}
+      reviewAuthor = classifyReviewAuthor(
+        typeof reviewer.login === 'string' ? reviewer.login : '',
+        typeof reviewer.type === 'string' ? reviewer.type : '',
+        `${config.githubApp.slug}[bot]`,
+      )
       const pull = typeof body.pull_request === 'object' && body.pull_request !== null ? (body.pull_request as typeof pulls[number]) : undefined
       if (pull !== undefined) pulls.push(pull)
     } else {
@@ -5992,8 +6001,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.info('github merge reconcile', { repo: `${repo.owner}/${repo.name}`, pr: number, reason })
         continue
       }
-      const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha, ...(instruction === '' ? {} : { instruction }) })
-      log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, trace: result.job?.id })
+      const result = await jobs.followUp(repo, { prUrl, branch, baseBranch, reason, headSha, ...(instruction === '' ? {} : { instruction }), ...(reviewAuthor === undefined ? {} : { reviewAuthor }) })
+      log.info('github follow-up', { repo: `${repo.owner}/${repo.name}`, pr: number, ok: result.ok, code: result.code, author: reviewAuthor, trace: result.job?.id })
     }
   }
 

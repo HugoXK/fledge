@@ -1713,6 +1713,25 @@ and starts nothing. Every accepted trigger writes `trigger.mention` with the
 comment id, the head SHA, the actor and the outcome (`started`, `recorded`,
 `parked`), and answers in the thread.
 
+A review that requests changes may start a fix, and that path is budgeted —
+`src/lib/revisionBudget.ts` holds the rule. The author of the review decides the
+bound: a person is never counted, a third-party review bot may cause one fix per
+pull request whichever head it reviewed, and the platform's own reviewer (the
+installation's `<app slug>[bot]` account) may cause `max_revisions` at one head —
+three by default, overridable per repository with the setting
+`repo:<id>:max_revisions`. The existing fingerprint dedupe answers before the
+budget, so a repeated request never spends it; the count follows the fix that
+actually starts, so a request parked behind a running job counts when it is
+replayed rather than when it parks, and several updates merged into one job
+count once. The parked row carries the author at its top level, and the review
+job's own follow-ups park as the platform reviewer, so a replayed request is
+decided exactly like one that starts on arrival. When several requests merge
+into one row, a person's request wins — a merged fix is never refused by a bot's
+budget — and otherwise the strictest bot class present is charged, so a
+third-party bot's single fix is not hidden behind the platform's larger
+allowance. A refusal writes one `trigger.revision_refused` row carrying the
+actor class, the head and the reason, and no job.
+
 The inbox is also available as `GET /api/inbox/events`, a per-user SSE stream.
 The server reuses the cached inbox snapshot, sends the server-rendered inbox HTML
 when the question signature changes, and the browser replaces the section and
