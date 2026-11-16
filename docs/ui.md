@@ -10,44 +10,44 @@ them; this page only fixes the names and the values.
 
 | Group | Token | Value | Used for |
 |---|---|---|---|
-| Surface | `--bg` | `#07090d` | page background |
-| Surface | `--bg-soft` | `#0a0e14` | alternate page background |
-| Surface | `--panel` | `#0d1118` | cards |
-| Surface | `--panel-2` | `#111722` | raised panel, lightest surface |
-| Surface | `--surface-sunken` | `#090e14` | inset blocks (lists, forms) |
-| Surface | `--surface-inset` | `#080d13` | inline code, chips, option rows |
-| Surface | `--surface-raised` | `#0b121b` | bubbles, tooltips |
-| Surface | `--field` | `#080c12` | input, textarea, select |
-| Surface | `--track` | `#060a10` | progress track |
-| Surface | `--paper` | `#ffffff` | the white workspace iframe |
-| Surface | `--raised-top` | `#101722` | gradient start of a raised card |
-| Surface | `--raised-bottom` | `#0a0e15` | gradient end of a raised card |
-| Line | `--line` | `#1c232d` | default border and divider |
-| Line | `--field-line` | `#5a6680` | input, textarea, select resting boundary (3.40:1 on `--field`) |
-| Line | `--line-strong` | `#2a3545` | emphasised border |
-| Line | `--row-line` | `#18202a` | table row divider |
-| Line | `--scroll-track` | `#5b6779` | `.table-scroll` scrollbar track, 641-960px only (3.3:1 on `--panel`) |
-| Line | `--scroll-thumb` | `#c8d2de` | `.table-scroll` scrollbar thumb, 641-960px only (3.7:1 on `--scroll-track`) |
-| Text | `--text` | `#f2f5f9` | body copy and headings |
-| Text | `--muted` | `#98a2b3` | secondary copy |
-| Text | `--muted-2` | `#8b96a6` | 10-13px meta text: `.fine`, `<small>`, `.count`, `.foot`, table headers |
-| Text | `--lede-ink` | `#b9c6d4` | landing page lede |
-| Text | `--tip-ink` | `#dbe6f3` | tooltip body |
-| Accent | `--accent` | `#7b95ff` | links, focus ring, selected state |
-| Accent | `--accent-strong` | `#4c66f5` | primary button fill |
-| Accent | `--accent-hover` | `#5f78ff` | primary button hover |
-| Accent | `--accent-ink` | `#ffffff` | text on the primary fill |
-| Accent | `--brand` | `#b8f34a` | brand mark, highlight |
-| Accent | `--brand-2` | `#6ee7a8` | brand mark gradient end |
-| Accent | `--good` | `#67e8c7` | success |
-| Accent | `--warn` | `#f0c674` | warning |
-| Accent | `--danger` | `#ff8a8a` | error |
-| Accent | `--mint` | `#67e8c7` | feature accent |
-| Accent | `--blue` | `#7b95ff` | feature accent |
-| Accent | `--violet` | `#b69cff` | feature accent |
-| Accent | `--mark-ink` | `#07101f` | letter inside the brand mark |
-| Accent | `--badge-bg` | `#1a222b` | neutral badge fill |
-| Accent | `--badge-ink` | `#aab7c4` | neutral badge text |
+| Surface | `--bg` | `#0d0c0b` | page background |
+| Surface | `--bg-soft` | `#121110` | alternate page background |
+| Surface | `--panel` | `#161412` | cards |
+| Surface | `--panel-2` | `#1c1916` | raised panel, lightest surface |
+| Surface | `--surface-sunken` | `#100e0d` | inset blocks (lists, forms) |
+| Surface | `--surface-inset` | `#141210` | inline code, chips, option rows |
+| Surface | `--surface-raised` | `#191614` | bubbles, tooltips |
+| Surface | `--field` | `#12100e` | input, textarea, select |
+| Surface | `--track` | `#0a0908` | progress track |
+| Surface | `--paper` | `#fffdf8` | the white workspace iframe |
+| Surface | `--raised-top` | `#1a1714` | gradient start of a raised card |
+| Surface | `--raised-bottom` | `#131110` | gradient end of a raised card |
+| Line | `--line` | `#2a251f` | default border and divider |
+| Line | `--field-line` | `#7d7266` | input, textarea, select resting boundary (4.04:1 on `--field`) |
+| Line | `--line-strong` | `#3b342c` | emphasised border |
+| Line | `--row-line` | `#24201c` | table row divider |
+| Line | `--scroll-track` | `#8a8074` | .table-scroll scrollbar track, 641-960px only (4.74:1 on `--panel`) |
+| Line | `--scroll-thumb` | `#f0e7d9` | .table-scroll scrollbar thumb, 641-960px only (3.16:1 on `--scroll-track`) |
+| Text | `--text` | `#f3ede4` | body copy and headings |
+| Text | `--muted` | `#c8bfb1` | secondary copy |
+| Text | `--muted-2` | `#a99f91` | 10-13px meta text: `.fine`, `<small>`, `.count`, `.foot`, table headers |
+| Text | `--lede-ink` | `#d8cfc2` | landing page lede |
+| Text | `--tip-ink` | `#ece4d8` | tooltip body |
+| Accent | `--accent` | `#d97745` | links, focus ring, selected state |
+| Accent | `--accent-strong` | `#c2602f` | primary button fill |
+| Accent | `--accent-hover` | `#e3875a` | primary button hover |
+| Accent | `--accent-ink` | `#120d08` | text on the primary fill |
+| Accent | `--brand` | `#7fae9a` | brand mark, highlight (sage) |
+| Accent | `--brand-2` | `#e0b36a` | brand mark gradient end (sand) |
+| Accent | `--good` | `#7fae9a` | success |
+| Accent | `--warn` | `#e0b36a` | warning |
+| Accent | `--danger` | `#e88a7d` | error |
+| Accent | `--mint` | `#7fae9a` | feature accent |
+| Accent | `--blue` | `#9aabba` | feature accent |
+| Accent | `--violet` | `#b49a86` | feature accent |
+| Accent | `--mark-ink` | `#120d08` | letter inside the brand mark |
+| Accent | `--badge-bg` | `#241f1a` | neutral badge fill |
+| Accent | `--badge-ink` | `#d0c6b7` | neutral badge text |
 | Spacing | `--space-1` | `4px` | tightest gap |
 | Spacing | `--space-2` | `8px` | inline gap, chip padding |
 | Spacing | `--space-3` | `12px` | list row gap |
@@ -64,20 +64,58 @@ them; this page only fixes the names and the values.
 | Type | `--text-2xl` | `32px` | page heading |
 | Radius | `--radius-xs` | `6px` | small chips and inline code |
 | Radius | `--radius-sm` | `8px` | controls, inputs and small panels |
-| Radius | `--radius-md` | `12px` | rows, inputs and inset blocks |
-| Radius | `--radius-lg` | `18px` | feature and hero panels |
-| Radius | `--radius` | `16px` | the card shell |
+| Radius | `--radius-md` | `10px` | rows, inputs and inset blocks |
+| Radius | `--radius-lg` | `12px` | feature, hero and dialog shells |
+| Radius | `--radius` | `12px` | the card shell |
 | Radius | `--radius-pill` | `999px` | badges, pills and the meter |
 | Motion | `--motion-fast` | `120ms` | hover, colour change |
 | Motion | `--motion-base` | `180ms` | layout and opacity change |
 | Motion | `--ease` | `cubic-bezier(0.2, 0.7, 0.3, 1)` | standard easing |
-| Motion | `--shadow` | `0 24px 80px rgba(0, 0, 0, 0.38)` | raised card shadow |
+| Motion | `--shadow` | `0 8px 24px rgba(0, 0, 0, 0.28)` | menus, popovers and dialogs only |
 | Layout | `--touch` | `44px` | minimum height for a tappable control |
 | Layout | `--content` | `1180px` | content max width |
+| Layout | `--nav-h` | `61px` | section nav height; `scroll-margin-top` reads it so an anchor clears the bar |
 | Layout | `--mono` | `ui-monospace, …` | code and numeric columns |
+| Layout | `--display` | `"Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Songti SC", "Noto Serif CJK SC", serif` | serif display face for `h1`, the wordmark and the hero heading |
 | Layout | `--page-pad` | `clamp(16px, 4vw, 32px)` | page and header horizontal padding |
 | Layout | `--section-gap` | `clamp(24px, 4vw, 48px)` | page and section rhythm |
 | Layout | `--card-pad` | `clamp(18px, 2.4vw, 28px)` | card padding |
+
+### Alpha tints
+
+Every rgba() a component rule paints is one of these tokens, so a palette change
+never leaves a blue focus ring behind: `rgba()` cannot name a solid token and
+keep its alpha.
+
+| Family | Token | Value | Used for |
+|---|---|---|---|
+| accent | `--accent-a05` | `rgba(217, 119, 69, 0.05)` | 5% accent tint |
+| accent | `--accent-a10` | `rgba(217, 119, 69, 0.10)` | 10% accent tint |
+| accent | `--accent-a12` | `rgba(217, 119, 69, 0.12)` | 12% accent tint |
+| accent | `--accent-a16` | `rgba(217, 119, 69, 0.16)` | 16% accent tint |
+| accent | `--accent-a18` | `rgba(217, 119, 69, 0.18)` | 18% accent tint |
+| accent | `--accent-a26` | `rgba(217, 119, 69, 0.26)` | 26% accent tint |
+| accent | `--accent-a32` | `rgba(217, 119, 69, 0.32)` | 32% accent tint |
+| accent | `--accent-a34` | `rgba(217, 119, 69, 0.34)` | 34% accent tint |
+| accent | `--accent-a42` | `rgba(217, 119, 69, 0.42)` | 42% accent tint |
+| brand | `--brand-a08` | `rgba(127, 174, 154, 0.08)` | 8% brand tint |
+| brand | `--brand-a10` | `rgba(127, 174, 154, 0.10)` | 10% brand tint |
+| brand | `--brand-a14` | `rgba(127, 174, 154, 0.14)` | 14.000000000000002% brand tint |
+| brand | `--brand-a28` | `rgba(127, 174, 154, 0.28)` | 28.000000000000004% brand tint |
+| brand | `--brand-a30` | `rgba(127, 174, 154, 0.30)` | 30% brand tint |
+| brand | `--brand-a35` | `rgba(127, 174, 154, 0.35)` | 35% brand tint |
+| warn | `--warn-a12` | `rgba(224, 179, 106, 0.12)` | 12% warn tint |
+| warn | `--warn-a14` | `rgba(224, 179, 106, 0.14)` | 14.000000000000002% warn tint |
+| warn | `--warn-a28` | `rgba(224, 179, 106, 0.28)` | 28.000000000000004% warn tint |
+| warn | `--warn-a30` | `rgba(224, 179, 106, 0.30)` | 30% warn tint |
+| warn | `--warn-a32` | `rgba(224, 179, 106, 0.32)` | 32% warn tint |
+| danger | `--danger-a08` | `rgba(232, 138, 125, 0.08)` | 8% danger tint |
+| danger | `--danger-a10` | `rgba(232, 138, 125, 0.10)` | 10% danger tint |
+| danger | `--danger-a14` | `rgba(232, 138, 125, 0.14)` | 14.000000000000002% danger tint |
+| danger | `--danger-a26` | `rgba(232, 138, 125, 0.26)` | 26% danger tint |
+| danger | `--danger-a35` | `rgba(232, 138, 125, 0.35)` | 35% danger tint |
+| danger | `--danger-a40` | `rgba(232, 138, 125, 0.40)` | 40% danger tint |
+| danger | `--danger-a58` | `rgba(232, 138, 125, 0.58)` | 57.99999999999999% danger tint |
 
 ## Naming rules (命名规则)
 
@@ -151,6 +189,35 @@ rules replace them:
 `test/uiSurfaces.test.ts` pins all three, including the count (`pages.ts` may
 carry exactly one `style="`).
 
+## Warm editorial foundation (#858)
+
+The console reads as a worked page, not as a dark-blue AI template: warm
+charcoal surfaces, warm paper in light, one copper interactive accent, sage and
+sand as the only secondary hues. The token names are unchanged, so a view written
+against `var(--panel)` or `var(--accent)` did not move; only the values did.
+
+- **One accent, warm.** `--accent` is copper (`#d97745` dark, `#ad5530` light)
+  on every control and link. The brand pair is decorative: `--brand` is sage and
+  `--brand-2` sand, so the wordmark gradient and the feature accents never read
+  as something clickable, and the `--blue`/`--violet` feature hues are
+  desaturated for the same reason.
+- **A serif display face.** `h1`, `.brand` and `.hero-copy h1` set `--display`
+  (Iowan Old Style / Palatino / Georgia / Songti SC / Noto Serif CJK SC); body
+  copy keeps the system sans stack, and `--mono` stays for code and numeric
+  columns. The CJK faces sit in the display stack so a mixed heading keeps one
+  texture.
+- **Smaller, flatter surfaces.** Radii are 6 / 8 / 10 / 12 with `--radius` 12,
+  a card is a `--panel` fill inside a 1px `--line` border, and the one
+  `--shadow` (`0 8px 24px`, the tightest the direction allows) is reserved for
+  menus, popovers and dialogs; a card carries a border instead of a shadow.
+- **No uppercase eyebrow.** The 12-13px meta text keeps its size and colour and
+  sets its own case; the letter-spaced uppercase labels that made every section
+  look like a landing page are gone.
+
+`test/uiTokens.test.ts` pins the palette values, the serif/sans split and the AA
+pairs; `test/lightTheme.test.ts` pins that the light palette is complete, light
+and readable.
+
 ## Email shell (#468)
 
 Every transactional email is rendered through `emailShell()` in
@@ -188,22 +255,26 @@ Text must reach WCAG 2.1 AA — 4.5:1 — on every surface it can be painted on,
 because most of the console's meta text is 10-13px. `test/uiTokens.test.ts`
 computes the ratios from `:root` instead of trusting the palette:
 
-- `--muted-2` was `#6f7a8a`: 4.58 on `--bg`, 4.45 on `--bg-soft`, 4.35 on
-  `--panel` and **4.13 on `--panel-2`** — below AA on the surface it most often
-  lands on. It is now `#8b96a6`: 6.65 / 6.46 / 6.31 / 5.99, measured against
-  `--bg`, `--bg-soft`, `--panel` and `--panel-2` in that order, so the next
-  reader can re-derive each ratio from the token; it is still dimmer than
-  `--muted` (`#98a2b3`, 6.97–7.74 on the same surfaces), so the hierarchy is
-  unchanged.
-- `--accent-ink` on `--accent-strong` is 4.64:1 — the primary button passes
-  without changing the brand fill.
+- `--muted-2` paints the 10-13px meta text and used to fall below AA on the
+  surface it lands on most (`4.13:1` on `--panel-2` at `#6f7a8a`). It is
+  `#a99f91` in dark: 7.50 / 7.23 / 7.05 / 6.71 on `--bg`, `--bg-soft`, `--panel`
+  and `--panel-2` in that order, and `#6d6355` in light: 5.79 on `--panel` and
+  5.37 on `--panel-2`. It stays dimmer than `--muted` (`#c8bfb1`, 10.74 / 10.37
+  / 10.10 / 9.62 on the same dark surfaces; `#5b5348`, 7.44 on the light
+  `--panel`), so the hierarchy is unchanged.
+- `--accent-ink` on `--accent-strong` is 4.61:1 in dark (`#120d08` on
+  `#c2602f`) and 6.90:1 in light (`#fffdf8` on `#93401f`) — the primary button
+  passes in both palettes.
+- The 641-960px table scrollbar is a graphical object too, so `--scroll-track`
+  and `--scroll-thumb` keep 3:1 against `--panel` and against each other: 4.74
+  and 3.16 in dark, 3.87 and 3.11 in light.
 - The resting field boundary is non-text, so it answers a different rule:
   WCAG 2.2 1.4.11 asks 3:1 for the visual information that identifies a
-  control, and a fill is not that information — `--field` is 1.04:1 against
+  control, and a fill is not that information — `--field` is 1.03:1 against
   `--panel` in dark and 1.00:1 in light, so the hairline was the only edge a
-  field had. `--field-line` carries it: `#5a6680` in dark (3.40 on `--field`,
-  3.28 on `--panel`, 3.12 on `--panel-2`) and `#7c8794` in light (3.65 on
-  `--field` and `--panel`, 3.46 on `--panel-2`, 3.37 on `--bg`). `--line`
+  field had. `--field-line` carries it: `#7d7266` in dark (4.04 on `--field`,
+  3.91 on `--panel`, 3.73 on `--panel-2`) and `#8a7f6d` in light (3.87 on
+  `--field` and `--panel`, 3.59 on `--panel-2`, 3.50 on `--bg`). `--line`
   stays the surface divider so cards, tables and panels do not move (#596).
 - A new text colour is added together with a row in the test's contrast list, so
   the ratio is checked in CI rather than in a browser.
@@ -217,28 +288,29 @@ default; the light palette redefines the same colour names:
 
 | Group | Token | Dark | Light | Light ratio |
 |---|---|---|---|---|
-| Surface | `--bg` | `#07090d` | `#f4f6f9` | `--text` 16.8:1 |
-| Surface | `--bg-soft` | `#0a0e14` | `#eef1f6` | `--muted-2` 5.2:1 |
-| Surface | `--panel` | `#0d1118` | `#ffffff` | `--muted-2` 6.1:1 |
-| Surface | `--panel-2` | `#111722` | `#f7f9fc` | `--muted-2` 5.8:1 |
-| Surface | `--surface-inset` | `#080d13` | `#e9edf3` | `--text` 14.6:1 |
-| Surface | `--field` | `#080c12` | `#ffffff` | `--text` 17.4:1 |
-| Line | `--line` | `#1c232d` | `#dbe1e9` | 1px divider, non-text |
-| Line | `--field-line` | `#5a6680` | `#7c8794` | 3.65:1 on `--field`, 3.46:1 on `--panel-2` |
-| Line | `--scroll-track` | `#5b6779` | `#828c9a` | 3.4:1 on `--panel`, 3.3:1 on `--scroll-thumb` |
-| Line | `--scroll-thumb` | `#c8d2de` | `#333c48` | 11.2:1 on `--panel` |
-| Surface | `--header-bg` | `rgba(7, 9, 13, 0.78)` | `rgba(244, 246, 249, 0.86)` | translucent sticky row; its ink is `--text`/`--muted` at the ratios above |
-| Surface | `--chip-bg` | `rgba(255, 255, 255, 0.02)` | `rgba(16, 22, 31, 0.04)` | translucent account pill; its ink is `--muted`/`--muted-2` |
-| Text | `--text` | `#f2f5f9` | `#10161f` | 16.8:1 on `--bg` |
-| Text | `--muted` | `#98a2b3` | `#47515f` | 8.1:1 on `--panel` |
-| Text | `--muted-2` | `#8b96a6` | `#59636f` | 6.1:1 on `--panel`, 5.8:1 on `--panel-2` |
-| Accent | `--accent` | `#7b95ff` | `#2b4fd0` | 6.7:1 on `--panel` |
-| Accent | `--accent-ink` | `#ffffff` | `#ffffff` | 8.8:1 on `--accent-strong` |
-| Accent | `--brand` | `#b8f34a` | `#3f7a12` | 5.2:1 on `--panel` |
-| Accent | `--good` / `--mint` | `#67e8c7` | `#0a6e55` | 6.2:1 on `--panel` |
-| Accent | `--warn` | `#f0c674` | `#7a5200` | 6.9:1 on `--panel` |
-| Accent | `--danger` | `#ff8a8a` | `#b3261e` | 6.5:1 on `--panel` |
-| Accent | `--badge-ink` on `--badge-bg` | `#aab7c4` / `#1a222b` | `#414d5c` / `#e7ecf3` | 7.3:1 |
+| Surface | `--bg` | `#0d0c0b` | `#f6f1e7` | `--text` 15.40:1 |
+| Surface | `--bg-soft` | `#121110` | `#f1ebdf` | `--muted-2` 4.96:1 |
+| Surface | `--panel` | `#161412` | `#fffdf8` | `--muted-2` 5.79:1 |
+| Surface | `--panel-2` | `#1c1916` | `#f8f4ec` | `--muted-2` 5.37:1 |
+| Surface | `--surface-inset` | `#141210` | `#efe8db` | `--text` 14.23:1 |
+| Surface | `--field` | `#12100e` | `#fffdf8` | `--text` 17.05:1 |
+| Line | `--line` | `#2a251f` | `#ded6c6` | 1px divider, non-text |
+| Line | `--field-line` | `#7d7266` | `#8a7f6d` | 3.87:1 on `--field` and `--panel`, 3.59:1 on `--panel-2`, 3.50:1 on `--bg` |
+| Line | `--scroll-track` | `#8a8074` | `#8a7f6d` | 3.87:1 on `--panel`, 3.11:1 on `--scroll-thumb` |
+| Line | `--scroll-thumb` | `#f0e7d9` | `#3b342c` | 12.06:1 on `--panel` |
+| Surface | `--header-bg` | `rgba(13, 12, 11, 0.82)` | `rgba(246, 241, 231, 0.88)` | translucent sticky row; its ink is `--text`/`--muted` at the ratios above |
+| Surface | `--chip-bg` | `rgba(243, 237, 228, 0.03)` | `rgba(29, 26, 22, 0.04)` | translucent account pill; its ink is `--muted`/`--muted-2` |
+| Text | `--text` | `#f3ede4` | `#1d1a16` | 15.40:1 on `--bg` |
+| Text | `--muted` | `#c8bfb1` | `#5b5348` | 7.44:1 on `--panel` |
+| Text | `--muted-2` | `#a99f91` | `#6d6355` | 5.79:1 on `--panel`, 5.37:1 on `--panel-2` |
+| Accent | `--accent` | `#d97745` | `#ad5530` | 5.02:1 on `--panel`, 4.53:1 on `--bg` |
+| Accent | `--accent-ink` | `#120d08` | `#fffdf8` | 6.90:1 on `--accent-strong` |
+| Accent | `--brand` | `#7fae9a` | `#3a6653` | 6.44:1 on `--panel` |
+| Accent | `--brand-2` | `#e0b36a` | `#7a5200` | 6.81:1 on `--panel` |
+| Accent | `--good` / `--mint` | `#7fae9a` | `#3a6653` | 6.44:1 on `--panel` |
+| Accent | `--warn` | `#e0b36a` | `#7a5200` | 6.81:1 on `--panel` |
+| Accent | `--danger` | `#e88a7d` | `#a33426` | 6.71:1 on `--panel` |
+| Accent | `--badge-ink` on `--badge-bg` | `#d0c6b7` / `#241f1a` | `#4a4237` / `#ece5d8` | 7.89:1 |
 
 How it is selected:
 
@@ -252,15 +324,19 @@ How it is selected:
   the selection colour follow the palette instead of the operating system.
   `::selection` uses `var(--text)`, which is dark ink on the pale tint in the
   light palette.
-- `--paper` and `--accent-ink` stay `#ffffff` in both palettes by contract: they
-  paint the white iframe and the primary button's fill.
+- `--paper` is `#fffdf8` in both palettes: it paints the workspace iframe, which
+  stays the warm white the palette calls paper. `--accent-ink` is the ink on the
+  primary fill, so it is dark in dark mode (`#120d08` on copper) and paper in
+  light mode (`#fffdf8` on `#93401f`); it is never a fixed `#ffffff`.
 - The light declarations appear twice (media query and attribute selector)
   because the two cannot share a declaration block; both are kept in step by
   `test/lightTheme.test.ts`, which reads each block out of the stylesheet,
   rejects a missing or extra colour token, and recomputes every ratio above with
   the same WCAG formula as `test/uiTokens.test.ts`.
-- `--shadow` softens to `rgba(15, 23, 42, 0.14)`; it is a shadow, not text, so it
-  carries no contrast requirement.
+- `--shadow` is the one editorial shadow, `0 8px 24px rgba(29, 26, 22, 0.14)` in
+  light and `0 8px 24px rgba(0, 0, 0, 0.28)` in dark; only menus, popovers and
+  dialogs consume it, and a card keeps its 1px border instead. It is a shadow,
+  not text, so it carries no contrast requirement.
 - **The reader can choose** (#657). The preference is the `fledge_theme` cookie,
   saved by `GET /theme/system|light|dark` (an unknown mode is a 404 and `next` is
   same-origin only), so the server renders the palette on the first frame — no
