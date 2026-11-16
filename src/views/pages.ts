@@ -2389,6 +2389,8 @@ const AUDIT_ACTIONS: Record<string, [string, string]> = {
   'repo.refreshed': ['刷新仓库', 'Repository refreshed'],
   'schedule.saved': ['保存排期', 'Schedule saved'],
   'schedule.removed': ['删除排期', 'Schedule deleted'],
+  'schedule.pause': ['暂停排期', 'Schedule paused'],
+  'schedule.resume': ['恢复排期', 'Schedule resumed'],
   'notification.resend': ['重发通知', 'Notification resent'],
   'job.enqueued': ['任务入队', 'Job queued'],
   'job.succeeded': ['任务成功', 'Job succeeded'],
@@ -4689,6 +4691,20 @@ export function scheduleConsolePage(input: {
   const runNow = state.kind === 'none' || state.kind === 'unreadable'
     ? ''
     : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/run-now" class="run-now">${csrf(viewer)}<input type="hidden" name="command_key" value="${escapeHtml(runNowKey)}" /><button type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button><span class="fine">${escapeHtml(t('从当前时刻开始一次，不改动下次运行。', 'One run from now; the next scheduled run does not move.'))}</span></form>`
+  // #544 slice 9: the only new control. Pause and Resume are separate forms with
+  // their own action, so a browser retry of one cannot become the other, and the
+  // state the page printed is re-read from the row rather than trusted from the
+  // form.
+  const stateLine = state.kind === 'none'
+    ? t('unknown', 'unknown')
+    : state.status === 'paused'
+      ? `${t('已暂停', 'paused')}${state.pausedAt === null ? '' : ` · ${t('自 ', 'since ')}${escapeHtml(new Date(state.pausedAt).toISOString())}`}`
+      : t('运行中', 'active')
+  const pauseControls = state.kind === 'none'
+    ? ''
+    : state.status === 'paused'
+      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/resume" class="schedule-state">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('恢复排期', 'Resume schedule'))}</button><span class="fine">${escapeHtml(t('恢复后从下一个时刻开始，暂停期间不补跑。', 'After resuming it runs from the next instant; the paused window is not made up.'))}</span></form>`
+      : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/pause" class="schedule-state">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停排期', 'Pause schedule'))}</button><span class="fine">${escapeHtml(t('暂停期间走过的时刻记为 skipped，原因为 paused。', 'Instants that pass while paused are recorded as skipped with reason paused.'))}</span></form>`
   const kindNote = state.kind === 'none'
     ? `<p class="muted">${escapeHtml(t('这个仓库还没有排期；它仍按旧的自动间隔运行。保存一个排期后，由排期决定何时运行。', 'This repository has no schedule yet and still runs on the legacy interval. Once a schedule is saved, the schedule decides when it runs.'))}</p>`
     : state.kind === 'unreadable'
@@ -4699,6 +4715,7 @@ export function scheduleConsolePage(input: {
       ${kindNote}
       <dl class="schedule-facts">
         <dt>${escapeHtml(t('排期', 'Schedule'))}</dt><dd data-schedule-kind="${escapeHtml(state.kind)}">${scheduleLine}</dd>
+        <dt>${escapeHtml(t('状态', 'State'))}</dt><dd data-schedule-status="${escapeHtml(state.status)}">${stateLine}</dd>
         <dt>${escapeHtml(t('下次运行', 'Next run'))}</dt><dd data-schedule-next="${escapeHtml(iso(state.nextAt))}">${escapeHtml(shown(state.nextAt))}</dd>
         <dt>${escapeHtml(t('上次成功', 'Last success'))}</dt><dd data-last-success="${escapeHtml(iso(state.lastSuccess?.logicalTime ?? null))}">${escapeHtml(shown(state.lastSuccess?.logicalTime ?? null))}</dd>
         <dt>${escapeHtml(t('最后决定', 'Last decision'))}</dt><dd>${lastLine}</dd>
@@ -4710,6 +4727,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('每日运行上限', 'Daily run limit'))}</dt><dd data-schedule-daily-runs="${escapeHtml(state.budget.dailyRuns === null ? 'none' : String(state.budget.dailyRuns))}">${escapeHtml(state.budget.dailyRuns === null ? t('不限（默认）', 'unbounded (default)') : t(`${state.budget.dailyRuns} 次`, `${state.budget.dailyRuns} runs`))} · ${escapeHtml(state.budget.runsToday === null ? t('今天已运行 unknown', 'today unknown') : t(`今天已运行 ${state.budget.runsToday} 次`, `${state.budget.runsToday} today`))}${state.budget.remaining === null ? '' : ` · ${escapeHtml(t(`今天还剩 ${state.budget.remaining} 次`, `${state.budget.remaining} left today`))}`}</dd>
       </dl>
       ${runNow}
+      ${pauseControls}
     </section>
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
       <p class="muted">${escapeHtml(t('排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。', 'A schedule is a five-field cron or a fixed interval, one of the two; cron needs an IANA zone. The start/end instants need an offset.'))}</p>

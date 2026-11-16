@@ -32,6 +32,15 @@ export interface OccurrenceView {
 export interface ScheduleConsoleState {
   /** `none` when the repository has no schedule row; `unreadable` when it has one the planner cannot use. */
   kind: 'none' | 'unreadable' | 'cron' | 'interval'
+  /**
+   * #544 slice 9: `none` when there is no row, otherwise the stored state. A
+   * paused schedule still answers `nextAt` — the instant the planner would use —
+   * but nothing fires until it is resumed, and the page says so rather than
+   * promising a run.
+   */
+  status: 'none' | 'active' | 'paused'
+  /** The instant the schedule was paused, or null while it is active or absent. */
+  pausedAt: number | null
   schedule: Schedule | null
   timingRevision: number | null
   misfire: string | null
@@ -98,6 +107,8 @@ export function scheduleConsole(input: {
   const runsToday = row === undefined ? null : (input.runsToday ?? null)
   return {
     kind,
+    status: row === undefined ? 'none' : row.status === 'paused' ? 'paused' : 'active',
+    pausedAt: row === undefined ? null : row.paused_at,
     schedule,
     timingRevision: row === undefined ? null : row.timing_revision,
     misfire: row === undefined ? null : row.misfire,

@@ -4396,6 +4396,16 @@ export class Jobs {
             misfire: scheduleRow.misfire === 'once' ? 'once' : 'skip',
             graceMs: scheduleRow.grace_ms,
           })
+      // #544 slice 9: a paused schedule is decided, not run. The instant and its
+      // passed-over neighbours become skipped rows with reason `paused` and the
+      // cursor still moves, so the window a maintainer paused is readable
+      // afterwards and resuming does not make up a backlog. The branch sits
+      // before every other reason, because "somebody paused this" outranks the
+      // budget or an active job as the explanation for the instant.
+      if (plan !== null && scheduleRow !== undefined && scheduleRow.status === 'paused') {
+        this.skipScheduledOccurrence(repo, plan, 'paused')
+        continue
+      }
       if (plan !== null && plan.dueAt === null) {
         // #544 slice 5: a window whose only outcome is "too late" still has rows
         // to record. Only a decision with nothing to say — no run and no skipped

@@ -2896,3 +2896,24 @@ settles the row so the replay answers the same refusal.
 The recurrence cursor (`last_occurrence_at`) is not touched: "run this now" must
 not move when the schedule next fires. `schedule_occurrences.command_key` is
 null on every row the tick wrote, which is why the unique index is partial.
+
+## A paused schedule is decided, not run (#544)
+
+A schedule carries a state — `active` or `paused` — in `schedules.status`, with
+the instant of the last pause in `paused_at`. Only a maintainer's button writes
+it (`POST /repos/:id/schedule/pause` and `.../resume`, audited as
+`schedule.pause` / `schedule.resume`); saving the schedule form never changes it,
+so editing an expression cannot quietly switch a paused schedule back on.
+
+A paused schedule is still planned. The tick runs `planTick` as usual and then
+records the decision as `skipped` with reason `paused`, in the same
+`recordScheduleDecisions` transaction that moves the cursor — the pause window is
+readable afterwards instead of vanishing, and because the cursor keeps moving a
+resume does not make up a backlog or dispatch once per missed instant. The
+paused branch sits before the budget, active-job and idle reasons, because
+"somebody paused this" is the honest explanation for the instant.
+
+`run-now` stays available while paused: a person pressing the button is an
+explicit command, not the cadence, and it settles under its own command key.
+Resuming does not create an occurrence or move the cursor either, so the only
+thing it changes is whether the next instant dispatches.
