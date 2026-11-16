@@ -54,7 +54,7 @@ import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, re
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
-import { buildCarryOver, buildRunDigest, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
+import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
@@ -1175,7 +1175,9 @@ export class Jobs {
           return (await active.issueIsClosed(ref.owner, ref.name, ref.number)) ? 'closed' : 'open'
         }
         const pull = await active.getPullRequest(ref.owner, ref.name, ref.number)
-        return pull.merged ? 'merged' : 'open'
+        // #788: closed-without-merge is `closed`, not `open`; the mapping lives
+        // in continuity.ts so the test and the reader cannot disagree.
+        return carryOverPullState(pull)
       },
     }
   }
@@ -1287,13 +1289,14 @@ export class Jobs {
     // #365: a scheduled or follow-up run may only carry what is still live, so
     // the block is built with one live read per linked line. Nothing about the
     // block changes when a line names no issue or PR.
-    const carryOver = trigger === 'schedule' || trigger === 'followup'
-      ? (await buildCarryOver({
+    const carryOverBlock = trigger === 'schedule' || trigger === 'followup'
+      ? await buildCarryOver({
         recent: this.store.listJobsForRepo(repo.id, 3),
         openWork: this.store.listOpenWorkItems(repo.id),
         read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
-      })).text
-      : ''
+      })
+      : null
+    const carryOver = carryOverBlock?.text ?? ''
     // #366 slice 1: exactly one data line, and only when a previous run exists.
     // The line is placed before the goal is capped: appending it after the cap
     // would let a goal that is already near 4000 characters swallow it silently,
@@ -1401,7 +1404,11 @@ export class Jobs {
       }
       throw error
     }
-    if (continuityUsed) this.store.updateJob(job.id, { continuity_used: 1 })
+    if (continuityUsed && carryOverBlock !== null) {
+      // #788: the observation is a fact about the run, so it is stored with the
+      // row instead of being re-derived from the goal text on the page.
+      this.store.updateJob(job.id, { continuity_used: 1, carry_over_json: JSON.stringify(carryOverBlock.report) })
+    }
     if (temporal !== undefined) {
       job.temporal_json = JSON.stringify(temporal)
       this.store.updateJob(job.id, { temporal_json: job.temporal_json })
