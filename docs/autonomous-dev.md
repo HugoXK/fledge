@@ -116,14 +116,17 @@ real identity starts.
 
 - A fork pull request is skipped: a fork ref is not dispatchable with this
   repository's token.
-- A pull request with a `CI` run already at its head SHA is skipped, whatever
+- A pull request with a completed `CI` run at its head SHA is skipped, whatever
   that run's conclusion; another workflow's check run does not count, because
   `CodeQL` or a review bot can leave a check on a tip `CI` never visited.
 - A queued or in-progress `CI` run is never duplicated.
-- A head whose only `CI` run is `cancelled` is skipped too. A superseded run is
-  marked `cancelled` before any job exists, so it carries no `ci-ok`, and
-  re-dispatching that head would race the run that replaced it: such a head is a
-  human's to re-dispatch, not the watchdog's to loop on.
+- A cancelled run is not evidence that `CI` reached the tip: it can end before any
+  job exists, so the head carries no `ci-ok` and nothing repairs it. A head whose
+  `CI` runs are all `cancelled` is dispatched once. That repair is bounded per head
+  SHA by the `workflow_dispatch` run it starts: when the repair is cancelled too,
+  the watchdog prints the pull request as `stalled (cancelled-repair)` instead of
+  dispatching it again on the next tick, and re-dispatching it becomes a human's
+  decision.
 - At most 5 pull requests are dispatched per tick, so an outage cannot start an
   unbounded number of full CI runs in one pass.
 

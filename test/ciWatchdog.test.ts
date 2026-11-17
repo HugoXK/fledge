@@ -75,6 +75,44 @@ test('a completed CI run is not re-dispatched, even when it produced no checks',
   assert.equal(plan.decisions[0]?.reason, 'has-ci-run')
 })
 
+test('a cancelled final CI run is not counted as CI reaching the tip', () => {
+  const runs: WatchdogWorkflowRun[] = [
+    { id: 31, name: 'CI', status: 'completed', conclusion: 'cancelled', event: 'push' },
+  ]
+  const plan = planCiWatchdog({ entries: [entry(sameRepoPr(12), [], runs)] })
+  assert.deepEqual(plan.dispatches, [{ number: 12, branch: 'feature/12', sha: SHA }])
+  assert.equal(plan.decisions[0]?.action, 'dispatch')
+  assert.equal(plan.decisions[0]?.reason, 'cancelled-ci-run')
+})
+
+test('a repair dispatch that is cancelled again is reported as stalled, not dispatched in a loop', () => {
+  const runs: WatchdogWorkflowRun[] = [
+    { id: 31, name: 'CI', status: 'completed', conclusion: 'cancelled', event: 'push' },
+    { id: 44, name: 'CI', status: 'completed', conclusion: 'cancelled', event: 'workflow_dispatch' },
+  ]
+  const plan = planCiWatchdog({ entries: [entry(sameRepoPr(13), [], runs)] })
+  assert.deepEqual(plan.dispatches, [])
+  assert.equal(plan.decisions[0]?.action, 'stall')
+  assert.equal(plan.decisions[0]?.reason, 'cancelled-repair')
+  assert.equal(plan.decisions[0]?.previousRunId, 44)
+})
+
+test('a completed CI run at the head is left alone, whatever its conclusion', () => {
+  for (const conclusion of ['success', 'failure', 'timed_out', 'skipped']) {
+    const runs: WatchdogWorkflowRun[] = [{ id: 21, name: 'CI', status: 'completed', conclusion, event: 'push' }]
+    const plan = planCiWatchdog({ entries: [entry(sameRepoPr(14), [], runs)] })
+    assert.deepEqual(plan.dispatches, [], conclusion)
+    assert.equal(plan.decisions[0]?.action, 'skip', conclusion)
+    assert.equal(plan.decisions[0]?.reason, 'has-ci-run', conclusion)
+  }
+})
+
+test('the watchdog CLI reports a stall instead of dispatching a cancelled repair forever', () => {
+  const cli = readFileSync('scripts/ci-watchdog.mjs', 'utf8')
+  assert.match(cli, /decision\.action === 'stall'/)
+  assert.match(cli, /stalled/)
+})
+
 test('a pull request for another workflow run is not treated as active CI', () => {
   const runs: WatchdogWorkflowRun[] = [{ name: 'Review gate', status: 'in_progress' }]
   const plan = planCiWatchdog({ entries: [entry(sameRepoPr(11), [], runs)] })
