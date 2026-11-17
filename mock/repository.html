@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#f6f1e7" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0d0c0b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>HugoXK/fledge · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=cf958854359d" />
+  <link rel="stylesheet" href="assets/app.css?v=eed2b384789d" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -56,7 +56,7 @@
         <p class="fine">目标分支 <code>main</code></p>
         <div class="repo-status-strip">
           <span class="repo-status"><span class="fine">自动迭代</span><b>自动迭代已开启</b></span>
-          <span class="repo-status"><span class="fine">自动间隔</span><b>每天</b></span>
+          <span class="repo-status"><span class="fine">发现间隔</span><b>每天</b></span>
           <span class="repo-status"><span class="fine">下次约</span><span data-next-run data-next-source="schedule">2026-11-16 01:00:00 UTC</span></span>
           <a class="repo-status" href="schedule-console.html">排期控制台</a>
           <span class="repo-status"><span class="fine">FlyBot</span>未启用</span>
@@ -158,9 +158,9 @@
     <div class="table-scroll"><table><thead><tr><th>窗口</th><th>审核数</th><th>平均分</th><th>要求修改率</th><th>PR→审核</th><th>PR→合并</th><th>模型</th></tr></thead><tbody><tr data-trend-window="week"><th scope="row">7 天</th><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr><tr data-trend-window="month"><th scope="row">30 天</th><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td><td>—</td></tr></tbody></table></div>
     <p class="fine"><small class="muted" data-trend-empty="week">最近 7 天没有审核，所以显示 —，不是 0。</small> <small class="muted" data-trend-empty="month">最近 30 天没有审核，所以显示 —，不是 0。</small></p>
   </section><section class="card"><h2>待处理 PR</h2>
-    <p class="muted">合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。</p>
+    <p class="muted">合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。每个 PR 的合并在它自己的任务页『审查 → 合并』卡片里，只有那一个合并控件。</p>
     <form method="post" action="#" data-confirm="逐个重新检查并合并所有 clean PR？有阻塞的会跳过。" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">合并所有 clean PR</button></form>
-    <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>状态</th><th>核实</th><th>审核分</th><th>成本</th><th>创建</th><th></th></tr></thead><tbody><tr><td data-label="PR"><a href="https://github.com/HugoXK/fledge/pull/742" target="_blank" rel="noreferrer">#742</a></td><td data-label="状态"><span class="badge good">成功</span></td><td data-label="核实"><span class="badge busy">未核实</span><br /><small class="muted">Not verified yet: neither the path guard nor the evidence verification has run.</small></td><td data-label="审核分">88</td><td data-label="成本">¥3.02</td><td data-label="创建">2026-11-13 12:00:00 UTC</td><td data-label="操作"><div class="row"><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost btn-small" type="submit">重新核实</button></form><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn btn-ghost btn-small" type="submit">合并</button></form></div></td></tr></tbody></table></div></section>  <section class="card" id="jobs">
+    <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>状态</th><th>核实</th><th>审核分</th><th>成本</th><th>创建</th><th></th></tr></thead><tbody><tr><td data-label="PR"><a href="https://github.com/HugoXK/fledge/pull/742" target="_blank" rel="noreferrer">#742</a></td><td data-label="状态"><span class="badge good">成功</span></td><td data-label="核实"><span class="badge busy">未核实</span><br /><small class="muted">Not verified yet: neither the path guard nor the evidence verification has run.</small></td><td data-label="审核分">88</td><td data-label="成本">¥3.02</td><td data-label="创建">2026-11-13 12:00:00 UTC</td><td data-label="操作"><div class="row"><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost btn-small" type="submit">重新核实</button></form><a class="link" href="job.html#review-merge">审查并合并</a></div></td></tr></tbody></table></div></section>  <section class="card" id="jobs">
     <h2>任务</h2>
     <div class="table-scroll"><table class="job-table table-priority" id="repo-jobs-table" aria-label="任务"><thead><tr><th>任务</th><th>状态</th><th>PR / Issue</th><th data-priority="low">摘要</th></tr></thead><tbody><tr data-job-id="job_mock_failed">
         <td class="job-cell" data-label="任务">
@@ -278,11 +278,11 @@
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" checked /> 自动迭代</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" checked /> 启用</label>
-          <label>发现间隔<button type="button" class="info-tip" aria-label="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。" aria-expanded="false" data-tip="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。">!</button> <select name="interval"><option value="60">每小时</option><option value="120">每 2 小时</option><option value="180">每 3 小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
+          <label>发现间隔<button type="button" class="info-tip" aria-label="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。" aria-expanded="false" data-tip="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。">!</button> <select name="interval" id="repo-settings-interval"><option value="60">每小时</option><option value="120">每 2 小时</option><option value="180">每 3 小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" checked  data-role-can-review="1" /> 启用 PR 审核</label>
-          <label>审核间隔 <select name="reviewInterval" ><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
+          <label>审核间隔 <select name="reviewInterval" id="repo-settings-review-interval" ><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
         </div>
         <div class="row" data-merge-group>
           <label class="check"><input type="checkbox" name="autoMerge" value="1" checked  /> 允许 maintainer 自动合并 PR<button type="button" class="info-tip" aria-label="默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。" aria-expanded="false" data-tip="默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。">!</button></label>

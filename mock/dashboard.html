@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#f6f1e7" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0d0c0b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>仓库 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=cf958854359d" />
+  <link rel="stylesheet" href="assets/app.css?v=eed2b384789d" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -48,15 +48,18 @@
 <div class="banner" data-mock-snapshot>静态快照 · 由 <code>npm run mock:snapshot</code> 从真实视图生成；表单和链接不会提交。Static snapshot generated from the real views; forms and links are inert.</div>
     
     
-    <section class="workspace-hero">
-    <div class="workspace-intro">
-      <div class="eyebrow">仓库</div>
+    <section class="masthead">
+    <div class="masthead-copy">
       <h1>仓库</h1>
-      <p class="muted">接入仓库、设置迭代目标，并查看最近任务。</p>
+      <p class="lede">接入仓库、写下一个目标；团队每次只交回一个 PR，由你审核并合并。</p>
+      <div class="masthead-meta"><span><b>2</b> 个仓库</span><span><b>2</b> 个任务</span><span><b>3</b> 个未完成工作项</span></div>
     </div>
+    <nav class="loop-rail" aria-label="工作循环">
+    <div class="loop-step" data-stage="connect" data-state="done"><span class="dot" aria-hidden="true"></span><span class="step-label">接入</span><span class="step-note">添加一个仓库</span></div><div class="loop-step" data-stage="goal" data-state="done"><span class="dot" aria-hidden="true"></span><span class="step-label">目标</span><span class="step-note">写下一个目标</span></div><div class="loop-step" data-stage="work" data-state="done"><span class="dot" aria-hidden="true"></span><span class="step-label">工作</span><span class="step-note">团队开一个 PR</span></div><div class="loop-step" data-stage="review" data-state="current" aria-current="step"><span class="dot" aria-hidden="true"></span><span class="step-label">审核</span><span class="step-note">打开 PR</span></div><div class="loop-step" data-stage="merge" data-state="next"><span class="dot" aria-hidden="true"></span><span class="step-label">合并</span><span class="step-note">合并后继续</span></div>
+  </nav>
   </section>
   <div class="card notices"><h2>通知</h2><div class="notice"><span>平台额度剩余 ¥50.00；首次运行可能不够用时，建议配置自己的模型。</span><small>2026-11-15 12:00:00 UTC</small></div><div class="notice"><span>PR #742 等待合并</span><small>2026-11-15 12:00:00 UTC</small></div><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="link" type="submit">全部标为已读</button></form></div>
-  <section class="card" id="next-action" data-next-action="alert" aria-labelledby="next-action-title">
+  <section class="card action-card" id="next-action" data-next-action="alert" aria-labelledby="next-action-title">
     <div class="eyebrow">下一步</div>
     <h2 id="next-action-title">PR 已打开 48 小时</h2>
     <p class="muted">这是唯一需要你处理的事项。</p>
