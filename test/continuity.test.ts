@@ -218,6 +218,13 @@ function pageReport(overrides: Partial<Record<string, unknown>> = {}): string {
   })
 }
 
+// The row names its link: the code element is read out and compared exactly, so
+// the assertion says the URL *is* the row's link instead of that the URL appears
+// somewhere in the page (CodeQL's incomplete-url-substring check).
+function rowLink(row: string): string | null {
+  return /<code>([^<]*)<\/code>/.exec(row)?.[1] ?? null
+}
+
 function jobPageFor(jobOverrides: Partial<JobRow>): string {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -241,9 +248,9 @@ test('the job page lists each dropped item with its link and reason from the sto
   assert.match(html, /data-carry-over>carry-over: 1 used, 2 dropped \(closed\/merged\)</)
   const rows = html.split('data-carry-over-item data-kind').slice(1)
   assert.equal(rows.length, 2, 'two dropped items render two rows, not a single count')
-  assert.ok(rows[0]!.includes(CLOSED_ISSUE), 'the closed issue row names its link')
+  assert.equal(rowLink(rows[0]!), CLOSED_ISSUE, 'the closed issue row names its link')
   assert.match(rows[0]!, /Closed issue/, 'the closed issue row names its reason')
-  assert.ok(rows[1]!.includes(MERGED_PR), 'the merged pull request row names its link')
+  assert.equal(rowLink(rows[1]!), MERGED_PR, 'the merged pull request row names its link')
   assert.match(rows[1]!, /Merged pull request/, 'the merged pull request row names its reason')
 })
 
@@ -260,7 +267,7 @@ test('the page names the class of an unverified item it could not read', () => {
   })
   const rows = html.split('data-carry-over-item data-kind').slice(1)
   assert.equal(rows.length, 1, 'the unverified item is listed, not only counted')
-  assert.ok(rows[0]!.includes(FAILED_LINK), 'the unverified row names its link')
+  assert.equal(rowLink(rows[0]!), FAILED_LINK, 'the unverified row names its link')
   assert.match(rows[0]!, /Read failed/, 'the unverified row names the class of the failure')
 })
 
@@ -268,7 +275,7 @@ test('a report written before the item list still lists what it dropped', () => 
   const html = jobPageFor({ id: 'job_old_report', goal: 'fix bugs', continuity_used: 1, carry_over_json: pageReport({ items: [] }) })
   const rows = html.split('data-carry-over-item data-kind').slice(1)
   assert.equal(rows.length, 2, 'the stored links and observations still render rows')
-  assert.ok(rows[0]!.includes(CLOSED_ISSUE), 'the old row names its link')
+  assert.equal(rowLink(rows[0]!), CLOSED_ISSUE, 'the old row names its link')
   assert.match(rows[0]!, /Closed issue/, 'the observation supplies the recorded reason')
   assert.match(rows[1]!, /Merged pull request/, 'a merged pull request keeps its own reason')
 })
