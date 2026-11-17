@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Store } from '../src/db.js'
+import { Store, formatReviewOutcomeDetail, parseReviewOutcomeDetail } from '../src/db.js'
 import type { RepoRow, UserRow } from '../src/db.js'
 import { repoPage } from '../src/views/pages.js'
 import { makeUser, testConfig } from './helpers.js'
@@ -126,6 +126,33 @@ test('the trend takes one first-decision sample per work item, and says so', () 
   }
 })
 
+test('a decision row round-trips, and a row written before the identity still reads', () => {
+  // The formatter and its reader live together so the trend and an override
+  // cannot read one audit row two ways. These cases pin both shapes the store
+  // holds: the one this build writes, and the one it wrote before #794.
+  const detail = formatReviewOutcomeDetail({
+    workItemId: 'item_x', outcome: 'changes_requested', score: 61,
+    reviewJobId: 'job_decision', tip: TIP_A, model: 'model-a',
+  })
+  assert.equal(detail, `item_x: changes_requested score=61 review=job_decision tip=${TIP_A} model=model-a`)
+  assert.deepEqual(parseReviewOutcomeDetail(detail), {
+    workItemId: 'item_x', outcome: 'changes_requested', score: 61,
+    reviewJobId: 'job_decision', tip: TIP_A, model: 'model-a',
+  })
+
+  // A row written before the identity existed carries the score and nothing
+  // else: it parses with the missing fields null instead of a borrowed revision.
+  assert.deepEqual(parseReviewOutcomeDetail('item_old: changes_requested score=55'), {
+    workItemId: 'item_old', outcome: 'changes_requested', score: 55,
+    reviewJobId: null, tip: null, model: null,
+  })
+
+  // Anything that is not that shape is unknown, not guessed.
+  assert.equal(parseReviewOutcomeDetail('no separator here'), undefined, 'no work item id, no row')
+  assert.equal(parseReviewOutcomeDetail('item_x: something score=5'), undefined, 'an outcome this build never wrote is not a decision')
+  assert.equal(parseReviewOutcomeDetail('item_x: approved'), undefined, 'a row with no score is not a decision')
+})
+
 test('the override rate counts a merge past a recorded blocking decision', () => {
   const seeded = seed('override-rate')
   const { store, user, repo } = seeded
@@ -217,6 +244,43 @@ test('an empty window shows — for the override rate, never 0', () => {
     const html = page(seeded)
     assert.match(html, /data-trend-empty="week"/)
     assert.doesNotMatch(html, /data-trend-override-rate="week"[^<]*>0%/)
+  } finally {
+    seeded.store.close()
+  }
+})
+
+test('an override whose decision predates the identity says so on the page', () => {
+  const seeded = seed('override-unrecorded')
+  const { store, user, repo } = seeded
+  try {
+    // The decision row was written before #794, so it names no review job; the
+    // override row is from the same build and carries `-` in every identity
+    // field. The page must label the gap, not print three empty slots.
+    seedWorkItem(store, user, repo, { id: 'item_a', prNumber: 1, openedDaysAgo: 10, state: 'changes_requested' })
+    seedWorkItem(store, user, repo, { id: 'item_b', prNumber: 2, openedDaysAgo: 8, mergedDaysAgo: 4, state: 'merged' })
+    seedReview(store, user, repo, { id: 'job_ra', finishedDaysAgo: 2, score: 50, model: 'model-a', workItemId: 'item_a' })
+    seedReview(store, user, repo, { id: 'job_rb', finishedDaysAgo: 5, score: 60, model: 'model-b', workItemId: 'item_b' })
+    store.audit(user.id, 'work_item.review_outcome', 'item_a: changes_requested score=50')
+    store.audit(user.id, 'work_item.review_outcome', 'item_b: changes_requested score=60')
+    store.createJob({
+      id: 'job_fix_b', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'fix it', callbackHash: 'hash_fix_b',
+      platformTokenHash: '', kind: 'iterate', workItemId: 'item_b', createdAt: ago(4),
+    })
+    store.updateJob('job_fix_b', {
+      status: 'succeeded', finished_at: ago(4), pr_url: 'https://github.com/acme/override-unrecorded/pull/2', branch: 'fledge/fix-b',
+    })
+    store.audit(user.id, 'job.merge_review_override', 'job_fix_b: review - score=60 tip=- model=- reason=review 60 < 80')
+
+    const week = store.reviewTrend(repo.id, ago(7))
+    assert.equal(week.overrides, 1, 'the merge still counts: the decision itself is recorded')
+    assert.equal(week.overrideDetails[0]?.reviewJobId, null, 'the row names no review job')
+    assert.equal(week.overrideDetails[0]?.tip, null)
+    assert.equal(week.overrideDetails[0]?.model, null)
+
+    const html = page(seeded)
+    assert.match(html, /review not recorded/i, 'the review identity is labelled missing')
+    assert.match(html, /model not recorded/i)
+    assert.match(html, /revision not recorded/i)
   } finally {
     seeded.store.close()
   }

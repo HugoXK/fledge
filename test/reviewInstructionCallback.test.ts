@@ -147,3 +147,47 @@ test('a callback instruction is bounded by the carrier’s own limit', async () 
     store.close()
   }
 })
+
+test('a review that decides a work item records the job, the model and the tip it covered', async () => {
+  // #794: the decision row is the record an override reads back. Before this
+  // test the row was only ever written by hand in a fixture, so the callback
+  // path — which is the only real writer — was unexecuted: it could name the
+  // wrong job, drop the model, or borrow the merge tip and nothing failed.
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), RUNNER, new MemoryMailer())
+  const secret = 'packet-callback-decision'
+  const prUrl = 'https://github.com/o/packet-decision/pull/11'
+  const tip = 'f'.repeat(40)
+  try {
+    const repo = repoFor(store, 'packet-decision')
+    store.createWorkItem({
+      id: 'item_decision', repoId: repo.id, userId: repo.user_id, title: 'pull request 11',
+      prUrl, state: 'in_review',
+    })
+    store.createJob({
+      id: 'job_decision', repoId: repo.id, userId: repo.user_id, trigger: 'schedule', goal: 'review the pull request',
+      callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'review', baseBranch: 'main', workItemId: 'item_decision',
+    })
+    store.updateJob('job_decision', {
+      status: 'running', branch: 'fledge/decision', started_at: new Date().toISOString(),
+      model_json: JSON.stringify({ model: { id: 'provider:model-a', label: 'model-a' }, attempts: [] }),
+    })
+    const result = await jobs.handleCallback('job_decision', secret, {
+      status: 'succeeded',
+      reviewScore: 55,
+      followUps: [{ prUrl, branch: 'fledge/decision', headSha: tip, reason: 'review requested changes' }],
+    })
+    assert.equal(result.ok, true, result.error ?? 'no error')
+
+    const decision = store.latestReviewOutcome('item_decision')
+    assert.ok(decision !== undefined, 'the callback wrote a decision row this build can read')
+    assert.equal(decision.outcome, 'changes_requested')
+    assert.equal(decision.score, 55)
+    assert.equal(decision.reviewJobId, 'job_decision', 'the row names the review job that decided')
+    assert.equal(decision.model, 'model-a', 'and the model that answered')
+    assert.equal(decision.tip, tip, 'and the tip that review covered, taken from its own follow-up')
+    assert.equal(store.latestReviewOutcome('item_decision', 'approved'), undefined, 'a decision does not answer to the outcome it is not')
+  } finally {
+    store.close()
+  }
+})
