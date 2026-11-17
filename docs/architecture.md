@@ -531,6 +531,19 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
   Jobs that exceed the timeout are failed.
+- **One answer for "why did this not start"** (#807 review, #938, #942):
+  `Store.automationDispatchBlocker` is the single predicate behind both the
+  dispatcher's refusal and the `automation_idle_with_work` alert, so the console
+  cannot report a repository idle after the dispatcher has already named a
+  reason. It answers `user_not_ready`, `instance_not_ready` or `quota`. The quota
+  member arrived last: it applies only when the platform pays for the run
+  (`Store.platformFundedFor`, the same rule the refusal reads — a user's own
+  model or a repository's own model selection means the platform pays nothing),
+  and it asks `quotaExhausted` in `src/gateway/quota.ts`, which `quotaView` also
+  reads, so the refusal and the alert cannot disagree on the arithmetic either.
+  A caller that passes no quota rate keeps the older two-reason answer rather
+  than refusing work it cannot see; `alerts()` passes the rate its callers
+  already carry.
 - **Schedule expressions** (#544, first slice): `src/schedules/next.ts` is the
   one planner a preview and the worker will share. A schedule is either a
   five-field cron expression (numeric values, `*`, ranges, lists and steps; no

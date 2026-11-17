@@ -10,6 +10,7 @@ import { canonicalSections, strategyHash } from './strategy/bundle.js'
 import { currentStrategySections } from './strategy/sources.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
+import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
@@ -4870,9 +4871,31 @@ export class Store {
     return this.getRepoInstance(repoId)?.status === 'ready'
   }
 
-  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean): 'user_not_ready' | 'instance_not_ready' | null {
+  // #732/#942: the platform pays only when the job has no own model to use. A
+  // repository selection is an own model too: the bridge patches the instance from
+  // `listRepoModelSelection` and the gateway resolves the same row, so checking
+  // only the legacy users.own_llm_* columns would refuse a job that spends no
+  // platform quota. This one implementation is what both the refusal and the
+  // scheduler predicate read.
+  platformFundedFor(user: UserRow, repoId: string): boolean {
+    const legacyOwnModel =
+      user.own_llm_base_url !== null &&
+      user.own_llm_base_url !== '' &&
+      user.own_llm_key_enc !== null
+    return !legacyOwnModel && this.listRepoModelSelection(repoId).length === 0
+  }
+
+  // #942: quota joins the readiness halves, so the alert and the dispatcher
+  // cannot disagree about a repository the platform will not fund. The quota
+  // answer is optional on purpose: a caller that did not read one (the two-argument
+  // callers) keeps the old answer instead of being refused on a guess.
+  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean, quota?: { usdCny: number }): 'user_not_ready' | 'instance_not_ready' | 'quota' | null {
     if (!this.userReadyForScheduling(repo.user_id)) return 'user_not_ready'
     if (!this.instanceReadyForScheduling(repo.id, instancesManaged)) return 'instance_not_ready'
+    if (quota !== undefined) {
+      const user = this.userById(repo.user_id)
+      if (user !== undefined && this.platformFundedFor(user, repo.id) && quotaExhausted(user, quota.usdCny)) return 'quota'
+    }
     return null
   }
 
@@ -4950,7 +4973,7 @@ export class Store {
     for (const repo of repos) {
       if (repo.enabled !== 1 || repo.auto_iterate !== 1) continue
       if (runningRepos.has(repo.id)) continue
-      if (this.automationDispatchBlocker(repo, instancesManaged) !== null) continue
+      if (this.automationDispatchBlocker(repo, instancesManaged, { usdCny }) !== null) continue
       const oldest = readySince.get(repo.id)
       if (oldest === undefined || !Number.isFinite(oldest)) continue
       const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
