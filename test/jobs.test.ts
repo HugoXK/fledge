@@ -1376,6 +1376,51 @@ test('a repository whose bridge instance is not up is reported as instance_not_r
   }
 })
 
+test('a repository the dispatcher refuses for quota is reported with its reason, not as idle', async () => {
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const blocked = (reason: string): number =>
+      metricsSnapshot().counters
+        .filter((entry) => entry.name === 'fledge_automation_blocked_total' && entry.labels.reason === reason)
+        .reduce((sum, entry) => sum + entry.value, 0)
+    const idleAlerts = (now?: string): number =>
+      store.alerts({ ...(now === undefined ? {} : { now }), usdCny: 1, automationIdleMinutes: 30 })
+        .filter((alert) => alert.kind === 'automation_idle_with_work').length
+
+    const user = makeUser(store, { login: 'quota-refused-user', status: 'approved', quota: 0 })
+    const repo = store.createRepo({ id: 'repo_quota_refused', userId: user.id, owner: 'o', name: 'quota', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.createWorkItem({ id: 'work_quota_refused', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
+    store.db.exec("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_quota_refused'")
+
+    // An exhausted quota is a refusal like an unapproved user or a starting
+    // instance: the repository is waiting on the platform, not idle with work.
+    // It must stay silent before the dispatcher has tried anything.
+    assert.equal(idleAlerts(), 0)
+
+    // The dispatcher names the quota instead of starting a job.
+    const before = blocked('quota')
+    await jobs.tick()
+    assert.equal(blocked('quota'), before + 1)
+    assert.equal(store.listJobsForRepo(repo.id).filter((job) => job.status !== 'quota_exhausted').length, 0)
+    assert.equal(idleAlerts(), 0)
+
+    // The refusal rewrites last_run_at for an iterate refusal; that must not let
+    // the alert speak again half an hour later about a repository blocked the
+    // whole time.
+    assert.equal(idleAlerts(new Date(Date.parse('2020-01-01T00:00:00.000Z') + 31 * 60_000).toISOString()), 0)
+
+    // Control: with quota back, the same repository does raise the alert, so the
+    // silence above is the refusal and not a broken alert.
+    store.setUserQuota(user.id, 100)
+    const funded = store.alerts({ usdCny: 1, automationIdleMinutes: 30 })
+      .filter((alert) => alert.kind === 'automation_idle_with_work' && alert.repoId === repo.id)
+    assert.equal(funded.length, 1)
+  } finally {
+    store.close()
+  }
+})
+
 test('three consecutive failures pause auto-iterate', async () => {
   const store = new Store(':memory:')
   const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())

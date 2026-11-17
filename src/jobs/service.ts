@@ -64,23 +64,11 @@ import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
 import { repoGithubToken, ReadOnlyTokenUnavailable, triageReadOnlyToken } from '../repos/token.js'
+import { platformQuotaExhausted } from '../lib/platformFunding.js'
 import { parseTeam } from '../flybot/instances.js'
 import { isRuleChange, loadRepoRules, RulesError, type RepoRules } from '../rules.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
-
-// #732: the platform pays only when the job has no own model to use. A
-// repository selection is an own model too: the bridge patches the instance from
-// `listRepoModelSelection` and the gateway resolves the same row, so checking
-// only the legacy users.own_llm_* columns refused a job that would never spend
-// platform quota.
-function platformFundedFor(user: UserRow, store: Store, repoId: string): boolean {
-  const legacyOwnModel =
-    user.own_llm_base_url !== null &&
-    user.own_llm_base_url !== '' &&
-    user.own_llm_key_enc !== null
-  return !legacyOwnModel && store.listRepoModelSelection(repoId).length === 0
-}
 
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
@@ -1310,9 +1298,9 @@ export class Jobs {
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
-    const platformFunded = platformFundedFor(user, this.store, repo.id)
-
-    if (platformFunded && quotaView(user, this.config).exhausted) {
+    // #942: the refusal and the store predicate that keeps a refused repository
+    // out of the idle alert read one quota answer.
+    if (platformQuotaExhausted(user, this.store.listRepoModelSelection(repo.id).length, this.config.quota.usdCny)) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, workType: workType.type, ownerStarted: this.ownerStartedFor(trigger, options) })
       this.store.updateJob(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。', error_code: 'QUOTA_EXHAUSTED', finished_at: nowIso() })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'quota_exhausted' })
@@ -4123,8 +4111,7 @@ export class Jobs {
     } catch (error) {
       return fail(`任务密钥无法解密：${String(error)}`)
     }
-    const platformFunded = platformFundedFor(user, this.store, repo.id)
-    if (platformFunded && quotaView(user, this.config).exhausted) {
+    if (platformQuotaExhausted(user, this.store.listRepoModelSelection(repo.id).length, this.config.quota.usdCny)) {
       this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。' }, revoke)
       await this.quotaNotifier.notify(user)
       return
@@ -4440,7 +4427,7 @@ export class Jobs {
       }
       // The readiness test is the store's, so the alert the console lists and the
       // decision taken here cannot name different reasons for one repository.
-      const notReady = this.store.automationDispatchBlocker(repo, this.instancesManaged)
+      const notReady = this.store.automationDispatchBlocker(repo, this.instancesManaged, this.config.quota.usdCny)
       if (notReady !== null) {
         blocked(notReady)
         continue

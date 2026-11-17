@@ -68,8 +68,8 @@ Automation alerts:
   enabled, automatic iteration on, the owner approved, the bridge instance ready
   when the installation runs instances — and it lives in one place,
   `Store.automationDispatchBlocker`, so the alert cannot call a repository idle
-  after the dispatcher has refused it as `user_not_ready` or
-  `instance_not_ready`. The alert clears as soon as a job starts, because the
+  after the dispatcher has refused it as `user_not_ready`,
+  `instance_not_ready` or `quota`. The alert clears as soon as a job starts, because the
   condition is recomputed rather than remembered, and the notification pass
   keeps one per `OPS_ALERT_COOLDOWN_MINUTES` window.
 - `FledgeDispatchLatencyHigh` pages when the p95 dispatch latency is above 15

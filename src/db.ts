@@ -12,6 +12,7 @@ import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
 import { randomId, redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
+import { platformQuotaExhausted } from './lib/platformFunding.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import type { CostReport } from './metrics/cost.js'
 
@@ -4865,9 +4866,14 @@ export class Store {
     return this.getRepoInstance(repoId)?.status === 'ready'
   }
 
-  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean): 'user_not_ready' | 'instance_not_ready' | null {
+  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean, usdCny = 1): 'user_not_ready' | 'instance_not_ready' | 'quota' | null {
     if (!this.userReadyForScheduling(repo.user_id)) return 'user_not_ready'
     if (!this.instanceReadyForScheduling(repo.id, instancesManaged)) return 'instance_not_ready'
+    // #942: an exhausted platform quota is the fourth reason a repository did not
+    // start. It belongs here, with the other two, so the alert cannot call idle a
+    // repository the dispatcher has just refused.
+    const user = this.userById(repo.user_id)
+    if (user !== undefined && platformQuotaExhausted(user, this.listRepoModelSelection(repo.id).length, usdCny)) return 'quota'
     return null
   }
 
@@ -4945,7 +4951,7 @@ export class Store {
     for (const repo of repos) {
       if (repo.enabled !== 1 || repo.auto_iterate !== 1) continue
       if (runningRepos.has(repo.id)) continue
-      if (this.automationDispatchBlocker(repo, instancesManaged) !== null) continue
+      if (this.automationDispatchBlocker(repo, instancesManaged, usdCny) !== null) continue
       const oldest = readySince.get(repo.id)
       if (oldest === undefined || !Number.isFinite(oldest)) continue
       const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)

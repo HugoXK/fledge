@@ -1,5 +1,6 @@
 import type { Config } from '../config.js'
 import type { UserRow } from '../db.js'
+import { remainingQuotaCny } from '../lib/platformFunding.js'
 
 export interface QuotaView {
   unlimited: boolean
@@ -17,12 +18,12 @@ export function quotaView(user: UserRow, config: Config): QuotaView {
       unlimited: true,
       initialCny: user.quota_cny,
       usedCny,
-      remainingCny: user.quota_cny,
+      remainingCny: remainingQuotaCny(user, config.quota.usdCny),
       remainingUsd: user.quota_cny / config.quota.usdCny,
       exhausted: false,
     }
   }
-  const remainingCny = Math.max(0, user.quota_cny - usedCny)
+  const remainingCny = remainingQuotaCny(user, config.quota.usdCny)
   return {
     unlimited: false,
     initialCny: user.quota_cny,
