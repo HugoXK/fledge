@@ -322,8 +322,9 @@ export function layout(options: LayoutOptions): string {
   ${themeMeta('system')}
   <title>${escapeHtml(title)} · Fledge</title>
   <link rel="stylesheet" href="${assetUrl('/assets/app.css')}" />
+  <link rel="stylesheet" href="${assetUrl('/assets/fledge-deepwiki.css')}" />
 </head>
-<body>
+<body data-fledge-auth="${viewer !== undefined && viewer !== null ? 'in' : 'out'}" data-fledge-locale="${locale}" data-fledge-path="${escapeHtml(path)}">
   <a class="skip-link" href="#main">${escapeHtml(t('跳到主要内容', 'Skip to main content'))}</a>
   <header class="top">
     <div class="top-inner">
@@ -356,6 +357,7 @@ export function layout(options: LayoutOptions): string {
   </dialog>
   <script src="${assetUrl('/assets/app.js')}" defer></script>
   <script src="${assetUrl('/assets/questions.js')}" defer></script>
+  <script src="${assetUrl('/assets/fledge-deepwiki.js')}" defer></script>
 </body>
 </html>`
 }

@@ -745,7 +745,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (!request.url.startsWith('/v1') && !request.url.startsWith('/api/')) {
       reply.header(
         'content-security-policy',
-        "default-src 'self'; img-src 'self' https://avatars.githubusercontent.com data:; style-src 'self' 'unsafe-inline'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
+        "default-src 'self'; connect-src 'self' https://mcp.deepwiki.com; img-src 'self' https://avatars.githubusercontent.com data:; style-src 'self' 'unsafe-inline'; script-src 'self'; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
       )
     }
     if (config.baseUrl.startsWith('https://')) reply.header('strict-transport-security', 'max-age=31536000; includeSubDomains')
