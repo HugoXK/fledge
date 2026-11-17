@@ -1442,6 +1442,48 @@ Run it from a timer only after a dry run has shown the candidates:
 10 4 * * *  cd /opt/fledge && node scripts/artifact-retention.mjs --root /var/lib/fledge/flybot-users --apply
 ```
 
+### Data retention windows
+
+`pruneOldData` runs in the scheduler tick (at most hourly) and deletes rows older
+than a per-class window. Each window is an environment variable; unset takes the
+built-in value, which is the number the service already enforced:
+
+| Variable | Class | Default |
+|---|---|---|
+| `RETENTION_OAUTH_STATES_DAYS` | `oauth_states` | 7 |
+| `RETENTION_APPROVAL_TOKENS_DAYS` | `approval_tokens` (expired or used) | 30 |
+| `RETENTION_NOTIFICATIONS_READ_DAYS` | read `notifications` | 30 |
+| `RETENTION_NOTIFICATIONS_UNREAD_DAYS` | unread `notifications` | 90 |
+| `RETENTION_EVENTS_DAYS` | `events` | 90 |
+| `RETENTION_JOB_EVENTS_DAYS` | `job_events` | 365 |
+| `RETENTION_WEBHOOK_DELIVERIES_DAYS` | `webhook_deliveries` | 30 |
+| `RETENTION_OUTBOX_SENT_DAYS` | sent `notification_outbox` | 30 |
+| `RETENTION_OUTBOX_DEAD_DAYS` | dead/blocked `notification_outbox` | 90 |
+| `RETENTION_OUTBOX_UNKNOWN_DAYS` | unknown `notification_outbox` | 365 |
+| `RETENTION_JOBS_DAYS` | finished `jobs` | 365 |
+| `RETENTION_AUDIT_LOG_DAYS` | `audit_log` | 365 |
+| `RETENTION_QUOTA_LEDGER_DAYS` | `quota_ledger` | 730 |
+
+An unset window is the default, never "keep forever", and a value that is not an
+integer or is below 1 falls back to the default rather than being read as zero
+(zero here would mean "delete every row"). `sessions` are removed by
+`expires_at` and `api_tokens` have no age window; neither is configurable here.
+
+Preview any change before making it. The tool opens the database read-only, holds
+no write lock, prints one `count=` line per class and two states instead of a
+number:
+
+```sh
+sudo -u fledge DB_PATH=/var/lib/fledge/fledge.db node scripts/retention.mjs --dry-run --days 30
+```
+
+`--days` is required; it never guesses a window. `--dry-run` is accepted for
+symmetry with `npm run artifacts:prune`, and the tool never deletes rows with or
+without it. The output is counts only — never a row body, login, email or token
+value — so the preview can be pasted into a log. The same counts for the
+configured windows appear on `/admin`'s **Data retention** card, with an unset
+window marked `default`.
+
 ## 10. Go-live checklist
 
 - [ ] HTTPS `BASE_URL`; OAuth callback matches exactly.

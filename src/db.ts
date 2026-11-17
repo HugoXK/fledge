@@ -28,6 +28,7 @@ export interface UsageDetail {
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
+import { RETENTION_CLASSES, retentionCountSql, retentionDefaultWindows, retentionDeleteSql, type RetentionAt, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -6980,27 +6981,36 @@ export class Store {
     return { retries, followups, jobEvents, instances }
   }
 
-  pruneOldData(): void {
+  /**
+   * #281: how many rows each configured window would delete right now, through
+   * the same predicate `pruneOldData` runs. The admin page renders these; the
+   * dry-run tool prints them from the same table. Read-only by construction.
+   */
+  retentionCounts(windows: RetentionWindows = retentionDefaultWindows()): Array<{ id: RetentionId; days: number; count: number }> {
+    const now = Date.now()
+    return RETENTION_CLASSES.map((cls) => {
+      const days = windows[cls.id] ?? cls.defaultDays
+      const at: RetentionAt = { now: nowIso(), cutoff: new Date(now - days * 86_400_000).toISOString() }
+      const { sql, params } = retentionCountSql(cls, at)
+      return { id: cls.id, days, count: Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0) }
+    })
+  }
+
+  // #281: every window comes from config, with the shipped literal as the
+  // default, and the predicates live beside the dry-run tool in
+  // `scripts/lib/retention.mjs` so a preview cannot count different rows than
+  // the delete removes. `deleteExpiredSessions` stays: sessions age out by
+  // `expires_at`, not by a day count. No new delete path and no default changed.
+  pruneOldData(windows: RetentionWindows = retentionDefaultWindows()): void {
     const now = Date.now()
     const cutoff = (days: number): string => new Date(now - days * 86_400_000).toISOString()
+    const at = (days: number): RetentionAt => ({ now: nowIso(), cutoff: cutoff(days) })
     this.deleteExpiredSessions()
-    this.run('DELETE FROM oauth_states WHERE created_at < ?', cutoff(7))
-    this.run('DELETE FROM approval_tokens WHERE (expires_at < ? OR used_at IS NOT NULL) AND created_at < ?', nowIso(), cutoff(30))
-    this.run('DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?', cutoff(30))
-    this.run('DELETE FROM notifications WHERE read_at IS NULL AND created_at < ?', cutoff(90))
-    this.run('DELETE FROM events WHERE at < ?', cutoff(90))
-    this.run('DELETE FROM job_events WHERE at < ?', cutoff(365))
-    this.run('DELETE FROM webhook_deliveries WHERE received_at < ?', cutoff(30))
-    // #544 slice 7: a delivered notification is a receipt, so it goes with the
-    // other 30-day receipts. The unresolved states are kept longer because they
-    // are what a human still has to look at; `unknown` keeps its full window so
-    // the duplicate risk stays visible instead of ageing out with the sent rows.
-    this.run("DELETE FROM notification_outbox WHERE state = 'sent' AND created_at < ?", cutoff(30))
-    this.run("DELETE FROM notification_outbox WHERE state IN ('dead', 'blocked') AND created_at < ?", cutoff(90))
-    this.run("DELETE FROM notification_outbox WHERE state = 'unknown' AND created_at < ?", cutoff(365))
-    this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
-    this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
-    this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))
+    for (const cls of RETENTION_CLASSES) {
+      const days = windows[cls.id] ?? cls.defaultDays
+      const { sql, params } = retentionDeleteSql(cls, at(days))
+      this.run(sql, ...params)
+    }
     // #419: the prefix list and the cutoff table were two hand-kept copies of
     // one mapping, so a key could be written without either half ever selecting
     // it. `plan_expired:` and `plan_reminded:` are written per unapproved plan

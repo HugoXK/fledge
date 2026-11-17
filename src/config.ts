@@ -8,6 +8,7 @@ import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { registerRedactionSecrets } from './lib/secrets.js'
 import { DEFAULT_RATE_LIMIT_BUDGETS, type RateLimitBudgets } from './lib/rateLimit.js'
 import { parseManagementService, type ManagementServiceMode } from './management/mode.js'
+import { RETENTION_CLASSES, retentionDefaultWindows, retentionWindow, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
 
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
@@ -41,6 +42,15 @@ export interface Config {
   // #708: the per-class windows mutating routes take. A route names its class;
   // the numbers live here so a deployment tightens a limit without a rebuild.
   rateLimit: RateLimitBudgets
+  // #281: the age windows `pruneOldData` enforces, read from config so a deploy
+  // can change one without a code change. `configured` is false when the env var
+  // is unset, so the operator surface can mark the built-in value as the default.
+  // Unset means today's window, never "keep forever": the rows are deleted at
+  // that age today, and stopping that quietly would be a privacy regression.
+  retention: {
+    windows: RetentionWindows
+    configured: Record<RetentionId, boolean>
+  }
   // #637: the comment names that count as a trigger. `@<name>` in an issue or
   // pull request comment starts a review; a deployment renames or adds names
   // here rather than in code, and an empty list disables the trigger.
@@ -416,6 +426,16 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   const keyB64 = text('TOKEN_ENCRYPTION_KEY')
   const encryptionKey = keyB64 === '' ? randomBytes(32).toString('base64') : keyB64
   const dataDir = resolve(text('DATA_DIR', './data'))
+  // #281: one window per retention class, with the shipped literal as the
+  // effective default. `retentionWindow` refuses 0 and non-integers rather than
+  // reading them as "delete everything", and marks a fallback `configured:false`.
+  const retentionWindows = retentionDefaultWindows()
+  const retentionConfigured = {} as Record<RetentionId, boolean>
+  for (const cls of RETENTION_CLASSES) {
+    const parsed = retentionWindow(process.env[cls.env], cls.defaultDays)
+    retentionWindows[cls.id] = parsed.days
+    retentionConfigured[cls.id] = parsed.configured
+  }
   const config: Config = {
     env,
     port: number('PORT', 8080),
@@ -445,6 +465,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         max: Math.max(1, number('RATE_LIMIT_EXPENSIVE_MAX', DEFAULT_RATE_LIMIT_BUDGETS.expensive.max)),
         windowMs: Math.max(1_000, number('RATE_LIMIT_EXPENSIVE_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.expensive.windowMs)),
       },
+    },
+    retention: {
+      windows: retentionWindows,
+      configured: retentionConfigured,
     },
     triggers: {
       mentions: text('FLEDGE_MENTION_NAMES', 'fledge')

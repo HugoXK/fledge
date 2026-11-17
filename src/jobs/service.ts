@@ -4358,7 +4358,7 @@ export class Jobs {
     this.store.deleteExpiredJobTokens()
     if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {
       this.lastPruneAt = Date.now()
-      this.store.pruneOldData()
+      this.store.pruneOldData(this.config.retention.windows)
     }
     if (this.config.env !== 'test' && this.instances !== undefined) {
       await this.instances.healthSweep().catch((error) => log.warn('instance health sweep failed', { error: String(error) }))
