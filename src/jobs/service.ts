@@ -4428,7 +4428,11 @@ export class Jobs {
       // The readiness test is the store's, so the alert the console lists and the
       // decision taken here cannot name different reasons for one repository.
       const notReady = this.store.automationDispatchBlocker(repo, this.instancesManaged, this.config.quota.usdCny)
-      if (notReady !== null) {
+      // #942: a quota refusal keeps its single site in `enqueue`, which writes the
+      // refusal row, the repository status and the owner's notice. The predicate
+      // reports the same reason to the alert, so the two surfaces agree without
+      // moving the refusal's side effects.
+      if (notReady !== null && notReady !== 'quota') {
         blocked(notReady)
         continue
       }

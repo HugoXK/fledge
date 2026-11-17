@@ -1398,22 +1398,26 @@ test('a repository the dispatcher refuses for quota is reported with its reason,
     // It must stay silent before the dispatcher has tried anything.
     assert.equal(idleAlerts(), 0)
 
-    // The dispatcher names the quota instead of starting a job.
+    // The dispatcher names the quota instead of starting a job, and the refusal
+    // keeps the row it has always written.
     const before = blocked('quota')
     await jobs.tick()
     assert.equal(blocked('quota'), before + 1)
-    assert.equal(store.listJobsForRepo(repo.id).filter((job) => job.status !== 'quota_exhausted').length, 0)
+    assert.deepEqual(store.listJobsForRepo(repo.id).map((job) => job.status), ['quota_exhausted'])
     assert.equal(idleAlerts(), 0)
 
     // The refusal rewrites last_run_at for an iterate refusal; that must not let
     // the alert speak again half an hour later about a repository blocked the
     // whole time.
-    assert.equal(idleAlerts(new Date(Date.parse('2020-01-01T00:00:00.000Z') + 31 * 60_000).toISOString()), 0)
+    const refusedAt = Date.parse(store.getRepo(repo.id)?.last_run_at ?? '')
+    assert.equal(Number.isFinite(refusedAt), true, 'the refusal records when it happened')
+    const later = new Date(refusedAt + 31 * 60_000).toISOString()
+    assert.equal(idleAlerts(later), 0)
 
-    // Control: with quota back, the same repository does raise the alert, so the
-    // silence above is the refusal and not a broken alert.
+    // Control: with quota back the same repository does raise the alert at that
+    // same instant, so the silence above is the refusal and not a broken alert.
     store.setUserQuota(user.id, 100)
-    const funded = store.alerts({ usdCny: 1, automationIdleMinutes: 30 })
+    const funded = store.alerts({ now: later, usdCny: 1, automationIdleMinutes: 30 })
       .filter((alert) => alert.kind === 'automation_idle_with_work' && alert.repoId === repo.id)
     assert.equal(funded.length, 1)
   } finally {
