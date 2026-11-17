@@ -10,8 +10,11 @@ import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 // #544, the delivery fact: the console used to answer `unknown` for every
 // repository because the page said no outbox existed. The outbox exists (#544
 // slice 7) and a dispatched occurrence names its job, so the honest answer is
-// the state of the notification that job queued — `none` when it queued
-// nothing, and `unknown` only when nobody read the outbox at all.
+// the state of the notification that job queued — `none` when a finished job
+// queued nothing, and `unknown` while nobody read the outbox, nothing has run,
+// or the run's job has not finished: a job queues its notifications only when
+// it ends (`succeeded`/`failed`), so a queued or running job has no rows yet
+// and a missing value must never print as a definite none.
 
 const HOUR = 3_600_000
 const NOW = Date.parse('2026-11-16T00:00:00Z')
@@ -36,6 +39,8 @@ function dispatched(store: Store, repoId: string, jobId: string): ReturnType<typ
 }
 
 const noJobs = (): string | null => null
+const doneJobs = (): string | null => 'succeeded'
+const jobAt = (status: string): (() => string | null) => () => status
 const fake = (states: NotificationOutboxState[]) => (): Array<{ state: NotificationOutboxState }> => states.map((state) => ({ state }))
 
 // -- the link between a job and the notification it queued ------------------
@@ -62,23 +67,39 @@ test('the console reports the delivery state of the newest dispatched run', () =
     const job = store.createJob({ id: 'job_sent', repoId, userId, trigger: 'schedule', goal: 'g', callbackHash: 'cb_sent', platformTokenHash: '' })
     const row = dispatched(store, repoId, job.id)
     const state = scheduleConsole({
-      repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: noJobs,
+      repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: doneJobs,
       jobDeliveries: fake(['sent']),
     })
     assert.equal(state.delivery, 'sent', 'a notification the transport accepted reads sent, not unknown')
   } finally { store.close() }
 })
 
-test('a run that queued no notification reads none, and no run at all stays unknown', () => {
+test('a run whose job has not finished reads unknown; a finished job that queued nothing reads none', () => {
   const { store, repoId, userId } = harness('delivery-none')
   try {
     const job = store.createJob({ id: 'job_none', repoId, userId, trigger: 'schedule', goal: 'g', callbackHash: 'cb_none', platformTokenHash: '' })
     const row = dispatched(store, repoId, job.id)
+    // A job queues its notifications only when it ends, so while it is queued
+    // or running the empty outbox read is a value nobody knows yet — printing
+    // `none` there would deny a notification the run may still queue.
+    const at = (status: string) => scheduleConsole({
+      repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: jobAt(status),
+      jobDeliveries: fake([]),
+    }).delivery
+    assert.equal(at('queued'), 'unknown', 'a queued job has not queued its notifications yet')
+    assert.equal(at('running'), 'unknown', 'a running job may still queue a notification, so none would be a lie')
+
     const ran = scheduleConsole({
+      repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: doneJobs,
+      jobDeliveries: fake([]),
+    })
+    assert.equal(ran.delivery, 'none', 'a finished job that queued nothing is none, not unknown')
+
+    const lost = scheduleConsole({
       repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: noJobs,
       jobDeliveries: fake([]),
     })
-    assert.equal(ran.delivery, 'none', 'a job that queued nothing is none, not unknown')
+    assert.equal(lost.delivery, 'unknown', 'a job the store cannot find is unknown, not none')
 
     const empty = scheduleConsole({ repoId, row, occurrences: [], now: NOW, jobStatus: noJobs, jobDeliveries: fake([]) })
     assert.equal(empty.delivery, 'unknown', 'nothing has run, so nothing is known')
@@ -94,7 +115,7 @@ test('several notifications read as the worst of them, because one needs attenti
     const job = store.createJob({ id: 'job_worst', repoId, userId, trigger: 'schedule', goal: 'g', callbackHash: 'cb_worst', platformTokenHash: '' })
     const row = dispatched(store, repoId, job.id)
     const state = (states: NotificationOutboxState[]) => scheduleConsole({
-      repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: noJobs,
+      repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: doneJobs,
       jobDeliveries: fake(states),
     }).delivery
     assert.equal(state(['sent', 'retry']), 'retry', 'a retry behind a sent row is still visible')
@@ -113,9 +134,9 @@ test('the page prints the delivery it knows instead of "no delivery outbox in th
     const row = dispatched(store, repoId, job.id)
     const user = store.userById(userId)!
     const viewer = { user, csrfToken: 'csrf_test' }
-    const page = (deliveries: Array<{ state: NotificationOutboxState }>) => scheduleConsolePage({
+    const page = (deliveries: Array<{ state: NotificationOutboxState }>, jobStatus: () => string | null = doneJobs) => scheduleConsolePage({
       config: testConfig(), locale: 'en', viewer, repo: store.getRepo(repoId)!, state: scheduleConsole({
-        repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus: noJobs,
+        repoId, row, occurrences: store.listScheduleOccurrences(repoId, 10), now: NOW, jobStatus,
         jobDeliveries: () => deliveries,
       }),
       form: { cron: '', every: '', timezone: '', startAt: '', endAt: '', misfire: 'skip', grace: '', dailyRuns: '' },
@@ -130,6 +151,10 @@ test('the page prints the delivery it knows instead of "no delivery outbox in th
     const none = page([])
     assert.match(none, /data-delivery="none"/)
     assert.match(none, /not queued/, 'a run that queued nothing says so')
+
+    const running = page([], jobAt('running'))
+    assert.match(running, /data-delivery="unknown"/, 'a run whose job has not finished reads unknown')
+    assert.doesNotMatch(running, /not queued/, 'the page must not deny a notification the run may still queue')
 
     const retry = page([{ state: 'sent' }, { state: 'retry' }])
     assert.match(retry, /data-delivery="retry"/)
@@ -154,6 +179,10 @@ test('the schedule console route reads the outbox for the run it shows', async (
     })
     const job = store.createJob({ id: 'job_route', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: 'cb_route', platformTokenHash: '' })
     dispatched(store, repo.id, job.id)
+    // The route reads the store, and a job queues its notifications only when
+    // it ends, so the fixture finishes the job before seeding the webhook row —
+    // the real order at the finish path this page observes.
+    store.updateJob(job.id, { status: 'succeeded' })
     store.enqueueNotification({
       transport: 'webhook', destination: 'webhook', payload: { event: 'job.succeeded', jobId: job.id },
       idempotencyKey: `job.${job.id}:succeeded:webhook`, jobId: job.id, now: NOW,
@@ -161,6 +190,6 @@ test('the schedule console route reads the outbox for the run it shows', async (
     const session = sessionFor(built, user)
     const response = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/schedule`, headers: { cookie: session.cookie } })
     assert.equal(response.statusCode, 200)
-    assert.match(response.body, /data-delivery="pending"/, 'the queued notification is visible on the console')
+    assert.match(response.body, /data-delivery="pending"/, 'the finished run queued a webhook and the console reads it')
   } finally { await built.close() }
 })

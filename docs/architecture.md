@@ -627,8 +627,12 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   schedule with no occurrence row has not run, so it is not a zero. The delivery
   fact is read from the outbox (`notification_outbox.job_id`, below) for the job
   the newest decided instant dispatched: a job that queued a send reports that
-  send's state, and a job that queued none prints `none` — a run with nothing to
-  deliver — rather than the `unknown` of a page that did not look. The outbox's own
+  send's state, and a finished job that queued none prints `none` — a run with
+  nothing to deliver — rather than the `unknown` of a page that did not look. A
+  job queues its notifications only when it ends (`succeeded`/`failed`), so a
+  run whose job is still queued or running prints `unknown` too: the empty read
+  is a value nobody knows yet, and a missing value is never printed as a
+  definite none. The outbox's own
   `unknown` (a send that may have crossed the external boundary) is printed as
   `unconfirmed`, so it is never confused with "nobody read the outbox". The eight facts render through `.schedule-facts`,
   a two-column grid with muted labels that stacks to one column below 640px, so
