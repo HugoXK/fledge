@@ -24,7 +24,7 @@
 ## UI
 
 The console is server-rendered from `src/views/` and styled by `public/app.css`;
-its design tokens are documented in [docs/ui.md](ui.md). One colour pair leaves
+its design tokens are documented in [docs/ui.md](ui.md), and the visual direction is recorded in [design/flight-deck.md](design/flight-deck.md). One colour pair leaves
 the stylesheet: `src/views/theme.ts` renders the `theme-color` meta tags, so its
 `THEME_COLORS` are the palette's two `--bg` values and `test/theme.test.ts`
 fails when they drift from `public/app.css`.

@@ -1,0 +1,1 @@
+The current setup step's mark now paints its ink in `--mark-ink` on the `--accent` fill instead of `--accent-ink`: at 12px the old pair was 1.92:1 in the dark palette and the new one is 9.30:1. The AA guard in `test/uiTokens.test.ts` now covers every token ink painted on a token fill in both palettes, so a rule cannot reintroduce an unreadable pair without failing the build.
