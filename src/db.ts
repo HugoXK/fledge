@@ -3033,11 +3033,16 @@ export class Store {
         repos: Number(this.get<{ n: number }>('SELECT COUNT(*) AS n FROM repos')?.n ?? 0),
       }
       const existing = this.get<IdentityMigrationRow>('SELECT * FROM identity_migrations WHERE version = 1 ORDER BY id LIMIT 1')
+      const next = JSON.stringify(report)
       if (existing === undefined) {
         const id = Number(this.get<{ next: number }>('SELECT COALESCE(MAX(id), 0) + 1 AS next FROM identity_migrations')?.next ?? 1)
-        this.run('INSERT INTO identity_migrations (id, version, report_json, created_at) VALUES (?, 1, ?, ?)', id, JSON.stringify(report), at)
-      } else {
-        this.run('UPDATE identity_migrations SET report_json = ? WHERE id = ?', JSON.stringify(report), existing.id)
+        this.run('INSERT INTO identity_migrations (id, version, report_json, created_at) VALUES (?, 1, ?, ?)', id, next, at)
+      } else if (existing.report_json !== next) {
+        // #671: the row records a migration, not a heartbeat. An unchanged report
+        // is not rewritten: every boot took the write lock for it, and a
+        // read-only or full volume failed the start over a write that moved
+        // nothing.
+        this.run('UPDATE identity_migrations SET report_json = ? WHERE id = ?', next, existing.id)
       }
       return report
     })
