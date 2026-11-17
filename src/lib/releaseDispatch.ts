@@ -93,16 +93,39 @@ function api(options: ReleaseDispatchOptions, path: string): Promise<Response> {
   })
 }
 
+// A repo-scoped token minted with only Actions: write can dispatch the workflow
+// but cannot read any of the preview endpoints, so it answers 403 on the first
+// call. The bare status left the operator guessing which permission to add, and
+// pointing at this list keeps the message and the docs saying the same thing.
+const READ_SCOPES: Array<[RegExp, string]> = [
+  [/\/check-runs/, 'Checks: read'],
+  [/\/pulls/, 'Pull requests: read'],
+  [/\/contents\//, 'Contents: read'],
+  [/\/git\/matching-refs/, 'Contents: read'],
+  [/\/git\/ref\//, 'Contents: read'],
+  [/\/compare\//, 'Contents: read'],
+  [/\/commits\//, 'Contents: read'],
+]
+
+export function readScopeFor(path: string): string {
+  return READ_SCOPES.find(([pattern]) => pattern.test(path))?.[1] ?? 'Contents: read'
+}
+
+function refused(options: ReleaseDispatchOptions, status: number, path: string): Error {
+  if (status !== 403) return new Error(`GitHub ${String(status)} ${path}`)
+  return new Error(`GitHub 403 on ${path}: RELEASE_DISPATCH_TOKEN needs ${readScopeFor(path)} on ${options.repo}.`)
+}
+
 async function json<T>(options: ReleaseDispatchOptions, path: string): Promise<T> {
   const response = await api(options, path)
-  if (!response.ok) throw new Error(`GitHub ${String(response.status)} ${path}`)
+  if (!response.ok) throw refused(options, response.status, path)
   return (await response.json()) as T
 }
 
 async function optional<T>(options: ReleaseDispatchOptions, path: string): Promise<T | null> {
   const response = await api(options, path)
   if (response.status === 404) return null
-  if (!response.ok) throw new Error(`GitHub ${String(response.status)} ${path}`)
+  if (!response.ok) throw refused(options, response.status, path)
   return (await response.json()) as T
 }
 

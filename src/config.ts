@@ -31,8 +31,9 @@ export interface Config {
   // How long a GitHub re-authentication stays "recent" for destructive actions.
   recentAuthMinutes: number
   // #897: the superadmin release action dispatches the existing release
-  // workflow. The token only needs Actions: write on the Fledge repository; it
-  // is a server secret and is never rendered or logged.
+  // workflow. The token needs Actions: write to dispatch and Contents: read,
+  // Checks: read and Pull requests: read to build the preview; it is a server
+  // secret and is never rendered or logged.
   release: {
     dispatchToken: string
     repo: string

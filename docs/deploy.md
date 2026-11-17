@@ -323,7 +323,11 @@ release PR, `ci-ok`, `review-gate`, auto-merge, tag job and `release.yml` publis
 chain stay in charge.
 
 The dispatch credential is `RELEASE_DISPATCH_TOKEN` in the server `.env`, scoped
-to the Fledge repository with only `Actions: write`; prefer a fine-grained token.
+to the Fledge repository with `Actions: write` to dispatch the workflow and
+`Contents: read`, `Checks: read` and `Pull requests: read` to read the preview;
+prefer a fine-grained token, and grant no write scope on contents or pull
+requests. A token minted with only `Actions: write` answers `403` on the first
+preview read, and the Admin page names the scope it needs.
 An empty value disables the action instead of failing the Admin page. The token
 is never rendered, logged or returned by the route.
 

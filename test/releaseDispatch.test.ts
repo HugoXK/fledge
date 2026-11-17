@@ -11,11 +11,16 @@ function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: number | null; tags?: string[]; packageContent?: string } = {}): { fetch: typeof globalThis.fetch; calls: Array<{ url: string; method: string; body: string }> } {
+function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: number | null; tags?: string[]; packageContent?: string; refuseAt?: string } = {}): { fetch: typeof globalThis.fetch; calls: Array<{ url: string; method: string; body: string }> } {
   const calls: Array<{ url: string; method: string; body: string }> = []
   const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = String(input)
     calls.push({ url, method: String(init?.method ?? 'GET'), body: String(init?.body ?? '') })
+    // A fine-grained token with only Actions: write answers 403 with this body;
+    // the message under test must not lean on GitHub's wording.
+    if (overrides.refuseAt !== undefined && url.includes(overrides.refuseAt)) {
+      return json({ message: 'Resource not accessible by personal access token' }, 403)
+    }
     if (url.endsWith('/repos/o/r/commits/main')) return json({ sha: MAIN, commit: { committer: { date: '2026-11-16T07:00:00Z' } } })
     if (url.endsWith('/repos/o/r/git/matching-refs/tags/v')) return json((overrides.tags ?? ['v0.4.0']).map((tag) => ({ ref: `refs/tags/${tag}` })))
     if (url.endsWith('/repos/o/r/commits/v0.4.0')) return json({ sha: TAG_SHA, commit: { committer: { date: '2026-11-16T01:20:00Z' } } })
@@ -109,6 +114,32 @@ test('preview handles an unreadable package, no tag and a non-directory fragment
   const noFragments = await previewRelease(options(fakeFetch({ fragments: null }).fetch))
   assert.equal(noFragments.fragments, 0)
   assert.match(noFragments.reason, /no-fragments/)
+})
+
+// #908: the documented credential was "Actions: write only", so the first
+// preview read answered 403 and the page showed a bare status. Each refused read
+// has to name the scope an operator must add, not echo GitHub's wording.
+test('a refused preview read names the permission the release token is missing', async () => {
+  const cases = [
+    ['/repos/o/r/commits/main', 'Contents: read'],
+    ['/repos/o/r/contents/package.json', 'Contents: read'],
+    ['/check-runs', 'Checks: read'],
+    ['/repos/o/r/pulls?state=open', 'Pull requests: read'],
+    ['/git/ref/heads/release/', 'Contents: read'],
+  ] as const
+  for (const [refuseAt, scope] of cases) {
+    const error = await previewRelease(options(fakeFetch({ refuseAt }).fetch)).then(
+      () => null,
+      (reason: unknown) => reason,
+    )
+    assert.ok(error instanceof Error, `${refuseAt} must fail the preview`)
+    const message = error.message
+    assert.match(message, /403/, `${refuseAt} keeps the status: ${message}`)
+    assert.ok(message.includes(scope), `${refuseAt} names "${scope}": ${message}`)
+    assert.match(message, /RELEASE_DISPATCH_TOKEN/, `${refuseAt} names the setting to change: ${message}`)
+    assert.match(message, /o\/r/, `${refuseAt} names the repository: ${message}`)
+    assert.doesNotMatch(message, /Resource not accessible/, `${refuseAt} does not echo the GitHub body: ${message}`)
+  }
 })
 
 test('previewAndDispatch posts dry_run=false only after a fresh eligible preview', async () => {
