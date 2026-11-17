@@ -472,6 +472,19 @@ run's input and passes `gh` in as the runner. A pull request or merge-queue ref 
 never reach the write: the job's condition and the module both refuse anything
 but `refs/heads/main`.
 
+The reporter itself can fail, and that failure needs its own durable signal
+(#929): until it had one, a `main-health` run that crashed after `ci-ok` had
+failed — a malformed `gh` answer, a refused write — printed its error, exited 1,
+and left nothing, which is the same silence the tracker was built to end. The
+runner's catch now opens one label-less issue titled `ci: main-health failed to
+report`, naming the commit, the run and the original error, and still exits 1.
+Label-less on purpose: a labelled create is rejected before the issue exists
+when the label is missing, so it would depend on the same bootstrap that can
+fail the reporter, and nothing ever searches for this issue — a human reads it
+and closes it. A crash off the default branch writes nothing (the same gate as
+the decision), and the signal's own `gh` call is guarded so a signal that
+cannot be opened cannot mask the failure it reports.
+
 ### Write sessions, one PR per branch, and verification servers
 
 Hard rule 8 in `AGENTS.md` points at these four rules; they are repeated here

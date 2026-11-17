@@ -14,6 +14,10 @@
 //   (not green, no tracker)    -> create one issue, labelled `ci:main-red`
 //   (not green, tracker open)  -> comment on the newest tracker, never a second
 //
+// The reporter's own failure is a fifth write (#929): `reporterAlertIssue` and
+// `alertIssueCreateArgs` below open one label-less signal issue from the
+// runner's catch when the reporter itself fails on the default branch.
+//
 // The reporter searches by the label, never by the title: a human can rename an
 // issue, and a title search would then open a duplicate on the next red run.
 // The concurrency group `ci-main-red` (in the workflow) stops two pushes inside
@@ -99,6 +103,43 @@ export function issueCommentArgs(number, body) {
 
 export function issueCloseArgs(number, body) {
   return ['issue', 'close', text(number), '--comment', text(body)]
+}
+
+// #929: the reporter's own failure signal. Until this, a `main-health` run that
+// crashed — a malformed `gh` answer, a refused write — printed its error,
+// exited 1, and left nothing durable: the job log scrolls away and the tracker
+// the run should have written never exists, so a crashed reporter ended in the
+// same silence the tracker was built to end. When the reporter itself fails on
+// the default branch it opens one label-less issue naming itself. Label-less on
+// purpose: `gh issue create --label <unknown>` is rejected before the issue
+// exists, so a labelled create would depend on the same bootstrap that can fail
+// the reporter, and no code ever searches for this issue — a human reads it
+// and closes it.
+export const REPORTER_JOB = 'main-health'
+export const REPORTER_ALERT_TITLE = 'ci: main-health failed to report'
+
+export function reporterAlertBody({ sha = '', runUrl = '', error = '' } = {}) {
+  return [
+    `\`${REPORTER_JOB}\` failed to report the health of the default branch; this is not the tracker for a red \`main\`.`,
+    '',
+    `Commit: ${text(sha)}`,
+    `Run: ${text(runUrl)}`,
+    '',
+    `Error: ${text(error)}`,
+    '',
+    `Opened by the \`${REPORTER_JOB}\` job itself when it could not finish. It carries no label on purpose — the label bootstrap is part of the write path that just failed — and nothing searches for this issue, so a human closes it once the reporter is fixed.`,
+  ].join('\n')
+}
+
+export function reporterAlertIssue({ ref = '', sha = '', runUrl = '', error = '' } = {}) {
+  // The same gate as the decision: off the default branch a crash is a red
+  // herring, not a write reason, and `issues: write` must not follow the ref.
+  if (ref !== MAIN_REF) return undefined
+  return { title: REPORTER_ALERT_TITLE, body: reporterAlertBody({ sha, runUrl, error }) }
+}
+
+export function alertIssueCreateArgs(issue) {
+  return ['issue', 'create', '--title', text(issue?.title), '--body', text(issue?.body)]
 }
 
 function labelsIn(raw) {
