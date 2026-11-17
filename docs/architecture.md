@@ -1845,6 +1845,36 @@ branch and repository contents with the repository token. A 401/403 marks `repos
 The repository page shows the credential banner until a refresh or a successful
 preflight clears it.
 
+### The model router as a dependency
+
+The shared model router serves every model call the bridge and the gateway make,
+and until now it was invisible to this tree: no URL, no timeout, no probe, no
+metric. `MODEL_ROUTER_URL` turns on a read of the router's `GET /healthz`, with
+`MODEL_ROUTER_TIMEOUT_MS` (default 1000 ms, clamped 50–10000) bounding the read
+and a two-second cache in front of it, so a public `/readyz` cannot become a way
+to hammer a loopback service. With the variable unset nothing here runs: the
+readiness body is byte for byte what it was and no `fledge_router_*` series
+exists. Set, `/readyz` gains a `router` object beside the database, instance and
+clock fields — never in place of them — carrying `state` and `latencyMs`.
+
+`state` is `ok`, `rate-limited`, `budget-exhausted` or `unreachable`, but
+readiness fails only on `unreachable` or on a router whose every reported key is
+capped: the router's own `mode: rate` means at least one key is cooling, not that
+none can serve, so a single-key cooldown stays a detail instead of a site
+outage. Every reported key means every key the router reported; an absent alias
+is not counted as free. The reading is fail-closed while the service is
+fail-open — a non-200 from the router, a truncated body, a missing or unknown
+`mode`, or JSON that is not an object all read as `unreachable`, never as `ok`,
+and the process keeps serving.
+
+`fledge_router_up` and the `fledge_router_probe_seconds` histogram cover the
+probe, gauges carry per-key spend and cap, cooldowns and queue depth, and a probe
+that cannot read an answer removes them rather than republishing the last
+reading. A router with no serving key is not one repository's problem, so it
+reaches the superadmin through the existing alert cooldown, event row and
+`ops.alert` webhook; the series list, the router knobs and the runbook are in
+[observability.md](observability.md).
+
 ### Model providers and per-bot models
 
 Settings owns a per-user set of OpenAI-compatible providers. Each provider has
