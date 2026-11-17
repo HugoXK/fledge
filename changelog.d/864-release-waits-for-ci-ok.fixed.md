@@ -1,1 +1,0 @@
-The daily release waits for the `ci-ok` verdict instead of reading it once: a run whose aggregate is still in progress is re-read at the same tip up to three times, five minutes apart, so a green tip that was still running no longer loses the slot, while a red aggregate still blocks at once. The release summary names the `ci-ok` run id, its status and how many reads were made.
