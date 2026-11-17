@@ -1101,6 +1101,13 @@ export interface AlertView {
   kind: string
   level: 'info' | 'warning' | 'critical'
   repoId?: string
+  /**
+   * #282: a caller-supplied alert that is not about one repository (the model
+   * router) names its recipient directly. `Store.alerts` never sets it; the
+   * notification pass prefers it over the repository's owner, so an alert with
+   * no repo is not dropped silently.
+   */
+  userId?: string
   repoLabel?: string
   jobId?: string
   prUrl?: string

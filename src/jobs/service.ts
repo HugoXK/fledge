@@ -9,6 +9,7 @@ import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { deliverOutbox, OUTBOX_LEASE_MS } from '../notifications/outbox.js'
 import { emailTransport, webhookTransport } from '../notifications/transports.js'
 import { log } from '../lib/log.js'
+import { cachedRouterProbe } from '../lib/routerHealth.js'
 import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
@@ -3286,13 +3287,34 @@ export class Jobs {
 
   async notifyOpsAlerts(): Promise<number> {
     const alerts = this.store.alerts({ usdCny: this.config.quota.usdCny, automationIdleMinutes: this.config.ops.automationIdleAlertMinutes, instancesManaged: this.instancesManaged })
+    // #282: the router alert is not about a repository, so it names its
+    // recipient instead of deriving one from a repo. The existing cooldown key,
+    // event row and `ops.alert` webhook are what make it a first-class alert
+    // rather than a second notifier.
+    if (this.config.router.url !== '') {
+      const router = await cachedRouterProbe(this.config)
+      const admin = this.store.userByLogin(this.config.github.adminLogin)
+      if (admin !== undefined && (router.state === 'unreachable' || router.allKeysCapped)) {
+        alerts.push({
+          kind: 'router_health',
+          level: 'critical',
+          userId: admin.id,
+          state: router.state,
+          message: `model router: ${router.state}${router.allKeysCapped ? ' (every provider key is capped)' : ' (no health answer)'}`,
+        })
+      }
+    }
     const current = new Set<string>()
     let sent = 0
     for (const alert of alerts) {
       const key = `ops_alert_notified:${alert.kind}:${alert.repoId ?? ''}:${alert.jobId ?? ''}:${alert.prUrl ?? ''}`.slice(0, 300)
       current.add(key)
       const repo = alert.repoId === undefined ? undefined : this.store.getRepo(alert.repoId)
-      const user = repo === undefined ? undefined : this.store.userById(repo.user_id)
+      // #282: an alert may name its own recipient (the router alert has no
+      // repository); everything the store raises keeps deriving the owner.
+      const user = alert.userId !== undefined
+        ? this.store.userById(alert.userId)
+        : repo === undefined ? undefined : this.store.userById(repo.user_id)
       if (user === undefined || user.status !== 'approved') continue
       const previous = this.store.getSetting(key)
       const previousAt = previous === undefined ? 0 : Date.parse(previous)

@@ -38,6 +38,7 @@ import { decisionWithAnswer, jobIdFromQuestionId, jobQuestionId, storedDecision 
 import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { parseVerification } from './lib/verification.js'
+import { cachedRouterProbe } from './lib/routerHealth.js'
 import { readChangeStory, type ChangeStory } from './lib/changeStory.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl, parsePrUrl } from './jobs/prUrl.js'
@@ -1118,13 +1119,26 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // `thresholdSeconds`, so a reader can tell "no number" from "a number that is
     // too far".
     const clock = githubApp.clockState()
+    // #282: the model router is reported beside the database, instance and clock
+    // fields rather than in front of them, so a router outage can never hide a
+    // database or instance failure. With no `MODEL_ROUTER_URL` the field is
+    // absent and this response is byte-identical to the one before the probe
+    // existed: a deployment without a router cannot be made unready here.
+    //
+    // Readiness fails on an unreachable router or on one whose every key is
+    // capped — not on `state` alone, because `mode: rate` means at least one key
+    // is cooling, which is still a serving router. A single-key cooldown is a
+    // detail for the operator and never a site outage.
+    const router = config.router.url === '' ? null : await cachedRouterProbe(config)
+    const routerReady = router === null || (router.state !== 'unreachable' && !router.allKeysCapped)
     const body = {
-      ok: clock.state !== 'fail',
+      ok: clock.state !== 'fail' && routerReady,
       db: true,
       instances: { ready, failed, total: instances.length },
       clock: { ...clock, source: 'github' },
+      ...(router === null ? {} : { router: { state: router.state, latencyMs: router.latencyMs } }),
     }
-    return clock.state === 'fail' ? reply.code(503).send(body) : body
+    return body.ok ? body : reply.code(503).send(body)
   })
 
   app.get('/lang/:locale', async (request, reply) => {
