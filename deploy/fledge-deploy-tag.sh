@@ -103,7 +103,7 @@ restore_release() {
 }
 
 snapshot_release
-if ! rsync -a --delete --exclude .git --exclude .env --exclude node_modules --exclude dist \
+if ! rsync -a --ignore-times --delete --exclude .git --exclude .env --exclude node_modules --exclude dist \
   --exclude backups --exclude data --exclude "*.db" --exclude "*.db-wal" --exclude "*.db-shm" \
   --exclude "*.log" --exclude "dist.bak*" --exclude "public.bak*" --exclude "package.json.bak*" \
   --exclude ".build-identity.bak*" "$DEPLOY/" "$APP/" >> "$LOG" 2>&1; then

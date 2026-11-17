@@ -419,8 +419,8 @@ before retrying.
 ### Verify a release
 
 The publish run records what it produced in the GitHub Release body — the image
-reference with its digest, the SBOM artifact name and the attested digest — so
-the chain can be read back through the API alone:
+reference with its digest, the SBOM asset URL and the attested digest — so the
+chain can be read back through the API alone:
 
 ```sh
 # the whole chain, from the plan to the running instance. METRICS_TOKEN is what
@@ -431,6 +431,28 @@ GITHUB_TOKEN=… METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3
 GITHUB_TOKEN=… METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 \
   --base-url https://fledge.hugoxk.online --write "${DATA_DIR}/release-status.json"
 ```
+
+`release.yml` runs that same check itself as its last step (#883), so a release
+whose body claims a digest, an SBOM or an attestation it does not have fails the
+publish instead of leaving the claim for an operator to find. The publish side is
+closed in five places:
+
+- the image is built once and published under a commit tag
+  (`ghcr.io/hugoxk/fledge:sha-<12 hex>`), and the digest that push produced is
+  the only identity later steps read;
+- that exact digest is scanned by Trivy at the CI threshold, and the container is
+  started from it and asserted on `/healthz`, so the image a host will pull is
+  the image this run proved;
+- the SBOM is generated from the same digest and uploaded as a Release asset, and
+  the body names its download URL;
+- `vX.Y.Z` is an alias created from the verified digest. A run that finds the
+  alias already naming another digest stops: repointing it would silently change
+  what every record that named it points at (`scripts/lib/release-alias.mjs`);
+- the whole chain is verified after the Release exists, with the job token.
+
+A redispatch of a tag that already has a Release still stops at the guard before
+anything is built; what the alias rule adds is that a tag without a Release
+cannot move a name that already published one.
 
 It exits `0` only when every link is present and agrees: the plan's base `main`
 sha, the `release/v<version>` branch and tip, the merged release pull request,
@@ -587,6 +609,10 @@ or the rollout check fails. A refused rollout leaves the host on the release it
 was running, and the next tick retries the same tag instead of reading the new
 version and exiting as already deployed. It never runs `git push`, `--admin`, a
 merge or a rollback to an older tag. On success it invokes the verifier.
+
+The source copy is `rsync -a --ignore-times --delete`: `--ignore-times` makes it
+copy a changed file whatever its size and mtime say, which rsync's default quick
+check would otherwise skip and leave one file at the old release.
 
 `fledge-verify-release.sh` reads `GITHUB_TOKEN` from the environment or the
 `GITHUB_TOKEN` entry in `FLEDGE_SECRETS_FILE` (default

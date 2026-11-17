@@ -1,0 +1,1 @@
+The console moves to a flight-deck visual system: a cool mineral and pine palette with brass as the only warm note, flat section rules and square controls instead of identical rounded cards, a dashboard masthead with a Connect → Goal → Work → Review → Merge loop rail, sentence-case labels, and the About card removed from Settings.

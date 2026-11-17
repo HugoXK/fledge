@@ -872,7 +872,7 @@ test('the dashboard shows a personal delivery card with a selectable window', ()
       personal: { repos: 2, jobs: 10, succeeded: 8, failed: 2, prs: 6, merged: 4, costUsd: 0.5, openWorkItems: 1, lastJobAt: new Date().toISOString() },
       alerts: [{ kind: 'job_stalled', level: 'critical', repoId: 'r1', repoLabel: 'o/r', jobId: 'j1', minutes: 45, message: 'job j1 has no callback for 45m' }],
     })
-    assert.match(page, /MY DELIVERY/)
+    assert.match(page, /My delivery/)
     assert.match(page, /Delivery and cost/)
     assert.match(page, /30 days/)
     assert.match(page, />10</)
