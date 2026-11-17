@@ -466,9 +466,17 @@ moves on with the next fix and is not a review outcome.
 | Reviews | completed review jobs with a score, terminated inside the window | no such review |
 | Average score | mean of those scores, one decimal | no scored review |
 | Changes requested | `changes_requested outcomes / outcomes recorded`, `x% (a/b)` | no outcome recorded in the window |
-| PR→review | median `review finished_at − work item created_at` for reviews linked to a PR | no linked PR review |
+| PR→first decision | median `first review finished_at − work item created_at`, one sample per work item | no linked PR review |
 | PR→merge | median `merged_at − created_at` for work items merged in the window | no merge |
 | Model | the model each review ran, `label ×n` | no recorded model |
+| Overrides | `overrides / recorded changes-requested decisions`, `x% (a/b)`, plus each override's review job, model and tip | no recorded blocking decision in the window |
+
+An override is a merge that named a recorded `changes_requested` decision and
+went ahead; the denominator is those decisions in the same window, so the number
+cannot be read as a share of all reviews. A threshold-only block has no decision
+row and is not in the rate. Each override names `<review job> · <model> · <tip>`,
+and a field a row does not carry prints `not recorded` rather than an empty
+placeholder.
 
 Rules the card follows, because a reader cannot tell a confident zero from an
 unknown one:

@@ -1364,8 +1364,20 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     window.models.length === 0 ? '—' : window.models.map((model) => `${model.label} ×${model.reviews}`).join(', ')
   const trendSample = (window: ReviewTrendWindow): string =>
     window.smallSample ? ` <span class="badge" data-trend-small-sample="1">${escapeHtml(t(`小样本 n=${window.reviews}`, `Small sample n=${window.reviews}`))}</span>` : ''
+  // #794: an override is not a bare count. The rate names its own denominator
+  // and the row names the decision it went past — review job, model and tip —
+  // or says that a row predates the identity rather than printing an empty one.
+  const trendOverrides = (window: ReviewTrendWindow): string => {
+    if (window.overrideRate === null) return '—'
+    const rate = `${window.overrideRate}% (${window.overrides}/${window.blockingDecisions})`
+    if (window.overrideDetails.length === 0) return rate
+    const details = window.overrideDetails.map((entry) => `<span class="fine" data-trend-override>${entry.reviewJobId === null
+      ? escapeHtml(t('审核未记录', 'review not recorded'))
+      : `<code>${escapeHtml(entry.reviewJobId)}</code>`} · ${entry.model === null ? escapeHtml(t('模型未记录', 'model not recorded')) : escapeHtml(entry.model)} · ${entry.tip === null ? escapeHtml(t('修订未记录', 'revision not recorded')) : `<code>${escapeHtml(entry.tip.slice(0, 12))}</code>`}</span>`).join(' ')
+    return `${rate}<div class="fine">${details}</div>`
+  }
   const reviewTrendRows = trendWindows
-    .map(({ key, zh, en, window }) => `<tr data-trend-window="${key}"><th scope="row">${escapeHtml(t(zh, en))}</th><td>${window.reviews === 0 ? '—' : `${window.reviews}${trendSample(window)}`}</td><td>${window.averageScore === null ? '—' : window.averageScore}</td><td>${escapeHtml(trendRate(window))}</td><td>${escapeHtml(durationText(window.medianPrOpenToReviewMs))}</td><td>${escapeHtml(durationText(window.medianPrOpenToMergeMs))}</td><td>${escapeHtml(trendModels(window))}</td></tr>`)
+    .map(({ key, zh, en, window }) => `<tr data-trend-window="${key}"><th scope="row">${escapeHtml(t(zh, en))}</th><td>${window.reviews === 0 ? '—' : `${window.reviews}${trendSample(window)}`}</td><td>${window.averageScore === null ? '—' : window.averageScore}</td><td>${escapeHtml(trendRate(window))}</td><td>${escapeHtml(durationText(window.medianPrOpenToReviewMs))}</td><td>${escapeHtml(durationText(window.medianPrOpenToMergeMs))}</td><td>${escapeHtml(trendModels(window))}</td><td data-trend-override-rate="${key}">${window.overrideRate === null ? '—' : trendOverrides(window)}</td></tr>`)
     .join('')
   const reviewTrendEmpty = trendWindows
     .filter(({ window }) => window.reviews === 0)
@@ -1425,8 +1437,8 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('分类', 'Category'))}</th><th>${escapeHtml(t('疑似原因', 'Suspected cause'))}</th><th>${escapeHtml(t('复发', 'Recurrence'))}</th><th>${escapeHtml(t('首次 / 最近', 'First / last'))}</th><th>${escapeHtml(t('预防措施', 'Preventive action'))}</th></tr></thead><tbody>${postmortemRows}</tbody></table></div>`}
   </section>`
   const reviewTrendCard = reviewTrend === undefined ? '' : `<section class="card" id="review-trend">
-    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('审核质量', 'Review quality'))}</div><h2>${escapeHtml(t('审核趋势', 'Review trend'))}</h2><p class="muted">${escapeHtml(t('只统计这个仓库已完成的审核。空窗口显示 —；少于 5 个审核标注为小样本；要求修改率的分母是记录了结果的审核，不是全部审核。', 'Completed reviews for this repository only. An empty window shows —; fewer than 5 reviews is labelled a small sample; the changes-requested rate is over reviews that recorded an outcome, not all reviews.'))}</p></div></div>
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('窗口', 'Window'))}</th><th>${escapeHtml(t('审核数', 'Reviews'))}</th><th>${escapeHtml(t('平均分', 'Average score'))}</th><th>${escapeHtml(t('要求修改率', 'Changes requested'))}</th><th>${escapeHtml(t('PR→审核', 'PR→review'))}</th><th>${escapeHtml(t('PR→合并', 'PR→merge'))}</th><th>${escapeHtml(t('模型', 'Model'))}</th></tr></thead><tbody>${reviewTrendRows}</tbody></table></div>
+    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('审核质量', 'Review quality'))}</div><h2>${escapeHtml(t('审核趋势', 'Review trend'))}</h2><p class="muted">${escapeHtml(t('只统计这个仓库已完成的审核。空窗口显示 —；少于 5 个审核标注为小样本；要求修改率的分母是记录了结果的审核，不是全部审核。PR→首次决定每个工作项只取第一次审核；改判率的分母是窗口内记录了「要求修改」的决定，分子是这些决定之后仍然合并的次数。', 'Completed reviews for this repository only. An empty window shows —; fewer than 5 reviews is labelled a small sample; the changes-requested rate is over reviews that recorded an outcome, not all reviews. PR→first decision takes one sample per work item at its first review; the override rate is over recorded changes-requested decisions in the window, and its numerator is merges that went past one.'))}</p></div></div>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('窗口', 'Window'))}</th><th>${escapeHtml(t('审核数', 'Reviews'))}</th><th>${escapeHtml(t('平均分', 'Average score'))}</th><th>${escapeHtml(t('要求修改率', 'Changes requested'))}</th><th>${escapeHtml(t('PR→首次决定', 'PR→first decision'))}</th><th>${escapeHtml(t('PR→合并', 'PR→merge'))}</th><th>${escapeHtml(t('模型', 'Model'))}</th><th>${escapeHtml(t('改判率', 'Overrides'))}</th></tr></thead><tbody>${reviewTrendRows}</tbody></table></div>
     ${reviewTrendEmpty === '' ? '' : `<p class="fine">${reviewTrendEmpty}</p>`}
   </section>`
   const advanced = advancedViewer(viewer)
@@ -3700,7 +3712,9 @@ export function jobPage(input: {
             : escapeHtml(t(`${pathGuard.violations.length} 个文件违反路径约束。`, `${pathGuard.violations.length} file(s) violate the path constraints.`))}${pathGuard.allow.length === 0 && pathGuard.deny.length === 0 ? ` · ${escapeHtml(t('未设置约束', 'no constraints set'))}` : ''}</p>
         ${pathGuard.violations.length === 0 ? '' : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('文件', 'File'))}</th><th>${escapeHtml(t('原因', 'Reason'))}</th></tr></thead><tbody>${pathGuard.violations.map((violation) => `<tr><td><code>${escapeHtml(violation.file)}</code></td><td>${escapeHtml(violation.reason === 'denied' ? t('命中禁止路径', 'Denied path') : t('不在允许路径', 'Not allowed'))}</td></tr>`).join('')}</tbody></table></div>`}`}
     ${adversarial === null ? '' : `<h3 class="mt-16">${escapeHtml(t('独立对抗式审核', 'Independent adversarial review'))}</h3>
-      <p class="fine" data-adversarial>${escapeHtml(adversarialText(adversarial))}${adversarial.model === null ? '' : ` · ${escapeHtml(t('模型', 'Model'))} ${escapeHtml(adversarial.model)}`}${adversarial.promptHash === null ? '' : ` · ${escapeHtml(t('提示哈希', 'Prompt hash'))} <code>${escapeHtml(adversarial.promptHash.slice(0, 12))}</code>`}</p>`}
+      <p class="fine" data-adversarial>${escapeHtml(adversarialText(adversarial))}${adversarial.model === null ? '' : ` · ${escapeHtml(t('模型', 'Model'))} ${escapeHtml(adversarial.model)}`}${adversarial.promptHash === null ? '' : ` · ${escapeHtml(t('提示哈希', 'Prompt hash'))} <code>${escapeHtml(adversarial.promptHash.slice(0, 12))}</code>`}${adversarial.tipSha === null
+        ? (adversarial.promptHash === null ? '' : ` · ${escapeHtml(t('修订未记录', 'revision not recorded'))}`)
+        : ` · <span data-adversarial-tip="${escapeHtml(adversarial.tipSha)}">${escapeHtml(t('修订', 'Revision'))} <code>${escapeHtml(adversarial.tipSha.slice(0, 12))}</code></span>`}</p>`}
   </section>`}
   <section class="card">
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>

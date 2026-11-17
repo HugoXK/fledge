@@ -83,7 +83,126 @@ export interface ReviewTrendWindow {
   medianPrOpenToReviewMs: number | null
   medianPrOpenToMergeMs: number | null
   models: Array<{ label: string; reviews: number }>
+  // #794: the decision, and the merge that went past it. A blocking decision is
+  // a recorded `changes_requested` outcome; an override is a merge that named
+  // that decision and went ahead. Both are audit rows, so the rate and its
+  // details come from one place and cannot be read two ways.
+  blockingDecisions: number
+  overrides: number
+  overrideRate: number | null
+  overrideDetails: ReviewOverrideRecord[]
   smallSample: boolean
+}
+
+// #794: the reviewer packet identity is the decision's own record. The audit
+// detail is the one row both the trend and a merge override read, so the format
+// and its reader live together; a second copy in the service would drift and the
+// override would start naming a different decision from the trend.
+export interface ReviewDecisionRecord {
+  workItemId: string | null
+  outcome: 'approved' | 'changes_requested'
+  score: number | null
+  reviewJobId: string | null
+  model: string | null
+  tip: string | null
+}
+
+export interface ReviewOverrideRecord {
+  reviewJobId: string | null
+  score: number | null
+  model: string | null
+  tip: string | null
+  reason: string
+}
+
+function detailValue(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return '-'
+  const text = String(value).trim()
+  return text === '' ? '-' : text
+}
+
+function detailField(text: string, key: string, next: string | null): string | null {
+  const start = text.indexOf(key)
+  if (start < 0) return null
+  const from = start + key.length
+  const end = next === null ? text.length : text.indexOf(next, from)
+  if (end < 0) return null
+  const value = text.slice(from, end).trim()
+  return value === '' || value === '-' ? null : value
+}
+
+function detailNumber(value: string | null): number | null {
+  if (value === null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** The `work_item.review_outcome` detail both the trend and an override read. */
+export function formatReviewOutcomeDetail(input: {
+  workItemId: string
+  outcome: 'approved' | 'changes_requested'
+  score: number | null
+  reviewJobId: string | null
+  model: string | null
+  tip: string | null
+}): string {
+  return `${input.workItemId}: ${input.outcome} score=${detailValue(input.score)} review=${detailValue(input.reviewJobId)} tip=${detailValue(input.tip)} model=${detailValue(input.model)}`
+}
+
+/**
+ * Reads a decision row. A row written before the identity was recorded has no
+ * `review=`/`tip=`/`model=` field; it still parses, and the caller shows
+ * "not recorded" rather than inventing a revision.
+ */
+export function parseReviewOutcomeDetail(detail: string): ReviewDecisionRecord | undefined {
+  const separator = detail.indexOf(': ')
+  if (separator < 0) return undefined
+  const body = detail.slice(separator + 2)
+  const outcome = body.startsWith('changes_requested ') ? 'changes_requested' : body.startsWith('approved ') ? 'approved' : undefined
+  if (outcome === undefined) return undefined
+  const scoreAt = body.indexOf(' score=')
+  if (scoreAt < 0) return undefined
+  const tail = body.slice(scoreAt + 1)
+  return {
+    workItemId: detail.slice(0, separator),
+    outcome,
+    // The score is the one field every row has carried since #361, so it is read
+    // from the prefix rather than between two markers a newer row introduced.
+    score: detailNumber(/^score=(\S+)/.exec(tail)?.[1] ?? null),
+    reviewJobId: detailField(tail, 'review=', ' tip='),
+    tip: detailField(tail, 'tip=', ' model='),
+    model: detailField(tail, 'model=', null),
+  }
+}
+
+/** The `job.merge_review_override` detail, built beside its reader. */
+export function formatReviewOverrideDetail(input: {
+  jobId: string
+  reviewJobId: string | null
+  score: number | null
+  model: string | null
+  tip: string | null
+  reason: string
+}): string {
+  return `${input.jobId}: review ${detailValue(input.reviewJobId)} score=${detailValue(input.score)} tip=${detailValue(input.tip)} model=${detailValue(input.model)} reason=${input.reason}`
+}
+
+/** A row in the shape this build never wrote returns undefined, not a guess. */
+export function parseReviewOverrideDetail(detail: string): ReviewOverrideRecord | undefined {
+  const separator = detail.indexOf(': ')
+  if (separator < 0) return undefined
+  const body = detail.slice(separator + 2)
+  if (!body.startsWith('review ')) return undefined
+  const scoreAt = body.indexOf(' score=')
+  if (scoreAt < 0) return undefined
+  const tail = body.slice(scoreAt + 1)
+  return {
+    reviewJobId: detailField(body, 'review ', ' score='),
+    score: detailNumber(/^score=(\S+)/.exec(tail)?.[1] ?? null),
+    tip: detailField(tail, 'tip=', ' model='),
+    model: detailField(tail, 'model=', ' reason='),
+    reason: detailField(body, 'reason=', null) ?? '',
+  }
 }
 
 // Below this many completed reviews the page says "small sample" instead of
@@ -4715,6 +4834,20 @@ export class Store {
     }
   }
 
+  /**
+   * #794: the last decision a review recorded for one work item, in the shape
+   * `parseReviewOutcomeDetail` reads. A merge override names the same decision,
+   * so it reads it back instead of re-deriving a review id and a tip from
+   * whatever job happens to be newest at merge time.
+   */
+  latestReviewOutcome(itemId: string, outcome?: 'approved' | 'changes_requested'): ReviewDecisionRecord | undefined {
+    const row = this.get<{ detail: string }>(
+      "SELECT detail FROM audit_log WHERE action = 'work_item.review_outcome' AND detail LIKE ? ORDER BY id DESC LIMIT 1",
+      outcome === undefined ? `${itemId}: %` : `${itemId}: ${outcome} score=%`,
+    )
+    return row === undefined ? undefined : parseReviewOutcomeDetail(row.detail)
+  }
+
   reviewTrend(repoId: string, sinceIso: string): ReviewTrendWindow {
     const reviewJobs = this.all<JobRow>(
       `SELECT * FROM jobs
@@ -4725,8 +4858,9 @@ export class Store {
     )
     const scores = reviewJobs.flatMap((job) => (job.review_score === null ? [] : [job.review_score]))
     const averageScore = scores.length === 0 ? null : Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10
-    const outcomes = this.all<{ outcome: string }>(
-      `SELECT CASE WHEN a.detail LIKE '%: changes_requested score=%' THEN 'changes_requested' ELSE 'approved' END AS outcome
+    const outcomes = this.all<{ item: string; outcome: string }>(
+      `SELECT substr(a.detail, 1, instr(a.detail, ':') - 1) AS item,
+              CASE WHEN a.detail LIKE '%: changes_requested score=%' THEN 'changes_requested' ELSE 'approved' END AS outcome
          FROM audit_log a
          JOIN work_items w ON w.id = substr(a.detail, 1, instr(a.detail, ':') - 1)
         WHERE a.action = 'work_item.review_outcome' AND a.at >= ? AND w.repo_id = ?
@@ -4735,18 +4869,43 @@ export class Store {
       repoId,
     )
     const changesRequested = outcomes.filter((row) => row.outcome === 'changes_requested').length
+    // #794: one sample per work item, taken at its first successful review. The
+    // old join pushed one sample per review job, so a PR reviewed four times
+    // contributed four samples and the median was of every decision, not the
+    // first. A first decision is the first review the work item finished with.
     const reviewDelays = this.all<{ opened: string; reviewed: string }>(
-      `SELECT w.created_at AS opened, j.finished_at AS reviewed
+      `SELECT w.created_at AS opened, MIN(j.finished_at) AS reviewed
          FROM jobs j
          JOIN work_items w ON w.id = j.work_item_id
         WHERE j.repo_id = ? AND j.kind = 'review' AND j.status = 'succeeded'
-          AND j.finished_at IS NOT NULL AND j.finished_at >= ? AND w.pr_url IS NOT NULL`,
+          AND j.finished_at IS NOT NULL AND j.finished_at >= ? AND w.pr_url IS NOT NULL
+        GROUP BY w.id`,
       repoId,
       sinceIso,
     ).flatMap((row) => {
       const value = durationMs(row.opened, row.reviewed)
       return value === null ? [] : [value]
     })
+    // #794: an override counts only when the decision it overturned is a
+    // recorded `changes_requested` outcome in the same window and the item it
+    // belongs to merged. A threshold-only block is derived at merge time and has
+    // no decision row of its own: it is audited on the job page, but it has no
+    // denominator here, and inventing one would make the rate read two ways.
+    const blockingItems = new Set(outcomes.filter((row) => row.outcome === 'changes_requested').map((row) => row.item))
+    const overrideDetails = this.all<{ detail: string; item: string }>(
+      `SELECT a.detail AS detail, w.id AS item
+         FROM audit_log a
+         JOIN jobs j ON j.id = substr(a.detail, 1, instr(a.detail, ':') - 1)
+         JOIN work_items w ON w.id = j.work_item_id
+        WHERE a.action = 'job.merge_review_override' AND a.at >= ? AND j.repo_id = ? AND w.pr_state = 'merged'`,
+      sinceIso,
+      repoId,
+    ).flatMap((row) => {
+      if (!blockingItems.has(row.item)) return []
+      const parsed = parseReviewOverrideDetail(row.detail)
+      return parsed === undefined ? [] : [parsed]
+    })
+    const overrides = overrideDetails.length
     const mergeDelays = this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND merged_at IS NOT NULL AND merged_at >= ?', repoId, sinceIso).flatMap((item) => {
       const value = durationMs(item.created_at, item.merged_at)
       return value === null ? [] : [value]
@@ -4765,6 +4924,10 @@ export class Store {
       changesRequestedRate: outcomes.length === 0 ? null : Math.round((changesRequested / outcomes.length) * 1000) / 10,
       medianPrOpenToReviewMs: median(reviewDelays),
       medianPrOpenToMergeMs: median(mergeDelays),
+      blockingDecisions: changesRequested,
+      overrides,
+      overrideRate: changesRequested === 0 ? null : Math.round((overrides / changesRequested) * 1000) / 10,
+      overrideDetails: overrideDetails.slice(0, 5),
       models: [...byModel.entries()]
         .map(([label, reviews]) => ({ label, reviews }))
         .sort((a, b) => b.reviews - a.reviews || a.label.localeCompare(b.label)),

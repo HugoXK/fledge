@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
 import type { JobRow, RepoRow, ScheduleOccurrenceRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
+import { formatReviewOutcomeDetail, formatReviewOverrideDetail } from '../db.js'
 import type { Mailer, MailMessage } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
@@ -44,7 +45,7 @@ import {
 } from '../lib/adversarialReview.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
-import { reviewInstructionLine } from '../lib/followUpInstruction.js'
+import { normalizeReviewInstruction, reviewInstructionLine } from '../lib/followUpInstruction.js'
 import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
 import { DEFAULT_MAX_REVISIONS, decideRevision, maxRevisionsSettingKey, parseMaxRevisions, revisionCounterKey, type ReviewAuthor } from '../lib/revisionBudget.js'
 import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
@@ -2463,7 +2464,23 @@ export class Jobs {
             : `最新审核分 ${reviewBlock.score} 低于 ${reviewBlock.minScore}，自动合并已阻止。`,
         }
       }
-      this.store.audit(job.user_id, 'job.merge_review_override', `${job.id}: ${detail}`)
+      // #794: the override names the decision it overturned — the review job,
+      // its score, the model that answered and the tip that review covered —
+      // instead of a bare sentence. The decision row is the one source; a
+      // threshold-only block has no such row and the record says so.
+      const decision = linkedItem === undefined
+        ? undefined
+        : this.store.latestReviewOutcome(linkedItem.id, reviewBlock.kind === 'changes_requested' ? 'changes_requested' : undefined)
+      const overrideModel = decision?.model ?? (review === undefined ? null : parseModelRun(review.model_json)?.model?.label ?? null)
+      const overrideScore = decision?.score ?? (reviewBlock.kind === 'score' ? reviewBlock.score : review?.review_score ?? null)
+      this.store.audit(job.user_id, 'job.merge_review_override', formatReviewOverrideDetail({
+        jobId: job.id,
+        reviewJobId: decision?.reviewJobId ?? review?.id ?? null,
+        score: overrideScore,
+        model: overrideModel,
+        tip: decision?.tip ?? null,
+        reason: detail,
+      }))
     }
     if (!manual) {
       // Defence in depth for the automatic path: the job must be the newest
@@ -3682,6 +3699,13 @@ export class Jobs {
             ...(typeof value.baseBranch === 'string' ? { baseBranch: value.baseBranch.slice(0, 300) } : {}),
             ...(typeof value.headSha === 'string' ? { headSha: value.headSha.slice(0, 100) } : {}),
             ...(typeof value.reason === 'string' ? { reason: value.reason.slice(0, 300) } : {}),
+            // #794: the reviewer's own words are parsed, not dropped. The carrier
+            // (#251) bounds the line at REVIEW_INSTRUCTION_MAX and collapses it to
+            // one line, so the callback accepts the same normalised form the
+            // webhook path writes; a field the parser omits is a silent loss for
+            // every follow-up parked behind a review job. Redaction runs before
+            // the slice, like every other callback string.
+            ...(typeof value.instruction === 'string' ? { instruction: normalizeReviewInstruction(redact(value.instruction)) } : {}),
           }]
         }).slice(0, 10)
       : []
@@ -3848,7 +3872,23 @@ export class Jobs {
       if (item !== undefined) {
         const outcome = followUps.length > 0 || (reviewScore !== undefined && reviewScore < 80) ? 'changes_requested' : 'approved'
         this.store.updateWorkItem(item.id, { state: outcome })
-        this.store.audit(job.user_id, 'work_item.review_outcome', `${item.id}: ${outcome} score=${reviewScore ?? '-'}`)
+        // #794: the recorded decision carries its own identity — the review job,
+        // the model that answered, and the tip that review covered. The review's
+        // own follow-up is the only place the tip is reported for this PR; a
+        // review with no body has none, and then the row says `-` instead of
+        // borrowing the merge tip.
+        const reviewModel = parseModelRun(job.model_json)?.model?.label ?? null
+        const reviewedTip = item.pr_url === null
+          ? null
+          : followUps.find((follow) => follow.prUrl === item.pr_url)?.headSha ?? null
+        this.store.audit(job.user_id, 'work_item.review_outcome', formatReviewOutcomeDetail({
+          workItemId: item.id,
+          outcome,
+          score: reviewScore ?? null,
+          reviewJobId: job.id,
+          model: reviewModel,
+          tip: reviewedTip,
+        }))
       }
     }
     if (status === 'succeeded') await this.verifyAndMaybeMerge(jobId)
