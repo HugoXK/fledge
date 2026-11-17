@@ -588,6 +588,10 @@ was running, and the next tick retries the same tag instead of reading the new
 version and exiting as already deployed. It never runs `git push`, `--admin`, a
 merge or a rollback to an older tag. On success it invokes the verifier.
 
+The source copy is `rsync -a --ignore-times --delete`: `--ignore-times` makes it
+copy a changed file whatever its size and mtime say, which rsync's default quick
+check would otherwise skip and leave one file at the old release.
+
 `fledge-verify-release.sh` reads `GITHUB_TOKEN` from the environment or the
 `GITHUB_TOKEN` entry in `FLEDGE_SECRETS_FILE` (default
 `~/.dsh/bot/secrets.json`), loads `METRICS_TOKEN` / `BASE_URL` from `.env`, and
