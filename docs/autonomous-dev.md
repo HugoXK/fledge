@@ -807,7 +807,13 @@ association test only for `issue_comment`, so a stranger cannot start the
 The association gate is per job, not per workflow: any job holding `actions:
 write` must test `author_association` on every event a stranger can trigger, and
 `review-gate-repair` does the same for `pull_request_review` (reading
-`github.event.review.author_association`). `scripts/action-pins.mjs` enforces the
+`github.event.review.author_association`). The comment job holds no second test of
+the comment's shape: a word list in its `if:` was a second definition of "a
+verdict" and it drifted — `## REVIEW` started nothing while the parser accepted it
+(#931). The job now names only the event and the association, and the guard step
+asks `parseConclusion` itself after checking the default branch out, so one
+expression decides for both halves and a pull request cannot edit the copy that
+decides. `scripts/action-pins.mjs` enforces the
 rule for the whole tree — a job with `actions: write` on a stranger-reachable
 event without the matching association test reds the required `action-pins` job.
 The scan counts the permission in each form it takes: a block mapping, an inline
