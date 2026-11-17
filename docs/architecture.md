@@ -624,8 +624,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   schedule, the next run from `nextTime`, the newest decided instant with its
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
   last instant whose job succeeded. A value nobody recorded prints `unknown`: a
-  schedule with no occurrence row has not run, and this slice has no delivery
-  outbox, so neither is a zero. The eight facts render through `.schedule-facts`,
+  schedule with no occurrence row has not run, so it is not a zero. The delivery
+  fact is read from the outbox (`notification_outbox.job_id`, below) for the job
+  the newest decided instant dispatched: a job that queued a send reports that
+  send's state, and a job that queued none prints `none` — a run with nothing to
+  deliver — rather than the `unknown` of a page that did not look. The outbox's own
+  `unknown` (a send that may have crossed the external boundary) is printed as
+  `unconfirmed`, so it is never confused with "nobody read the outbox". The eight facts render through `.schedule-facts`,
   a two-column grid with muted labels that stacks to one column below 640px, so
   the console does not fall back to the browser's default definition-list text.
   `src/schedules/console.ts` is that view model. The
@@ -658,9 +663,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   (`#387`) must move the count inside that claim, or two workers could each spend
   the last slot.
 - **The notification outbox** (#544, slice 7): the notifications it covers are
-  durable rows (`notification_outbox`) instead of a call whose failure lived only
-  in a log line — the digests, question mails, ops alerts and per-job/PR webhooks
-  are queued with an idempotency key, so a replayed callback or a second tick
+  durable rows (`notification_outbox`), and a send that reports on a job carries
+  its `job_id` (nullable, indexed) so the schedule console can name a run's
+  delivery without parsing the idempotency key; a row written before the column
+  existed keeps NULL and is never retro-attached to a run. A notification is a
+  row instead of a call whose failure lived only in a log line — the digests,
+  question mails, ops alerts and per-job/PR webhooks are queued with an
+  idempotency key, so a replayed callback or a second tick
   keeps one row rather than sending twice. Per-job success/failure mail and the
   transactional approval, quota, trial and feedback mail still send inline in
   this slice; they are not queued rows yet. A tick pass sweeps lapsed `sending`
