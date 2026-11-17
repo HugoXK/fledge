@@ -58,16 +58,19 @@ Core series:
   `fledge_router_mode_rate_total` and `fledge_router_mode_budget_total` count
   what the router reported, while `fledge_router_all_keys_rate_limited_total`
   and `fledge_router_all_keys_exhausted_total` are incremented **only** when
-  every key the router reports is capped — a single cooling key never reaches
-  the all-keys names. `fledge_router_unreachable_total` counts probes that could
+  every key the router reports is capped with that one cause — a single cooling
+  key never reaches the all-keys names, and a mixed cap (one key budget-capped,
+  the others rate-capped) increments neither, because the names say why nothing
+  can serve and a mixed cause is reported in `router.state` instead.
+  `fledge_router_unreachable_total` counts probes that could
   not read an answer. The gauges are `fledge_router_key_spend{key}`,
   `fledge_router_key_max{key}`, `fledge_router_rate_cooldown_seconds`,
   `fledge_router_budget_cooldown_seconds` and `fledge_router_queue_depth`; `key`
   is one of the fixed aliases `primary`, `alt`, `third` and never a key value, a
-  key file or a repository. A probe that cannot read an answer removes the
-  gauges instead of leaving the previous reading, so an empty panel means
-  "unknown", and a deployment with no `MODEL_ROUTER_URL` publishes none of these
-  series.
+  key file or a repository. A probe that cannot read an answer removes every
+  label combination of those gauges, the per-key ones included, instead of
+  leaving the previous reading, so an empty panel means "unknown", and a
+  deployment with no `MODEL_ROUTER_URL` publishes none of these series.
 
 The `/admin/metrics` page carries the same three numbers as one `Automation
 health` card — repositories with ready work and no active job, the mean dispatch

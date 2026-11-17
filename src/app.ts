@@ -590,7 +590,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     args: { kind: JobKind; goal?: string; workItemId?: string; prUrl?: string; priority?: number },
   ): Promise<CommandOutcome> => {
     const parts = commandParts(form(request), management.revisionOf('project', repo.id))
-    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    // #671: the store is what makes this the database resolver — the tenant the
+    // receipt is scoped by and the live capabilities — so the console cannot
+    // build two kinds of actor for one repository.
+    const actor = managementActor({ store, userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
     const commandArgs: Record<string, unknown> = { kind: args.kind }
     if (args.goal !== undefined) commandArgs.goal = args.goal
     if (args.workItemId !== undefined) commandArgs.workItemId = args.workItemId
@@ -616,7 +619,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     operation: 'task.resume' | 'task.retry',
   ): Promise<CommandOutcome> => {
     const parts = commandParts(form(request), management.revisionOf('job', jobId))
-    const actor = managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
+    const actor = managementActor({ store, userId: viewer.user.id, repo, channel: 'web', requestId: request.id })
     return management.run(actor, {
       operation,
       target: { projectId: repo.id, jobId },
@@ -4494,7 +4497,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // contract, so the revision fence, the idempotency receipt and the audit row
     // are not copied into this route a second time.
     const parts = commandParts(body, management.revisionOf('repo', repo.id))
-    const outcome = await management.run(managementActor({ userId: viewer.user.id, repo, channel: 'web', requestId: request.id }), {
+    const outcome = await management.run(managementActor({ store, userId: viewer.user.id, repo, channel: 'web', requestId: request.id }), {
       operation: 'repo.update',
       target: { projectId: repo.id },
       arguments: {
@@ -6280,7 +6283,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   }
 
   const runChatCreate = async (kind: JobKind, goal: string, itemId: string): Promise<CommandOutcome> => {
-    const actor = managementActor({ userId: repo.user_id, repo, channel: 'chat', requestId: `issue_command:${source.commentId}` })
+    const actor = managementActor({ store, userId: repo.user_id, repo, channel: 'chat', requestId: `issue_command:${source.commentId}` })
     return management.run(actor, {
       operation: 'task.create',
       target: { projectId: repo.id },

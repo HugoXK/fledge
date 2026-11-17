@@ -5,7 +5,8 @@ import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { Jobs } from '../src/jobs/service.js'
-import { metricsSnapshot, resetMetrics } from '../src/lib/metrics.js'
+import { metricsSnapshot, renderMetrics, resetMetrics } from '../src/lib/metrics.js'
+import { resetRouterProbeCache } from '../src/lib/routerHealth.js'
 import type { Config } from '../src/config.js'
 import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
 
@@ -200,6 +201,87 @@ test('a malformed, truncated, mode-less or non-200 health answer reads as unreac
     } finally {
       await router.close()
     }
+  }
+})
+
+// #282 review finding: the removal guarantee has to remove the labeled children.
+// `clearGauge(name)` without labels addresses one series, so the per-key
+// `{key=…}` gauges survived an unreadable answer while `fledge_router_up` read 0
+// — the stale-gauge case #758 forbids. Assert on the rendered scrape, not a
+// snapshot, so the guarantee is checked where a dashboard reads it.
+test('an unreadable answer after a readable one removes the per-key gauges too', async () => {
+  resetMetrics()
+  resetRouterProbeCache()
+  const router = await startRouter(() => ({
+    body: healthBody('primary', { primary: { budgetUntil: null, rateUntil: null, spend: 3, max: 5 }, alt: free, third: free }),
+  }))
+  const url = router.url
+  const first = await readyz(withRouter(testConfig(), url, 400))
+  assert.equal(first.status, 200)
+  assert.match(renderMetrics(), /fledge_router_key_spend\{key="primary"\} 3/, 'the readable answer publishes the labeled gauge')
+  await router.close()
+  resetRouterProbeCache()
+  const second = await readyz(withRouter(testConfig(), url, 300))
+  assert.equal(second.status, 503)
+  assert.equal((second.parsed.router as { state: string }).state, 'unreachable')
+  const text = renderMetrics()
+  assert.doesNotMatch(text, /fledge_router_key_spend\{/, 'a labeled spend series survived an unreadable answer')
+  assert.doesNotMatch(text, /fledge_router_key_max\{/, 'a labeled budget series survived an unreadable answer')
+  assert.doesNotMatch(text, /fledge_router_rate_cooldown_seconds/)
+  assert.doesNotMatch(text, /fledge_router_budget_cooldown_seconds/)
+  assert.doesNotMatch(text, /fledge_router_queue_depth/)
+  assert.match(text, /^fledge_router_up 0$/m, 'the up gauge still reports 0')
+})
+
+// The second removal branch: a readable answer that reports no keys at all. The
+// same stale-label defect, so the same assertion — otherwise it is the same bug
+// six months from now.
+test('an answer that reports no keys removes the per-key gauges from an earlier reading', async () => {
+  resetMetrics()
+  resetRouterProbeCache()
+  let reportKeys = true
+  const router = await startRouter(() => ({
+    body: healthBody('primary', reportKeys ? { primary: { budgetUntil: null, rateUntil: null, spend: 2, max: 4 }, alt: free, third: free } : {}),
+  }))
+  const url = router.url
+  try {
+    const first = await readyz(withRouter(testConfig(), url, 400))
+    assert.equal(first.status, 200)
+    assert.match(renderMetrics(), /fledge_router_key_spend\{key="primary"\} 2/)
+    reportKeys = false
+    resetRouterProbeCache()
+    const second = await readyz(withRouter(testConfig(), url, 400))
+    assert.equal(second.status, 200, 'a readable answer with no keys is still a health answer')
+    assert.equal((second.parsed.router as { state: string }).state, 'ok')
+    const text = renderMetrics()
+    assert.doesNotMatch(text, /fledge_router_key_spend\{/, 'a labeled spend series outlived the keys it described')
+    assert.doesNotMatch(text, /fledge_router_key_max\{/)
+    assert.doesNotMatch(text, /fledge_router_rate_cooldown_seconds/)
+    assert.doesNotMatch(text, /fledge_router_budget_cooldown_seconds/)
+  } finally {
+    await router.close()
+  }
+})
+
+// #282 review, non-blocking: a cap with two causes is not a single-cause event.
+// The names are read by an operator as "why nothing can serve"; a set where one
+// key is budget-capped and the rest are rate-capped must not be counted as
+// either. Readiness is unchanged (503), and `router.state` still names the mode.
+test('a mixed cap increments neither all-keys counter while readiness still fails', async () => {
+  resetMetrics()
+  resetRouterProbeCache()
+  const budgetAndRate = { budgetUntil: ms(BUDGET_UNTIL), rateUntil: ms(RATE_UNTIL), spend: 5, max: 5 }
+  const rateOnly = { budgetUntil: null, rateUntil: ms(RATE_UNTIL), spend: 1, max: 5 }
+  const router = await startRouter(() => ({ body: healthBody('budget', { primary: budgetAndRate, alt: rateOnly, third: rateOnly }) }))
+  try {
+    const answer = await readyz(withRouter(testConfig(), router.url))
+    assert.equal(answer.status, 503)
+    assert.equal((answer.parsed.router as { state: string }).state, 'budget-exhausted')
+    const text = renderMetrics()
+    assert.doesNotMatch(text, /fledge_router_all_keys_rate_limited_total/, 'a mixed cap was counted as all-rate')
+    assert.doesNotMatch(text, /fledge_router_all_keys_exhausted_total/, 'a mixed cap was counted as all-budget')
+  } finally {
+    await router.close()
   }
 })
 

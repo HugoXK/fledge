@@ -36,6 +36,22 @@ export interface RouterObservation {
 /** Fixed aliases, so a label can never be a string the router invented. */
 const KEY_ALIASES = ['primary', 'alt', 'third'] as const
 
+// Every gauge this module publishes except `fledge_router_up`, removed as a
+// whole. `fledge_router_key_spend` and `fledge_router_key_max` exist only as
+// `{key=…}` children, so `clearGauge(name)` without labels would leave them at
+// the last reading while `fledge_router_up` says 0 — the stale-gauge case #758
+// forbids (#282 review). Enumerating the fixed aliases is safe: the label set is
+// this module's own vocabulary, not something the router can extend.
+function clearReadingGauges(): void {
+  for (const alias of KEY_ALIASES) {
+    clearGauge('fledge_router_key_spend', { key: alias })
+    clearGauge('fledge_router_key_max', { key: alias })
+  }
+  clearGauge('fledge_router_rate_cooldown_seconds')
+  clearGauge('fledge_router_budget_cooldown_seconds')
+  clearGauge('fledge_router_queue_depth')
+}
+
 // A public `/readyz` must not become a way to hammer the loopback router: a
 // monitor polls it far more often than a tick runs, and a flood of readiness
 // calls would otherwise turn one unauthenticated endpoint into outbound
@@ -118,31 +134,31 @@ function record(reading: Reading, state: RouterState): void {
   if (state === 'unreachable') {
     incCounter('fledge_router_unreachable_total', {}, 1, 'Model router probes that could not read a health answer')
     // An unreachable router has no numbers to publish. A stale gauge is worse
-    // than an absent one (#758): drop the series rather than leave last tick's
-    // spend on a dashboard as if it were current.
-    clearGauge('fledge_router_key_spend')
-    clearGauge('fledge_router_key_max')
-    clearGauge('fledge_router_rate_cooldown_seconds')
-    clearGauge('fledge_router_budget_cooldown_seconds')
-    clearGauge('fledge_router_queue_depth')
+    // than an absent one (#758): drop every series — the per-key gauges are
+    // labeled children, not the unlabeled series — rather than leave last
+    // tick's spend on a dashboard as if it were current.
+    clearReadingGauges()
     return
   }
   if (state === 'rate-limited') incCounter('fledge_router_mode_rate_total', {}, 1, 'Model router probes answered in rate mode')
   if (state === 'budget-exhausted') incCounter('fledge_router_mode_budget_total', {}, 1, 'Model router probes answered in budget mode')
   // The `all_keys` names are only incremented when the per-key reading says
   // every key is capped; naming a partial cooldown `all_keys` would publish a
-  // false statement in the metric namespace.
+  // false statement in the metric namespace. A cap with more than one cause
+  // (one key budget-capped, the others rate-capped) increments neither name:
+  // the counters exist to say *why* nothing can serve, and `router.state` is
+  // where a mixed cause is reported, not a counter whose name would overstate
+  // one of them (#282 review).
   if (observation.allKeysCapped) {
-    const budgetCapped = [...keys.values()].every((key) => key.budgetCooldownSeconds > 0)
-    if (budgetCapped) incCounter('fledge_router_all_keys_exhausted_total', {}, 1, 'Model router probes where every key was capped by budget')
-    else incCounter('fledge_router_all_keys_rate_limited_total', {}, 1, 'Model router probes where every key was capped by rate')
+    const readings = [...keys.values()]
+    const budgetCappedEverywhere = readings.length > 0 && readings.every((key) => key.budgetCooldownSeconds > 0)
+    const anyBudgetCapped = readings.some((key) => key.budgetCooldownSeconds > 0)
+    const rateCappedEverywhere = readings.length > 0 && readings.every((key) => key.rateCooldownSeconds > 0)
+    if (budgetCappedEverywhere) incCounter('fledge_router_all_keys_exhausted_total', {}, 1, 'Model router probes where every key was capped by budget')
+    else if (rateCappedEverywhere && !anyBudgetCapped) incCounter('fledge_router_all_keys_rate_limited_total', {}, 1, 'Model router probes where every key was capped by rate')
   }
   if (keys.size === 0) {
-    clearGauge('fledge_router_queue_depth')
-    clearGauge('fledge_router_key_spend')
-    clearGauge('fledge_router_key_max')
-    clearGauge('fledge_router_rate_cooldown_seconds')
-    clearGauge('fledge_router_budget_cooldown_seconds')
+    clearReadingGauges()
     return
   }
   let rateCooldown = 0
