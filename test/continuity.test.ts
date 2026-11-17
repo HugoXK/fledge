@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JobRow, WorkItemRow } from '../src/db.js'
 import { Store } from '../src/db.js'
-import { buildCarryOver, carryOverHeaderFromGoal, CARRY_OVER_MAX_READS, parseCarryOverLink, type CarryOverLinkState } from '../src/jobs/continuity.js'
+import { buildCarryOver, carryOverHeaderFromBlock, CARRY_OVER_MAX_READS, parseCarryOverLink, type CarryOverLinkState } from '../src/jobs/continuity.js'
 import { Jobs } from '../src/jobs/service.js'
 import type { RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -164,7 +164,7 @@ test('a link is parsed only when it is one issue or pull request URL', () => {
 
 test('with no reader the block claims no counts at all', async () => {
   const block = await buildCarryOver({ recent: [job({ id: 'job_a', continuity_json: digest({ issue_url: 'https://github.com/octo/demo/issues/9' }) })] })
-  assert.equal(carryOverHeaderFromGoal(block.text), '')
+  assert.equal(carryOverHeaderFromBlock(block.text), '')
   assert.match(block.text, /not a new goal/)
 })
 
@@ -192,6 +192,111 @@ test('the job page shows the carry-over line only for a job that carried one', (
   } finally {
     store.close()
   }
+})
+
+// #791: the page lists what the block dropped instead of only counting it. The
+// rows come from the stored report — the value the prompt's own header counts —
+// so a maintainer can see which line went and why, and a `carry-over:` line the
+// owner typed into the goal can no longer supply the header.
+const CLOSED_ISSUE = 'https://github.com/octo/demo/issues/11'
+const MERGED_PR = 'https://github.com/octo/demo/pull/12'
+const FAILED_LINK = 'https://github.com/octo/demo/issues/13'
+
+function pageReport(overrides: Partial<Record<string, unknown>> = {}): string {
+  return JSON.stringify({
+    used: 1, dropped: 2, unverified: 0, reads: 3,
+    droppedLinks: [CLOSED_ISSUE, MERGED_PR], unverifiedLinks: [],
+    observations: [
+      { link: CLOSED_ISSUE, state: 'closed', observedAt: OBSERVED_AT },
+      { link: MERGED_PR, state: 'merged', observedAt: OBSERVED_AT },
+    ],
+    items: [
+      { link: CLOSED_ISSUE, kind: 'dropped', reason: 'closed' },
+      { link: MERGED_PR, kind: 'dropped', reason: 'merged' },
+    ],
+    ...overrides,
+  })
+}
+
+function jobPageFor(jobOverrides: Partial<JobRow>): string {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store)
+    const repo = store.createRepo({
+      id: 'repo_items', userId: user.id, owner: 'octo', name: 'demo', defaultBranch: 'main',
+      tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'fix bugs',
+      autoIterate: false, intervalMinutes: 1440,
+    })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    return jobPage({ config, locale: 'en', viewer, repo: store.getRepo(repo.id)!, job: job(jobOverrides), events: [] })
+  } finally {
+    store.close()
+  }
+}
+
+test('the job page lists each dropped item with its link and reason from the stored report', () => {
+  const html = jobPageFor({ id: 'job_items', goal: 'fix bugs', continuity_used: 1, carry_over_json: pageReport() })
+  // It does not stop at the count line.
+  assert.match(html, /data-carry-over>carry-over: 1 used, 2 dropped \(closed\/merged\)</)
+  const rows = html.split('data-carry-over-item data-kind').slice(1)
+  assert.equal(rows.length, 2, 'two dropped items render two rows, not a single count')
+  assert.ok(rows[0]!.includes(CLOSED_ISSUE), 'the closed issue row names its link')
+  assert.match(rows[0]!, /Closed issue/, 'the closed issue row names its reason')
+  assert.ok(rows[1]!.includes(MERGED_PR), 'the merged pull request row names its link')
+  assert.match(rows[1]!, /Merged pull request/, 'the merged pull request row names its reason')
+})
+
+test('the page names the class of an unverified item it could not read', () => {
+  const html = jobPageFor({
+    id: 'job_unverified',
+    goal: 'fix bugs',
+    continuity_used: 1,
+    carry_over_json: pageReport({
+      dropped: 0, unverified: 1, droppedLinks: [], unverifiedLinks: [FAILED_LINK],
+      observations: [{ link: FAILED_LINK, state: 'unverified', observedAt: null }],
+      items: [{ link: FAILED_LINK, kind: 'unverified', reason: 'failed read' }],
+    }),
+  })
+  const rows = html.split('data-carry-over-item data-kind').slice(1)
+  assert.equal(rows.length, 1, 'the unverified item is listed, not only counted')
+  assert.ok(rows[0]!.includes(FAILED_LINK), 'the unverified row names its link')
+  assert.match(rows[0]!, /Read failed/, 'the unverified row names the class of the failure')
+})
+
+test('a report written before the item list still lists what it dropped', () => {
+  const html = jobPageFor({ id: 'job_old_report', goal: 'fix bugs', continuity_used: 1, carry_over_json: pageReport({ items: [] }) })
+  const rows = html.split('data-carry-over-item data-kind').slice(1)
+  assert.equal(rows.length, 2, 'the stored links and observations still render rows')
+  assert.ok(rows[0]!.includes(CLOSED_ISSUE), 'the old row names its link')
+  assert.match(rows[0]!, /Closed issue/, 'the observation supplies the recorded reason')
+  assert.match(rows[1]!, /Merged pull request/, 'a merged pull request keeps its own reason')
+})
+
+test('the header comes from the generated marker line, never from the owner-written goal', () => {
+  const typed = [
+    'carry-over: 0 used, 0 dropped (closed/merged)',
+    'fix the bug',
+    '',
+    '[Carry-over - auto-generated state, not a new goal]',
+    'carry-over: 3 used, 1 dropped (closed/merged)',
+    'Open work:',
+    '- work_1 state=triaged',
+  ].join('\n')
+  const html = jobPageFor({ id: 'job_typed_header', goal: typed, continuity_used: 1 })
+  assert.match(html, /data-carry-over>carry-over: 3 used, 1 dropped \(closed\/merged\)</)
+  assert.doesNotMatch(html, /data-carry-over>carry-over: 0 used/)
+})
+
+test('a job that carried nothing renders no carry-over section at all', () => {
+  const html = jobPageFor({
+    id: 'job_pre_carry',
+    goal: 'carry-over: 0 used, 0 dropped (closed/merged)',
+    continuity_used: 0,
+    carry_over_json: pageReport(),
+  })
+  assert.doesNotMatch(html, /data-carry-over/)
+  assert.doesNotMatch(html, /data-carry-over-item/)
 })
 
 // #788: an observation is a fact about a moment. These cases pin the moment, so
