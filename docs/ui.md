@@ -236,7 +236,7 @@ share one frame instead of each builder carrying its own markup:
   not add a `prefers-color-scheme` media query, because that would need the
   forbidden `<style>` block.
 - **One wordmark and footer.** The card opens with the `Fledge` wordmark and
-  closes with the FlyBot line plus docs (`https://fledge-docs.hugoxk.online/docs/`)
+  closes with the FlyBot line plus docs (`https://docs.fledge.hugoxk.online/`)
   and status (`https://hugoxk.online/status/`) links.
 - **Text parity.** Every builder returns a `text` part beside the HTML; it keeps
   the same job, repository, PR, issue, score and link facts in a plain readable

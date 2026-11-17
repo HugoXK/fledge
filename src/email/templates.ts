@@ -4,7 +4,7 @@ function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
 }
 
-const DOCS_URL = 'https://fledge-docs.hugoxk.online/docs/'
+const DOCS_URL = 'https://docs.fledge.hugoxk.online/'
 const STATUS_URL = 'https://hugoxk.online/status/'
 
 // One shell for every transactional mail: a 640px table measure that survives

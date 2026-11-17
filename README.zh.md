@@ -18,7 +18,7 @@
   <a href="https://github.com/HugoXK/fledge/pkgs/container/fledge"><img alt="GHCR" src="https://img.shields.io/badge/ghcr.io-hugoxk%2Ffledge-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-<p align="center"><a href="README.md">English</a> | 中文 · <a href="https://fledge-docs.hugoxk.online/docs/">文档</a></p>
+<p align="center"><a href="README.md">English</a> | 中文 · <a href="https://docs.fledge.hugoxk.online/">文档</a></p>
 
 ---
 
@@ -29,7 +29,7 @@ bridge 把任务交给 FlyBot 代理；代理先写失败测试，做最小修�
 
 > **状态：** 最新发布是 `v0.4.0`（2026-11-16）：<https://fledge.hugoxk.online/>。
 > 周一早上（Asia/Shanghai 10:00）发 minor，周内后续发布都是 patch。登录走 GitHub OAuth：生产 OAuth App 已配置，token 登录兜底已关闭。文档在
-> <https://fledge-docs.hugoxk.online/docs/>；项目主页和 Guide 在
+> <https://docs.fledge.hugoxk.online/>；项目主页和 Guide 在
 > <https://hugoxk.online/fledge/>。
 
 ## 目录
@@ -189,7 +189,7 @@ flowchart LR
 
 ## 文档
 
-用户 Guide 和参考在 <https://fledge-docs.hugoxk.online/docs/>（镜像：
+用户 Guide 和参考在 <https://docs.fledge.hugoxk.online/>（镜像：
 <https://hugoxk.online/fledge/docs/>）。它们由
 [HugoXK/fledge-docs](https://github.com/HugoXK/fledge-docs) 从本仓库的
 `README.md`、`README.zh.md` 和 `docs/` 自动构建。
