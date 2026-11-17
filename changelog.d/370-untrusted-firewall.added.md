@@ -1,1 +1,0 @@
-An issue body that tells the agent to push to main is now recorded as named, blocked directives on the job page instead of only being fenced as data. The firewall matches a finite rule table and stores rule ids plus the body hash, never the text.
