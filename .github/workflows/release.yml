@@ -190,39 +190,115 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
+          set -euo pipefail
+          # #883: the version tag is an alias, not the identity. The image this
+          # run builds and publishes carries a commit-scoped tag, so the same
+          # tag always names the same build; `vX.Y.Z` is created from the digest
+          # afterwards and never repointed.
+          IMMUTABLE="${IMAGE}:sha-$(git rev-parse --short=12 HEAD)"
+          echo "IMMUTABLE=${IMMUTABLE}" >> "$GITHUB_ENV"
           docker build \
             --build-arg "GIT_SHA=$(git rev-parse HEAD)" \
             --build-arg "BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
-            -t "${IMAGE}:${RELEASE_TAG}" .
+            -t "$IMMUTABLE" .
 
-      # The digest is the identity the attestation signs. `docker push` prints
-      # layer progress, so the repo digest is read back from the image metadata
-      # after the push; without it the provenance step silently has nothing to
-      # attest.
-      - name: Publish to GHCR
+      # #883: the published digest is what is scanned, smoked and attested, and
+      # the commit tag is the name it is reached through. An existing commit tag
+      # is adopted rather than re-pushed: the same commit cannot legitimately
+      # produce different content, and re-pushing is how a tag stops being an
+      # identity. An adopted digest still needs its scan and smoke below, so a
+      # resumed run proves the image it did not build.
+      - name: Publish the immutable image
         if: ${{ steps.guard.outputs.published != 'true' }}
         id: push
         env:
           GHCR_USER: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: |
           set -euo pipefail
           echo "$GHCR_TOKEN" | docker login ghcr.io -u "$GHCR_USER" --password-stdin
-          docker push "${IMAGE}:${RELEASE_TAG}"
-          digest="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "${IMAGE}:${RELEASE_TAG}" \
-            | sed -n 's/^.*@\(sha256:[0-9a-f]*\)$/\1/p' | head -n 1)"
-          if [ -z "$digest" ]; then
-            echo "::error::the push produced no repo digest; cannot attest or name an SBOM"
+          if docker buildx imagetools inspect "$IMMUTABLE" >/dev/null 2>&1; then
+            digest="$(docker buildx imagetools inspect "$IMMUTABLE" --format '{{.Manifest.Digest}}')"
+            echo "${IMMUTABLE} already exists; adopting ${digest} instead of republishing it"
+          else
+            docker push "$IMMUTABLE"
+            digest="$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' "$IMMUTABLE" \
+              | sed -n 's/^.*@\(sha256:[0-9a-f]*\)$/\1/p' | head -n 1)"
+          fi
+          if [ -z "$digest" ] || [ "$digest" = "" ]; then
+            echo "::error::the push produced no repo digest; cannot scan, attest or name an SBOM"
             exit 1
           fi
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
 
-      - name: Generate an SBOM for the published image
+      # #883 item 2: the scan is of the digest this run publishes, not of a
+      # second image built beside it. Same threshold and allowlist as the CI scan
+      # of `fledge:ci`, so a release can never pass a gate a pull request fails.
+      - name: Scan the published digest
+        if: ${{ steps.guard.outputs.published != 'true' }}
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
+          format: table
+          exit-code: '1'
+          severity: 'HIGH,CRITICAL'
+          ignore-unfixed: true
+          skip-dirs: usr/local/lib/node_modules/npm
+          trivyignores: .trivyignore.yaml
+
+      # #883 item 3: the image that answered nothing in the runner is not the
+      # image a host will run. This runs the published digest — resolved through
+      # its tag, so the smoke test also proves the push landed where the release
+      # body says — and asserts `/healthz` the way the Docker job does in CI.
+      - name: Run the published image and assert /healthz
+        if: ${{ steps.guard.outputs.published != 'true' }}
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          random() { node -e "process.stdout.write(require('node:crypto').randomBytes(32).toString('$1'))"; }
+          docker run -d --name fledge-release-smoke \
+            -e SESSION_SECRET="$(random hex)" \
+            -e TOKEN_ENCRYPTION_KEY="$(random base64)" \
+            -e METRICS_TOKEN="$(random hex)" \
+            -e ALLOW_TOKEN_LOGIN_ONLY=true \
+            -e DATA_DIR=/data \
+            -e PORT=8080 \
+            -p 18081:8080 \
+            "${IMAGE}@${DIGEST}"
+          cleaned=0
+          cleanup() {
+            if [ "$cleaned" = 0 ]; then docker rm -f fledge-release-smoke >/dev/null 2>&1 || true; fi
+          }
+          trap cleanup EXIT
+          started=0
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18081/healthz -o /tmp/release-healthz.json; then started=1; break; fi
+            if [ "$(docker inspect -f '{{.State.Running}}' fledge-release-smoke 2>/dev/null)" = "false" ]; then break; fi
+            sleep 1
+          done
+          if [ "$started" = 0 ]; then
+            echo "::error::the published digest never answered /healthz"
+            docker logs fledge-release-smoke || true
+            exit 1
+          fi
+          ok="$(jq -r '.ok' /tmp/release-healthz.json)"
+          version="$(jq -r '.version // empty' /tmp/release-healthz.json)"
+          if [ "$ok" != "true" ] || [ -z "$version" ]; then
+            echo "::error::/healthz did not answer ok=true with a version: $(head -c 400 /tmp/release-healthz.json)"
+            exit 1
+          fi
+          echo "published digest ${DIGEST} answered /healthz with version ${version}"
+          docker rm -f fledge-release-smoke >/dev/null 2>&1 || true
+          cleaned=1
+
+      # The SBOM describes the same digest the scan read; an SBOM built from a
+      # second image would describe something nobody publishes.
+      - name: Generate an SBOM for the published digest
         if: ${{ steps.guard.outputs.published != 'true' }}
         uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
         with:
-          image: ${{ env.IMAGE }}:${{ env.RELEASE_TAG }}
+          image: ${{ env.IMAGE }}@${{ steps.push.outputs.digest }}
           format: spdx-json
           output-file: sbom.spdx.json
           artifact-name: fledge-sbom-${{ env.RELEASE_TAG }}
@@ -239,11 +315,54 @@ jobs:
           # signs, so `gh attestation verify` finds it from the image alone.
           push: true
 
+      # #883 item 5: `vX.Y.Z` is an alias of the verified digest. The alias is
+      # created once and compared on every later run; a tag that would be
+      # repointed stops the job, because every record that named it (the release
+      # body, a deploy record) would otherwise silently change what it points at.
+      - name: Promote the digest to the version alias
+        if: ${{ steps.guard.outputs.published != 'true' }}
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: |
+          set -euo pipefail
+          alias_ref="${IMAGE}:${RELEASE_TAG}"
+          status=0
+          existing="$(docker buildx imagetools inspect "$alias_ref" --format '{{.Manifest.Digest}}' 2>&1)" || status=$?
+          action="$(STATUS="$status" EXISTING="$existing" DIGEST="$DIGEST" node --input-type=module -e '
+            import { classifyAlias } from "./scripts/lib/release-alias.mjs"
+            const result = classifyAlias({
+              status: Number(process.env.STATUS),
+              existing: process.env.EXISTING ?? "",
+              digest: process.env.DIGEST ?? "",
+            })
+            console.error(`alias: ${result.action} — ${result.reason}`)
+            process.stdout.write(result.action)
+          ')"
+          case "$action" in
+            same)
+              echo "${alias_ref} already names ${DIGEST}; nothing to write" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            create)
+              docker tag "${IMAGE}@${DIGEST}" "$alias_ref"
+              docker push "$alias_ref"
+              echo "${alias_ref} created as an alias of ${DIGEST}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::refusing to repoint ${alias_ref}; see the alias line above"
+              exit 1
+              ;;
+          esac
+
       # #280: the Release body is the one durable, API-readable place the digest,
       # the SBOM and the attestation can be read back from without a registry
       # credential, so `node scripts/verify-release.mjs` compares them instead of
       # trusting a workflow run nobody opened. Written before the Release exists,
       # so a run that fails earlier never leaves a body claiming them.
+      #
+      # #883 item 4: the SBOM line is the Release asset URL, not the name of an
+      # Actions artifact that expires; the asset is uploaded to this same release
+      # below.
       - name: Record the published chain in the release notes
         if: ${{ steps.guard.outputs.published != 'true' }}
         env:
@@ -254,7 +373,7 @@ jobs:
           {
             echo ""
             echo "Image: ${IMAGE}:${RELEASE_TAG}@${DIGEST}"
-            echo "SBOM: fledge-sbom-${RELEASE_TAG}"
+            echo "SBOM: https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/sbom.spdx.json"
             echo "Attestation: ${DIGEST}"
           } >> /tmp/release-notes.md
 
@@ -288,3 +407,31 @@ jobs:
             exit 1
           fi
           gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file /tmp/release-notes.md
+
+      # #883 item 4: the SBOM is a Release asset, so it outlives the run that
+      # made it. The body wrote its download URL before the release existed; this
+      # step makes that URL true.
+      - name: Attach the SBOM to the release
+        if: ${{ steps.guard.outputs.published != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release upload "$RELEASE_TAG" sbom.spdx.json --clobber
+          echo "SBOM attached to ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+
+      # #883 item 1: the chain is closed on the publish side. The release job is
+      # the only place that holds everything at once — the tag, the digest, the
+      # SBOM asset and the attestation — so the verification runs here, after the
+      # release exists, and a non-zero exit fails the publish instead of leaving
+      # a release whose body claims more than it has.
+      - name: Verify the release chain
+        if: ${{ steps.guard.outputs.published != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          # `verify-release` takes the bare X.Y.Z; the tag carries the leading v.
+          node scripts/verify-release.mjs --version "${RELEASE_TAG#v}"
