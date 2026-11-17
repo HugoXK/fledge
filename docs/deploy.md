@@ -575,10 +575,12 @@ for someone to notice. A scheduled run acts on the merge commit of the merged
 later merge the tip is no longer that merge and the identity check would correctly
 refuse it; a scheduled run that cannot name exactly one such pull request keeps
 the tip, and the identity check then refuses it with its own reason rather than
-guessing a release to repair. The release job's drive still reports `tag` (a merged
-release pull request with no tag) — that is the night's summary line, not the
-writer. **The tag job is the only tag writer**: the release job never creates a
-tag, and its `tag` action is documented here rather than executed.
+guessing a release to repair. **The tag job is the only tag writer**: the release
+job never creates a tag, and its drive no longer carries a `tag` action at all.
+That action was unreachable — the release job never fed it the merged pull request
+list, so it could neither execute nor be reported — and it was removed rather than
+left as a claim in the code; a merged release pull request without a tag is found
+by the tag job itself (#866).
 
 Two recovery steps remain owner actions, unchanged by this slice: an orphan
 `release/vX.Y.Z` branch still cannot be deleted through the `keep release

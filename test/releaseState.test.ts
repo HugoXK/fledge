@@ -200,7 +200,6 @@ test('a foreign release-shaped PR alone leaves the night releasable', () => {
   const decision = decideDrive({
     plan: { shouldRelease: plan.shouldRelease, nextVersion: plan.nextVersion, reason: plan.reason },
     openReleasePr: null,
-    mergedPrs: [],
     tags: state.tags,
     ciOk: state.ciOk,
     dryRun: false,
@@ -230,7 +229,6 @@ test('a newer foreign PR cannot shadow this repository\'s own release PR', () =>
       checks: [{ name: 'ci-ok', conclusion: 'success' }],
       sameRepo: true,
     },
-    mergedPrs: [],
     tags: state.tags,
     ciOk: 'success',
     dryRun: false,
@@ -278,7 +276,6 @@ function driveOrphan(state: ReturnType<typeof orphanState>) {
   return decideDrive({
     plan: PLAN_0302,
     openReleasePr: null,
-    mergedPrs: [],
     tags: state.tags,
     orphanBranches: state.orphanBranches,
     ciOk: state.ciOk,
@@ -329,7 +326,6 @@ test('an orphan blocks the night even when the release rule is not met', () => {
   const decision = decideDrive({
     plan: { shouldRelease: false, nextVersion: '0.3.2', reason: 'only 9 merged PRs, need 10' },
     openReleasePr: null,
-    mergedPrs: [],
     tags: state.tags,
     orphanBranches: state.orphanBranches,
     ciOk: state.ciOk,
@@ -380,17 +376,16 @@ test('the existing reasons are unchanged when the branch is not an orphan', () =
       merge_commit_sha: 'b'.repeat(40),
     }]],
   })
-  const tagDecision = decideDrive({
+  const mergedDecision = decideDrive({
     plan: PLAN_0302,
     openReleasePr: null,
-    mergedPrs: [{ number: 208, title: 'release: v0.3.2', headRef: 'release/v0.3.2', mergeCommitSha: 'b'.repeat(40) }],
     tags: merged.tags,
     orphanBranches: merged.orphanBranches,
     ciOk: merged.ciOk,
     dryRun: false,
   })
-  assert.equal(tagDecision.action, 'tag', 'a merged release PR without its tag is still tagged')
-  assert.doesNotMatch(tagDecision.reason, /orphan-branch/)
+  assert.equal(mergedDecision.action, 'open-pr', 'a merged release PR clears the orphan; the tag job owns its tag')
+  assert.doesNotMatch(mergedDecision.reason, /orphan-branch/)
 })
 
 test('nothing is reported about branches when there is no release branch at all', () => {
