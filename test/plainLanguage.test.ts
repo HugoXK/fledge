@@ -31,8 +31,11 @@ function visibleText(html: string): string {
   return html
     .replace(/<details[^>]*advanced-help[^>]*>[\s\S]*?<\/details>/g, '\n')
     .replace(/<footer[\s\S]*?<\/footer>/g, '\n')
-    .replace(/<script[\s\S]*?<\/script>/gi, '\n')
-    .replace(/<style[\s\S]*?<\/style>/gi, '\n')
+    // The end tag may carry whitespace before `>` (`</script >`), which a bare
+    // `</script>` pattern would miss — CodeQL's bad-tag-filter query flags that
+    // shape, so both tags allow it.
+    .replace(/<script[^>]*>[\s\S]*?<\/script\s*>/gi, '\n')
+    .replace(/<style[^>]*>[\s\S]*?<\/style\s*>/gi, '\n')
     .replace(/<[^>]*>/g, '\n')
 }
 
