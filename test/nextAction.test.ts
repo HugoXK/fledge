@@ -140,7 +140,7 @@ test('an open question outranks an alert, because only the user can answer it', 
   }
   const section = nextActionBlock(render('en', { questions: [question], alerts: [criticalAlert] }))
   assert.match(section, /data-next-action="questions"/)
-  assert.match(section, /FlyBot is waiting on 1 answer/)
+  assert.match(section, /Workspace is waiting on 1 answer/)
   assert.deepEqual(targets(section), ['#inbox'], 'the answer form is one tap away')
   assert.doesNotMatch(section, /45 minutes/, 'an alert does not displace a question only the user can answer')
 })
@@ -215,7 +215,7 @@ test('platform quota satisfies the model step, so the next action is the instanc
   const html = render('en', { setup })
   const section = nextActionBlock(html)
   assert.match(section, /data-next-action="setup"/)
-  assert.match(section, /Start the FlyBot instance/, 'the platform-funded first run advances past the model step')
+  assert.match(section, /Start workspace/, 'the platform-funded first run advances past the model step')
   assert.doesNotMatch(section, /Add a model provider/, 'an optional model step is not the primary action')
   assert.match(html, /Using platform quota/, 'the checklist still says where the model comes from')
 })
