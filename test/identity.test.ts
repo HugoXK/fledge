@@ -88,6 +88,33 @@ test('the backfill is idempotent and seeds the owner tenant, project, member and
   }
 })
 
+// #671: the report row is a migration record, not a heartbeat. Rewriting the
+// same JSON on every boot takes the SQLite write lock, and on a read-only or
+// full volume a start fails over a write that changes nothing. The wrapped
+// `run` counts the UPDATE itself: asserting the stored JSON alone passes
+// whether or not the row was rewritten, so it would not catch this.
+test('a second identity migration rewrites no report row when the counts are unchanged', () => {
+  const h = harness()
+  try {
+    h.store.migrateIdentity()
+    const updates: string[] = []
+    const run = h.store.run.bind(h.store)
+    h.store.run = ((sql: string, ...params: unknown[]): void => {
+      if (/^\s*UPDATE identity_migrations\b/.test(sql)) updates.push(sql)
+      run(sql, ...params)
+    }) as typeof h.store.run
+    try {
+      const second = h.store.migrateIdentity()
+      assert.deepEqual(updates, [], 'the unchanged report is not rewritten')
+      assert.equal(second.version, 1)
+    } finally {
+      h.store.run = run
+    }
+  } finally {
+    h.store.close()
+  }
+})
+
 test('the migration gives a user with no repository a principal', () => {
   const h = harness()
   try {
