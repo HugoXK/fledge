@@ -982,6 +982,17 @@ dependency carries a harmless `postinstall` marker, and fails if the marker is
 written. Dropping the flag therefore fails the suite instead of silently
 restoring script execution.
 
+The sweep in `test/ciInstallScripts.test.ts` is the other half: it reads every
+workflow and both Docker stages and fails on an unguarded install, and it matches
+the install-command family — `npm ci`, `npm install`, `npm i`, `npm add`,
+`npm exec`, `yarn install`/`yarn add`, `pnpm install`/`pnpm add`/`pnpm i`/
+`pnpm exec`, and an `npx` that resolves a package — instead of one spelling
+(#925). The two `npx` lines that run a binary the checkout already has,
+`npx playwright install --with-deps chromium` and
+`npx tsx scripts/isolation-check.ts --image fledge:ci`, are named exclusions by
+exact command text; the suite fails when either line changes, so an exclusion
+cannot grow to cover a new command.
+
 The remaining `npm ci` calls (`typecheck`, `test`, `coverage`, `build`, `audit`,
 `visual`, `release.yml` and both Docker stages) still run scripts and move one
 job at a time, each on its own measured run. A dependency that genuinely needs a
