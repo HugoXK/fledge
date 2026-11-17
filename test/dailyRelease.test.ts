@@ -1,7 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 // The contract of issue #80, as a structural test: the file may carry no stored
 // secret, no file-level permissions block, no pull-request creation or release
@@ -128,7 +130,17 @@ test('the release job runs on a push too, and the trigger predicate decides whet
   // the trigger decided, so an ordinary merge that plans nothing is still
   // visible in the run history.
   assert.match(job('release'), /if: github\.event_name == 'schedule' \|\| github\.event_name == 'workflow_dispatch' \|\| github\.event_name == 'push'/)
-  assert.match(job('tag'), /if: github\.event_name == 'push'/)
+  // #866: the scheduled slot also reaches the tag job, because a release can be
+  // left half-made with no further push. The job decides from the API state
+  // (tag present? release present?), not from the event that woke it.
+  assert.match(job('tag'), /if: github\.event_name == 'push' \|\| github\.event_name == 'schedule'/)
+  assert.doesNotMatch(job('tag'), /workflow_dispatch/, 'a manual dispatch never tags, so a dry run cannot publish')
+  assert.match(job('tag'), /releases\/tags\/\$\{RELEASE_TAG\}/, 'the tag job reads whether the GitHub Release exists')
+  assert.match(job('tag'), /release: JSON\.parse/, 'the release state is an input to the pure decision')
+  const dispatchStep = between('      - name: Dispatch release.yml at the tag', '')
+  assert.match(dispatchStep, /steps\.decide\.outputs\.action == 'create' \|\| steps\.decide\.outputs\.action == 'publish'/, 'a tag without its release dispatches the publish run')
+  const createStep = between('      - name: Create the annotated tag on the merge commit', '      - name: Dispatch release.yml at the tag')
+  assert.match(createStep, /if: \$\{\{ steps\.decide\.outputs\.action == 'create' \}\}/, 'a publish never writes a second tag')
   const step = between('      - name: Trigger', '      - name: Check the opener precondition')
   assert.match(step, /id: trigger/)
   // #548: this was `always()`. The step reads the state the collect step wrote,
@@ -358,6 +370,9 @@ test('the surface this branch adds is declared, and the workflow runs no other r
   // growing back into the release path shows up here as an import.
   const machinery = new Set([
     'scripts/lib/release-drive.mjs',
+    // #909: the one rule that reads the GitHub Release state, shared with
+    // release.yml; its table is test/releaseLookup.test.ts and both step bodies.
+    'scripts/lib/release-lookup.mjs',
     'scripts/lib/release-state.mjs',
     'scripts/lib/release-tag.mjs',
     'scripts/lib/release-trigger.mjs',
@@ -418,4 +433,204 @@ test('release.yml keeps its own concurrency and verifies the tag before publishi
   assert.match(release, /git merge-base --is-ancestor "refs\/tags\/\$\{RELEASE_TAG\}" origin\/main/)
   assert.match(release, /tag:\s*\n\s*description:/)
   assert.match(release, /gh release create "\$RELEASE_TAG"/)
+})
+
+test('the scheduled slot resolves the release merge instead of the tip', () => {
+  // #866: on `schedule` $GITHUB_SHA is main's tip, and the identity check needs
+  // the release pull request's squash commit. A later merge makes those differ,
+  // so the scheduled repair never reached the half-made release. The collect step
+  // resolves the target through the tested helper and publishes it as an output,
+  // and the decision is made about that target — not about the tip.
+  const collect = between('      - name: Collect the pushed commit', '      - name: Decide the tag')
+  assert.match(collect, /id: collect/, 'the collected sha is an output the decide step reads')
+  assert.match(collect, /import \{ resolveTarget \} from "\.\/scripts\/lib\/release-tag\.mjs"/, 'the scheduled target is a tested pure decision, not assembled in shell')
+  assert.match(collect, /gh pr list[^\n]*--state merged/, 'the merged release pull request is what names the target')
+  assert.match(collect, /sha=\$\{TARGET\}/, 'the resolved target is published as the step output')
+  const decide = between('      - name: Decide the tag', '      - name: Create the annotated tag')
+  assert.match(decide, /SHA: \$\{\{ steps\.collect\.outputs\.sha \}\}/, 'the decision is made about the resolved target')
+  assert.equal(decide.includes('github.sha'), false, 'the decide step no longer judges the tip on a scheduled run')
+})
+
+
+// #909: the collect step and release.yml's guard read one fact — does this tag
+// already have a GitHub Release? — and the exit status alone cannot tell a 404
+// ("not made yet") from a 403 or a 5xx ("I could not read it"). The step used to
+// grep `gh`'s message for `HTTP 404`; both steps now classify through one tested
+// rule, and these tests drive the real collect body against the same table the
+// guard is driven against, so the two cannot drift.
+
+function collectBody(): string {
+  const block = between('      - name: Collect the pushed commit', '      - name: Decide the tag')
+  const marker = '        run: |\n'
+  const start = block.indexOf(marker)
+  assert.notEqual(start, -1, 'the collect step has a run body')
+  const body: string[] = []
+  for (const line of block.slice(start + marker.length).split('\n')) {
+    if (line !== '' && !line.startsWith('          ')) break
+    body.push(line.startsWith('          ') ? line.slice(10) : line)
+  }
+  return body.join('\n')
+}
+
+function guardBody(): string {
+  const start = release.indexOf('      - name: Stop when the release already exists')
+  assert.notEqual(start, -1, 'release.yml has the guard step')
+  const block = release.slice(start)
+  const marker = '        run: |\n'
+  const at = block.indexOf(marker)
+  assert.notEqual(at, -1, 'the guard step has a run body')
+  const body: string[] = []
+  for (const line of block.slice(at + marker.length).split('\n')) {
+    if (line !== '' && !line.startsWith('          ')) break
+    body.push(line.startsWith('          ') ? line.slice(10) : line)
+  }
+  return body.join('\n')
+}
+
+interface LookupAnswer {
+  exit: number
+  stderr: string
+}
+
+interface BodyRun {
+  status: number | null
+  stdout: string
+  output: string
+  releaseJson: string
+  summary: string
+}
+
+// The stub answers every `gh` call the collect body makes: the release lookup is
+// the answer under test, and the rest are the payloads of a run that gets as far
+// as the lookup.
+function runCollect(answer: LookupAnswer): BodyRun {
+  const dir = mkdtempSync(join(tmpdir(), 'collect-release-'))
+  try {
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    const stub = [
+      '#!/usr/bin/env bash',
+      'case "$*" in',
+      '  *releases/tags/*)',
+      '    if [ "$STUB_EXIT" = "0" ]; then printf \'{"tag_name":"v0.3.2"}\\n\'; exit 0; fi',
+      '    printf "%s\\n" "$STUB_STDERR" >&2',
+      '    exit "$STUB_EXIT"',
+      '    ;;',
+      '  *contents/package.json*) printf "%s\\n" "$STUB_PACKAGE" ;;',
+      '  *) printf "[]\\n" ;;',
+      'esac',
+      '',
+    ].join('\n')
+    const ghPath = join(bin, 'gh')
+    writeFileSync(ghPath, stub)
+    chmodSync(ghPath, 0o755)
+    const output = join(dir, 'output')
+    const summary = join(dir, 'summary.md')
+    writeFileSync(output, '')
+    writeFileSync(summary, '')
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', collectBody()], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        GITHUB_REPOSITORY: 'HugoXK/fledge',
+        GITHUB_SHA: '8213cec5035f7abb9764c9449ecf074a7f1a9cdd',
+        GITHUB_EVENT_NAME: 'push',
+        RUNNER_TEMP: dir,
+        GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: summary,
+        STUB_EXIT: String(answer.exit),
+        STUB_STDERR: answer.stderr,
+        STUB_PACKAGE: Buffer.from('{"version":"0.3.2"}').toString('base64'),
+      },
+    })
+    const releasePath = join(dir, 'release.json')
+    return {
+      status: result.status,
+      stdout: result.stdout,
+      output: readFileSync(output, 'utf8'),
+      releaseJson: existsSync(releasePath) ? readFileSync(releasePath, 'utf8') : '',
+      summary: readFileSync(summary, 'utf8'),
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+function guardAnswer(answer: LookupAnswer): 'present' | 'absent' | 'refused' {
+  const dir = mkdtempSync(join(tmpdir(), 'guard-release-'))
+  try {
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    const stub = ['#!/usr/bin/env bash', 'printf "%s\\n" "$STUB_STDERR" >&2', `exit ${String(answer.exit)}`, ''].join('\n')
+    const ghPath = join(bin, 'gh')
+    writeFileSync(ghPath, stub)
+    chmodSync(ghPath, 0o755)
+    const output = join(dir, 'output')
+    const summary = join(dir, 'summary.md')
+    writeFileSync(output, '')
+    writeFileSync(summary, '')
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', guardBody()], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        GITHUB_REPOSITORY: 'HugoXK/fledge',
+        RUNNER_TEMP: dir,
+        GITHUB_OUTPUT: output,
+        GITHUB_STEP_SUMMARY: summary,
+        STUB_STDERR: answer.stderr,
+        RELEASE_TAG: 'v0.3.2',
+      },
+    })
+    if (result.status !== 0) return 'refused'
+    const published = readFileSync(output, 'utf8')
+    if (/^published=true$/m.test(published)) return 'present'
+    assert.match(published, /^published=false$/m, 'a successful guard answers exactly one of the two gates')
+    return 'absent'
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('the collect step records a 404 as absence and nothing else as absence', () => {
+  const absent = runCollect({ exit: 1, stderr: 'gh: Not Found (HTTP 404)' })
+  assert.equal(absent.status, 0, 'a 404 is the normal "not released yet" answer')
+  assert.deepEqual(JSON.parse(absent.releaseJson), {}, 'the absent fact is recorded as an empty release')
+  assert.match(absent.summary, /no GitHub Release/, 'the summary names the absence')
+  assert.match(absent.output, /sha=/, 'the target is still published for the decide step')
+
+  const present = runCollect({ exit: 0, stderr: '' })
+  assert.equal(present.status, 0, 'a present release is a normal answer too')
+  assert.equal(JSON.parse(present.releaseJson).tag_name, 'v0.3.2', 'the release payload is what the decision reads')
+
+  for (const stderr of [
+    'gh: Resource not accessible by integration (HTTP 403)',
+    'gh: Server Error (HTTP 502)',
+    'dial tcp: i/o timeout',
+    'gh: release not found',
+  ]) {
+    const unreadable = runCollect({ exit: 1, stderr })
+    assert.notEqual(unreadable.status, 0, `${stderr}: the step fails`)
+    assert.match(unreadable.stdout, /::error::/, `${stderr}: the failure is the single report`)
+    assert.notEqual(unreadable.releaseJson.trim(), '{}', `${stderr}: only a 404 is recorded as an absent release`)
+  }
+})
+
+test('the guard and the collect step agree on every answer of the table', () => {
+  // One table, both step bodies: present → published, 404 → not published,
+  // anything else → refusal. If the two ever diverge, one of these rows goes red.
+  const rows: Array<{ stderr: string; exit: number; expected: 'present' | 'absent' | 'refused' }> = [
+    { stderr: '', exit: 0, expected: 'present' },
+    { stderr: 'gh: Not Found (HTTP 404)', exit: 1, expected: 'absent' },
+    { stderr: 'gh: Resource not accessible by integration (HTTP 403)', exit: 1, expected: 'refused' },
+    { stderr: 'gh: Server Error (HTTP 502)', exit: 1, expected: 'refused' },
+    { stderr: 'dial tcp: i/o timeout', exit: 1, expected: 'refused' },
+  ]
+  for (const row of rows) {
+    assert.equal(guardAnswer(row), row.expected, `release.yml guard: ${row.stderr || `exit ${String(row.exit)}`}`)
+    const collect = runCollect(row)
+    const answer = collect.status === 0 ? (JSON.parse(collect.releaseJson).tag_name === undefined ? 'absent' : 'present') : 'refused'
+    assert.equal(answer, row.expected, `daily-release.yml collect: ${row.stderr || `exit ${String(row.exit)}`}`)
+  }
 })

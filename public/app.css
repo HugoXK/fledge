@@ -732,6 +732,16 @@ label.check { min-height: var(--touch); }
 
 .form { display: grid; gap: 13px; }
 .form label { display: grid; gap: 6px; font-size: 13px; color: var(--muted); }
+/* 471: a field error sits directly under the control it describes and shifts
+   only what comes after it, so the control the reader was sent to does not move
+   when the message appears. The control also takes the danger border, so the
+   sentence has a visible anchor instead of standing alone. */
+.field-error { margin: 0; font-size: 13px; line-height: 1.5; color: var(--danger); overflow-wrap: anywhere; }
+/* Inside a `.row` the message takes its own line under the pair, so the control
+   above it keeps the place it had before the message existed. */
+.row > .field-error { flex: 0 0 100%; }
+.form [aria-invalid="true"] { border-color: var(--danger-a35); }
+.form [aria-invalid="true"]:focus { border-color: var(--danger); box-shadow: 0 0 0 3px var(--danger-a14); }
 input, textarea, select {
   width: 100%; background: var(--field); color: var(--text); border: 1px solid var(--field-line);
   border-radius: var(--radius-sm); padding: 10px 12px; font: inherit; font-size: 14px;
@@ -1425,4 +1435,16 @@ html:lang(zh) .stat strong { letter-spacing: 0; line-height: 1.15; }
     transition-duration: 0.01ms !important;
     scroll-behavior: auto !important;
   }
+}
+/* Issue 264: one card answers review -> merge on the job page. The single action sits
+   above the facts, so a phone reader reaches it without scrolling past the
+   evidence, and the facts drop to one column below the tablet band. */
+.review-merge h2 { margin: 4px 0 0; font-size: clamp(18px, 2.4vw, 22px); line-height: 1.35; text-wrap: balance; }
+.review-merge-action { display: flex; flex-wrap: wrap; align-items: center; gap: var(--space-2); margin: var(--space-4) 0 var(--space-2); }
+.review-merge-action form { margin: 0; }
+.review-merge-facts { margin-top: var(--space-3); border-top: 1px solid var(--line); }
+.review-merge-facts .list-row { padding: 10px 0; }
+.review-merge-facts code { overflow-wrap: anywhere; }
+@media (min-width: 641px) {
+  .review-merge-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); column-gap: var(--space-5); }
 }

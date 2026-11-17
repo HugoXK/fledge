@@ -89,3 +89,49 @@ export function ruleSectionKey(path: string): string {
   if (family !== null) return `${family}:${trimmed.split('/').slice(1).join('/')}`
   return `rules:${trimmed.replace(/^rules\//, '')}`
 }
+
+// #433 slice 2: the difference between the strategy two jobs ran under. A change
+// is named by section key, so the page can say *which* part moved (`rules:review`,
+// `playbook:team`) instead of only that the hash differs; a key that appeared has
+// no `before`, a key that disappeared has no `after`.
+export interface StrategySectionChange {
+  key: string
+  before?: string
+  after?: string
+}
+
+export function diffStrategies(before: StrategySections, after: StrategySections): StrategySectionChange[] {
+  const keys = new Set([...Object.keys(before), ...Object.keys(after)])
+  const changes: StrategySectionChange[] = []
+  for (const key of [...keys].sort()) {
+    const left = before[key]
+    const right = after[key]
+    if (left === right) continue
+    changes.push({
+      key,
+      ...(left === undefined ? {} : { before: left }),
+      ...(right === undefined ? {} : { after: right }),
+    })
+  }
+  return changes
+}
+
+// The section map a job stored, read back without trusting the row. A corrupt row
+// reads as "no strategy recorded" rather than as an empty map, which would diff
+// every section in as newly added and blame the wrong job for the change.
+export function parseStrategySections(json: string | null): StrategySections | null {
+  if (json === null || json === '') return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return null
+  const sections: StrategySections = {}
+  for (const [key, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (typeof value !== 'string') return null
+    sections[key] = value
+  }
+  return canonicalSections(sections)
+}

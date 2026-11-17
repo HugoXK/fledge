@@ -79,6 +79,8 @@ const MESSAGES: Record<string, string> = {
   '目标分支不存在或不可访问。': 'The target branch does not exist or is not accessible.',
   '平台当前已有 2 个任务在运行，请稍后再试。': 'Two jobs are already running on the platform; try again later.',
   '账号已被管理员停用': 'The account was disabled by an administrator.',
+  '只有 maintainer 可以分析发布运行。': 'Only a maintainer can analyse a release run.',
+  '这条发布记录还没有对应的工作流运行，先点“检查工作流”。': 'This release row has no workflow run yet; check the run first.',
   '仓库格式应为 owner/name': 'Use the owner/name repository format.',
   '仓库名只能包含字母、数字、. _ -': 'Repository names may only contain letters, numbers, dots, underscores and hyphens.',
   'GitHub token 无效或已过期': 'The GitHub token is invalid or expired.',

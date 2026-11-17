@@ -7,9 +7,10 @@ import { nowIso } from './lib/time.js'
 import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
 import { canonicalSections, strategyHash } from './strategy/bundle.js'
+import { currentStrategySections } from './strategy/sources.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
-import { redact } from './lib/secrets.js'
+import { randomId, redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import type { CostReport } from './metrics/cost.js'
@@ -62,7 +63,7 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 // restore check (#652) has to prove a fixture written by an older build still
 // migrates to exactly this number, and a literal in two places would let the
 // check and the migration disagree.
-export const SCHEMA_VERSION = 45
+export const SCHEMA_VERSION = 47
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
@@ -278,6 +279,13 @@ export interface ScheduleRow {
    * before this column existed.
    */
   daily_runs: number | null
+  /**
+   * #544 slice 9: `active` or `paused`. A paused schedule records its instants
+   * as skipped with reason `paused` instead of dispatching them.
+   */
+  status: string
+  /** #544 slice 9: the instant the schedule was paused, or null while active. */
+  paused_at: number | null
   last_occurrence_at: number | null
   created_at: string
   updated_at: string
@@ -488,17 +496,54 @@ export interface JobRow {
   provider_model: string | null
   output_kind: string | null
   continuity_used: number
+  carry_over_json: string | null
   owner_started: number
   retry_attempt: number
   retry_of: string | null
   lease_owner: string | null
   lease_until: string | null
+  // #247: the dispatch generation of the running attempt. It is stamped when an
+  // attempt starts and is the fence every later write compares against, so a
+  // worker whose lease was taken over cannot finalise an attempt it no longer
+  // owns. 0 means the row has never been dispatched (or predates the column).
+  lease_epoch: number
   callback_secret_enc: string | null
   platform_token_enc: string | null
   last_callback_at: string | null
+  // #433 slice 2: the strategy the job was created under. The section map is
+  // stored beside the hash because a job can run a strategy that was never
+  // frozen, and a diff between two jobs must not depend on a bundle row that may
+  // not exist. `strategy_version` is NULL for exactly that case.
+  strategy_hash: string | null
+  strategy_version: number | null
+  strategy_json: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
+}
+
+// #247: one row per dispatch attempt. The attempt is the unit a worker owns;
+// `lease_epoch` matches the epoch stamped on the job row when the attempt
+// started, `attempt` is the chain number (a retry continues it), and the
+// terminal row is evidence the reap happened rather than a quiet reset to
+// queued. `refused_*` records a report that arrived from a lease epoch that was
+// no longer current; it never rewrites the terminal outcome of the row it lost.
+export type JobAttemptStatus = 'running' | 'succeeded' | 'failed' | 'reaped'
+
+export interface JobAttemptRow {
+  id: string
+  job_id: string
+  attempt: number
+  worker: string
+  lease_epoch: number
+  dispatch_id: string
+  status: JobAttemptStatus
+  error: string | null
+  retry_of: string | null
+  started_at: string
+  finished_at: string | null
+  refused_at: string | null
+  refused_reason: string | null
 }
 
 export interface WorkItemRow {
@@ -1336,13 +1381,18 @@ CREATE TABLE IF NOT EXISTS jobs (
   provider_model TEXT,
   output_kind TEXT,
   continuity_used INTEGER NOT NULL DEFAULT 0,
+  carry_over_json TEXT,
   owner_started INTEGER NOT NULL DEFAULT 0,
   retry_attempt INTEGER NOT NULL DEFAULT 0,
   retry_of TEXT,
   lease_owner TEXT,
   lease_until TEXT,
+  lease_epoch INTEGER NOT NULL DEFAULT 0,
   callback_secret_enc TEXT,
   platform_token_enc TEXT,
+  strategy_hash TEXT,
+  strategy_version INTEGER,
+  strategy_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -1556,6 +1606,30 @@ CREATE TABLE IF NOT EXISTS job_events (
 CREATE INDEX IF NOT EXISTS job_events_job_idx ON job_events(job_id, id DESC);
 CREATE INDEX IF NOT EXISTS job_events_at_idx ON job_events(at);
 
+-- #247: one row per dispatch attempt. Its lease_epoch is the fence copied from
+-- the job's running transition; retry_of links a re-dispatch to the attempt it
+-- continues. A worker that lost its lease can only append a refusal to the row
+-- it owns, and the reaper writes a terminal reaped outcome instead of resetting
+-- the job to queued.
+CREATE TABLE IF NOT EXISTS job_attempts (
+  id TEXT PRIMARY KEY,
+  job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  attempt INTEGER NOT NULL,
+  worker TEXT NOT NULL,
+  lease_epoch INTEGER NOT NULL,
+  dispatch_id TEXT NOT NULL,
+  status TEXT NOT NULL,
+  error TEXT,
+  retry_of TEXT REFERENCES job_attempts(id) ON DELETE SET NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  refused_at TEXT,
+  refused_reason TEXT,
+  UNIQUE(job_id, attempt)
+);
+CREATE INDEX IF NOT EXISTS job_attempts_job_idx ON job_attempts(job_id, attempt DESC);
+CREATE INDEX IF NOT EXISTS job_attempts_status_idx ON job_attempts(status);
+
 -- #639: an explicit relation between two tasks of one project. The row is a
 -- claim somebody made with a reason and evidence; nothing derives it from a
 -- title, so two similarly named tasks stay two tasks until a person links them.
@@ -1646,6 +1720,7 @@ CREATE TABLE IF NOT EXISTS repo_releases (
   draft_url TEXT,
   external_release_id TEXT,
   last_checked_at TEXT,
+  analysis_json TEXT,
   notes_source_json TEXT,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -2038,6 +2113,14 @@ CREATE TABLE IF NOT EXISTS schedules (
   -- before the column existed; the count itself is read from the occurrence
   -- rows, so a database restored without them cannot invent usage.
   daily_runs INTEGER,
+  -- #544 slice 9: a schedule a person paused stops dispatching until it is
+  -- resumed. 'active' is the default, so every row written before the column
+  -- existed keeps the behaviour it had; paused_at is the instant of the last
+  -- pause and is null while the schedule is active, including before the first
+  -- one. The state is a decision by a maintainer, so a form save never changes
+  -- it.
+  status TEXT NOT NULL DEFAULT 'active',
+  paused_at INTEGER,
   last_occurrence_at INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -2255,6 +2338,8 @@ export interface ReleaseRow {
   last_checked_at: string | null
   /** #546 slice 3: the exact sources the draft notes were built from. */
   notes_source_json: string | null
+  /** #546 slice 4: the last run analysis, redacted; null until one was taken. */
+  analysis_json: string | null
   created_at: string
   updated_at: string
 }
@@ -2435,6 +2520,7 @@ export class Store {
     this.migrateScheduleOccurrenceColumns()
     this.migrateScheduleMisfireColumns()
     this.migrateScheduleBudgetColumns()
+    this.migrateSchedulePauseColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -2469,6 +2555,15 @@ export class Store {
   private migrateScheduleBudgetColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
     if (!columns.includes('daily_runs')) this.db.exec('ALTER TABLE schedules ADD COLUMN daily_runs INTEGER')
+  }
+
+  // #544 slice 9: the pause state adds two columns. A row written before them is
+  // active with no pause instant, which is the behaviour it had; nothing else is
+  // rewritten, and the default is what makes that true without a backfill.
+  private migrateSchedulePauseColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
+    if (!columns.includes('status')) this.db.exec("ALTER TABLE schedules ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if (!columns.includes('paused_at')) this.db.exec('ALTER TABLE schedules ADD COLUMN paused_at INTEGER')
   }
 
   private migrateScheduleOccurrenceColumns(): void {
@@ -2662,6 +2757,9 @@ export class Store {
       ['external_release_id', 'TEXT'],
       ['last_checked_at', 'TEXT'],
       ['notes_source_json', 'TEXT'],
+      // #546 slice 4: the run analysis is an observation beside the tracking
+      // fields, so it is one JSON column and never a second state machine.
+      ['analysis_json', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE repo_releases ADD COLUMN ${name} ${type}`)
@@ -2799,6 +2897,9 @@ export class Store {
     if (!jobColumns.has('continuity_json')) this.run('ALTER TABLE jobs ADD COLUMN continuity_json TEXT')
     if (!jobColumns.has('output_kind')) this.run('ALTER TABLE jobs ADD COLUMN output_kind TEXT')
     if (!jobColumns.has('continuity_used')) this.run('ALTER TABLE jobs ADD COLUMN continuity_used INTEGER NOT NULL DEFAULT 0')
+    // #788: additive; a row that predates it reads back as "the observation was
+    // never recorded", which the job page says plainly instead of borrowing a time.
+    if (!jobColumns.has('carry_over_json')) this.run('ALTER TABLE jobs ADD COLUMN carry_over_json TEXT')
     if (!jobColumns.has('owner_started')) this.run('ALTER TABLE jobs ADD COLUMN owner_started INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('model_json')) this.run('ALTER TABLE jobs ADD COLUMN model_json TEXT')
     if (!jobColumns.has('provider_id')) this.run('ALTER TABLE jobs ADD COLUMN provider_id TEXT')
@@ -2811,9 +2912,18 @@ export class Store {
     if (!jobColumns.has('pr_state')) this.run('ALTER TABLE jobs ADD COLUMN pr_state TEXT')
     if (!jobColumns.has('lease_owner')) this.run('ALTER TABLE jobs ADD COLUMN lease_owner TEXT')
     if (!jobColumns.has('lease_until')) this.run('ALTER TABLE jobs ADD COLUMN lease_until TEXT')
+    // #247: additive; every row that predates the column reads back as epoch 0,
+    // which is exactly "never dispatched by this build".
+    if (!jobColumns.has('lease_epoch')) this.run('ALTER TABLE jobs ADD COLUMN lease_epoch INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('callback_secret_enc')) this.run('ALTER TABLE jobs ADD COLUMN callback_secret_enc TEXT')
     if (!jobColumns.has('platform_token_enc')) this.run('ALTER TABLE jobs ADD COLUMN platform_token_enc TEXT')
     if (!jobColumns.has('error_code')) this.run('ALTER TABLE jobs ADD COLUMN error_code TEXT')
+    // #433 slice 2: additive on purpose. Every row that predates the strategy
+    // bundle reads back as "no strategy recorded", which is true, and the job
+    // page says so instead of inventing one.
+    if (!jobColumns.has('strategy_hash')) this.run('ALTER TABLE jobs ADD COLUMN strategy_hash TEXT')
+    if (!jobColumns.has('strategy_version')) this.run('ALTER TABLE jobs ADD COLUMN strategy_version INTEGER')
+    if (!jobColumns.has('strategy_json')) this.run('ALTER TABLE jobs ADD COLUMN strategy_json TEXT')
     // #359: additive on purpose; every existing row backfills as NULL, which is
     // exactly "no recorded reason", so no close that happened earlier is read as
     // a plan expiry.
@@ -3936,6 +4046,15 @@ export class Store {
     return this.releaseById(id)
   }
 
+  // #546 slice 4: the analysis is written beside the tracking fields and never
+  // into them. A second analysis replaces the first, and neither touches
+  // `status`, `conclusion` or the draft pointer, because an observation is not
+  // a release decision.
+  updateReleaseAnalysis(id: string, analysisJson: string | null): ReleaseRow | undefined {
+    this.run('UPDATE repo_releases SET analysis_json = ?, updated_at = ? WHERE id = ?', analysisJson, nowIso(), id)
+    return this.releaseById(id)
+  }
+
   // #433 slice 1: freeze the strategy as a new candidate. The declared base is
   // the candidate version the page rendered, and the compare-and-swap happens in
   // one transaction with the insert: a form filled in before another candidate
@@ -4730,13 +4849,36 @@ export class Store {
       .slice(0, limit)
   }
 
-  alerts(input: { now?: string; stallMinutes?: number; prAgeHours?: number; usdCny?: number; budgetRatio?: number; userId?: string } = {}): AlertView[] {
+  // #807 review: what the dispatcher calls "may not run yet" and what the
+  // automation alert calls "idle" have to be the same test, or the console can
+  // say no repository is waiting while the alert lists one the dispatcher has
+  // just cleared as `user_not_ready` or `instance_not_ready`. Both readiness
+  // halves live here, and the dispatcher calls this instead of repeating them.
+  userReadyForScheduling(userId: string): boolean {
+    return this.userById(userId)?.status === 'approved'
+  }
+
+  instanceReadyForScheduling(repoId: string, instancesManaged: boolean): boolean {
+    // An installation without a bridge image does not manage instances at all,
+    // so a missing row is not a reason to refuse anything.
+    if (!instancesManaged) return true
+    return this.getRepoInstance(repoId)?.status === 'ready'
+  }
+
+  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean): 'user_not_ready' | 'instance_not_ready' | null {
+    if (!this.userReadyForScheduling(repo.user_id)) return 'user_not_ready'
+    if (!this.instanceReadyForScheduling(repo.id, instancesManaged)) return 'instance_not_ready'
+    return null
+  }
+
+  alerts(input: { now?: string; stallMinutes?: number; prAgeHours?: number; usdCny?: number; budgetRatio?: number; userId?: string; automationIdleMinutes?: number; instancesManaged?: boolean } = {}): AlertView[] {
     const now = input.now ?? nowIso()
     const nowMs = Date.parse(now)
     const stallMs = (input.stallMinutes ?? 30) * 60_000
     const prAgeMs = (input.prAgeHours ?? 24) * 3_600_000
     const ratio = input.budgetRatio ?? 0.8
     const usdCny = input.usdCny ?? 1
+    const idleMs = (input.automationIdleMinutes ?? 30) * 60_000
     const alerts: AlertView[] = []
     const repos = input.userId === undefined
       ? this.all<RepoRow>('SELECT * FROM repos')
@@ -4785,6 +4927,41 @@ export class Store {
           })
         }
       }
+    }
+    // #807: ready work nobody is working on. The wait is measured from the later
+    // of the oldest ready item and the repository's last run, so a repository that
+    // just finished a job is not reported as idle, and a running job clears the
+    // condition instead of the alert having to be dismissed by hand. Only a
+    // repository the scheduler may dispatch to can be idle: with automatic
+    // iteration off, ready work waiting is the setting the owner chose, and an
+    // unapproved user or an instance that is not up is a reason the dispatcher
+    // reports instead of an idle platform.
+    const readyRows = input.userId === undefined
+      ? this.all<{ repo_id: string; oldest: string }>("SELECT repo_id, MIN(created_at) AS oldest FROM work_items WHERE state NOT IN ('merged', 'closed') GROUP BY repo_id")
+      : this.all<{ repo_id: string; oldest: string }>("SELECT repo_id, MIN(created_at) AS oldest FROM work_items WHERE state NOT IN ('merged', 'closed') AND user_id = ? GROUP BY repo_id", input.userId)
+    const readySince = new Map(readyRows.map((row) => [row.repo_id, Date.parse(row.oldest)]))
+    const runningRepos = new Set(running.map((job) => job.repo_id))
+    const instancesManaged = input.instancesManaged ?? false
+    for (const repo of repos) {
+      if (repo.enabled !== 1 || repo.auto_iterate !== 1) continue
+      if (runningRepos.has(repo.id)) continue
+      if (this.automationDispatchBlocker(repo, instancesManaged) !== null) continue
+      const oldest = readySince.get(repo.id)
+      if (oldest === undefined || !Number.isFinite(oldest)) continue
+      const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
+      const since = Number.isFinite(lastRun) && lastRun > oldest ? lastRun : oldest
+      const waitedMs = nowMs - since
+      if (waitedMs < idleMs) continue
+      const minutes = Math.round(waitedMs / 60_000)
+      const label = repoLabels.get(repo.id) ?? repo.id
+      alerts.push({
+        kind: 'automation_idle_with_work',
+        level: waitedMs >= idleMs * 2 ? 'critical' : 'warning',
+        repoId: repo.id,
+        repoLabel: label,
+        minutes,
+        message: `${label}: ready work has waited ${minutes}m with no active job`,
+      })
     }
     const rank: Record<string, number> = { critical: 0, warning: 1, info: 2 }
     return alerts.sort((a, b) => (rank[a.level] ?? 9) - (rank[b.level] ?? 9))
@@ -5293,6 +5470,22 @@ export class Store {
   // exists, owns that repository's cadence.
   scheduleForRepo(repoId: string): ScheduleRow | undefined {
     return this.get<ScheduleRow>('SELECT * FROM schedules WHERE repo_id = ?', repoId)
+  }
+
+  // #544 slice 9: the pause state. It is written by a maintainer's button and by
+  // nothing else, so a schedule save keeps whatever state it found: resuming is
+  // an explicit act, not a side effect of editing the expression. Pausing an
+  // already paused schedule keeps the first pause instant, because the window
+  // that was skipped starts when the schedule actually stopped.
+  setScheduleStatus(repoId: string, status: 'active' | 'paused', at: number): ScheduleRow | undefined {
+    const existing = this.scheduleForRepo(repoId)
+    if (existing === undefined) return undefined
+    const pausedAt = status === 'paused' ? (existing.status === 'paused' ? existing.paused_at : at) : null
+    this.run(
+      'UPDATE schedules SET status = ?, paused_at = ?, updated_at = ? WHERE repo_id = ?',
+      status, pausedAt, nowIso(), repoId,
+    )
+    return this.scheduleForRepo(repoId)
   }
 
   listSchedules(): ScheduleRow[] {
@@ -5920,11 +6113,23 @@ export class Store {
   }
 
   createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+    // #433 slice 2: the job records the strategy it was created under, from the
+    // same sources the strategy page reads, so the page a maintainer opens and
+    // the strategy a job names cannot disagree. An unfrozen strategy keeps its
+    // hash and no version; a strategy whose sources name a frozen section is not
+    // a strategy the page would accept, so the job records none rather than a
+    // hash that was never valid.
+    const strategyRepo = this.getRepo(input.repoId)
+    const assembled = strategyRepo === undefined ? null : currentStrategySections(this, { id: strategyRepo.id, goal: strategyRepo.goal })
+    const strategy = assembled !== null && assembled.ok ? assembled : null
+    const strategyVersion = strategy === null
+      ? null
+      : (this.get<{ version: number }>('SELECT version FROM strategy_bundles WHERE repo_id = ? AND hash = ?', input.repoId, strategy.hash)?.version ?? null)
     // The ticket is taken inside the insert, so two jobs created at the same
     // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -5932,6 +6137,9 @@ export class Store {
       input.goal,
       input.callbackHash,
       input.platformTokenHash,
+      strategy?.hash ?? null,
+      strategyVersion,
+      strategy === null ? null : JSON.stringify(strategy.sections),
       input.kind ?? 'iterate',
       input.workType ?? 'iterate',
       input.baseBranch ?? null,
@@ -6210,6 +6418,23 @@ export class Store {
     return this.all<JobRow>('SELECT * FROM jobs WHERE repo_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?', repoId, limit)
   }
 
+  // #433 slice 2: the run this job's strategy is compared with. It is the newest
+  // earlier row of the same repository that recorded a strategy, so a job created
+  // before the columns existed is skipped rather than reported as "no change".
+  // `rowid` is the insert order, which is what "previous job" means here; a
+  // backdated `created_at` on an imported row must not reorder that.
+  previousStrategyJob(repoId: string, jobId: string): JobRow | undefined {
+    return this.get<JobRow>(
+      `SELECT * FROM jobs
+       WHERE repo_id = ? AND id != ? AND strategy_hash IS NOT NULL
+         AND rowid < (SELECT rowid FROM jobs WHERE id = ?)
+       ORDER BY rowid DESC LIMIT 1`,
+      repoId,
+      jobId,
+      jobId,
+    )
+  }
+
   // #366: the base SHA of the newest finished job that recorded one. A window
   // over `listJobsForRepo` would answer "no previous run" on a busy repository
   // whose newest twenty rows are unfinished, so the question is asked directly.
@@ -6456,8 +6681,93 @@ export class Store {
     )
   }
 
+  // #247: start one dispatch attempt in the same transaction that marks the job
+  // running. The attempt number chains through `jobs.retry_of`, so a retry after
+  // a reap is attempt N+1 linked to the attempt it continues; the lease epoch is
+  // the job-side fence, bumped once per dispatch.
+  startJobAttempt(jobId: string, worker: string, leaseMs: number): { id: string; attempt: number; epoch: number } | undefined {
+    return this.transaction(() => {
+      const job = this.getJob(jobId)
+      if (job === undefined || job.status !== 'queued') return undefined
+      const previous = this.get<{ id: string; attempt: number }>('SELECT id, attempt FROM job_attempts WHERE job_id = ? ORDER BY attempt DESC LIMIT 1', jobId)
+      const parent = job.retry_of === null
+        ? undefined
+        : this.get<{ id: string; attempt: number }>('SELECT id, attempt FROM job_attempts WHERE job_id = ? ORDER BY attempt DESC LIMIT 1', job.retry_of)
+      const attempt = (previous?.attempt ?? parent?.attempt ?? 0) + 1
+      const retryOf = previous?.id ?? parent?.id ?? null
+      const epoch = job.lease_epoch + 1
+      const now = nowIso()
+      const until = new Date(Date.now() + Math.max(1, leaseMs)).toISOString()
+      const changes = this.runChanges(
+        "UPDATE jobs SET status = 'running', started_at = ?, lease_owner = ?, lease_until = ?, lease_epoch = ? WHERE id = ? AND status = 'queued'",
+        now,
+        worker,
+        until,
+        epoch,
+        jobId,
+      )
+      if (changes !== 1) return undefined
+      const id = randomId('att')
+      this.run(
+        'INSERT INTO job_attempts (id, job_id, attempt, worker, lease_epoch, dispatch_id, status, retry_of, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
+        id,
+        jobId,
+        attempt,
+        worker,
+        epoch,
+        `${jobId}:${attempt}`,
+        'running',
+        retryOf,
+        now,
+      )
+      return { id, attempt, epoch }
+    })
+  }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  jobAttempts(jobId: string): JobAttemptRow[] {
+    return this.all<JobAttemptRow>('SELECT * FROM job_attempts WHERE job_id = ? ORDER BY attempt ASC', jobId)
+  }
+
+  // #247: a report from a lease epoch that is no longer current is recorded on
+  // the attempt it lost. It never creates a row, never touches a result the
+  // worker did report, and never rewrites the terminal outcome the reaper wrote;
+  // only a `reaped` attempt has a late report to record.
+  refuseJobAttempt(jobId: string, epoch: number, reason: string): boolean {
+    return this.runChanges(
+      "UPDATE job_attempts SET refused_at = ?, refused_reason = ? WHERE job_id = ? AND lease_epoch = ? AND status = 'reaped'",
+      nowIso(),
+      reason.slice(0, 500),
+      jobId,
+      epoch,
+    ) === 1
+  }
+
+  // #247: a dispatch that failed before the worker could report. The job and its
+  // attempt move together, and the epoch guard means a worker whose lease was
+  // already reaped cannot rewrite the row.
+  failJobAttempt(jobId: string, epoch: number, error: string, errorCode: string): boolean {
+    return this.transaction(() => {
+      const changes = this.runChanges(
+        "UPDATE jobs SET status = 'failed', error = ?, error_code = ?, finished_at = ?, lease_owner = NULL, lease_until = NULL WHERE id = ? AND status = 'running' AND lease_epoch = ?",
+        error,
+        errorCode,
+        nowIso(),
+        jobId,
+        epoch,
+      )
+      if (changes !== 1) return false
+      this.run(
+        "UPDATE job_attempts SET status = 'failed', error = ?, finished_at = ? WHERE job_id = ? AND lease_epoch = ? AND status = 'running'",
+        error,
+        nowIso(),
+        jobId,
+        epoch,
+      )
+      return true
+    })
+  }
+
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []
@@ -6486,16 +6796,34 @@ export class Store {
   }
 
   // The terminal transition is the callback idempotency key: only the delivery
-  // that moves the row out of queued/running may run side effects.
-  claimJobTerminal(jobId: string, status: string, fingerprint: string | null, patch: Record<string, unknown>): boolean {
-    const entries = Object.entries(redactJobText({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) })).filter(([, value]) => value !== undefined)
-    const sets = entries.map(([key]) => `${key} = ?`).join(', ')
-    const changes = this.runChanges(
-      `UPDATE jobs SET ${sets} WHERE id = ? AND status IN ('queued','running')`,
-      ...entries.map(([, value]) => value),
-      jobId,
-    )
-    return changes === 1
+  // that moves the row out of queued/running may run side effects. When the
+  // caller names the attempt it owns (#247), the same transaction finalises that
+  // attempt, and the guarded UPDATE also compares the lease epoch — so a worker
+  // whose lease was taken over loses the transition instead of writing it.
+  claimJobTerminal(jobId: string, status: string, fingerprint: string | null, patch: Record<string, unknown>, attempt?: { epoch: number; outcome: Exclude<JobAttemptStatus, 'running'>; error?: string | null }): boolean {
+    return this.transaction(() => {
+      const entries = Object.entries(redactJobText({ ...patch, status, ...(fingerprint === null ? {} : { callback_fingerprint: fingerprint }) })).filter(([, value]) => value !== undefined)
+      const sets = entries.map(([key]) => `${key} = ?`).join(', ')
+      const epochClause = attempt === undefined ? '' : ' AND lease_epoch = ?'
+      const changes = this.runChanges(
+        `UPDATE jobs SET ${sets} WHERE id = ? AND status IN ('queued','running')${epochClause}`,
+        ...entries.map(([, value]) => value),
+        jobId,
+        ...(attempt === undefined ? [] : [attempt.epoch]),
+      )
+      if (changes !== 1) return false
+      if (attempt !== undefined) {
+        this.run(
+          "UPDATE job_attempts SET status = ?, error = ?, finished_at = ? WHERE job_id = ? AND lease_epoch = ? AND status = 'running'",
+          attempt.outcome,
+          attempt.outcome === 'succeeded' ? null : (attempt.error ?? null),
+          nowIso(),
+          jobId,
+          attempt.epoch,
+        )
+      }
+      return true
+    })
   }
 
   countActiveJobs(): number {

@@ -8,7 +8,8 @@
 import { readFileSync } from 'node:fs'
 import { mechanicalRelease } from './lib/mechanical-release.mjs'
 import { checkBody } from './lib/pr-body.mjs'
-import { tierForFiles, loadRules } from './lib/risk.mjs'
+import { incompleteList, paginate } from './lib/review-gate.mjs'
+import { loadRules, tierForChanges } from './lib/risk.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -80,16 +81,12 @@ async function loadPolicy(baseRef) {
 const pr = await api(`/repos/${REPO}/pulls/${prNumber}`).catch((error) => fail(error.message))
 const POLICY = await loadPolicy(String(pr.base?.ref ?? 'main'))
 
-async function paginate(path, maxPages = 6) {
-  const out = []
-  for (let page = 1; page <= maxPages; page += 1) {
-    const separator = path.includes('?') ? '&' : '?'
-    const items = await api(`${path}${separator}per_page=100&page=${page}`)
-    out.push(...items)
-    if (items.length < 100) break
-  }
-  return out
-}
+// #862: every rule below reads the changed-file list — the docs group, the
+// changelog obligation, the size line and the computed tier — so a fixed page cap
+// judges a prefix of a large pull request. The reader is the gate's own
+// `paginate`: it keeps asking while a page comes back full, refuses at the
+// absurdity guard, and the completeness check below proves the list whole against
+// the count the pull request reports. One reader, so the two checks cannot drift.
 
 const INVESTIGATE_PATH = /(^|\n)\s*(No-issue|Investigates)\s*:/i
 // How a PR ties itself to an issue, without inventing a close: `Fixes #N` closes
@@ -115,7 +112,13 @@ function covers(path, doc) {
   return path.startsWith(doc.endsWith('/') ? doc : `${doc}/`)
 }
 
-const files = await paginate(`/repos/${REPO}/pulls/${prNumber}/files`).catch((error) => fail(error.message))
+// #862: completeness is judged before any rule reads the paths. A truncated list
+// cannot tell whether the `Large-PR:` line is honest, whether the changed module
+// owns a doc, or which tier the diff is, so reporting a body complaint against it
+// would name the wrong problem: the pull request is refused for the list instead.
+const files = await paginate(api, `/repos/${REPO}/pulls/${prNumber}/files`).catch((error) => fail(error.message))
+const filesIncomplete = incompleteList('changed-file', files.length, pr.changed_files)
+if (filesIncomplete !== '') fail(filesIncomplete)
 const body = String(pr.body ?? '')
 const paths = files.map((file) => file.filename)
 // The mechanical daily minor release (#80) is keyed on identity, not on the file
@@ -159,7 +162,7 @@ if (!mechanical.mechanical && (changedFiles > 20 || changedLines > 800) && !/(^|
 }
 
 const rules = loadRules()
-const computed = mechanical.mechanical ? 'T0' : tierForFiles(paths, rules).tier
+const computed = mechanical.mechanical ? 'T0' : tierForChanges(files.map((file) => ({ path: file.filename, patch: file.patch })), rules).tier
 const labels = (pr.labels ?? []).map((label) => label.name)
 for (const label of labels.filter((name) => /^risk:T[0-3]$/.test(name))) {
   if (label !== `risk:${computed}`) errors.push(`label ${label} does not match the computed tier risk:${computed}`)

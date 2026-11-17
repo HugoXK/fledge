@@ -124,14 +124,22 @@ risk-tier: T2; basis: src/jobs/service.ts
 ```
 
 - **T0** — docs, README, changelog fragments. Green `ci-ok` only.
-- **T1** — tests, `public/` assets, small UI-only changes. Green `ci-ok` only.
-- **T2** — `src/` app code (views, email, users, lib, app routing). PASS at the
+- **T1** — tests, `public/` assets, small UI-only changes. Green `ci-ok` only,
+  except the diff shapes that raise it below.
+- **T2** — `src/` app code (views, email, users, lib, app routing) and a
+  `public/**/*.js|mjs` client-side script. PASS at the
   tip + green `ci-ok`.
 - **T3** — auth, gateway, jobs, repos, config, DB, bridge, scripts, deploy,
   `.github/**`, `package*.json`, `tsconfig*.json`, `Dockerfile`, `AGENTS.md`,
   `LESSONS.md`, `docs/code-standards.md`, `docs/autonomous-dev.md`, `SECURITY.md`,
   `LICENSE`. PASS at the tip + green `ci-ok`.
 - Any path no rule names is **T2**, never silently T0/T1.
+- The diff can raise a path tier (#869): a T1 tip becomes **T2** when it removes
+  an `assert.`/`expect(` line under `test/`, adds `assert.ok(true)`/`assert(true)`,
+  or adds an inline `<script>` under `public/`. Changed-line coverage only counts
+  added `src/` lines, so a deleted assertion keeps the suite green and the number
+  flat; the rules live in `.github/agent/risk-rules.json` (`escalations`) and
+  `tierForChanges` in `scripts/lib/risk.mjs` is the one place that applies them.
 
 Labels (`risk:T0`…`risk:T3`) are advisory mirrors for humans; they are not the
 decision. The controller copies the computed tier onto the PR on its next poll.

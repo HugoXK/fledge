@@ -356,6 +356,19 @@ jobs:
           echo "opener=ready version=${DECIDE_VERSION}" >> "$GITHUB_STEP_SUMMARY"
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
+      - name: Check the UI mock snapshot
+        # #777: the mock is a release artifact, not a per-PR gate. The nightly
+        # refuses to plan a release whose views moved without the snapshot; the
+        # release routine regenerates it in a docs pull request.
+        if: ${{ inputs.dry_run != true && steps.opener.outputs.ready == 'true' }}
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          if ! npm run mock:check; then
+            echo "::error::mock/ is stale: run npm run mock:snapshot, commit mock/ in a docs pull request, and re-run the release"
+            exit 1
+          fi
+
       - name: Push the release branch
         id: push
         # A manual dispatch defaults to a dry run: it writes the summary and the
@@ -540,9 +553,13 @@ jobs:
 
   tag:
     name: tag the merged release and dispatch the publish run
-    # Inverted mirror of the release job: a scheduled or manual run must never
-    # tag, and only a push to `main` can carry a merged release.
-    if: github.event_name == 'push'
+    # A push to `main` carries a merged release; the scheduled slot also comes
+    # here, because a release can be left half-made with no further push (the tag
+    # written, the publish dispatch failed, #866). The job is idempotent: it
+    # creates the tag only when it is missing, dispatches only when the tag exists
+    # without its GitHub Release, and is a no-op when both exist. The manual
+    # dispatch never reaches it, so a dry run cannot tag anything.
+    if: github.event_name == 'push' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -557,30 +574,96 @@ jobs:
           node-version: 22
 
       - name: Collect the pushed commit
+        id: collect
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -euo pipefail
           REPO="$GITHUB_REPOSITORY"
-          SHA="$GITHUB_SHA"
+          # The version first, because it is the only fact a scheduled run has
+          # before it knows which release it is repairing.
+          gh api "repos/${REPO}/contents/package.json?ref=${GITHUB_SHA}" --jq '.content' | base64 -d | jq -r '.version // empty' > "$RUNNER_TEMP/version.txt"
+          VERSION="$(cat "$RUNNER_TEMP/version.txt")"
+          # #866: on `schedule`, $GITHUB_SHA is main's tip, and the identity check
+          # needs the release pull request's squash commit. One merge after the
+          # release makes those differ, so a scheduled run could never repair the
+          # release it names. The target is resolved by the tested helper: the
+          # event's own commit on a push, the merged `release: v<version>` pull
+          # request's merge commit on a schedule. An unresolvable shape keeps the
+          # tip, and the identity check then refuses it with its own reason.
+          gh pr list --repo "$REPO" --state merged --limit 50 \
+            --search "v${VERSION} in:title" \
+            --json number,title,mergeCommit,headRefName > "$RUNNER_TEMP/release-prs.json"
+          TARGET="$(VERSION="$VERSION" node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            import { resolveTarget } from "./scripts/lib/release-tag.mjs"
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
+            const target = resolveTarget({
+              eventName: process.env.GITHUB_EVENT_NAME,
+              sha: process.env.GITHUB_SHA,
+              version: process.env.VERSION,
+              releasePrs: JSON.parse(readFileSync(TMP + "/release-prs.json", "utf8")),
+            })
+            console.error(`target ${target.sha} — ${target.reason}`)
+            process.stdout.write(target.sha)
+          ')"
+          echo "sha=${TARGET}" >> "$GITHUB_OUTPUT"
+          echo "read version ${VERSION} at ${TARGET} from the ${GITHUB_EVENT_NAME} event" >> "$GITHUB_STEP_SUMMARY"
           # The pull requests that produced this commit, and the tag list as the
           # API sees it — not the runner's copy, which is one commit deep.
-          gh api "repos/${REPO}/commits/${SHA}/pulls" > "$RUNNER_TEMP/pulls.json"
+          gh api "repos/${REPO}/commits/${TARGET}/pulls" > "$RUNNER_TEMP/pulls.json"
           gh api --paginate "repos/${REPO}/git/matching-refs/tags/v" \
             | jq -s 'flatten | map(.ref) | map(ltrimstr("refs/tags/"))' > "$RUNNER_TEMP/tags.json"
-          gh api "repos/${REPO}/contents/package.json?ref=${SHA}" --jq '.content' | base64 -d | jq -r '.version // empty' > "$RUNNER_TEMP/version.txt"
-          echo "read version $(cat "$RUNNER_TEMP/version.txt") at ${SHA}" >> "$GITHUB_STEP_SUMMARY"
+          # #866/#909: the tag and the GitHub Release are two different writes,
+          # and the decision has to tell "tag exists, release missing" from "both
+          # exist". The answer comes from the same tested rule release.yml uses
+          # (scripts/lib/release-lookup.mjs): a 404 is the one "not made yet" and
+          # is recorded as `{}`; a 403, a 5xx or a failed connection is
+          # unreadable, and a blind `publish` on an unreadable fact would dispatch
+          # a second publish run, so it fails here as the single report instead.
+          # The rule is a status parser, not a grep of `gh`'s prose, so a
+          # reworded message cannot flip the answer.
+          RELEASE_TAG="v$(cat "$RUNNER_TEMP/version.txt")"
+          status=0
+          gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}" \
+            > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release.err" || status=$?
+          STATE="$(STATUS="$status" node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            import { classifyReleaseLookup } from "./scripts/lib/release-lookup.mjs"
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
+            const result = classifyReleaseLookup({
+              status: Number(process.env.STATUS),
+              stderr: readFileSync(`${TMP}/release.err`, "utf8"),
+            })
+            console.error(`release lookup: ${result.state} — ${result.reason}`)
+            process.stdout.write(result.state)
+          ')"
+          case "$STATE" in
+            present)
+              echo "GitHub Release ${RELEASE_TAG} exists" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            absent)
+              printf '{}\n' > "$RUNNER_TEMP/release.json"
+              echo "no GitHub Release for ${RELEASE_TAG}" >> "$GITHUB_STEP_SUMMARY"
+              ;;
+            *)
+              echo "::error::could not read the GitHub Release state for ${RELEASE_TAG}; refusing to plan on it"
+              exit 1
+              ;;
+          esac
 
       - name: Decide the tag
         id: decide
         env:
-          SHA: ${{ github.sha }}
+          SHA: ${{ steps.collect.outputs.sha }}
         run: |
           set -euo pipefail
           VERSION="$(cat "$RUNNER_TEMP/version.txt")"
           export VERSION SHA
-          # Whether this push is the squash of the mechanical release is a pure
-          # decision with a test per refusal, in scripts/lib/release-tag.mjs.
+          # Whether this commit is the squash of the mechanical release is a pure
+          # decision with a test per refusal, in scripts/lib/release-tag.mjs. It
+          # answers `create` (tag missing), `publish` (tag exists, its GitHub
+          # Release does not) or `skip` (both exist, or this is not the release).
           node --input-type=module -e '
             import { readFileSync, appendFileSync } from "node:fs"
             import { plan } from "./scripts/lib/release-tag.mjs"
@@ -588,6 +671,7 @@ jobs:
             const result = plan({
               pulls: JSON.parse(readFileSync(TMP + "/pulls.json", "utf8")),
               tags: JSON.parse(readFileSync(TMP + "/tags.json", "utf8")),
+              release: JSON.parse(readFileSync(TMP + "/release.json", "utf8")),
               packageVersion: process.env.VERSION,
               sha: process.env.SHA,
             })
@@ -614,7 +698,10 @@ jobs:
           echo "created ${TAG} on ${SHA}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Dispatch release.yml at the tag
-        if: ${{ steps.decide.outputs.action == 'create' }}
+        # #866: `publish` means the tag was written but its GitHub Release was
+        # not, so the owed write is the dispatch alone. Gating it on `create` was
+        # what wedged a release after one failed dispatch.
+        if: ${{ steps.decide.outputs.action == 'create' || steps.decide.outputs.action == 'publish' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAG: ${{ steps.decide.outputs.tag }}
@@ -622,6 +709,8 @@ jobs:
           set -euo pipefail
           # A tag written with the automatic token starts no workflow, so the
           # publish run is dispatched explicitly at that tag. release.yml verifies
-          # the tag is an ancestor of main before it publishes anything.
+          # the tag is an ancestor of main before it publishes anything, so a
+          # repeated dispatch after a failed one is safe: a complete release is
+          # refused there, not published twice.
           gh workflow run release.yml --ref "$TAG" -f "tag=$TAG"
           echo "dispatched release.yml at ${TAG}" >> "$GITHUB_STEP_SUMMARY"

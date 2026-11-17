@@ -180,7 +180,7 @@ and what `scripts/issue-hash.mjs` prints, so a verdict writer records from the
 same function instead of trimming by hand. The Lead recomputes it with
 
 ```sh
-node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold
+node scripts/issue-gate.mjs --issue <N>   # ok | stale-pass | no-pass | bad-passer | changes | corrupt-body | hold | stale-anchor
 node scripts/issue-hash.mjs --issue <N>   # raw <hash> / trimmed <hash> for a verdict line
 ```
 
@@ -191,6 +191,21 @@ anyone other than the policy's `requiredPass` is not a PASS at all. A `hold`
 line (exit 7) means the card is approved but not claimable: `hold` replaces
 `ok` and nothing else, so a held card with `changes` still reports `changes`,
 and a held card with no verdict still reports `no-pass`.
+
+A `stale-anchor` line (exit 8) is the other question the gate answers: a card
+can be approved at the live body and still cite a `path:line` that does not
+exist at the sha the body names. The gate reads the tree at that sha — the first
+full 40-hex outside a fence, or `main` when the body pins nothing — and refuses
+`ok` when a cited path is absent (`found=missing-path`) or a cited line is past
+the file's last line (`found=last-line-<n>`), where the last line is the `\n`
+segments minus the trailing empty one. It replaces `ok` and nothing else, so a
+stale PASS, a CHANGES, a `hold` and a missing PASS all keep their own line and
+gain one stderr note per unresolved citation (at most five). Two things it
+deliberately does not do: a bare name that matches several paths is a note and
+never a verdict, and a citation inside a fenced block or on a line that declares
+the file new is not scanned. It cannot tell that a real line now holds a
+different function — the premise stays a human catch, as `docs/autonomous-dev.md`
+already says of the review itself.
 
 Known limit, stated rather than papered over: a byte-for-byte revert back to the
 PASSed text **does** revive the PASS, because the gate compares the live body
@@ -218,12 +233,22 @@ risk-tier: T2; basis: src/jobs/service.ts
 | Tier | Paths | Merge requirement |
 |---|---|---|
 | T0 | `docs/`, `README*`, `CHANGELOG.md`, `changelog.d/`, `CODE_OF_CONDUCT.md` | `ci-ok` green |
-| T1 | `test/`, `public/`, issue templates, small UI-only changes | `ci-ok` green |
-| T2 | the rest of `src/` (app routing, views, email, users, lib) | PASS at tip + `ci-ok` |
+| T1 | `test/`, `public/` assets, issue templates, small UI-only changes | `ci-ok` green |
+| T2 | the rest of `src/` (app routing, views, email, users, lib), a `public/**/*.js|mjs` client-side script | PASS at tip + `ci-ok` |
 | T3 | auth, gateway, jobs, repos, config, db, bridge, `scripts/`, `deploy/`, `.github/`, manifests, licence, policy docs | PASS at tip + `ci-ok` |
 
 Unknown path → T2. A `risk:T*` label is advisory and never a reason to skip a
 review.
+
+The tier is also raised by what a diff does, not only by the path it touches
+(#869). A T1 tip becomes T2 when it removes an `assert.`/`expect(` line under
+`test/`, adds `assert.ok(true)`/`assert(true)`, or adds an inline `<script>`
+under `public/`: changed-line coverage counts added `src/` lines, so a deleted
+assertion leaves the suite green and the percentage flat. The rules are data in
+`.github/agent/risk-rules.json` (`escalations`), and the CI risk job,
+`scripts/lib/review-gate.mjs` and `scripts/pr-lint.mjs` all classify through
+`tierForChanges` in `scripts/lib/risk.mjs`, so the computed tier, the `risk:T*`
+label and the PASS the gate demands cannot disagree.
 
 ## Gates
 
@@ -266,7 +291,7 @@ renames it to `ci-ok-head`. See
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
 - `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
-- `deploy-check` (the `deploy/` worker, alert rules and service samples parse, when the diff reaches `deploy/`)
+- `deploy-check` (the `deploy/` worker, alert rules, the nginx sample against a real `nginx -t`, and the systemd sample through a static unit parser, when the diff reaches `deploy/`)
 
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
@@ -300,8 +325,11 @@ verdict reads it either.
 `deploy` is its own flag because a deploy-only diff is not gate-free: `deploy/`
 ships the Cloudflare worker, the Prometheus rules and the nginx/systemd samples,
 and none of the app gates reads them. `deploy-check` parses the worker, runs
-`promtool check rules`, and checks nginx/systemd where the runner provides them
-(a missing tool is written to the job summary as a gap, never as a pass). The
+`promtool check rules`, installs nginx and parses the sample for real — with a
+negative proof that the same invocation rejects a deliberately broken copy — and
+gates `deploy/fledge.service` through a static unit parser that runs on any
+runner. A missing tool is a failed step, never a gap recorded beside a green job
+(#882). The
 flag is computed from the same path list as `source`, so a diff that mixes
 `deploy/` with `src/` sets both and the code gates still run; the classifier
 cannot answer "deploy-only" for a mixed diff, and `test/ciChanges.test.ts`
@@ -662,6 +690,18 @@ node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` 
 `pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
 writer, and any `risk:T*` label against the computed tier.
+
+Both checks read the pull request's file and commit lists, and both used to stop
+at a fixed page cap. A list longer than the cap was judged from its prefix, which
+is enough to hide the only T3 path — or a reviewer-authored commit — past the cap
+and let the pull request be classified below the tier it needs (#862). Each list
+is now read until the API returns a short page, and both checks prove the read
+list whole against the `changed_files` and `commits` counts the pull request
+object reports. A short read, a count the API does not send, or a list that only
+stops at the absurdity guard is refused by name — "the changed-file list is
+incomplete: read N of M" — instead of being classified. `pr-lint` judges
+completeness before any rule that reads the paths, so a truncated list is reported
+as an incomplete list rather than as a body complaint.
 
 `pr-lint` is its own workflow (`.github/workflows/pr-lint.yml`), so a fixed PR
 body repaints that check and nothing else. Its activity types are `opened`,

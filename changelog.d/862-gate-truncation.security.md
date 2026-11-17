@@ -1,0 +1,1 @@
+The review gate and the PR lint no longer judge a large pull request from a capped prefix of its file and commit lists. Both read until the API returns a short page and refuse, by name, a list that does not match the file and commit counts the pull request reports, so a T3 path or a reviewer-authored commit past the old cap can neither pass without a PASS nor be searched for.

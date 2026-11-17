@@ -909,8 +909,13 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
       windowDays: 7,
       failures: [{ kind: 'quota', count: 1 }],
       since: '2026-01-01T00:00:00.000Z',
+      automation: { idleWithWork: [{ repo: 'o/r', seconds: 1_200 }], queueDepth: 2, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3 },
     })
     assert.match(page, /Delivery efficiency/)
+    // #807: the automation card is on the same page as the numbers it reads.
+    assert.match(page, /Automation health/)
+    assert.match(page, /4\.5 s/)
+    assert.match(page, /Mean over 3 dispatches/)
     assert.match(page, /Daily trend/)
     assert.match(page, /2026-01-01/)
     assert.match(page, /PR merge rate/)
@@ -1220,6 +1225,7 @@ test('admin metrics shows the failure breakdown', () => {
       windowDays: 30,
       failures: [{ kind: 'quota', count: 1 }, { kind: 'github', count: 1 }],
       since: '2026-01-01T00:00:00.000Z',
+      automation: { idleWithWork: [], queueDepth: 0, activeJobs: 0, dispatchLatencyMs: null, dispatchSamples: 0 },
     })
     assert.match(page, /Failure breakdown/)
     assert.match(page, /Platform quota exhausted/)
