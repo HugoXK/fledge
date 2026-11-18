@@ -281,7 +281,14 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   row's answer and `nextRunFor` answers `disabled` before the row — no surface
   names a run for a paused repository. The page keeps the `disabled` sentence with
   or without a schedule row, and the dashboard never names a paused repository
-  while an enabled one has a next run. The dashboard route passes open work, the
+  while an enabled one has a next run. A paused *schedule* is the second pause and
+  is answered the same way (#940): the row keeps its expression and its repository
+  stays enabled, but the worker turns the due instant into a skipped occurrence and
+  never makes it up, so a row whose `status` is `paused` is handed to both surfaces
+  as `kind: 'paused'` with no instant (`scheduledNextFor`, `src/app.ts`), `nextRunFor`
+  answers `paused`, and the page, the card and the digest print the paused sentence
+  in place of the time — resuming is the only thing that brings an instant back.
+  The dashboard route passes open work, the
   active job and instance readiness per repository because those live outside
   `RepoRow`; the surfaces therefore print one string, and
   the wording says "next run", never an estimate. The newest job is read on its own, not

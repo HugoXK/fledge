@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
+import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type ScheduleRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
 import { RETENTION_IDLE_TABLES } from '../scripts/lib/retention.mjs'
 import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
@@ -122,6 +122,7 @@ import {
   inboxSection,
   errorPage,
   type InboxQuestion,
+  type ScheduledNext,
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
 import type { PullTip } from './views/reviewMerge.js'
@@ -167,6 +168,17 @@ export interface BuiltApp {
   // Exposed so a test can force one measurement instead of faking the route.
   githubApp: GithubApp
   close: () => Promise<void>
+}
+
+// #940: one conversion from a saved schedule row to what the repository page and
+// the dashboard card render (#688 keeps them on one string). A paused row (#932)
+// keeps its expression and its repository stays enabled, so the row alone would
+// hand both surfaces an instant the worker skips and never makes up.
+function scheduledNextFor(row: ScheduleRow): ScheduledNext {
+  const schedule = scheduleFromRow(row)
+  if (schedule === null) return { kind: 'unreadable', at: null }
+  if (row.status === 'paused') return { kind: 'paused', at: null }
+  return { kind: schedule.kind, at: nextTime(schedule, Date.now()) }
 }
 
 function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED'): Error {
@@ -1570,7 +1582,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // interval rule the card used to apply to every repository.
     const nextRunFacts = allRepos.map((repo) => {
       const scheduleRow = store.scheduleForRepo(repo.id)
-      const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
       return {
         repoId: repo.id,
         openWork: store.listOpenWorkItems(repo.id).length > 0,
@@ -1579,11 +1590,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #723: the worker only considers an enabled repository (`listAutoRepos`
         // is `WHERE enabled = 1 AND auto_iterate = 1`), so a paused repository
         // must not travel with a planner answer the card would treat as runnable.
-        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
-          scheduledNext: schedule === null
-            ? { kind: 'unreadable' as const, at: null }
-            : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
-        }),
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : { scheduledNext: scheduledNextFor(scheduleRow) }),
       }
     })
     return reply.type('text/html').send(
@@ -2353,7 +2360,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     ]
     const repoModels = store.listRepoModelSelection(repo.id)
     const scheduleRow = store.scheduleForRepo(repo.id)
-    const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
     let chiefMessages
     if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
       chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
@@ -2430,9 +2436,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #723: `enabled` answers before the row does, so a paused repository
         // keeps the `disabled` sentence the page already has instead of a
         // planner instant the worker will never run.
-        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
-          scheduledNext: schedule === null ? { kind: 'unreadable' as const, at: null } : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
-        }),
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : { scheduledNext: scheduledNextFor(scheduleRow) }),
         workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),
         postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
         recurrences: store.listPostmortemRecurrences(repo.id),

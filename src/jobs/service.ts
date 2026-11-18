@@ -3506,6 +3506,9 @@ export class Jobs {
       case 'waiting-first-run': return '等待首次运行'
       case 'due': return '等待调度'
       case 'scheduled': return this.digestTime(new Date(next.at ?? Date.now()))
+      // #940: a paused schedule skips every window it would have run, so the
+      // email says so instead of naming an instant that will not happen.
+      case 'paused': return '排期已暂停：恢复后从下一个时刻开始'
       case 'unknown-unreadable': return 'unknown（排期无法解析）'
       case 'unknown-closed': return 'unknown（排期窗口已结束）'
     }

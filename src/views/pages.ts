@@ -839,7 +839,7 @@ export interface NextActionView {
 // The route computes it once per repository, and both surfaces render it through
 // `plannedNextLine`, so one repository cannot be given two next-run times (#688).
 export interface ScheduledNext {
-  kind: 'cron' | 'interval' | 'unreadable'
+  kind: 'cron' | 'interval' | 'unreadable' | 'paused'
   at: number | null
 }
 
@@ -873,6 +873,10 @@ function nextRunLine(next: NextRun, t: Translate): string {
 // a closed window have no instant to name, and the two surfaces say that in the
 // same words instead of formatting the same state twice (#688).
 function plannedNextLine(scheduled: ScheduledNext, t: Translate): string {
+  // #940: a paused schedule has no next run to name. The instant it would carry
+  // is skipped by the worker (`reason: 'paused'`) and is never made up, so the
+  // sentence replaces the time instead of sitting beside it.
+  if (scheduled.kind === 'paused') return t('排期已暂停：恢复后从下一个时刻开始', 'Schedule paused: it runs from the next instant after you resume')
   if (scheduled.kind === 'unreadable') return t('unknown（排期无法解析）', 'unknown (the schedule cannot be read)')
   if (scheduled.at === null) return t('unknown（排期窗口已结束）', 'unknown (the schedule window has closed)')
   return nextRunLine({ at: scheduled.at, state: scheduled.at <= Date.now() ? 'due' : 'scheduled' }, t)
@@ -901,7 +905,9 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
         // #723: a paused repository keeps its row but is never a candidate; the
         // route already withholds the row's answer for it, so this is the same
         // condition stated where the choice is made.
-        runnable: repo.enabled === 1 && scheduled.kind !== 'unreadable' && scheduled.at !== null,
+        // #940: a paused schedule row is the other pause that keeps the
+        // repository enabled, and it is no more a candidate than a disabled one.
+        runnable: repo.enabled === 1 && scheduled.kind !== 'unreadable' && scheduled.kind !== 'paused' && scheduled.at !== null,
       }
     }
     const state = nextRun({

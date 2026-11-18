@@ -404,3 +404,94 @@ test('with only paused repositories the dashboard says runs are paused and names
     store.close()
   }
 })
+
+// #940: pausing a saved schedule (#932) is the second pause a user can press.
+// The repository stays enabled and keeps its cron, so every surface kept naming
+// the next instant — the instant the worker turns into a skipped occurrence with
+// `reason: 'paused'`. The console already reads `已暂停 / paused · since <iso>`;
+// the page and the card have to agree with it rather than promise a run.
+test('a paused schedule names no instant on the repository page, and resuming restores it', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-run-paused-page', status: 'approved' })
+    const session = sessionFor(built, user)
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const repo = nextRunRepo(store, user, 'repo_paused_schedule', 'paused-schedule')
+    const row = store.saveSchedule({ id: 'sch_paused_schedule', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    const schedule = scheduleFromRow(row)
+    assert.ok(schedule !== null, 'the schedule row parses')
+    const expected = humanTimeShort(new Date(nextTime(schedule, Date.now())!).toISOString())
+    assert.equal(repoLine((await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })).body), expected, 'the fixture starts from the instant an active schedule names')
+    store.setScheduleStatus(repo.id, 'paused', Date.now())
+
+    const paused = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(paused.statusCode, 200)
+    const pausedLine = repoLine(paused.body)
+    assert.equal(pausedLine, 'Schedule paused: it runs from the next instant after you resume', 'a paused schedule is not given an instant the worker will skip')
+    assert.doesNotMatch(pausedLine, /\d{2}:\d{2}/, 'the paused line names no instant')
+    assert.doesNotMatch(pausedLine, new RegExp(expected), 'the skipped instant is gone from the page')
+
+    store.setScheduleStatus(repo.id, 'active', Date.now())
+    const resumed = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
+    assert.equal(repoLine(resumed.body), expected, 'resuming restores the instant without a second action')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('a paused schedule is never the dashboard next run while an enabled one has one', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-run-paused-dash', status: 'approved' })
+    const session = sessionFor(built, user)
+    const paused = nextRunRepo(store, user, 'repo_dash_paused_row', 'paused-row')
+    const enabled = nextRunRepo(store, user, 'repo_dash_enabled_row', 'enabled-row')
+    seedAllClear(store, user, enabled.id)
+    // The paused schedule fires every hour and the enabled one once a year, so
+    // before the fix the card names the paused repository: it is both runnable
+    // and strictly earlier.
+    store.saveSchedule({ id: 'sch_dash_paused_row', repoId: paused.id, kind: 'cron', expression: '0 * * * *', timezone: 'Asia/Shanghai' })
+    store.saveSchedule({ id: 'sch_dash_enabled_row', repoId: enabled.id, kind: 'cron', expression: '0 9 1 1 *', timezone: 'Asia/Shanghai' })
+    store.setScheduleStatus(paused.id, 'paused', Date.now())
+
+    const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
+    assert.equal(dashboard.statusCode, 200)
+    const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
+    assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card, where the next run is named')
+    assert.match(section, /下次自动运行：acme\/enabled-row/, 'the enabled schedule is the next automatic run')
+    assert.doesNotMatch(section, /acme\/paused-row/, 'a paused schedule is never named as the next automatic run')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('with every schedule paused the dashboard card says the schedule is paused and names no instant', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'next-run-paused-only', status: 'approved' })
+    const session = sessionFor(built, user)
+    const only = nextRunRepo(store, user, 'repo_dash_only_paused_row', 'only-paused')
+    seedAllClear(store, user, only.id)
+    store.saveSchedule({ id: 'sch_dash_only_paused_row', repoId: only.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    store.setScheduleStatus(only.id, 'paused', Date.now())
+
+    const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
+    assert.equal(dashboard.statusCode, 200)
+    const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
+    assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card')
+    assert.match(section, /排期已暂停/, 'the card says the schedule is paused')
+    assert.doesNotMatch(section, /下次自动运行/, 'the card does not promise a run')
+    assert.doesNotMatch(section, /\d{2}:\d{2}/, 'no instant is printed for a paused schedule')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
