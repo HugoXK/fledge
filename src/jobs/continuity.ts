@@ -106,10 +106,28 @@ export interface CarryOverReport {
   used: number
   dropped: number
   unverified: number
+  /** #790: carried lines that name no artifact at all, so no read could observe
+   * them. A subset of `used`: the line stays (it is context) but it is not
+   * evidence of open work, and the instruction no longer offers it. */
+  unlinked: number
   reads: number
   droppedLinks: string[]
   unverifiedLinks: string[]
   observations: CarryOverObservation[]
+  /** #791: one row per dropped or unverified item, so the job page lists what
+   * the header counts instead of recounting it. `reason` is null only on a
+   * value written before this field existed. */
+  items: CarryOverItem[]
+}
+
+/** Why one item is not carried: the read answered `closed`/`merged`, or the
+ * read failed, or the run's read ceiling was already spent. */
+export type CarryOverItemReason = 'closed' | 'merged' | 'failed read' | 'budget spent'
+
+export interface CarryOverItem {
+  link: string
+  kind: 'dropped' | 'unverified'
+  reason: CarryOverItemReason | null
 }
 
 //: #788: the state a read returned, when it returned one. `observedAt` is null
@@ -135,21 +153,29 @@ export interface CarryOverBlock {
   report: CarryOverReport
 }
 
-//: The header line a block states, or '' when the goal carries no block. The job
-//: page reads this back from the stored goal instead of counting the text again,
-//: so the page and the prompt cannot spell the same counts two ways.
-export function carryOverHeaderFromGoal(goal: string): string {
-  for (const line of goal.split('\n')) {
-    if (line.startsWith('carry-over: ')) return line.trim()
-  }
-  return ''
+//: The block's first line. The generated block is appended after the owner's own
+//: goal, so the last occurrence is the one this deployment wrote; a marker typed
+//: into the goal cannot move it.
+export const CARRY_OVER_MARKER = '[Carry-over - auto-generated state, not a new goal]'
+
+//: The header line a block states, or '' when the goal carries no block. It is
+//: read from the marker line and the line after it, never from a `carry-over:`
+//: line the owner typed into the goal, so the page cannot print counts nobody
+//: computed (#791).
+export function carryOverHeaderFromBlock(goal: string): string {
+  const lines = goal.split('\n')
+  const marker = lines.lastIndexOf(CARRY_OVER_MARKER)
+  if (marker === -1) return ''
+  const header = (lines[marker + 1] ?? '').trim()
+  return header.startsWith('carry-over: ') ? header : ''
 }
 
 //: The one spelling of the counts, so the goal and the stored report cannot
 //: describe the same block two ways.
 export function carryOverHeaderText(report: CarryOverReport): string {
   const unverified = report.unverified > 0 ? `, ${report.unverified} unverified` : ''
-  return `carry-over: ${report.used} used, ${report.dropped} dropped (closed/merged)${unverified}`
+  const unlinked = report.unlinked > 0 ? `, ${report.unlinked} unlinked (no link)` : ''
+  return `carry-over: ${report.used} used, ${report.dropped} dropped (closed/merged)${unverified}${unlinked}`
 }
 
 //: What a page reads back from `jobs.carry_over_json`: the counts and the
@@ -161,16 +187,46 @@ export function parseCarryOverReport(value: string | null): CarryOverReport | nu
     const parsed = JSON.parse(value) as Partial<CarryOverReport>
     if (typeof parsed.used !== 'number' || typeof parsed.dropped !== 'number' || typeof parsed.reads !== 'number') return null
     const observations = Array.isArray(parsed.observations) ? parsed.observations : []
+    const kept = observations.filter((entry): entry is CarryOverObservation =>
+      typeof entry?.link === 'string'
+      && ['open', 'closed', 'merged', 'unverified'].includes(entry.state))
+    const droppedLinks = Array.isArray(parsed.droppedLinks)
+      ? parsed.droppedLinks.filter((entry): entry is string => typeof entry === 'string')
+      : []
+    const unverifiedLinks = Array.isArray(parsed.unverifiedLinks)
+      ? parsed.unverifiedLinks.filter((entry): entry is string => typeof entry === 'string')
+      : []
+    const storedItems = Array.isArray(parsed.items)
+      ? parsed.items.filter((entry): entry is CarryOverItem =>
+          typeof entry?.link === 'string'
+          && (entry.kind === 'dropped' || entry.kind === 'unverified')
+          && (entry.reason === null || ['closed', 'merged', 'failed read', 'budget spent'].includes(entry.reason as string)))
+      : []
+    // #791: a value written before this field still lists what it dropped, from
+    // the links and observations it already stored. A reason it never recorded
+    // stays null so the page can say "not recorded" instead of naming one.
+    const observedState = new Map(kept.map((entry) => [entry.link, entry.state]))
+    const items: CarryOverItem[] = storedItems.length > 0
+      ? storedItems
+      : [
+          ...droppedLinks.map((link): CarryOverItem => {
+            const state = observedState.get(link)
+            return { link, kind: 'dropped', reason: state === 'closed' || state === 'merged' ? state : null }
+          }),
+          ...unverifiedLinks.map((link): CarryOverItem => ({ link, kind: 'unverified', reason: null })),
+        ]
     return {
       used: parsed.used,
       dropped: parsed.dropped,
       unverified: typeof parsed.unverified === 'number' ? parsed.unverified : 0,
+      // #790: a value written before this field counted its unlinked line in
+      // `used` only, so it reads back as zero rather than as absent.
+      unlinked: typeof parsed.unlinked === 'number' ? parsed.unlinked : 0,
       reads: parsed.reads,
-      droppedLinks: Array.isArray(parsed.droppedLinks) ? parsed.droppedLinks : [],
-      unverifiedLinks: Array.isArray(parsed.unverifiedLinks) ? parsed.unverifiedLinks : [],
-      observations: observations.filter((entry): entry is CarryOverObservation =>
-        typeof entry?.link === 'string'
-        && ['open', 'closed', 'merged', 'unverified'].includes(entry.state)),
+      droppedLinks,
+      unverifiedLinks,
+      observations: kept,
+      items,
     }
   } catch {
     return null
@@ -213,7 +269,10 @@ export async function buildCarryOver(input: {
   const reader = input.read
   const clock = input.now ?? (() => new Date().toISOString())
   const states = new Map<string, CarryOverLinkState | 'unverified'>()
-  const report: CarryOverReport = { used: 0, dropped: 0, unverified: 0, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [] }
+  //: #791: a failed read and a spent read ceiling are different answers, so the
+  //: item keeps which one it was instead of the page guessing.
+  const unverifiedReasons = new Map<string, 'failed read' | 'budget spent'>()
+  const report: CarryOverReport = { used: 0, dropped: 0, unverified: 0, unlinked: 0, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [], items: [] }
 
   const observationOf = (link: string | null): CarryOverObservation | undefined =>
     link === null ? undefined : report.observations.find((entry) => entry.link === link)
@@ -229,6 +288,7 @@ export async function buildCarryOver(input: {
       // The ceiling is a bound on a job's GitHub budget, not a reason to drop:
       // an item nobody had budget to read is unverified, and it stays.
       state = 'unverified'
+      unverifiedReasons.set(link, 'budget spent')
     } else {
       report.reads += 1
       try {
@@ -238,6 +298,7 @@ export async function buildCarryOver(input: {
         observedAt = clock()
       } catch {
         state = 'unverified'
+        unverifiedReasons.set(link, 'failed read')
       }
     }
     states.set(link, state)
@@ -254,20 +315,28 @@ export async function buildCarryOver(input: {
     const state = await stateOf(link)
     if (state === 'closed' || state === 'merged') {
       report.dropped += 1
-      if (link !== null && !report.droppedLinks.includes(link)) report.droppedLinks.push(link)
+      if (link !== null && !report.droppedLinks.includes(link)) {
+        report.droppedLinks.push(link)
+        report.items.push({ link, kind: 'dropped', reason: state })
+      }
       continue
     }
     if (state === 'unverified') {
       report.unverified += 1
-      if (link !== null && !report.unverifiedLinks.includes(link)) report.unverifiedLinks.push(link)
+      if (link !== null && !report.unverifiedLinks.includes(link)) {
+        report.unverifiedLinks.push(link)
+        report.items.push({ link, kind: 'unverified', reason: unverifiedReasons.get(link) ?? null })
+      }
     }
+    if (link === null) report.unlinked += 1
     report.used += 1
     const summary = redact(digest?.summary ?? job.summary ?? job.error ?? '').replace(/\s+/g, ' ').slice(0, 220)
     const links = [issue, pr].filter(Boolean).map((value) => value as string)
     recentLines.push(
       `- ${job.created_at.slice(0, 16)} ${job.kind} ${job.status}: ${summary || '(no summary)'}` +
       (links.length > 0 ? ` [${[...new Set(links)].join(' ')}]` : '') +
-      observationText(observationOf(link)),
+      observationText(observationOf(link)) +
+      unlinkedText(link),
     )
   }
 
@@ -277,34 +346,49 @@ export async function buildCarryOver(input: {
     const state = await stateOf(link)
     if (state === 'closed' || state === 'merged') {
       report.dropped += 1
-      if (link !== null && !report.droppedLinks.includes(link)) report.droppedLinks.push(link)
+      if (link !== null && !report.droppedLinks.includes(link)) {
+        report.droppedLinks.push(link)
+        report.items.push({ link, kind: 'dropped', reason: state })
+      }
       continue
     }
     if (state === 'unverified') {
       report.unverified += 1
-      if (link !== null && !report.unverifiedLinks.includes(link)) report.unverifiedLinks.push(link)
+      if (link !== null && !report.unverifiedLinks.includes(link)) {
+        report.unverifiedLinks.push(link)
+        report.items.push({ link, kind: 'unverified', reason: unverifiedReasons.get(link) ?? null })
+      }
     }
+    if (link === null) report.unlinked += 1
     report.used += 1
     workLines.push(
       `- ${item.id}${observationText(observationOf(link))}` +
       ` priority=${item.priority}` +
       `${item.issue_url ? ` issue=${item.issue_url}` : ''}` +
-      `${item.pr_url ? ` pr=${item.pr_url}` : ''} title=${item.title.slice(0, 120)}`,
+      `${item.pr_url ? ` pr=${item.pr_url}` : ''} title=${item.title.slice(0, 120)}` +
+      unlinkedText(link),
     )
   }
 
-  const lines: string[] = ['[Carry-over - auto-generated state, not a new goal]']
+  const lines: string[] = [CARRY_OVER_MARKER]
   if (reader !== undefined) lines.push(carryOverHeaderText(report))
   lines.push(
-    'Continue the open work item when one exists; do not create a duplicate issue/PR.',
+    'Continue only a line whose artifact was observed live; do not create a duplicate issue/PR. '
+    + 'A line marked "unverified (no link)" is context, not a continuation instruction.',
     'Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.',
   )
   if (recentLines.length > 0) lines.push('Recent runs:', ...recentLines)
   if (workLines.length > 0) lines.push('Open work:', ...workLines)
   const text = lines.join('\n')
   const limit = input.maxChars ?? CARRY_OVER_MAX_CHARS
+  // #790: the marker is part of the cap, not added on top of it. A fixed
+  // `limit - 20` overshot by the marker's own two characters as soon as a block
+  // grew past the cap, which is exactly what a stated bound must not do.
+  const truncated = '\n[carry-over truncated]'
   return {
-    text: text.length <= limit ? text : `${text.slice(0, limit - 20)}\n[carry-over truncated]`,
+    text: text.length <= limit
+      ? text
+      : `${text.slice(0, Math.max(0, limit - truncated.length))}${limit > truncated.length ? truncated : ''}`.slice(0, limit),
     report,
   }
 }
@@ -315,6 +399,13 @@ function observationText(observation: CarryOverObservation | undefined): string 
   if (observation === undefined) return ''
   if (observation.state === 'unverified' || observation.observedAt === null) return ' observed unverified'
   return ` observed ${observation.observedAt.slice(11, 16)}Z ${observation.state}`
+}
+
+//: #790: a line that names no artifact has nothing to observe, so it states the
+//: other fact: it was carried without a link. Without this the line read exactly
+//: like one whose artifact was seen open.
+function unlinkedText(link: string | null): string {
+  return link === null ? ' unverified (no link)' : ''
 }
 
 function parseDigest(value: string | null): RunDigest | null {
@@ -331,6 +422,10 @@ export type NextJob =
   | { kind: 'discover' }
   | { kind: 'followup'; workItemId: string; prUrl?: string; branch?: string }
   | { kind: 'review'; workItemId: string; prUrl: string; branch?: string }
+  // #789: the chosen row's artifact is finished, so the run does not continue it.
+  // The row is named so the dispatcher can mark it; the run itself is a fresh
+  // iterate on the repository's own goal.
+  | { kind: 'iterate'; staleWorkItemId: string; artifactState: 'closed' | 'merged' }
   // #807: a ready item that does not start names what held it back, and when it
   // became dispatchable, so the dispatcher can publish why instead of a gap.
   | { kind: 'none'; reason: 'not due'; blockedBy: 'cooldown' | 'failure_backoff'; readyAt: number | null }
@@ -350,6 +445,12 @@ export interface SchedulerState {
   lastDiscoverAt?: string | null
   /** The repo interval; discovery runs at this cadence, not every work tick. */
   discoverIntervalMinutes?: number
+  /**
+   * #801: the newest work (iterate) job succeeded. A success is a capacity
+   * signal, not a throttle, so the next open item is due at once; a failure
+   * keeps the cooldown and the backoff exactly as they were.
+   */
+  lastWorkSucceeded?: boolean
 }
 
 export const DEFAULT_COOLDOWN_MS = 10 * 60_000
@@ -359,7 +460,14 @@ export const MIN_DISCOVERY_INTERVAL_MINUTES = 60
 
 //: Pick the next scheduled job kind. This never blocks a due repo (the #219
 //: lesson): when work is open it changes *what* runs, not whether a run happens.
-export function decideNextJob(state: SchedulerState, options: { cooldownMs?: number } = {}): NextJob {
+//: #789: the run must also be supported by the item's live artifact, so the
+//: reader is consulted after due-ness (a held-back repo costs no read) and only
+//: for an item that names a GitHub link. A read that fails keeps the item: a
+//: failed read saw nothing, so it is not evidence that the work is finished.
+export async function decideNextJob(
+  state: SchedulerState,
+  options: { cooldownMs?: number; read?: CarryOverReader } = {},
+): Promise<NextJob> {
   const work = state.openWork
     .filter((item) => item.state !== 'merged' && item.state !== 'closed')
     .sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at))
@@ -384,6 +492,22 @@ export function decideNextJob(state: SchedulerState, options: { cooldownMs?: num
   }
   const item = work[0]
   if (item === undefined) return { kind: 'none', reason: 'idle' }
+  // #789: the pull request is the finished state of the work when there is one,
+  // so it governs; only an item with no pull request is judged by its issue.
+  const link = cleanLink(item.pr_url) ?? cleanLink(item.issue_url)
+  if (link !== null && options.read !== undefined) {
+    let artifactState: CarryOverLinkState | 'unverified'
+    try {
+      artifactState = await options.read.read(link)
+    } catch {
+      artifactState = 'unverified'
+    }
+    // `unverified` keeps the item: the read saw no state, which is exactly
+    // slice 1's rule for a thrown line read.
+    if (artifactState === 'closed' || artifactState === 'merged') {
+      return { kind: 'iterate', staleWorkItemId: item.id, artifactState }
+    }
+  }
   if (item.pr_url) {
     const canReview = state.reviewerEnabled && state.repo.repo_role === 'maintainer'
     // A review that is not due never skips a due repo (#219). Continue the same
@@ -411,11 +535,28 @@ export function isDue(state: SchedulerState, cooldownMs: number = DEFAULT_COOLDO
   // WORK_SESSION_COOLDOWN_MINUTES. The last job's duration no longer pushes the
   // next work item out by another 1.5x; a finished job may be followed as soon
   // as the cooldown has passed.
-  const base = Math.max(Math.max(1, state.intervalMinutes) * 60_000, cooldownMs)
   const backoff = state.failureStreak >= 2
     ? Math.min(2 ** (state.failureStreak - 1), 4)
     : 1
+  // #801: a successful work job is the opposite of a capacity signal. The user's
+  // model is "a role finishes, the next item starts", so a success that is owed
+  // no backoff makes the next open item due immediately. A failure never takes
+  // this path — `lastWorkSucceeded` is read from the newest iterate row, which
+  // is the same row `failureStreak` counts — so the backoff below is untouched.
+  if (backoff === 1 && state.lastWorkSucceeded === true) return true
+  const base = Math.max(Math.max(1, state.intervalMinutes) * 60_000, cooldownMs)
   return state.now - last >= base * backoff
+}
+
+//: #801: whether the newest work job succeeded, by the same rule `failureStreak`
+//: uses to call one failed. `zero` and `meta` outputs are failures there, so they
+//: are not a success here either.
+export function lastWorkSucceeded(jobs: JobRow[]): boolean {
+  for (const job of jobs) {
+    if (job.kind !== 'iterate') continue
+    return job.status === 'succeeded' && job.output_kind !== 'zero' && job.output_kind !== 'meta'
+  }
+  return false
 }
 
 export function failureStreak(jobs: JobRow[]): number {

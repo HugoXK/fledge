@@ -299,9 +299,12 @@ test('the reporter depends on the jobs it must name, not only the aggregate', ()
 // into the lib so a case here can pin it: while `apply()` built its own arrays,
 // mutating `'comment'` to `'coment'` changed nothing this file could see.
 
+// The stub logs one line per call, but a body argument spans several lines
+// (#929), so every newline inside an argument is written as \x1e and restored
+// by the parser below: one log line stays exactly one `gh` call.
 const GH_STUB = `#!/bin/sh
 {
-  for argument in "$@"; do printf '%s|' "$argument"; done
+  for argument in "$@"; do printf '%s|' "$(printf '%s' "$argument" | tr '\\n' '\\036')"; done
   printf '\\n'
 } >> "$GH_LOG"
 if [ "$1" = "issue" ] && [ "$2" = "list" ]; then printf '%s\\n' "$GH_LIST_JSON"; fi
@@ -328,7 +331,7 @@ function runReporter(env: Record<string, string>) {
     const calls = readFileSync(log, 'utf8')
       .split('\n')
       .filter((line) => line !== '')
-      .map((line) => line.split('|').slice(0, -1))
+      .map((line) => line.split('|').slice(0, -1).map((argument) => argument.replaceAll('\x1e', '\n')))
     return { status: result.status, stdout: result.stdout, stderr: result.stderr, calls }
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -443,4 +446,56 @@ test('the runner wires the default runner and builds no argument list itself', (
   for (const verb of ["'issue', 'list'", "'issue', 'create'", "'issue', 'comment'", "'issue', 'close'", "'label', 'list'", "'label', 'create'"]) {
     assert.ok(lib.includes(verb), `${verb} must be pinned by the builders in the lib`)
   }
+})
+
+// --- #929: the reporter's own failure signal ---------------------------------
+//
+// The tracker above is for a red `main`; this section is for the reporter
+// itself failing. `main().catch` printed the error and exited 1, and that was
+// all: the job log scrolls away and the tracker the run should have written
+// never exists, so a crashed reporter left the same silence the tracker was
+// built to end. The fix is one best-effort, label-less issue opened from the
+// catch on the default branch — label-less because a labelled create is
+// rejected before the issue exists when the label is missing, so it would
+// depend on the same bootstrap that can fail the reporter, and nothing ever
+// searches for the signal: a human reads it and closes it.
+
+test('a crashed reporter on main opens a label-less failure signal and still fails', () => {
+  const run = runReporter({ ...GREEN_RUN, GH_LIST_JSON: 'not json' })
+  assert.equal(run.status, 1, 'the crash must still fail the job')
+  assert.equal(run.calls.length, 2, 'the tracker listing ran first, the signal second, and nothing else')
+  assert.deepEqual(run.calls[0], health.issueListArgs(), 'the normal flow ran before the crash')
+  const alert = run.calls[1]!
+  assert.deepEqual(
+    alert.slice(0, 5),
+    ['issue', 'create', '--title', health.REPORTER_ALERT_TITLE, '--body'],
+    'the signal is a create with no --label: a labelled create is the bootstrap that can fail the reporter',
+  )
+  assert.equal(alert.includes('--label'), false)
+  const body = String(alert[alert.indexOf('--body') + 1] ?? '')
+  assert.ok(body.includes('main-health'), 'the body names the job that failed')
+  assert.ok(body.includes(CLEARING_SHA), 'the body names the commit the reporter was reporting on')
+  assert.equal(field(body, 'Run'), RUN_URL, 'the body names the run on its own line')
+  assert.ok(String(field(body, 'Error') ?? '') !== '', 'the body carries the original error')
+  assert.match(run.stderr, /failure-signal/, 'the job log says the signal was opened')
+})
+
+test('the failure signal issue and argv are pinned exactly', () => {
+  const issue = health.reporterAlertIssue({ ref: MAIN_REF, sha: SHA, runUrl: RUN_URL, error: 'gh refused the write' })
+  assert.ok(issue)
+  assert.equal(issue.title, health.REPORTER_ALERT_TITLE)
+  const args = health.alertIssueCreateArgs(issue)
+  assert.deepEqual(args, ['issue', 'create', '--title', health.REPORTER_ALERT_TITLE, '--body', issue.body])
+  assert.equal(args.includes('--label'), false, 'the signal carries no label')
+  const body = String(issue.body)
+  assert.ok(body.includes(SHA), 'the body names the head sha')
+  assert.equal(field(body, 'Run'), RUN_URL, 'the body names the run on its own line')
+  assert.ok(body.includes('gh refused the write'), 'the body carries the error verbatim')
+})
+
+test('a crash off the default branch raises no failure signal', () => {
+  assert.equal(health.reporterAlertIssue({ ref: 'refs/heads/dev1/929-alert', sha: SHA, runUrl: RUN_URL, error: 'boom' }), undefined)
+  const run = runReporter({ ...GREEN_RUN, GITHUB_REF: 'refs/heads/dev1/929-alert', NEEDS: 'not json' })
+  assert.equal(run.status, 1, 'the crash must still fail the job')
+  assert.deepEqual(run.calls, [], 'no gh call at all off the default branch: the crash is not a write reason')
 })

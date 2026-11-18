@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
 import type { JobRow, RepoRow, ScheduleOccurrenceRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
+import { formatReviewOutcomeDetail, formatReviewOverrideDetail } from '../db.js'
 import type { Mailer, MailMessage } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
 import { quotaView } from '../gateway/quota.js'
@@ -9,6 +10,7 @@ import { notifyEmail, replyAddressFor } from '../email/recipient.js'
 import { deliverOutbox, OUTBOX_LEASE_MS } from '../notifications/outbox.js'
 import { emailTransport, webhookTransport } from '../notifications/transports.js'
 import { log } from '../lib/log.js'
+import { cachedRouterProbe } from '../lib/routerHealth.js'
 import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
@@ -44,7 +46,7 @@ import {
 } from '../lib/adversarialReview.js'
 import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
 import { observedAttribution } from '../lib/teamStats.js'
-import { reviewInstructionLine } from '../lib/followUpInstruction.js'
+import { normalizeReviewInstruction, reviewInstructionLine } from '../lib/followUpInstruction.js'
 import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
 import { DEFAULT_MAX_REVISIONS, decideRevision, maxRevisionsSettingKey, parseMaxRevisions, revisionCounterKey, type ReviewAuthor } from '../lib/revisionBudget.js'
 import { sweepExpiredTrials, type TrialSweepResult } from '../users/trial.js'
@@ -54,11 +56,12 @@ import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, re
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
-import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
+import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, lastWorkSucceeded, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
 import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatched, type DispatchBlockReason } from './automationHealth.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
+import { encodeOccurrenceSnapshot, occurrenceSnapshot } from '../schedules/snapshot.js'
 import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
@@ -68,19 +71,6 @@ import { parseTeam } from '../flybot/instances.js'
 import { isRuleChange, loadRepoRules, RulesError, type RepoRules } from '../rules.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
-
-// #732: the platform pays only when the job has no own model to use. A
-// repository selection is an own model too: the bridge patches the instance from
-// `listRepoModelSelection` and the gateway resolves the same row, so checking
-// only the legacy users.own_llm_* columns refused a job that would never spend
-// platform quota.
-function platformFundedFor(user: UserRow, store: Store, repoId: string): boolean {
-  const legacyOwnModel =
-    user.own_llm_base_url !== null &&
-    user.own_llm_base_url !== '' &&
-    user.own_llm_key_enc !== null
-  return !legacyOwnModel && store.listRepoModelSelection(repoId).length === 0
-}
 
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
@@ -1183,6 +1173,12 @@ export class Jobs {
     }
   }
 
+  // One live-state source for both readers: the scheduler's evidence gate on the
+  // chosen item (#789) and the carry-over block it is about to build (#365).
+  private liveArtifactReader(repo: RepoRow): CarryOverReader {
+    return (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo)
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
@@ -1294,7 +1290,7 @@ export class Jobs {
       ? await buildCarryOver({
         recent: this.store.listJobsForRepo(repo.id, 3),
         openWork: this.store.listOpenWorkItems(repo.id),
-        read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
+        read: this.liveArtifactReader(repo),
       })
       : null
     const carryOver = carryOverBlock?.text ?? ''
@@ -1310,7 +1306,9 @@ export class Jobs {
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
-    const platformFunded = platformFundedFor(user, this.store, repo.id)
+    // #942: the rule lives on the store, so the refusal and the scheduler
+    // predicate cannot answer differently about whether the platform pays.
+    const platformFunded = this.store.platformFundedFor(user, repo.id)
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, workType: workType.type, ownerStarted: this.ownerStartedFor(trigger, options) })
@@ -1752,7 +1750,7 @@ export class Jobs {
         issueUrl: issueUrl,
         summary: redact(result.summary ?? job.summary ?? ''),
         error: redact(result.error ?? job.error ?? ''),
-      }, `job.${job.id}:${result.status}:webhook`)
+      }, `job.${job.id}:${result.status}:webhook`, job.id)
     }
     const repo = this.store.getRepo(job.repo_id)
     if (repo !== undefined && repo.job_budget_cny > 0) {
@@ -1864,7 +1862,7 @@ export class Jobs {
         jobId,
         recurrenceKey: record.recurrence.recurrence_key,
         count: record.recurrence.count,
-      }, `postmortem.recurring:${record.postmortem.repo_id}:${record.recurrence.recurrence_key}:${record.recurrence.count}`)
+      }, `postmortem.recurring:${record.postmortem.repo_id}:${record.recurrence.recurrence_key}:${record.recurrence.count}`, jobId)
     } catch (error) {
       log.warn('postmortem write failed', { trace: jobId, error: String(error) })
       // #666: a postmortem that was not written is a repair job, not a no-op, so
@@ -1991,7 +1989,7 @@ export class Jobs {
     this.store.setSetting(key, nowIso())
     this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。`)
     this.store.audit(job.user_id, 'ops.repeated_failures', `${label}: 3 consecutive failures`)
-    this.queueWebhook('repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id }, `repo.repeated_failures:${job.repo_id}:${job.id}`)
+    this.queueWebhook('repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id }, `repo.repeated_failures:${job.repo_id}:${job.id}`, job.id)
   }
 
   private async refreshRepoAccess(repo: RepoRow): Promise<RepoRow | undefined> {
@@ -2474,7 +2472,23 @@ export class Jobs {
             : `最新审核分 ${reviewBlock.score} 低于 ${reviewBlock.minScore}，自动合并已阻止。`,
         }
       }
-      this.store.audit(job.user_id, 'job.merge_review_override', `${job.id}: ${detail}`)
+      // #794: the override names the decision it overturned — the review job,
+      // its score, the model that answered and the tip that review covered —
+      // instead of a bare sentence. The decision row is the one source; a
+      // threshold-only block has no such row and the record says so.
+      const decision = linkedItem === undefined
+        ? undefined
+        : this.store.latestReviewOutcome(linkedItem.id, reviewBlock.kind === 'changes_requested' ? 'changes_requested' : undefined)
+      const overrideModel = decision?.model ?? (review === undefined ? null : parseModelRun(review.model_json)?.model?.label ?? null)
+      const overrideScore = decision?.score ?? (reviewBlock.kind === 'score' ? reviewBlock.score : review?.review_score ?? null)
+      this.store.audit(job.user_id, 'job.merge_review_override', formatReviewOverrideDetail({
+        jobId: job.id,
+        reviewJobId: decision?.reviewJobId ?? review?.id ?? null,
+        score: overrideScore,
+        model: overrideModel,
+        tip: decision?.tip ?? null,
+        reason: detail,
+      }))
     }
     if (!manual) {
       // Defence in depth for the automatic path: the job must be the newest
@@ -2826,7 +2840,7 @@ export class Jobs {
   // webhook call; the settings keys above are what make the pass idempotent.
   private notifyPlan(job: JobRow, message: string, code: string): void {
     this.store.notify(job.user_id, 'job', message, code)
-    this.queueWebhook(code, { text: message, repoId: job.repo_id, jobId: job.id }, `${code}:${job.id}`)
+    this.queueWebhook(code, { text: message, repoId: job.repo_id, jobId: job.id }, `${code}:${job.id}`, job.id)
   }
 
   private async releaseAllPendingFollowups(): Promise<void> {
@@ -3286,13 +3300,34 @@ export class Jobs {
 
   async notifyOpsAlerts(): Promise<number> {
     const alerts = this.store.alerts({ usdCny: this.config.quota.usdCny, automationIdleMinutes: this.config.ops.automationIdleAlertMinutes, instancesManaged: this.instancesManaged })
+    // #282: the router alert is not about a repository, so it names its
+    // recipient instead of deriving one from a repo. The existing cooldown key,
+    // event row and `ops.alert` webhook are what make it a first-class alert
+    // rather than a second notifier.
+    if (this.config.router.url !== '') {
+      const router = await cachedRouterProbe(this.config)
+      const admin = this.store.userByLogin(this.config.github.adminLogin)
+      if (admin !== undefined && (router.state === 'unreachable' || router.allKeysCapped)) {
+        alerts.push({
+          kind: 'router_health',
+          level: 'critical',
+          userId: admin.id,
+          state: router.state,
+          message: `model router: ${router.state}${router.allKeysCapped ? ' (every provider key is capped)' : ' (no health answer)'}`,
+        })
+      }
+    }
     const current = new Set<string>()
     let sent = 0
     for (const alert of alerts) {
       const key = `ops_alert_notified:${alert.kind}:${alert.repoId ?? ''}:${alert.jobId ?? ''}:${alert.prUrl ?? ''}`.slice(0, 300)
       current.add(key)
       const repo = alert.repoId === undefined ? undefined : this.store.getRepo(alert.repoId)
-      const user = repo === undefined ? undefined : this.store.userById(repo.user_id)
+      // #282: an alert may name its own recipient (the router alert has no
+      // repository); everything the store raises keeps deriving the owner.
+      const user = alert.userId !== undefined
+        ? this.store.userById(alert.userId)
+        : repo === undefined ? undefined : this.store.userById(repo.user_id)
       if (user === undefined || user.status !== 'approved') continue
       const previous = this.store.getSetting(key)
       const previousAt = previous === undefined ? 0 : Date.parse(previous)
@@ -3321,12 +3356,15 @@ export class Jobs {
   // logical event, so a replayed callback or a second tick keeps one row instead
   // of sending twice. With no webhook configured there is no destination to
   // record, which is the same no-op the old fire-and-forget call had.
-  private queueWebhook(event: string, payload: Record<string, unknown>, key: string): void {
+  private queueWebhook(event: string, payload: Record<string, unknown>, key: string, jobId?: string | null): void {
     if (this.config.notifyWebhookUrl === '') return
     try {
       this.store.enqueueNotification({
         transport: 'webhook',
         destination: 'webhook',
+        // #544: a send about a job names it, so a scheduled run's delivery is
+        // readable without parsing the key.
+        ...(jobId === undefined ? {} : { jobId }),
         payload: { event, ...payload },
         idempotencyKey: key,
       })
@@ -3693,6 +3731,13 @@ export class Jobs {
             ...(typeof value.baseBranch === 'string' ? { baseBranch: value.baseBranch.slice(0, 300) } : {}),
             ...(typeof value.headSha === 'string' ? { headSha: value.headSha.slice(0, 100) } : {}),
             ...(typeof value.reason === 'string' ? { reason: value.reason.slice(0, 300) } : {}),
+            // #794: the reviewer's own words are parsed, not dropped. The carrier
+            // (#251) bounds the line at REVIEW_INSTRUCTION_MAX and collapses it to
+            // one line, so the callback accepts the same normalised form the
+            // webhook path writes; a field the parser omits is a silent loss for
+            // every follow-up parked behind a review job. Redaction runs before
+            // the slice, like every other callback string.
+            ...(typeof value.instruction === 'string' ? { instruction: normalizeReviewInstruction(redact(value.instruction)) } : {}),
           }]
         }).slice(0, 10)
       : []
@@ -3859,7 +3904,23 @@ export class Jobs {
       if (item !== undefined) {
         const outcome = followUps.length > 0 || (reviewScore !== undefined && reviewScore < 80) ? 'changes_requested' : 'approved'
         this.store.updateWorkItem(item.id, { state: outcome })
-        this.store.audit(job.user_id, 'work_item.review_outcome', `${item.id}: ${outcome} score=${reviewScore ?? '-'}`)
+        // #794: the recorded decision carries its own identity — the review job,
+        // the model that answered, and the tip that review covered. The review's
+        // own follow-up is the only place the tip is reported for this PR; a
+        // review with no body has none, and then the row says `-` instead of
+        // borrowing the merge tip.
+        const reviewModel = parseModelRun(job.model_json)?.model?.label ?? null
+        const reviewedTip = item.pr_url === null
+          ? null
+          : followUps.find((follow) => follow.prUrl === item.pr_url)?.headSha ?? null
+        this.store.audit(job.user_id, 'work_item.review_outcome', formatReviewOutcomeDetail({
+          workItemId: item.id,
+          outcome,
+          score: reviewScore ?? null,
+          reviewJobId: job.id,
+          model: reviewModel,
+          tip: reviewedTip,
+        }))
       }
     }
     if (status === 'succeeded') await this.verifyAndMaybeMerge(jobId)
@@ -4017,6 +4078,7 @@ export class Jobs {
       logicalTime: Date.now(),
       timingRevision: schedule.timing_revision,
       commandKey: parsed.key,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!created.created) return this.runNowAnswer(created.row, true)
     const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true })
@@ -4123,7 +4185,7 @@ export class Jobs {
     } catch (error) {
       return fail(`任务密钥无法解密：${String(error)}`)
     }
-    const platformFunded = platformFundedFor(user, this.store, repo.id)
+    const platformFunded = this.store.platformFundedFor(user, repo.id)
     if (platformFunded && quotaView(user, this.config).exhausted) {
       this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。' }, revoke)
       await this.quotaNotifier.notify(user)
@@ -4358,7 +4420,7 @@ export class Jobs {
     this.store.deleteExpiredJobTokens()
     if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {
       this.lastPruneAt = Date.now()
-      this.store.pruneOldData()
+      this.store.pruneOldData(this.config.retention.windows)
     }
     if (this.config.env !== 'test' && this.instances !== undefined) {
       await this.instances.healthSweep().catch((error) => log.warn('instance health sweep failed', { error: String(error) }))
@@ -4494,7 +4556,10 @@ export class Jobs {
         continue
       }
       const recent = this.store.listJobsForRepo(repo.id, 6)
-      const next = decideNextJob({
+      // #789: the scheduler decides on evidence too. The same reader that checks
+      // the carry-over lines checks the chosen item, and only after due-ness, so
+      // a held-back repository costs no read.
+      const next = await decideNextJob({
         repo,
         now,
         lastRunAt: repo.last_run_at,
@@ -4505,12 +4570,16 @@ export class Jobs {
         intervalMinutes: plan === null ? Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) : 0,
         lastDurationMs: lastDurationMs(recent),
         failureStreak: failureStreak(recent),
+        // #801: the success path starts the next open item at once; the failure
+        // path keeps its cooldown and backoff. The scheduler decides, not the
+        // caller, so one place owns the difference.
+        lastWorkSucceeded: lastWorkSucceeded(recent),
         openWork,
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
         lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
         discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
-      }, plan === null ? {} : { cooldownMs: 0 })
+      }, { ...(plan === null ? {} : { cooldownMs: 0 }), read: this.liveArtifactReader(repo) })
       if (next.kind === 'none') {
         // #807: a held-back item names its holder; an empty backlog clears the
         // idle reading rather than leaving the last wait on the dashboard.
@@ -4538,12 +4607,20 @@ export class Jobs {
         ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
         : next.kind === 'discover'
           ? await this.enqueue(repo, 'schedule', undefined, 'discover')
-          : await this.enqueue(repo, 'followup', undefined, 'iterate', {
-              workItemId: next.workItemId,
-              ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
-              ...(next.branch === undefined ? {} : { branch: next.branch }),
-            })
+          : next.kind === 'iterate'
+            // #789: the row's artifact is finished, so this is a fresh iterate on
+            // the repository's own goal, not a continuation: no goal override and
+            // no work-item id, and the due run still happens (the #219 rule).
+            ? await this.enqueue(repo, 'schedule', undefined, 'iterate')
+            : await this.enqueue(repo, 'followup', undefined, 'iterate', {
+                workItemId: next.workItemId,
+                ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
+                ...(next.branch === undefined ? {} : { branch: next.branch }),
+              })
       if (result.ok) {
+        // #789: mark the stale row only once the run exists, so a refused enqueue
+        // leaves it for the next tick instead of dropping the fresh iterate.
+        if (next.kind === 'iterate') this.store.updateWorkItem(next.staleWorkItemId, { state: next.artifactState })
         recordDispatched({
           repo,
           kind: next.kind === 'review' ? 'review' : next.kind === 'discover' ? 'discover' : 'iterate',
@@ -4639,6 +4716,7 @@ export class Jobs {
       skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
       decision: plan.dueAt === null ? undefined : { id: randomId('occ'), at: plan.dueAt, state: 'skipped', reason, missed: plan.missed },
       cursorAt: plan.cursorAt,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     this.store.audit(repo.user_id, 'schedule.skipped', JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
@@ -4667,6 +4745,7 @@ export class Jobs {
       timingRevision: schedule.timing_revision,
       skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
       cursorAt: plan.cursorAt,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     log.info('scheduled instants skipped', {
       repo: `${repo.owner}/${repo.name}`, count: recorded.skipped.length, at: plan.dueAt,
@@ -4677,6 +4756,13 @@ export class Jobs {
   // run is not made twice: null means another worker holds this instant and this
   // pass leaves it alone. The token is opaque and short-lived; nothing derives
   // it from the attempt count.
+  // #544: what an occurrence was decided under. Both rows are read by the
+  // caller, so this is the configuration the decision used, not a second read
+  // that could race an edit between the claim and the write.
+  private scheduleSnapshotJson(schedule: ScheduleRow, repo: RepoRow): string {
+    return encodeOccurrenceSnapshot(occurrenceSnapshot(schedule, repo))
+  }
+
   private claimScheduledOccurrence(repo: RepoRow, plan: TickPlan): string | null {
     if (plan.dueAt === null) return null
     const schedule = this.store.scheduleForRepo(repo.id)
@@ -4690,6 +4776,7 @@ export class Jobs {
       timingRevision: schedule.timing_revision,
       leaseToken,
       leaseMs: SCHEDULE_LEASE_MS,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!claim.claimed) {
       log.info('scheduled occurrence not claimed', {

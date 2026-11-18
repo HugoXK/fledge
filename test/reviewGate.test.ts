@@ -1070,12 +1070,12 @@ test('exactly one job is named review-gate and the comment path is a different j
   assert.ok(jobs.has('review-gate-comment'))
   assert.match(jobs.get('review-gate-comment')!, /issue_comment/)
   assert.match(jobs.get('review-gate-comment')!, /github\.event\.issue\.pull_request/)
-  // The match must use the first non-empty line and the same shapes and case
-  // handling as parseConclusion, or a heading-form verdict never repaints.
-  assert.match(jobs.get('review-gate-comment')!, /awk 'NF \{ print; exit \}'/)
-  assert.match(jobs.get('review-gate-comment')!, /grep -qiE/)
-  assert.match(jobs.get('review-gate-comment')!, /##\[\[:space:\]\]\*Review/)
-  assert.match(jobs.get('review-gate-comment')!, /Verdict:\[\[:space:\]\]\+\(PASS\|INC\|REQUEST_CHANGES\)/)
+  // #931: the guard asks the parser instead of restating its expression. A word
+  // list or a second regex here is a second definition of "a verdict" and it
+  // drifted once (`## REVIEW`); `test/reviewGatePrefilter.test.ts` pins that the
+  // shapes the job starts on are the shapes the parser accepts.
+  assert.match(jobs.get('review-gate-comment')!, /parseConclusion/)
+  assert.doesNotMatch(jobs.get('review-gate-comment')!, /grep -qiE/, 'no second shape test survives in the comment job')
   assert.match(jobs.get('review-gate-comment')!, /github\.event\.issue\.number/)
 })
 

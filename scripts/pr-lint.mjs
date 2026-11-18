@@ -7,7 +7,7 @@
 
 import { readFileSync } from 'node:fs'
 import { mechanicalRelease } from './lib/mechanical-release.mjs'
-import { checkBody } from './lib/pr-body.mjs'
+import { checkBody, isDependabotBump } from './lib/pr-body.mjs'
 import { incompleteList, paginate } from './lib/review-gate.mjs'
 import { loadRules, tierForChanges } from './lib/risk.mjs'
 
@@ -127,14 +127,18 @@ const paths = files.map((file) => file.filename)
 // label: a PR that merely touches the same files stays T3.
 const mechanical = mechanicalRelease({ branch: pr.head?.ref, title: pr.title, files: paths })
 
-const errors = checkBody(body, POLICY)
+const errors = checkBody(body, POLICY, String(pr.user?.login ?? ''))
 
 const closingRef = CLOSING_REF.exec(body)
 const trackingRef = TRACKING_REF.exec(body)
 // `Fixes` wins when both are present: the PR closes something and also belongs
 // to an epic, so the reader is told what it closes, not that it closes nothing.
 const trackingNote = closingRef === null && trackingRef !== null ? `; tracks #${trackingRef[2]}, closes nothing` : ''
-if (!INVESTIGATE_PATH.test(body) && closingRef === null && trackingRef === null) {
+// A generated dependency bump names no issue, and the pair that exempts it from
+// the body rules (author login plus the `Bumps ` first line, #982) exempts it
+// from the reference too. Every later rule — changelog, docs, size, tier — still
+// sees the paths, so a bump is judged there like any other pull request.
+if (!isDependabotBump(body, pr.user?.login) && !INVESTIGATE_PATH.test(body) && closingRef === null && trackingRef === null) {
   errors.push('the PR body needs "Fixes #N", "Part of #N", "Refs #N", "No-issue:" or "Investigates:"')
 }
 

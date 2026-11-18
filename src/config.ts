@@ -8,6 +8,7 @@ import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { registerRedactionSecrets } from './lib/secrets.js'
 import { DEFAULT_RATE_LIMIT_BUDGETS, type RateLimitBudgets } from './lib/rateLimit.js'
 import { parseManagementService, type ManagementServiceMode } from './management/mode.js'
+import { RETENTION_CLASSES, retentionDefaultWindows, retentionWindow, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
 
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
@@ -30,6 +31,16 @@ export interface Config {
   }
   // How long a GitHub re-authentication stays "recent" for destructive actions.
   recentAuthMinutes: number
+  // #897: the superadmin release action dispatches the existing release
+  // workflow. The token needs Actions: write to dispatch and Contents: read,
+  // Checks: read and Pull requests: read to build the preview; it is a server
+  // secret and is never rendered or logged.
+  release: {
+    dispatchToken: string
+    repo: string
+    workflow: string
+    ref: string
+  }
   // #690: how long after its `trial.expired` row a never-used rejected account is
   // erased. The sweep's purge phase reads this; 72 hours is the host-side cron it
   // replaces.
@@ -41,6 +52,15 @@ export interface Config {
   // #708: the per-class windows mutating routes take. A route names its class;
   // the numbers live here so a deployment tightens a limit without a rebuild.
   rateLimit: RateLimitBudgets
+  // #281: the age windows `pruneOldData` enforces, read from config so a deploy
+  // can change one without a code change. `configured` is false when the env var
+  // is unset, so the operator surface can mark the built-in value as the default.
+  // Unset means today's window, never "keep forever": the rows are deleted at
+  // that age today, and stopping that quietly would be a privacy regression.
+  retention: {
+    windows: RetentionWindows
+    configured: Record<RetentionId, boolean>
+  }
   // #637: the comment names that count as a trigger. `@<name>` in an issue or
   // pull request comment starts a review; a deployment renames or adds names
   // here rather than in code, and an empty list disables the trigger.
@@ -151,6 +171,16 @@ export interface Config {
     alertCooldownMinutes: number
     /** #807: how long ready work may wait for a dispatch before the alert fires. */
     automationIdleAlertMinutes: number
+  }
+  /**
+   * #282: the shared model router, a dependency outside this repository. Empty
+   * `url` means the deployment has no router and `/readyz` answers exactly as it
+   * did before the probe existed.
+   */
+  router: {
+    url: string
+    /** Bound on one health read; `/readyz` never waits longer than this. */
+    timeoutMs: number
   }
   tokens: {
     /** Default lifetime of a new personal `flg_` token, in days. */
@@ -416,6 +446,16 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   const keyB64 = text('TOKEN_ENCRYPTION_KEY')
   const encryptionKey = keyB64 === '' ? randomBytes(32).toString('base64') : keyB64
   const dataDir = resolve(text('DATA_DIR', './data'))
+  // #281: one window per retention class, with the shipped literal as the
+  // effective default. `retentionWindow` refuses 0 and non-integers rather than
+  // reading them as "delete everything", and marks a fallback `configured:false`.
+  const retentionWindows = retentionDefaultWindows()
+  const retentionConfigured = {} as Record<RetentionId, boolean>
+  for (const cls of RETENTION_CLASSES) {
+    const parsed = retentionWindow(process.env[cls.env], cls.defaultDays)
+    retentionWindows[cls.id] = parsed.days
+    retentionConfigured[cls.id] = parsed.configured
+  }
   const config: Config = {
     env,
     port: number('PORT', 8080),
@@ -429,6 +469,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       instancesGlobal: Math.max(0, number('LIMIT_INSTANCES_GLOBAL', 0)),
     },
     recentAuthMinutes: Math.max(1, number('RECENT_AUTH_MINUTES', 15)),
+    release: {
+      dispatchToken: text('RELEASE_DISPATCH_TOKEN'),
+      repo: text('RELEASE_DISPATCH_REPO', 'HugoXK/fledge'),
+      workflow: text('RELEASE_DISPATCH_WORKFLOW', 'daily-release.yml'),
+      ref: text('RELEASE_DISPATCH_REF', 'main'),
+    },
     trialPurgeGraceHours: Math.max(1, number('TRIAL_PURGE_GRACE_HOURS', 72)),
     autoPromoteDiscovery: bool('AUTO_PROMOTE_DISCOVERY', false),
     autoPromoteDiscoveryDailyCap: Math.max(0, number('AUTO_PROMOTE_DISCOVERY_DAILY_CAP', 3)),
@@ -445,6 +491,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         max: Math.max(1, number('RATE_LIMIT_EXPENSIVE_MAX', DEFAULT_RATE_LIMIT_BUDGETS.expensive.max)),
         windowMs: Math.max(1_000, number('RATE_LIMIT_EXPENSIVE_WINDOW_MS', DEFAULT_RATE_LIMIT_BUDGETS.expensive.windowMs)),
       },
+    },
+    retention: {
+      windows: retentionWindows,
+      configured: retentionConfigured,
     },
     triggers: {
       mentions: text('FLEDGE_MENTION_NAMES', 'fledge')
@@ -540,6 +590,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
       alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),
       automationIdleAlertMinutes: Math.max(1, number('AUTOMATION_IDLE_ALERT_MINUTES', 30)),
     },
+    router: {
+      url: text('MODEL_ROUTER_URL').replace(/\/$/, ''),
+      // A readiness probe must answer inside a monitor's patience; 10s is the
+      // ceiling so a misconfiguration cannot make /readyz hang for a minute.
+      timeoutMs: Math.min(10_000, Math.max(50, number('MODEL_ROUTER_TIMEOUT_MS', 1_000))),
+    },
     tokens: {
       patExpiryDays: Math.max(1, number('PAT_EXPIRY_DAYS', DEFAULT_PAT_EXPIRY_DAYS)),
     },
@@ -566,7 +622,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     services: {
       portal: text('PORTAL_URL', 'https://portal.hugoxk.online').replace(/\/$/, ''),
-      docs: withTrailingSlash(text('FLEDGE_DOCS_URL', 'https://fledge-docs.hugoxk.online/docs/')),
+      docs: withTrailingSlash(text('FLEDGE_DOCS_URL', 'https://docs.fledge.hugoxk.online/')),
       status: withTrailingSlash(text('STATUS_URL', 'https://hugoxk.online/status/')),
     },
     dataDir,

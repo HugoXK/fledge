@@ -526,11 +526,27 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   into the goal as bounded data. Work sessions use a short global cooldown
   (`WORK_SESSION_COOLDOWN_MINUTES`, default 15 minutes); the per-repository
   interval is only an upper bound on the idle check, with a 60-minute floor for
-  discovery, not a reason to produce.
-  A run backs off after two unproductive (failed, zero-output or meta) runs and
+  discovery, not a reason to produce. A **successful** work job is not a
+  throttle: the next open item is due on the next tick, because a role that
+  finished is the user's cue that the next item starts (#801). The cooldown
+  still applies after a run that did not succeed, and
+  a run backs off after two unproductive (failed, zero-output or meta) runs and
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
   Jobs that exceed the timeout are failed.
+- **One answer for "why did this not start"** (#807 review, #938, #942):
+  `Store.automationDispatchBlocker` is the single predicate behind both the
+  dispatcher's refusal and the `automation_idle_with_work` alert, so the console
+  cannot report a repository idle after the dispatcher has already named a
+  reason. It answers `user_not_ready`, `instance_not_ready` or `quota`. The quota
+  member arrived last: it applies only when the platform pays for the run
+  (`Store.platformFundedFor`, the same rule the refusal reads — a user's own
+  model or a repository's own model selection means the platform pays nothing),
+  and it asks `quotaExhausted` in `src/gateway/quota.ts`, which `quotaView` also
+  reads, so the refusal and the alert cannot disagree on the arithmetic either.
+  A caller that passes no quota rate keeps the older two-reason answer rather
+  than refusing work it cannot see; `alerts()` passes the rate its callers
+  already carry.
 - **Schedule expressions** (#544, first slice): `src/schedules/next.ts` is the
   one planner a preview and the worker will share. A schedule is either a
   five-field cron expression (numeric values, `*`, ranges, lists and steps; no
@@ -590,6 +606,15 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   hourly instants stays one row rather than 9k. The row carries the job it
   dispatched, the lag and the reason it skipped; the audit line stays for
   operators and names the row.
+  The row also freezes what the decision was taken under (`snapshot_json`,
+  written by `src/schedules/snapshot.ts`): the schedule's configuration (kind,
+  expression or interval, zone, window, misfire, grace, daily budget, status and
+  timing revision) and the repository's authorization (owner, installation,
+  permission and role). A later edit to the schedule, or a re-check that changes
+  the repository's permission, cannot rewrite what a past instant ran as. A row
+  written before the column existed, or one whose snapshot cannot be read,
+  answers null and is reported as unknown rather than back-filled from the live
+  schedule.
   The lease (slice 3B-B2) answers the second worker: a dispatch claims the row
   before it creates the job, and `lease_token` is compared at settle, so only the
   holder's result lands. A live lease is refused (`leased`), a lapsed one is
@@ -624,8 +649,20 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   schedule, the next run from `nextTime`, the newest decided instant with its
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
   last instant whose job succeeded. A value nobody recorded prints `unknown`: a
-  schedule with no occurrence row has not run, and this slice has no delivery
-  outbox, so neither is a zero. The eight facts render through `.schedule-facts`,
+  schedule with no occurrence row has not run, so it is not a zero. The delivery
+  fact is read from the outbox (`notification_outbox.job_id`, below) for the job
+  the newest decided instant dispatched: a job that queued a send reports that
+  send's state, and a finished job that queued none prints `none` — a run with
+  nothing to deliver — rather than the `unknown` of a page that did not look. A
+  job queues its notifications only when it ends (`succeeded`/`failed`), so a
+  run whose job is still queued or running prints `unknown` too: the empty read
+  is a value nobody knows yet, and a missing value is never printed as a
+  definite none. Only a decided instant answers: `skipped` queued nothing by
+  definition, while `claimed` (a worker holds it, `job_id` still NULL until the
+  job starts) and `expired` (a lease that lapsed before anyone settled it) have
+  not decided yet and print `unknown`. The outbox's own
+  `unknown` (a send that may have crossed the external boundary) is printed as
+  `unconfirmed`, so it is never confused with "nobody read the outbox". The eight facts render through `.schedule-facts`,
   a two-column grid with muted labels that stacks to one column below 640px, so
   the console does not fall back to the browser's default definition-list text.
   `src/schedules/console.ts` is that view model. The
@@ -658,9 +695,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   (`#387`) must move the count inside that claim, or two workers could each spend
   the last slot.
 - **The notification outbox** (#544, slice 7): the notifications it covers are
-  durable rows (`notification_outbox`) instead of a call whose failure lived only
-  in a log line — the digests, question mails, ops alerts and per-job/PR webhooks
-  are queued with an idempotency key, so a replayed callback or a second tick
+  durable rows (`notification_outbox`), and a send that reports on a job carries
+  its `job_id` (nullable, indexed) so the schedule console can name a run's
+  delivery without parsing the idempotency key; a row written before the column
+  existed keeps NULL and is never retro-attached to a run. A notification is a
+  row instead of a call whose failure lived only in a log line — the digests,
+  question mails, ops alerts and per-job/PR webhooks are queued with an
+  idempotency key, so a replayed callback or a second tick
   keeps one row rather than sending twice. Per-job success/failure mail and the
   transactional approval, quota, trial and feedback mail still send inline in
   this slice; they are not queued rows yet. A tick pass sweeps lapsed `sending`
@@ -756,7 +797,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   the linked work item is `changes_requested` or the newest succeeded review job
   for that PR has a score below `AUTO_MERGE_MIN_REVIEW_SCORE` (default 80). A
   manual maintainer merge may override the review-score gate, and the override
-  is audited as `job.merge_review_override`. The agent prompt always forbids
+  is audited as `job.merge_review_override`. The row names the decision it
+  overturned — the review job, its score, the model that answered and the tip
+  that review covered — so a reader can tell which review a merge went past; a
+  decision that recorded no revision leaves that field unknown rather than
+  borrowing the merge tip. The agent prompt always forbids
   merging. The switch is stored on the repository and included in the job
   payload for reporting. A stale or downgraded role blocks the merge.
   A merge also needs the newest `iterate` job for that pull request to have
@@ -860,6 +905,19 @@ command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
 path. The page owns the Users section at `/admin#users`; `/admin/users` is an
 admin-only redirect to that section for older links and bookmarks, while
 `/admin/users/:id` remains the read-only support view.
+
+For a superadmin, the Release card also carries the one-click preview
+(`src/lib/releaseDispatch.ts`): the current `main`, latest tag, commit/fix/
+feature/fragment counts, computed next version, `ci-ok`, any open release PR and
+the exact reason the action is blocked. `POST /admin/release` requires superadmin,
+CSRF, a recent GitHub re-authentication, the destructive rate-limit class and an
+audit row; it re-reads the preview and then dispatches the existing
+`daily-release.yml` with `dry_run=false`. It never creates a tag, merges a pull
+request or deploys a host. The server-side `RELEASE_DISPATCH_TOKEN` is repo-scoped
+and never rendered or logged; an empty value disables the action instead of
+failing the page. Release remains separate from deploy: production may already
+run `main`, and the next infra update installs the version-bump commit after the
+release PR merges.
 
 The admin page is a hub, not an approvals-only page. Its primary sections are
 Pending, Users, Jobs, Audit, Release and Backups; Product metrics, Webhook
@@ -1071,6 +1129,20 @@ own denominator (`50% (1/2)`) or `—` when no review recorded an outcome, and
 fewer than `REVIEW_TREND_SMALL_SAMPLE` (5) reviews are shown with a
 `Small sample n=<n>` badge rather than smoothed into a trend. What each cell
 means is fixed in [ui.md](ui.md).
+
+The identity of a decision travels with it. The `work_item.review_outcome` row
+names the review job, the score, the model that answered and the tip that review
+covered (`formatReviewOutcomeDetail`/`parseReviewOutcomeDetail`, in `src/db.ts`
+beside the trend that reads them). A row written before those fields existed
+still parses, with the newer fields unknown, and the page says `revision not
+recorded` rather than printing a hash or an id that belongs to nothing. The
+PR→first-decision median takes one sample per work item, at its first successful
+review, so a PR reviewed four times is one first decision and not four; the
+override rate is `overrides / recorded changes-requested decisions` in the same
+window, its numerator being merges that named such a decision and went ahead.
+A threshold-only block is derived at merge time and has no decision row: its
+override is audited on the job page but has no denominator here, and the card
+says so rather than folding it into a rate it cannot explain.
 
 `GET /api/read/metrics` exposes the same read model as JSON for an external
 control room: a normal user gets `personal`, a super admin gets the global sections.
@@ -1303,8 +1375,11 @@ named fields only — base sha, tip sha, the pull-request patches, the verifier
 result at the tip and the repository policy — so the author's summary and its
 claimed test output are not in the request at all; a caller that still holds them
 cannot pass them through. Each automatic merge attempt records one
-`job.adversarial` event with the model, the prompt hash and the evidence the
-reviewer saw.
+`job.adversarial` event with the model, the prompt hash, the base and tip sha and
+the evidence the reviewer saw. The job page reads the tip back beside the hash,
+so a verdict cannot be read against the wrong revision; a record written before
+the reader carried the tip says `revision not recorded` instead of printing a
+hash with no revision.
 
 The answer must be one of two shapes: `Concrete risk: <path>:<line>` with a
 failure mode and a repro, or `No concrete risk` with the checks it ran. A bare
@@ -1432,6 +1507,14 @@ and counted instead of being carried into the next run. The block states what it
 did in its header, `carry-over: 1 used, 1 dropped (closed/merged)`, with an
 `, N unverified` segment when a read failed; a failed read keeps its line rather
 than dropping it silently, and the job page shows the same header line. Since
+#790 a carried line that names no issue and no pull request is the fourth case:
+it stays in the block as context, costs no read, and is labelled
+`unverified (no link)` on its own line and counted in an `, N unlinked (no link)`
+header segment (the `unlinked` field of `jobs.carry_over_json`, a subset of
+`used`). The continuation instruction names only a line whose artifact was
+observed live and says an unlinked line is context, not a continuation
+instruction, so a prose digest from an earlier run is not offered as open work.
+Since
 #788 each carried line also states the observation it rests on, `observed
 07:12Z open`, from the read that line already spent — a failed read says
 `observed unverified` and claims no time — and the per-link `{state,
@@ -1440,6 +1523,17 @@ the observation back instead of re-deriving it. A pull request that was closed
 without merging is `closed`, not `open`, so the header's `(closed/merged)` is
 true as written; a job row written before that column says the observation was
 not recorded rather than borrowing a time.
+
+Since #789 the decision that produces the run is evidence-linked too:
+`decideNextJob()` is async and takes the same reader, so the chosen item's link
+is read after due-ness (a held-back repository costs no read) before it can
+become a `followup` or a `review`. A `closed` or `merged` answer turns the
+decision into a fresh `iterate` on the repository's own goal — no goal override
+and no `work_item_id` — and the stale row is marked with the state that was
+observed once the run exists, so the next tick does not choose it again. An
+`open` answer, a read that failed and an item that names no link all keep the
+previous behaviour: a failed read saw nothing, so it is not evidence that the
+work is finished.
 
 The goal also carries one **temporal delta** line (#366), built by
 `summariseDelta()` in `src/lib/temporal.ts` from two reads plus the commit
@@ -1852,6 +1946,36 @@ branch and repository contents with the repository token. A 401/403 marks `repos
 The repository page shows the credential banner until a refresh or a successful
 preflight clears it.
 
+### The model router as a dependency
+
+The shared model router serves every model call the bridge and the gateway make,
+and until now it was invisible to this tree: no URL, no timeout, no probe, no
+metric. `MODEL_ROUTER_URL` turns on a read of the router's `GET /healthz`, with
+`MODEL_ROUTER_TIMEOUT_MS` (default 1000 ms, clamped 50–10000) bounding the read
+and a two-second cache in front of it, so a public `/readyz` cannot become a way
+to hammer a loopback service. With the variable unset nothing here runs: the
+readiness body is byte for byte what it was and no `fledge_router_*` series
+exists. Set, `/readyz` gains a `router` object beside the database, instance and
+clock fields — never in place of them — carrying `state` and `latencyMs`.
+
+`state` is `ok`, `rate-limited`, `budget-exhausted` or `unreachable`, but
+readiness fails only on `unreachable` or on a router whose every reported key is
+capped: the router's own `mode: rate` means at least one key is cooling, not that
+none can serve, so a single-key cooldown stays a detail instead of a site
+outage. Every reported key means every key the router reported; an absent alias
+is not counted as free. The reading is fail-closed while the service is
+fail-open — a non-200 from the router, a truncated body, a missing or unknown
+`mode`, or JSON that is not an object all read as `unreachable`, never as `ok`,
+and the process keeps serving.
+
+`fledge_router_up` and the `fledge_router_probe_seconds` histogram cover the
+probe, gauges carry per-key spend and cap, cooldowns and queue depth, and a probe
+that cannot read an answer removes them rather than republishing the last
+reading. A router with no serving key is not one repository's problem, so it
+reaches the superadmin through the existing alert cooldown, event row and
+`ops.alert` webhook; the series list, the router knobs and the runbook are in
+[observability.md](observability.md).
+
 ### Model providers and per-bot models
 
 Settings owns a per-user set of OpenAI-compatible providers. Each provider has
@@ -2208,6 +2332,28 @@ all, so the console can report it only as staleness plus a mismatch; the drill
 prints its verdict and records nothing, so the card says "restore drill: none
 recorded" rather than a green it cannot prove.
 
+### Data retention windows (#281)
+
+`Store.pruneOldData` is the one age-based delete pass, run from the scheduler
+tick (at most hourly) and otherwise unchanged. Every window now comes from
+`config.retention.windows`, built in `loadConfig` from `scripts/lib/retention.mjs`
+— one table that also feeds each predicate and the preview, so the rows a preview
+counts are exactly the rows a deploy deletes. Unset keeps the literal this
+service has always used (OAuth states 7 days; approval tokens, read
+notifications, webhook deliveries and sent outbox 30; unread notifications and
+events 90; dead/blocked outbox 90; job events, finished jobs, audit log and
+unknown outbox 365; quota ledger 730), and `configured` is false for a fallback
+so the page can mark it `default`. Unset never means "keep forever": that would
+silently stop deleting rows the service deletes today. `sessions` are removed by
+`expires_at` and `api_tokens` have no age window; both are reported as such
+rather than given a number. `Store.retentionCounts` counts at the configured
+windows for the `/admin` card, which is read-only and has no window control; the
+operator tool `scripts/retention.mjs --dry-run --days N` counts any window on a
+host copy. The delete path refuses a window that is not a whole number of days of
+at least 1, before the first delete: `loadConfig` already refuses such an env
+value, and `pruneOldData({ jobs: 0 })` is a direct caller the config cannot see,
+so the store checks the same invariant rather than trusting its input.
+
 ### Operational alerts
 
 A failed job also feeds the ops signal: three consecutive failures in one
@@ -2271,7 +2417,7 @@ listing, and every row links to the page that already owns it.
 | `oauth_states` | short-lived OAuth `state` values |
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
-| `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
+| `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash, and the service principal a run executes under with the revision it resolved at (#749) |
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (`gateway` or `jobs:read`) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records: model, currency, price snapshot, `cost_known` (0 = could not be priced) |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
@@ -2282,7 +2428,7 @@ listing, and every row links to the page that already owns it.
 | `resource_revisions` | the fence a command compares against, one row per resource; a resource with no row is at revision 1 (#540) |
 | `tenants` | GitHub owner scope; the first slice stores the legacy login id `github.com:legacy:<owner-lowercase>` (#541) |
 | `projects` | one row per repository, keyed by the repository id and linked to its tenant (#541) |
-| `principals` | one human principal per user (`principal:user:<user_id>`); service principals are a later #541 slice |
+| `principals` | one human principal per user (`principal:user:<user_id>`), plus service principals (`kind='service'`, no user, `disabled_at` when disabled) that unattended runs execute as (#541, #749) |
 | `repo_members` | per-repository `maintainer`/`developer`/`viewer` rows with a revocation time (#541) |
 | `scoped_grants` | explicit capability grants with source, evidence, expiry, revocation and revision (#541) |
 | `identity_migrations` | one report row per identity backfill version (#541) |
@@ -2522,6 +2668,37 @@ grants and the legacy `repos.user_id` owner. `maintainer`, `developer` and
 membership or grant. `GET /api/auth/me` is the first read surface: it requires an
 approved session and returns the user summary, tenant/project roles,
 capabilities and platform capabilities without a token or key column.
+
+## The service principal execution identity (#749, slice 1)
+
+A service principal is a `principals` row with `kind='service'`, a tenant, no
+`user_id` and one or more `scoped_grants` rows. `resolveServiceActor(store,
+principalId, { projectId, capability?, expectedRevision? })` in
+`src/identity/serviceActor.ts` turns it into the same `ActorContext` a human actor
+gets, from the grant alone: the capability set is the union of the active grants
+that cover the project, no repository role is derived, and `platformRole` stays
+undefined, so `superadmin` is unreachable from a service principal.
+
+The resolver refuses instead of widening. An unknown id (`unknown_principal`), a
+row that is not `kind='service'` (`not_a_service_principal`), a `disabled_at` row
+(`principal_disabled`), no active grant at all (`no_active_grant`), active grants
+that name another project (`project_not_granted`), a capability outside the
+covering grants (`capability_not_granted`) and a revision the caller has moved past
+(`stale_revision`) each raise `ServiceActorRefused` with that code. A revoked or
+expired grant is inactive, so it excludes both its project and its capability. A
+grant with no `project_id` covers a project only when both name the same tenant.
+
+`jobs.principal_id` and `jobs.principal_revision` record the principal a run
+executes under and the revision it was created at; a human-owned job keeps both
+NULL. `resolveServiceActorForJob(store, job, { capability? })` resolves through
+that pair and refuses when the principal has moved past the recorded revision, so
+a rotation or revocation stops the run rather than silently re-authorising it.
+`Store.createJob` reads the revision inside the same write as the row.
+
+Not in this slice: creating, rotating and disabling a principal with its audit
+row, revoking a running job's token on revocation, binding a schedule or release
+to a principal, and the console surface. The `disabled_at` column exists so the
+resolver can refuse; the audited flow that sets it is follow-up work.
 
 ## Shared repository read path (#105, slice 1)
 

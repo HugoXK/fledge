@@ -546,6 +546,15 @@ whose duplicate risk a person still has to judge; a human resend is audited as
   widens project access. `GET /api/auth/me` requires an approved session and
   returns capabilities, not a token, key or password column. Enforcement on the
   existing routes is a later slice, so the old owner check still decides access.
+- A service principal (#749) is the execution identity for unattended work: a
+  `principals` row with `kind='service'` and its own `scoped_grants`, never a
+  user's session or token. `resolveServiceActor` builds the actor from the grant
+  only — no derived repository role, no platform role — and refuses an unknown,
+  disabled, ungranted, wrong-project or stale-revision principal with a coded
+  `ServiceActorRefused` rather than resolving something wider. A job records
+  `principal_id` and `principal_revision`; a principal that moves past that
+  revision at rotation or revocation refuses the run. Creating, rotating and
+  disabling a principal, and revoking a live job token, are follow-up work.
 - Repository roles are per user-repository connection: `maintainer` or
   `developer`. The allowed roles come from the user's GitHub permission
   (`admin`/`maintain` may choose either; all other permissions may only choose
@@ -618,6 +627,21 @@ whose duplicate risk a person still has to judge; a human resend is audited as
   backup was erased. Fledge deletes its own rows and its FlyBot instances and
   deletes the GitHub installation row with the account; it does not call GitHub
   to uninstall the App installation.
+
+- **Row retention windows (#281).** The scheduler's age pass deletes
+  `oauth_states`, `approval_tokens`, read and unread `notifications`, `events`,
+  `job_events`, `webhook_deliveries`, the three `notification_outbox` states,
+  finished `jobs`, `audit_log` and `quota_ledger` by a per-class window; the
+  numbers are configuration (`RETENTION_*_DAYS`) with the shipped literal as the
+  effective default. An unset window is never "keep forever": that would stop a
+  deletion the service performs today. A value that is not an integer or is
+  below 1 falls back to the default rather than becoming zero, because zero here
+  would mean "delete every row". `sessions` age out by `expires_at` and
+  `api_tokens` are revoked or removed with their account; the preview names both
+  states instead of printing a count. Before a window is shortened,
+  `node scripts/retention.mjs --dry-run --days N` counts what it would delete —
+  read-only, printing counts and never a row body, login, email or token value.
+  The `/admin` card shows the same counts for the configured windows.
 
 ### Platform emergency stop
 

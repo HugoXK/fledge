@@ -10,6 +10,7 @@ import { canonicalSections, strategyHash } from './strategy/bundle.js'
 import { currentStrategySections } from './strategy/sources.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
+import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
@@ -28,6 +29,7 @@ export interface UsageDetail {
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
+import { RETENTION_CLASSES, retentionCountSql, retentionDefaultWindows, retentionDeleteSql, type RetentionAt, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -63,7 +65,7 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 // restore check (#652) has to prove a fixture written by an older build still
 // migrates to exactly this number, and a literal in two places would let the
 // check and the migration disagree.
-export const SCHEMA_VERSION = 47
+export const SCHEMA_VERSION = 48
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
@@ -82,7 +84,126 @@ export interface ReviewTrendWindow {
   medianPrOpenToReviewMs: number | null
   medianPrOpenToMergeMs: number | null
   models: Array<{ label: string; reviews: number }>
+  // #794: the decision, and the merge that went past it. A blocking decision is
+  // a recorded `changes_requested` outcome; an override is a merge that named
+  // that decision and went ahead. Both are audit rows, so the rate and its
+  // details come from one place and cannot be read two ways.
+  blockingDecisions: number
+  overrides: number
+  overrideRate: number | null
+  overrideDetails: ReviewOverrideRecord[]
   smallSample: boolean
+}
+
+// #794: the reviewer packet identity is the decision's own record. The audit
+// detail is the one row both the trend and a merge override read, so the format
+// and its reader live together; a second copy in the service would drift and the
+// override would start naming a different decision from the trend.
+export interface ReviewDecisionRecord {
+  workItemId: string | null
+  outcome: 'approved' | 'changes_requested'
+  score: number | null
+  reviewJobId: string | null
+  model: string | null
+  tip: string | null
+}
+
+export interface ReviewOverrideRecord {
+  reviewJobId: string | null
+  score: number | null
+  model: string | null
+  tip: string | null
+  reason: string
+}
+
+function detailValue(value: string | number | null | undefined): string {
+  if (value === null || value === undefined) return '-'
+  const text = String(value).trim()
+  return text === '' ? '-' : text
+}
+
+function detailField(text: string, key: string, next: string | null): string | null {
+  const start = text.indexOf(key)
+  if (start < 0) return null
+  const from = start + key.length
+  const end = next === null ? text.length : text.indexOf(next, from)
+  if (end < 0) return null
+  const value = text.slice(from, end).trim()
+  return value === '' || value === '-' ? null : value
+}
+
+function detailNumber(value: string | null): number | null {
+  if (value === null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+/** The `work_item.review_outcome` detail both the trend and an override read. */
+export function formatReviewOutcomeDetail(input: {
+  workItemId: string
+  outcome: 'approved' | 'changes_requested'
+  score: number | null
+  reviewJobId: string | null
+  model: string | null
+  tip: string | null
+}): string {
+  return `${input.workItemId}: ${input.outcome} score=${detailValue(input.score)} review=${detailValue(input.reviewJobId)} tip=${detailValue(input.tip)} model=${detailValue(input.model)}`
+}
+
+/**
+ * Reads a decision row. A row written before the identity was recorded has no
+ * `review=`/`tip=`/`model=` field; it still parses, and the caller shows
+ * "not recorded" rather than inventing a revision.
+ */
+export function parseReviewOutcomeDetail(detail: string): ReviewDecisionRecord | undefined {
+  const separator = detail.indexOf(': ')
+  if (separator < 0) return undefined
+  const body = detail.slice(separator + 2)
+  const outcome = body.startsWith('changes_requested ') ? 'changes_requested' : body.startsWith('approved ') ? 'approved' : undefined
+  if (outcome === undefined) return undefined
+  const scoreAt = body.indexOf(' score=')
+  if (scoreAt < 0) return undefined
+  const tail = body.slice(scoreAt + 1)
+  return {
+    workItemId: detail.slice(0, separator),
+    outcome,
+    // The score is the one field every row has carried since #361, so it is read
+    // from the prefix rather than between two markers a newer row introduced.
+    score: detailNumber(/^score=(\S+)/.exec(tail)?.[1] ?? null),
+    reviewJobId: detailField(tail, 'review=', ' tip='),
+    tip: detailField(tail, 'tip=', ' model='),
+    model: detailField(tail, 'model=', null),
+  }
+}
+
+/** The `job.merge_review_override` detail, built beside its reader. */
+export function formatReviewOverrideDetail(input: {
+  jobId: string
+  reviewJobId: string | null
+  score: number | null
+  model: string | null
+  tip: string | null
+  reason: string
+}): string {
+  return `${input.jobId}: review ${detailValue(input.reviewJobId)} score=${detailValue(input.score)} tip=${detailValue(input.tip)} model=${detailValue(input.model)} reason=${input.reason}`
+}
+
+/** A row in the shape this build never wrote returns undefined, not a guess. */
+export function parseReviewOverrideDetail(detail: string): ReviewOverrideRecord | undefined {
+  const separator = detail.indexOf(': ')
+  if (separator < 0) return undefined
+  const body = detail.slice(separator + 2)
+  if (!body.startsWith('review ')) return undefined
+  const scoreAt = body.indexOf(' score=')
+  if (scoreAt < 0) return undefined
+  const tail = body.slice(scoreAt + 1)
+  return {
+    reviewJobId: detailField(body, 'review ', ' score='),
+    score: detailNumber(/^score=(\S+)/.exec(tail)?.[1] ?? null),
+    tip: detailField(tail, 'tip=', ' model='),
+    model: detailField(tail, 'model=', ' reason='),
+    reason: detailField(body, 'reason=', null) ?? '',
+  }
 }
 
 // Below this many completed reviews the page says "small sample" instead of
@@ -209,6 +330,7 @@ export interface PrincipalRow {
   user_id: string | null
   tenant_id: string | null
   authorization_revision: number
+  disabled_at: string | null
   created_at: string
 }
 
@@ -328,6 +450,14 @@ export interface ScheduleOccurrenceRow {
    * button idempotent.
    */
   command_key: string | null
+  /**
+   * #544: the schedule configuration and the repository authorization this
+   * instant was decided under, as versioned JSON written by
+   * `src/schedules/snapshot.ts`. Null on a row written before the column
+   * existed; `parseOccurrenceSnapshot` answers null for it and readers must say
+   * unknown rather than read the live schedule.
+   */
+  snapshot_json: string | null
 }
 
 /** #544 slice 7: one durable notification send. */
@@ -343,6 +473,10 @@ export interface NotificationOutboxRow {
   /** The account the email belongs to; null for a webhook. Delivery re-checks
    * that account and its current notification address before sending. */
   user_id: string | null
+  /** #544: the job whose outcome this notification reports, when it reports one.
+   * A scheduled run's delivery is read through it, so the console never has to
+   * parse the idempotency key to guess which send belongs to which run. */
+  job_id: string | null
   payload_json: string
   /** Reused by a human resend: the same logical notification, not a second one. */
   idempotency_key: string
@@ -448,6 +582,13 @@ export interface JobRow {
   id: string
   repo_id: string
   user_id: string
+  /**
+   * #749: the service principal this run executes under, if any. NULL is a
+   * human-owned job, which is what every row written before the column is.
+   */
+  principal_id: string | null
+  /** The principal revision the run was created at; a later bump makes it stale. */
+  principal_revision: number | null
   status: JobStatus
   trigger: string
   goal: string
@@ -1101,6 +1242,13 @@ export interface AlertView {
   kind: string
   level: 'info' | 'warning' | 'critical'
   repoId?: string
+  /**
+   * #282: a caller-supplied alert that is not about one repository (the model
+   * router) names its recipient directly. `Store.alerts` never sets it; the
+   * notification pass prefers it over the repository's owner, so an alert with
+   * no repo is not dropped silently.
+   */
+  userId?: string
   repoLabel?: string
   jobId?: string
   prUrl?: string
@@ -1334,6 +1482,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
   repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  -- #749: the execution identity. NULL is a human-owned run; a service principal
+  -- run names its principals row and the revision it resolved at.
+  principal_id TEXT REFERENCES principals(id) ON DELETE SET NULL,
+  principal_revision INTEGER,
   status TEXT NOT NULL,
   trigger TEXT NOT NULL,
   goal TEXT NOT NULL,
@@ -2043,6 +2195,9 @@ CREATE TABLE IF NOT EXISTS principals (
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   tenant_id TEXT REFERENCES tenants(id),
   authorization_revision INTEGER NOT NULL DEFAULT 0,
+  -- #749: a disabled principal keeps its rows and history but resolves no actor.
+  -- The audited disable flow is the follow-up slice; this slice only refuses.
+  disabled_at TEXT,
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS principals_user_idx ON principals(user_id) WHERE user_id IS NOT NULL;
@@ -2163,6 +2318,11 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
   -- #544 slice 8: a run-now occurrence is named by the command key the button
   -- carried, not by a planned instant, so the same key cannot start twice.
   command_key TEXT,
+  -- #544: the schedule configuration and the repository authorization this
+  -- instant was decided under, frozen at write time (src/schedules/snapshot.ts).
+  -- Null on a row written before the column existed; a reader must say unknown,
+  -- never substitute today's values.
+  snapshot_json TEXT,
   UNIQUE(schedule_id, logical_time, timing_revision)
 );
 CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrences(state, lease_expires_at);
@@ -2189,6 +2349,9 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
   transport TEXT NOT NULL,
   destination TEXT NOT NULL,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  -- #544: the job this send reports, when it reports one. Null for a send that
+  -- is not about a job (a digest, an ops alert without a job).
+  job_id TEXT,
   payload_json TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -2521,6 +2684,8 @@ export class Store {
     this.migrateScheduleMisfireColumns()
     this.migrateScheduleBudgetColumns()
     this.migrateSchedulePauseColumns()
+    this.migrateNotificationJobColumns()
+    this.migratePrincipalColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -2566,6 +2731,26 @@ export class Store {
     if (!columns.includes('paused_at')) this.db.exec('ALTER TABLE schedules ADD COLUMN paused_at INTEGER')
   }
 
+  // #544: the console answers a scheduled run's delivery through the job the
+  // occurrence dispatched, so an outbox row has to name that job. The column is
+  // added in place with no backfill: a row written before it cannot be attached
+  // to a run afterwards, and guessing from the idempotency key would attach the
+  // wrong one. Such rows answer `none` for an old run, never a fabricated state.
+  private migrateNotificationJobColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(notification_outbox)').map((column) => column.name)
+    if (!columns.includes('job_id')) this.db.exec('ALTER TABLE notification_outbox ADD COLUMN job_id TEXT')
+    this.run('CREATE INDEX IF NOT EXISTS notification_outbox_job_idx ON notification_outbox(job_id, created_at DESC)')
+  }
+
+  // #749: a service principal is refused when it is disabled, but the audited
+  // disable flow belongs to the follow-up slice. The column is added in place
+  // with no backfill: every existing row is an enabled principal, which is the
+  // behaviour it has today.
+  private migratePrincipalColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(principals)').map((row) => row.name))
+    if (!columns.has('disabled_at')) this.run('ALTER TABLE principals ADD COLUMN disabled_at TEXT')
+  }
+
   private migrateScheduleOccurrenceColumns(): void {
     const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(schedule_occurrences)').map((row) => row.name))
     const additions: Array<[string, string]> = [
@@ -2573,6 +2758,7 @@ export class Store {
       ['lease_token', 'TEXT'],
       ['lease_expires_at', 'INTEGER'],
       ['command_key', 'TEXT'],
+      ['snapshot_json', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE schedule_occurrences ADD COLUMN ${name} ${type}`)
@@ -2869,6 +3055,8 @@ export class Store {
     if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
     if (!jobColumns.has('work_item_id')) this.run('ALTER TABLE jobs ADD COLUMN work_item_id TEXT')
+    if (!jobColumns.has('principal_id')) this.run('ALTER TABLE jobs ADD COLUMN principal_id TEXT')
+    if (!jobColumns.has('principal_revision')) this.run('ALTER TABLE jobs ADD COLUMN principal_revision INTEGER')
     if (!jobColumns.has('priority')) this.run('ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('queue_seq')) this.run('ALTER TABLE jobs ADD COLUMN queue_seq INTEGER NOT NULL DEFAULT 0')
     // Backfill the ticket in arrival order, which is the order those rows were
@@ -4714,6 +4902,31 @@ export class Store {
     }
   }
 
+  /**
+   * #794: the last decision a review recorded for one work item, in the shape
+   * `parseReviewOutcomeDetail` reads. A merge override names the same decision,
+   * so it reads it back instead of re-deriving a review id and a tip from
+   * whatever job happens to be newest at merge time.
+   */
+  latestReviewOutcome(itemId: string, outcome?: 'approved' | 'changes_requested'): ReviewDecisionRecord | undefined {
+    // #980: compare the item id literally instead of interpolating it into a
+    // LIKE pattern. `_` is a single-character wildcard there, so `item_a`
+    // matched a newer `itemXa` row and the override named another item's
+    // decision. The prefix before the first `:` is the id the writer stored,
+    // which is what the trend reader beside this one already compares.
+    const row = outcome === undefined
+      ? this.get<{ detail: string }>(
+        "SELECT detail FROM audit_log WHERE action = 'work_item.review_outcome' AND substr(detail, 1, instr(detail, ':') - 1) = ? ORDER BY id DESC LIMIT 1",
+        itemId,
+      )
+      : this.get<{ detail: string }>(
+        "SELECT detail FROM audit_log WHERE action = 'work_item.review_outcome' AND substr(detail, 1, instr(detail, ':') - 1) = ? AND substr(detail, instr(detail, ':') + 2) LIKE ? ORDER BY id DESC LIMIT 1",
+        itemId,
+        `${outcome} score=%`,
+      )
+    return row === undefined ? undefined : parseReviewOutcomeDetail(row.detail)
+  }
+
   reviewTrend(repoId: string, sinceIso: string): ReviewTrendWindow {
     const reviewJobs = this.all<JobRow>(
       `SELECT * FROM jobs
@@ -4724,8 +4937,9 @@ export class Store {
     )
     const scores = reviewJobs.flatMap((job) => (job.review_score === null ? [] : [job.review_score]))
     const averageScore = scores.length === 0 ? null : Math.round((scores.reduce((sum, score) => sum + score, 0) / scores.length) * 10) / 10
-    const outcomes = this.all<{ outcome: string }>(
-      `SELECT CASE WHEN a.detail LIKE '%: changes_requested score=%' THEN 'changes_requested' ELSE 'approved' END AS outcome
+    const outcomes = this.all<{ item: string; outcome: string }>(
+      `SELECT substr(a.detail, 1, instr(a.detail, ':') - 1) AS item,
+              CASE WHEN a.detail LIKE '%: changes_requested score=%' THEN 'changes_requested' ELSE 'approved' END AS outcome
          FROM audit_log a
          JOIN work_items w ON w.id = substr(a.detail, 1, instr(a.detail, ':') - 1)
         WHERE a.action = 'work_item.review_outcome' AND a.at >= ? AND w.repo_id = ?
@@ -4734,18 +4948,43 @@ export class Store {
       repoId,
     )
     const changesRequested = outcomes.filter((row) => row.outcome === 'changes_requested').length
+    // #794: one sample per work item, taken at its first successful review. The
+    // old join pushed one sample per review job, so a PR reviewed four times
+    // contributed four samples and the median was of every decision, not the
+    // first. A first decision is the first review the work item finished with.
     const reviewDelays = this.all<{ opened: string; reviewed: string }>(
-      `SELECT w.created_at AS opened, j.finished_at AS reviewed
+      `SELECT w.created_at AS opened, MIN(j.finished_at) AS reviewed
          FROM jobs j
          JOIN work_items w ON w.id = j.work_item_id
         WHERE j.repo_id = ? AND j.kind = 'review' AND j.status = 'succeeded'
-          AND j.finished_at IS NOT NULL AND j.finished_at >= ? AND w.pr_url IS NOT NULL`,
+          AND j.finished_at IS NOT NULL AND j.finished_at >= ? AND w.pr_url IS NOT NULL
+        GROUP BY w.id`,
       repoId,
       sinceIso,
     ).flatMap((row) => {
       const value = durationMs(row.opened, row.reviewed)
       return value === null ? [] : [value]
     })
+    // #794: an override counts only when the decision it overturned is a
+    // recorded `changes_requested` outcome in the same window and the item it
+    // belongs to merged. A threshold-only block is derived at merge time and has
+    // no decision row of its own: it is audited on the job page, but it has no
+    // denominator here, and inventing one would make the rate read two ways.
+    const blockingItems = new Set(outcomes.filter((row) => row.outcome === 'changes_requested').map((row) => row.item))
+    const overrideDetails = this.all<{ detail: string; item: string }>(
+      `SELECT a.detail AS detail, w.id AS item
+         FROM audit_log a
+         JOIN jobs j ON j.id = substr(a.detail, 1, instr(a.detail, ':') - 1)
+         JOIN work_items w ON w.id = j.work_item_id
+        WHERE a.action = 'job.merge_review_override' AND a.at >= ? AND j.repo_id = ? AND w.pr_state = 'merged'`,
+      sinceIso,
+      repoId,
+    ).flatMap((row) => {
+      if (!blockingItems.has(row.item)) return []
+      const parsed = parseReviewOverrideDetail(row.detail)
+      return parsed === undefined ? [] : [parsed]
+    })
+    const overrides = overrideDetails.length
     const mergeDelays = this.all<WorkItemRow>('SELECT * FROM work_items WHERE repo_id = ? AND merged_at IS NOT NULL AND merged_at >= ?', repoId, sinceIso).flatMap((item) => {
       const value = durationMs(item.created_at, item.merged_at)
       return value === null ? [] : [value]
@@ -4764,6 +5003,10 @@ export class Store {
       changesRequestedRate: outcomes.length === 0 ? null : Math.round((changesRequested / outcomes.length) * 1000) / 10,
       medianPrOpenToReviewMs: median(reviewDelays),
       medianPrOpenToMergeMs: median(mergeDelays),
+      blockingDecisions: changesRequested,
+      overrides,
+      overrideRate: changesRequested === 0 ? null : Math.round((overrides / changesRequested) * 1000) / 10,
+      overrideDetails: overrideDetails.slice(0, 5),
       models: [...byModel.entries()]
         .map(([label, reviews]) => ({ label, reviews }))
         .sort((a, b) => b.reviews - a.reviews || a.label.localeCompare(b.label)),
@@ -4870,9 +5113,31 @@ export class Store {
     return this.getRepoInstance(repoId)?.status === 'ready'
   }
 
-  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean): 'user_not_ready' | 'instance_not_ready' | null {
+  // #732/#942: the platform pays only when the job has no own model to use. A
+  // repository selection is an own model too: the bridge patches the instance from
+  // `listRepoModelSelection` and the gateway resolves the same row, so checking
+  // only the legacy users.own_llm_* columns would refuse a job that spends no
+  // platform quota. This one implementation is what both the refusal and the
+  // scheduler predicate read.
+  platformFundedFor(user: UserRow, repoId: string): boolean {
+    const legacyOwnModel =
+      user.own_llm_base_url !== null &&
+      user.own_llm_base_url !== '' &&
+      user.own_llm_key_enc !== null
+    return !legacyOwnModel && this.listRepoModelSelection(repoId).length === 0
+  }
+
+  // #942: quota joins the readiness halves, so the alert and the dispatcher
+  // cannot disagree about a repository the platform will not fund. The quota
+  // answer is optional on purpose: a caller that did not read one (the two-argument
+  // callers) keeps the old answer instead of being refused on a guess.
+  automationDispatchBlocker(repo: RepoRow, instancesManaged: boolean, quota?: { usdCny: number }): 'user_not_ready' | 'instance_not_ready' | 'quota' | null {
     if (!this.userReadyForScheduling(repo.user_id)) return 'user_not_ready'
     if (!this.instanceReadyForScheduling(repo.id, instancesManaged)) return 'instance_not_ready'
+    if (quota !== undefined) {
+      const user = this.userById(repo.user_id)
+      if (user !== undefined && this.platformFundedFor(user, repo.id) && quotaExhausted(user, quota.usdCny)) return 'quota'
+    }
     return null
   }
 
@@ -4950,7 +5215,7 @@ export class Store {
     for (const repo of repos) {
       if (repo.enabled !== 1 || repo.auto_iterate !== 1) continue
       if (runningRepos.has(repo.id)) continue
-      if (this.automationDispatchBlocker(repo, instancesManaged) !== null) continue
+      if (this.automationDispatchBlocker(repo, instancesManaged, { usdCny }) !== null) continue
       const oldest = readySince.get(repo.id)
       if (oldest === undefined || !Number.isFinite(oldest)) continue
       const lastRun = repo.last_run_at === null ? Number.NaN : Date.parse(repo.last_run_at)
@@ -5579,16 +5844,18 @@ export class Store {
     jobId?: string | null
     dispatchedAt?: number | null
     lagMs?: number | null
+    /** #544: the config/authorization this row was written under; null is unknown. */
+    snapshotJson?: string | null
   }): { row: ScheduleOccurrenceRow; created: boolean } {
     const result = this.db.prepare(
       `INSERT INTO schedule_occurrences
-         (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, snapshot_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(schedule_id, logical_time, timing_revision) DO NOTHING`,
     ).run(...clean([
       input.id, input.scheduleId, input.repoId, input.logicalTime, input.timingRevision,
       input.state, input.reason ?? null, input.missed ?? 0, input.jobId ?? null,
-      nowIso(), input.dispatchedAt ?? null, input.lagMs ?? null,
+      nowIso(), input.dispatchedAt ?? null, input.lagMs ?? null, input.snapshotJson ?? null,
     ]))
     const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
     if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after insert`)
@@ -5614,6 +5881,8 @@ export class Store {
     logicalTime: number
     timingRevision: number
     commandKey: string
+    /** #544: the config/authorization the press was accepted under. */
+    snapshotJson?: string | null
   }): { row: ScheduleOccurrenceRow; created: boolean } {
     // Two explicit commands in the same millisecond are two instances, so the
     // logical time steps forward until the triple is free. The command key is
@@ -5621,10 +5890,10 @@ export class Store {
     for (let offset = 0; offset < 1_000; offset += 1) {
       const result = this.db.prepare(
         `INSERT INTO schedule_occurrences
-           (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, command_key)
-         VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, ?)
+           (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, command_key, snapshot_json)
+         VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, ?, ?)
          ON CONFLICT DO NOTHING`,
-      ).run(input.id, input.scheduleId, input.repoId, input.logicalTime + offset, input.timingRevision, nowIso(), input.commandKey)
+      ).run(input.id, input.scheduleId, input.repoId, input.logicalTime + offset, input.timingRevision, nowIso(), input.commandKey, input.snapshotJson ?? null)
       if (Number(result.changes) > 0) {
         const row = this.scheduleOccurrenceByCommandKey(input.scheduleId, input.commandKey)
         if (row === undefined) throw new Error(`run-now occurrence ${input.commandKey} disappeared after insert`)
@@ -5665,6 +5934,8 @@ export class Store {
     skipped: Array<{ id: string; at: number; reason: string; missed?: number }>
     decision?: { id: string; at: number; state: 'dispatched' | 'skipped'; reason: string | null; missed: number }
     cursorAt: number | null
+    /** #544: the snapshot this whole decision was taken under, for every row it writes. */
+    snapshotJson?: string | null
   }): { skipped: ScheduleOccurrenceRow[]; decision: ScheduleOccurrenceRow | undefined } {
     const skipped: ScheduleOccurrenceRow[] = []
     let decision: ScheduleOccurrenceRow | undefined
@@ -5679,6 +5950,7 @@ export class Store {
           state: 'skipped',
           reason: entry.reason,
           missed: entry.missed ?? 0,
+          snapshotJson: input.snapshotJson ?? null,
         }).row)
       }
       if (input.decision !== undefined) {
@@ -5691,6 +5963,7 @@ export class Store {
           state: input.decision.state,
           reason: input.decision.reason,
           missed: input.decision.missed,
+          snapshotJson: input.snapshotJson ?? null,
         }).row
       }
       if (input.cursorAt !== null) this.advanceScheduleOccurrence(input.repoId, input.cursorAt)
@@ -5743,6 +6016,8 @@ export class Store {
     leaseToken: string
     leaseMs: number
     now?: number
+    /** #544: the config/authorization the claim was decided under; written once. */
+    snapshotJson?: string | null
   }): { row: ScheduleOccurrenceRow; claimed: boolean; reason: 'leased' | 'settled' | null } {
     const now = input.now ?? Date.now()
     return this.transaction(() => {
@@ -5750,10 +6025,10 @@ export class Store {
       if (existing === undefined) {
         this.run(
           `INSERT INTO schedule_occurrences
-             (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, attempts, lease_token, lease_expires_at)
-           VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, 1, ?, ?)`,
+             (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, attempts, lease_token, lease_expires_at, snapshot_json)
+           VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, 1, ?, ?, ?)`,
           input.id, input.scheduleId, input.repoId, input.logicalTime, input.timingRevision,
-          nowIso(), input.leaseToken, now + input.leaseMs,
+          nowIso(), input.leaseToken, now + input.leaseMs, input.snapshotJson ?? null,
         )
         const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
         if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after claim`)
@@ -5881,6 +6156,8 @@ export class Store {
     transport: NotificationTransport
     destination: string
     userId?: string | null
+    /** #544: the job this send reports, so a scheduled run's delivery is readable. */
+    jobId?: string | null
     payload: unknown
     idempotencyKey: string
     now?: number
@@ -5888,14 +6165,15 @@ export class Store {
     const now = input.now ?? Date.now()
     const result = this.db.prepare(
       `INSERT INTO notification_outbox
-         (id, transport, destination, user_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+         (id, transport, destination, user_id, job_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
        ON CONFLICT(transport, idempotency_key) DO NOTHING`,
     ).run(...clean([
       `ntf_${randomBytes(8).toString('hex')}`,
       input.transport,
       input.destination.slice(0, 500),
       input.userId ?? null,
+      input.jobId ?? null,
       JSON.stringify(input.payload),
       input.idempotencyKey.slice(0, 300),
       now,
@@ -5912,6 +6190,16 @@ export class Store {
 
   getNotificationOutbox(id: string): NotificationOutboxRow | undefined {
     return this.get<NotificationOutboxRow>('SELECT * FROM notification_outbox WHERE id = ?', id)
+  }
+
+  // #544: every send a job produced, newest first. The console asks this for the
+  // job an occurrence dispatched; an empty answer is a run that queued nothing,
+  // which is `none` on the page rather than an unread `unknown`.
+  notificationsForJob(jobId: string): NotificationOutboxRow[] {
+    return this.all<NotificationOutboxRow>(
+      'SELECT * FROM notification_outbox WHERE job_id = ? ORDER BY created_at DESC, rowid DESC',
+      jobId,
+    )
   }
 
   // Claiming is one transaction, like the occurrence lease: the due rows are
@@ -6117,7 +6405,7 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string; principalId?: string | null }): JobRow {
     // #433 slice 2: the job records the strategy it was created under, from the
     // same sources the strategy page reads, so the page a maintainer opens and
     // the strategy a job names cannot disagree. An unfrozen strategy keeps its
@@ -6130,14 +6418,23 @@ export class Store {
     const strategyVersion = strategy === null
       ? null
       : (this.get<{ version: number }>('SELECT version FROM strategy_bundles WHERE repo_id = ? AND hash = ?', input.repoId, strategy.hash)?.version ?? null)
+    // #749: a run under a service principal records the revision it was created
+    // at. Inside the same write as the row, so a revision bump that lands after
+    // the read cannot leave a job whose snapshot is newer than its grant: the
+    // resolver refuses the job instead of guessing.
+    const servicePrincipal = input.principalId === undefined || input.principalId === null
+      ? null
+      : this.get<{ authorization_revision: number }>('SELECT authorization_revision FROM principals WHERE id = ?', input.principalId)
     // The ticket is taken inside the insert, so two jobs created at the same
     // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, principal_id, principal_revision, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
+      input.principalId ?? null,
+      servicePrincipal?.authorization_revision ?? null,
       input.trigger,
       input.goal,
       input.callbackHash,
@@ -6980,27 +7277,46 @@ export class Store {
     return { retries, followups, jobEvents, instances }
   }
 
-  pruneOldData(): void {
+  /**
+   * #281: how many rows each configured window would delete right now, through
+   * the same predicate `pruneOldData` runs. The admin page renders these; the
+   * dry-run tool prints them from the same table. Read-only by construction.
+   */
+  retentionCounts(windows: RetentionWindows = retentionDefaultWindows()): Array<{ id: RetentionId; days: number; count: number }> {
+    const now = Date.now()
+    return RETENTION_CLASSES.map((cls) => {
+      const days = windows[cls.id] ?? cls.defaultDays
+      const at: RetentionAt = { now: nowIso(), cutoff: new Date(now - days * 86_400_000).toISOString() }
+      const { sql, params } = retentionCountSql(cls, at)
+      return { id: cls.id, days, count: Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0) }
+    })
+  }
+
+  // #281: every window comes from config, with the shipped literal as the
+  // default, and the predicates live beside the dry-run tool in
+  // `scripts/lib/retention.mjs` so a preview cannot count different rows than
+  // the delete removes. `deleteExpiredSessions` stays: sessions age out by
+  // `expires_at`, not by a day count. No new delete path and no default changed.
+  pruneOldData(windows: RetentionWindows = retentionDefaultWindows()): void {
+    // #281: `loadConfig` refuses a zero-day env window, but the store is a
+    // public surface too, and `pruneOldData({ jobs: 0 })` would delete every
+    // finished job. The refusal is here, before the first delete, so a call
+    // that cannot be honoured removes nothing rather than half-pruning.
+    for (const cls of RETENTION_CLASSES) {
+      const configured = windows[cls.id] ?? cls.defaultDays
+      if (!Number.isInteger(configured) || configured < 1) {
+        throw new Error(`retention window ${cls.id} must be a whole number of days >= 1, got ${String(configured)}`)
+      }
+    }
     const now = Date.now()
     const cutoff = (days: number): string => new Date(now - days * 86_400_000).toISOString()
+    const at = (days: number): RetentionAt => ({ now: nowIso(), cutoff: cutoff(days) })
     this.deleteExpiredSessions()
-    this.run('DELETE FROM oauth_states WHERE created_at < ?', cutoff(7))
-    this.run('DELETE FROM approval_tokens WHERE (expires_at < ? OR used_at IS NOT NULL) AND created_at < ?', nowIso(), cutoff(30))
-    this.run('DELETE FROM notifications WHERE read_at IS NOT NULL AND created_at < ?', cutoff(30))
-    this.run('DELETE FROM notifications WHERE read_at IS NULL AND created_at < ?', cutoff(90))
-    this.run('DELETE FROM events WHERE at < ?', cutoff(90))
-    this.run('DELETE FROM job_events WHERE at < ?', cutoff(365))
-    this.run('DELETE FROM webhook_deliveries WHERE received_at < ?', cutoff(30))
-    // #544 slice 7: a delivered notification is a receipt, so it goes with the
-    // other 30-day receipts. The unresolved states are kept longer because they
-    // are what a human still has to look at; `unknown` keeps its full window so
-    // the duplicate risk stays visible instead of ageing out with the sent rows.
-    this.run("DELETE FROM notification_outbox WHERE state = 'sent' AND created_at < ?", cutoff(30))
-    this.run("DELETE FROM notification_outbox WHERE state IN ('dead', 'blocked') AND created_at < ?", cutoff(90))
-    this.run("DELETE FROM notification_outbox WHERE state = 'unknown' AND created_at < ?", cutoff(365))
-    this.run("DELETE FROM jobs WHERE status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", cutoff(365))
-    this.run('DELETE FROM audit_log WHERE at < ?', cutoff(365))
-    this.run('DELETE FROM quota_ledger WHERE at < ?', cutoff(730))
+    for (const cls of RETENTION_CLASSES) {
+      const days = windows[cls.id] ?? cls.defaultDays
+      const { sql, params } = retentionDeleteSql(cls, at(days))
+      this.run(sql, ...params)
+    }
     // #419: the prefix list and the cutoff table were two hand-kept copies of
     // one mapping, so a key could be written without either half ever selecting
     // it. `plan_expired:` and `plan_reminded:` are written per unapproved plan

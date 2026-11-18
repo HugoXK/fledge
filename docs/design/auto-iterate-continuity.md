@@ -151,8 +151,8 @@ Extend `buildText(job)` with a `CARRY-OVER` section, after `Goal:`:
 
 ```
 [Carry-over - auto-generated state, not a new goal]
-carry-over: 1 used, 1 dropped (closed/merged)
-Continue the open work item when one exists; do not create a duplicate issue/PR.
+carry-over: 1 used, 1 dropped (closed/merged), 1 unlinked (no link)
+Continue only a line whose artifact was observed live; do not create a duplicate issue/PR. A line marked "unverified (no link)" is context, not a continuation instruction.
 Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.
 Recent runs:
 - 2026-11-10T07:59 iterate succeeded: 存量清账 ... [issue link]
@@ -168,6 +168,10 @@ Rules:
   reads, one per line, deduplicated), a closed issue or merged pull request is
   dropped and counted, and a failed read keeps the line and counts it
   `unverified`. The counts line above states the result.
+- Slice 4 of #365 (#790) covers the line that names nothing: it is still carried
+  as context, costs no read, is labelled `unverified (no link)` on its own line
+  and counted in the `, N unlinked (no link)` header segment, and the
+  continuation instruction does not offer it.
 - The block is data, not a new goal; `Goal:` remains the source of intent.
 - If there is open work, the prompt says "continue this item; do not create a
   duplicate issue/PR".

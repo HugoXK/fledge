@@ -113,7 +113,13 @@ stream ends. A request that is already in flight is allowed to finish; the
   error redacted, because the day key is already set and that row is the only
   trace that the reminder was never delivered.
 - A failed job before it starts (quota already zero) is recorded as
-  `quota_exhausted` and does not call the model.
+  `quota_exhausted` and does not call the model. The scheduler predicate that
+  answers "why did this repository not start" reads the same answer
+  (`automationDispatchBlocker` takes the quota rate and uses the shared
+  `quotaExhausted`), so a repository refused for quota is reported as refused and
+  never as idle with work — before the attempt and however long the refusal
+  lasts. A user with their own model, or a repository with its own model
+  selection, never spends platform quota, so quota is never their refusal.
 
 402 body:
 
