@@ -1039,15 +1039,24 @@ function nextActionFor(input: {
 
 type LoopStage = 'connect' | 'goal' | 'work' | 'review' | 'merge'
 
-function loopStage(kind: NextActionKind): LoopStage {
-  if (kind === 'setup' || kind === 'quota') return 'connect'
-  if (kind === 'questions' || kind === 'job') return 'work'
-  if (kind === 'alert') return 'review'
-  return 'merge'
+// #953: `clear` is the quiet state, not a position in the five steps. It used to
+// fall through to `merge`, so every quiet dashboard announced Merge as where the
+// loop stood — even one whose account never connected a repository. A quiet
+// account whose goal is written stands at Goal; a quiet account without one has
+// no stage to name, and the rail marks none.
+function loopStage(action: NextActionView, hasGoal: boolean): LoopStage | null {
+  switch (action.kind) {
+    case 'setup':
+    case 'quota': return 'connect'
+    case 'questions':
+    case 'job': return 'work'
+    case 'alert': return 'review'
+    case 'clear': return hasGoal ? 'goal' : null
+  }
 }
 
-function loopRail(action: NextActionView, t: Translate): string {
-  const current = loopStage(action.kind)
+function loopRail(action: NextActionView, t: Translate, hasGoal: boolean): string {
+  const current = loopStage(action, hasGoal)
   const stages: Array<[LoopStage, string, string]> = [
     ['connect', t('接入', 'Connect'), t('添加一个仓库', 'Add a repository')],
     ['goal', t('目标', 'Goal'), t('写下一个目标', 'State one goal')],
@@ -1055,8 +1064,12 @@ function loopRail(action: NextActionView, t: Translate): string {
     ['review', t('审核', 'Review'), t('看 diff、检查和成本', 'Read the diff, checks and cost')],
     ['merge', t('合并', 'Merge'), t('合并后继续', 'Merge and repeat')],
   ]
-  const index = stages.findIndex(([stage]) => stage === current)
-  const currentNote = action.label === '' ? (stages[index]?.[2] ?? '') : action.label
+  const index = current === null ? -1 : stages.findIndex(([stage]) => stage === current)
+  // A quiet account that has already written its goal is not being asked for
+  // one, so the rail says what it stands on instead of the stage's own prompt.
+  const currentNote = action.label !== ''
+    ? action.label
+    : action.kind === 'clear' ? t('目标已写下，眼下没有待办', 'The goal is written; nothing is pending') : (stages[index]?.[2] ?? '')
   return `<nav class="loop-rail" aria-label="${escapeHtml(t('工作循环', 'The work loop'))}">
     ${stages.map(([stage, label, note], position) => {
       const state = position < index ? 'done' : position === index ? 'current' : 'next'
@@ -1146,6 +1159,7 @@ export function dashboardPage(input: {
       text: t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'),
     })
   }
+  const loopRepos = input.allRepos ?? repos
   const nextAction = nextActionFor({
     t,
     locale,
@@ -1154,7 +1168,7 @@ export function dashboardPage(input: {
     latestJob: input.latestJob ?? jobs[0],
     quota,
     setup: input.setup,
-    repos: input.allRepos ?? repos,
+    repos: loopRepos,
     nextRunFacts: input.nextRunFacts ?? [],
     config,
   })
@@ -1225,7 +1239,7 @@ export function dashboardPage(input: {
       <p class="lede">${escapeHtml(t('接入仓库、写下一个目标；团队每次只交回一个 PR，由你审核并合并。', 'Connect a repository and state one goal; the team returns one pull request for you to review and merge.'))}</p>
       <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', 'repositories'))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', 'jobs'))}</span><span><b>${personal?.openWorkItems ?? 0}</b> ${escapeHtml(t('个未完成工作项', 'open work items'))}</span></div>
     </div>
-    ${loopRail(nextAction, t)}
+    ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
   </section>
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}

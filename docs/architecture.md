@@ -241,6 +241,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
   disagree with the sections below it.
+- **Work-loop rail** (`src/views/pages.ts`, `loopStage`): the same header draws the
+  five steps Connect → Goal → Work → Review → Merge and marks one of them current.
+  Only a real position can be marked: an open question or a failed job is Work, an
+  alert is Review, an unfinished first run or an exhausted quota is Connect. The
+  all-clear is a state, not a step, so it never marks Merge: an account whose goal
+  is written stands at Goal, and an account without one gets a rail with no step
+  current rather than progress it did not make.
 - **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): the all-clear card and
   the repository page's next-run line print one answer per repository, and which
   rule answers is decided by the repository, never by the surface. A repository
