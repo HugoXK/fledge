@@ -234,7 +234,7 @@ test('the repository page shows used / cap for both ceilings', async () => {
     } as Parameters<typeof repoPage>[0])
     assert.match(html, /data-usage-line/)
     assert.match(html, /Repositories used 1\/2/)
-    assert.match(html, /FlyBot instances 1\/3/)
+    assert.match(html, /workspaces 1\/3/)
   } finally {
     store.close()
   }
