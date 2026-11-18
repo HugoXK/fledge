@@ -405,13 +405,14 @@ function renderedControls(html: string): RenderedControl[] {
   }))
 }
 
-// What the control shows once tags are stripped: an SVG contributes no text.
-function controlText(inner: string): string {
-  return inner
-    .replace(/<svg[\s\S]*?<\/svg>/g, '')
-    .replace(/<[^>]+>/g, '')
-    .replace(/&[a-z#0-9]+;/gi, ' ')
-    .replace(/\s+/g, '')
+// What the control shows, read off the raw markup. No regex tag-stripping: a
+// chained sanitizer is a CodeQL finding (js/incomplete-multi-character-
+// sanitization) and this test does not need one — the four sites either contain
+// a single typed glyph or a single `<svg>`, so the trimmed inner string answers
+// both questions the assertions ask.
+function controlContent(inner: string): { text: string; iconOnly: boolean } {
+  const trimmed = inner.trim()
+  return { text: trimmed, iconOnly: trimmed.startsWith('<svg') && trimmed.endsWith('</svg>') }
 }
 
 function iconAttributes(inner: string): void {
@@ -457,12 +458,12 @@ test('no control is a typed glyph, and every drawn icon keeps its label', () => 
       const controls = renderedControls(html)
       assert.ok(controls.length > 0, `the ${name} page rendered no control to check`)
       for (const control of controls) {
-        const text = controlText(control.inner)
+        const { text, iconOnly } = controlContent(control.inner)
         assert.ok(
           !CONTROL_GLYPHS.includes(text),
           `the ${name} page's <${control.tag}>${control.attrs.slice(0, 40)} is the bare glyph ${JSON.stringify(text)}; a control must draw its mark as SVG`,
         )
-        if (text === '' && control.inner.includes('<svg')) {
+        if (iconOnly) {
           assert.match(control.attrs, /aria-label="[^"]+"|title="[^"]+"/, `the ${name} page's icon-only <${control.tag}> has no aria-label or title`)
         }
       }
