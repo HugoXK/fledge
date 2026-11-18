@@ -79,7 +79,14 @@ export async function deliverOutbox(
     result.claimed += 1
     const transport = transports[row.transport]
     let outcome: OutboxSendResult
-    if (transport === undefined) {
+    // #544: the installation re-check, immediately before delivery. A job-scoped
+    // row whose installation was revoked after it was queued is blocked with the
+    // cause named, so the transport never sees the payload and a human fixes the
+    // installation rather than reading a delivery that only looked attempted.
+    const refusal = row.job_id === null || row.job_id === undefined ? null : store.jobInstallationRefusal(row.job_id)
+    if (refusal !== null) {
+      outcome = { state: 'blocked', error: refusal }
+    } else if (transport === undefined) {
       outcome = { state: 'dead', error: `unknown-transport:${row.transport}` }
     } else {
       try {

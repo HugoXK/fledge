@@ -748,7 +748,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   webhook or a destination the safety rule refuses is `blocked`, so a human
   fixes the cause first. Email is resolved again at delivery (`notifyEmail` of
   the current account), which is why a queued message cannot follow an address
-  the user has since changed or a revoked account. The one human action is an
+  the user has since changed or a revoked account. A row that reports on a job
+  also re-reads the installation that authorized that job's repository: an
+  installation removed after the row was queued blocks the send with
+  `installation-revoked` instead of delivering into it (#544). The one human action is an
   explicit resend from `/admin/notifications`, which reuses the row's
   idempotency key, keeps the attempt count readable, and is audited as
   `notification.resend`; a delivered row is not reopened. The console names
