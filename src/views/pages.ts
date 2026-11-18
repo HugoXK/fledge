@@ -39,6 +39,7 @@ import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversari
 import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
+import type { ReleaseDispatchPreview } from '../lib/releaseDispatch.js'
 import { readReleaseNotesSources } from '../releases/notes.js'
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
@@ -2618,6 +2619,10 @@ export function adminPage(input: {
   release?: ReleaseSurface
   /** The release chain recorded by `node scripts/verify-release.mjs`; null when none is recorded. */
   releaseStatus?: ReleaseStatusSnapshot | null
+  /** #897: the live GitHub preview for the superadmin release action. */
+  releaseDispatch?: ReleaseDispatchPreview | null
+  /** A readable reason when the live preview could not be fetched. */
+  releaseDispatchError?: string
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
   /** Defaults to reading `<dataDir>/backup-drill.json`; a test passes a fixture record. */
@@ -2695,6 +2700,8 @@ export function adminPage(input: {
   // recorded and never calls GitHub itself. The running row is the only live
   // fact — this process knows the version and the commit stamp it booted with.
   const releaseStatus = input.releaseStatus ?? null
+  const releaseDispatch = input.releaseDispatch ?? null
+  const releaseDispatchError = input.releaseDispatchError ?? ''
   const stateBadge = (state: string) => {
     if (state === 'ok') return `<span class="badge good">${escapeHtml(t('正常', 'ok'))}</span>`
     if (state === 'missing') return `<span class="badge bad">${escapeHtml(t('缺失', 'missing'))}</span>`
@@ -2754,6 +2761,23 @@ export function adminPage(input: {
         ${problemLinks.length === 0 ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('发布链', 'Release chain'))}</strong><small>${escapeHtml(t('所有发布产物一致；完整证据可展开。', 'All release artifacts agree; open the evidence for the full chain.'))}</small></div><div class="row">${stateBadge('ok')}</div></div>` : ''}
       </div>
       <details class="advanced-help"><summary>${escapeHtml(t('发布链证据', 'Release chain evidence'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}</summary><div class="list">${fullRows}</div></details>`
+  const releaseDispatchBlock = (() => {
+    if (!superadmin) return ''
+    if (releaseDispatchError !== '') {
+      return `<div class="banner bad" data-release-dispatch-error><strong>${escapeHtml(t('一键发布暂不可用', 'One-click release is unavailable'))}</strong> ${escapeHtml(releaseDispatchError)}</div>`
+    }
+    if (releaseDispatch === null) {
+      return `<p class="fine" data-release-dispatch>${escapeHtml(t('一键发布未配置：设置 RELEASE_DISPATCH_TOKEN 后可用。', 'One-click release is not configured: set RELEASE_DISPATCH_TOKEN to enable it.'))}</p>`
+    }
+    const preview = releaseDispatch
+    const counts = `${escapeHtml(t('领先', 'ahead'))} ${preview.aheadCommits} · ${escapeHtml(t('修复', 'fix'))} ${preview.fixes} · ${escapeHtml(t('功能', 'feat'))} ${preview.features} · ${escapeHtml(t('其他', 'other'))} ${preview.others} · ${escapeHtml(t('片段', 'fragments'))} ${preview.fragments}`
+    const facts = `<p class="fine" data-release-dispatch-facts>${escapeHtml(t('当前', 'current'))} <code>${escapeHtml(preview.mainSha.slice(0, 12))}</code> · ${escapeHtml(t('最新标签', 'latest tag'))} <code>${escapeHtml(preview.latestTag || '—')}</code> · ${counts} · <code>ci-ok ${escapeHtml(preview.ciOk)}</code></p>`
+    if (!preview.eligible) {
+      return `<div class="list-row" data-release-dispatch><div class="list-main"><strong>${escapeHtml(t('一键发布当前不可用', 'One-click release is not available'))}</strong><small>${facts}</small><small>${escapeHtml(preview.reason)}</small></div><div class="row"><span class="badge busy">${escapeHtml(t('不可用', 'blocked'))}</span></div></div>`
+    }
+    const confirm = `RELEASE ${preview.nextVersion}`
+    return `<div class="list-row" data-release-dispatch><div class="list-main"><strong>${escapeHtml(t(`发布 v${preview.nextVersion}`, `Release v${preview.nextVersion}`))}</strong><small>${facts}</small><small>${escapeHtml(t('只创建发布 PR；tag 与 publish 仍走现有门禁。不会部署或重启服务。', 'Creates the release pull request only; tagging and publishing stay on the existing gates. It does not deploy or restart the service.'))}</small><form method="post" action="/admin/release" class="row" data-release-dispatch-form>${csrf(viewer)}<label class="fine">${escapeHtml(t('输入确认', 'Type to confirm'))} <code>${escapeHtml(confirm)}</code> <input name="confirm" type="text" autocomplete="off" required /></label><button class="btn" type="submit">${escapeHtml(t('创建发布 PR', 'Create release PR'))}</button></form></div><div class="row"><span class="badge good">${escapeHtml(t('可用', 'ready'))}</span></div></div>`
+  })()
   const releaseCard = `<section class="card" id="release">
     <div class="row between">
       <div>
@@ -2767,6 +2791,7 @@ export function adminPage(input: {
       </div>
     </div>
     ${releaseDetails}
+    ${releaseDispatchBlock}
   </section>`
 
   // The console can only show what the writer leaves on disk: a copy and its
