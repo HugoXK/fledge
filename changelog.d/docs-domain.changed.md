@@ -1,0 +1,1 @@
+The Fledge documentation now lives at <https://docs.fledge.hugoxk.online/>. The app footer and email templates, the README files and the landing pages point there, and the old `fledge-docs.hugoxk.online` host redirects to the new one.

@@ -18,7 +18,7 @@
   <a href="https://github.com/HugoXK/fledge/pkgs/container/fledge"><img alt="GHCR" src="https://img.shields.io/badge/ghcr.io-hugoxk%2Ffledge-2496ED?logo=docker&logoColor=white"></a>
 </p>
 
-<p align="center">English | <a href="README.zh.md">中文</a> · <a href="https://fledge-docs.hugoxk.online/docs/">Docs</a></p>
+<p align="center">English | <a href="README.zh.md">中文</a> · <a href="https://docs.fledge.hugoxk.online/">Docs</a></p>
 
 ---
 
@@ -32,7 +32,7 @@ default branch, does not merge by default, and never runs a user repository itse
 > **Status:** `v0.4.1` is the latest release (2026-11-17) at <https://fledge.hugoxk.online/>.
 > A weekly minor release goes out on Monday morning (10:00 Asia/Shanghai); later releases in the same week are patch releases.
 > Login is GitHub OAuth: the production OAuth App is configured and the token login is disabled. Documentation is at
-> <https://fledge-docs.hugoxk.online/docs/>; the project homepage and guide are at
+> <https://docs.fledge.hugoxk.online/>; the project homepage and guide are at
 > <https://hugoxk.online/fledge/>.
 
 ## Table of contents
@@ -208,7 +208,7 @@ Detailed design: [docs/architecture.md](docs/architecture.md) · trust boundarie
 ## Documentation
 
 The user guide and reference live at
-<https://fledge-docs.hugoxk.online/docs/> (mirrored at
+<https://docs.fledge.hugoxk.online/> (mirrored at
 <https://hugoxk.online/fledge/docs/>). They are built from this repository's
 `README.md`, `README.zh.md` and `docs/` by [HugoXK/fledge-docs](https://github.com/HugoXK/fledge-docs).
 

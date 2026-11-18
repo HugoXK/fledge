@@ -31,7 +31,7 @@ it lives next to the working copy as `SESSION_HANDOFF.md`.
   server-rendered HTML.
 - **Service:** <https://fledge.hugoxk.online/> (live; GitHub OAuth login with the
   token login disabled).
-- **Docs:** <https://fledge-docs.hugoxk.online/docs/> (mirror:
+- **Docs:** <https://docs.fledge.hugoxk.online/> (mirror:
   <https://hugoxk.online/fledge/docs/>).
 - **Project page / guide:** <https://hugoxk.online/fledge/>.
 

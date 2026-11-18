@@ -93,7 +93,7 @@ test('every transactional email uses the one shared shell', () => {
       assert.match(html, /max-width:640px/, `${name}: 640px measure`)
       assert.match(html, /box-sizing:border-box/, `${name}: border-box sizing`)
       assert.match(html, /role="presentation"/, `${name}: layout table`)
-      assert.match(html, /href="https:\/\/fledge-docs\.hugoxk\.online\/docs\/"/, `${name}: docs footer link`)
+      assert.match(html, /href="https:\/\/docs\.fledge\.hugoxk\.online\/"/, `${name}: docs footer link`)
       assert.match(html, /href="https:\/\/hugoxk\.online\/status\/"/, `${name}: status footer link`)
       assert.doesNotMatch(html, /<style\b/i, `${name}: no style block`)
       assert.doesNotMatch(html, /<link\b/i, `${name}: no external stylesheet`)

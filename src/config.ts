@@ -622,7 +622,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     services: {
       portal: text('PORTAL_URL', 'https://portal.hugoxk.online').replace(/\/$/, ''),
-      docs: withTrailingSlash(text('FLEDGE_DOCS_URL', 'https://fledge-docs.hugoxk.online/docs/')),
+      docs: withTrailingSlash(text('FLEDGE_DOCS_URL', 'https://docs.fledge.hugoxk.online/')),
       status: withTrailingSlash(text('STATUS_URL', 'https://hugoxk.online/status/')),
     },
     dataDir,
