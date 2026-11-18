@@ -514,6 +514,34 @@ test('the digest says a disabled repository will not run even with a schedule ro
   }
 })
 
+// #940: a paused schedule row keeps its cron and its enabled repository, so the
+// digest kept printing the instant the worker skips with `reason: 'paused'`. The
+// email owns its own Chinese wording (#713), so it must say paused itself.
+test('the digest says a paused schedule will not run', async () => {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'Asia/Shanghai' } })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'digest-schedule-paused', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_digest_paused_schedule', userId: user.id, owner: 'o', name: 'paused', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo(repo.id, { last_run_at: new Date(Date.now() - 10 * 60_000).toISOString() })
+    const row = store.saveSchedule({ id: 'sch_digest_paused_schedule', repoId: repo.id, kind: 'cron', expression: '0 9 * * 1-5', timezone: 'Asia/Shanghai' })
+    const schedule = scheduleFromRow(row)
+    assert.ok(schedule !== null)
+    const skipped = digestTime(nextTime(schedule, Date.now())!)
+    store.setScheduleStatus(repo.id, 'paused', Date.now())
+
+    await jobs.tick()
+    const digest = mailer.messages.find((message) => /今日摘要/.test(message.subject))
+    assert.ok(digest, 'the digest was sent')
+    assert.match(digest.text, /下次自动迭代：o\/paused · 排期已暂停：恢复后从下一个时刻开始/, 'a paused schedule is not promised a run')
+    assert.doesNotMatch(digest.text, new RegExp(escapeRegExp(skipped)), 'the skipped instant is gone from the digest')
+  } finally {
+    store.close()
+  }
+})
+
 test('plan jobs dispatch as plan and keep a checkpoint', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
