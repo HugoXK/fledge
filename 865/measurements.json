@@ -1,0 +1,120 @@
+{
+  "header-zh-1280": {
+    "primaries": 1,
+    "moreSummary": "更多操作",
+    "cancelClass": null,
+    "jobDetails": 2,
+    "jobDetailSummaries": [
+      "工作类型",
+      "团队参与"
+    ],
+    "docWidth": 1280,
+    "docHeight": 3151,
+    "headerBox": {
+      "x": 82,
+      "y": 117,
+      "width": 1116,
+      "height": 158
+    },
+    "crop": "first section.card"
+  },
+  "header-zh-360": {
+    "primaries": 1,
+    "moreSummary": "更多操作",
+    "cancelClass": null,
+    "jobDetails": 2,
+    "jobDetailSummaries": [
+      "工作类型",
+      "团队参与"
+    ],
+    "docWidth": 360,
+    "docHeight": 3788,
+    "headerBox": {
+      "x": 16,
+      "y": 93,
+      "width": 328,
+      "height": 270
+    },
+    "crop": "full page"
+  },
+  "folded-zh-1280": {
+    "primaries": 0,
+    "moreSummary": "更多操作",
+    "cancelClass": null,
+    "jobDetails": 4,
+    "jobDetailSummaries": [
+      "复盘",
+      "工作类型",
+      "为什么有这个改动",
+      "团队参与"
+    ],
+    "docWidth": 1280,
+    "docHeight": 3221,
+    "headerBox": {
+      "x": 82,
+      "y": 117,
+      "width": 1116,
+      "height": 158
+    },
+    "crop": "full page"
+  },
+  "header-en-1280": {
+    "primaries": 1,
+    "moreSummary": "More actions",
+    "cancelClass": null,
+    "jobDetails": 2,
+    "jobDetailSummaries": [
+      "Work type",
+      "Team participation"
+    ],
+    "docWidth": 1280,
+    "docHeight": 3280,
+    "headerBox": {
+      "x": 82,
+      "y": 117,
+      "width": 1116,
+      "height": 210
+    },
+    "crop": "first section.card"
+  },
+  "header-en-360": {
+    "primaries": 1,
+    "moreSummary": "More actions",
+    "cancelClass": null,
+    "jobDetails": 2,
+    "jobDetailSummaries": [
+      "Work type",
+      "Team participation"
+    ],
+    "docWidth": 360,
+    "docHeight": 4207,
+    "headerBox": {
+      "x": 16,
+      "y": 93,
+      "width": 328,
+      "height": 379
+    },
+    "crop": "full page"
+  },
+  "folded-en-1280": {
+    "primaries": 0,
+    "moreSummary": "More actions",
+    "cancelClass": null,
+    "jobDetails": 4,
+    "jobDetailSummaries": [
+      "Postmortem",
+      "Work type",
+      "Why this change",
+      "Team participation"
+    ],
+    "docWidth": 1280,
+    "docHeight": 3238,
+    "headerBox": {
+      "x": 82,
+      "y": 117,
+      "width": 1116,
+      "height": 154
+    },
+    "crop": "full page"
+  }
+}
