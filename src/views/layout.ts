@@ -6,6 +6,7 @@ import { assetUrl } from '../lib/assetVersion.js'
 import { refusalBanner } from '../lib/failure.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import type { Density } from './density.js'
+import { icon } from './icons.js'
 import { themeMeta, type Theme } from './theme.js'
 
 export const FLEDGE_GITHUB_URL = 'https://github.com/HugoXK/fledge'
@@ -198,7 +199,7 @@ export function notificationStack(locale: Locale, entries: PageNotification[]): 
   const messages = ordered
     .map(
       (entry) =>
-        `<div class="${LEVEL_CLASS[entry.level]}" data-notification data-level="${entry.level}"><span class="banner-text">${entry.html ?? bannerHtml(entry.text ?? '', entry.link ?? null)}</span><button type="button" class="banner-dismiss" data-dismiss aria-label="${dismissLabel}" title="${dismissLabel}">×</button></div>`,
+        `<div class="${LEVEL_CLASS[entry.level]}" data-notification data-level="${entry.level}"><span class="banner-text">${entry.html ?? bannerHtml(entry.text ?? '', entry.link ?? null)}</span><button type="button" class="banner-dismiss" data-dismiss aria-label="${dismissLabel}" title="${dismissLabel}">${icon('close', 16)}</button></div>`,
     )
     .join('')
   return `<section class="banner-stack" aria-live="polite" data-notification-stack>${messages}</section>`
@@ -282,7 +283,7 @@ export function layout(options: LayoutOptions): string {
   const feedbackDialog = feedbackViewer === null ? '' : `<dialog id="feedback-dialog" class="add-repo-dialog feedback-dialog" aria-labelledby="feedback-dialog-title">
     <div class="row between dialog-head">
       <h2 id="feedback-dialog-title">${escapeHtml(t('反馈给开发者', 'Send feedback'))}</h2>
-      <button class="link" type="button" data-close-dialog aria-label="${escapeHtml(t('关闭', 'Close'))}">×</button>
+      <button class="link" type="button" data-close-dialog aria-label="${escapeHtml(t('关闭', 'Close'))}">${icon('close', 16)}</button>
     </div>
     <p class="muted">${escapeHtml(t('遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。', 'Found a problem, want a feature, or saw something unexpected? This stores a record and mails the maintainer.'))}</p>
     <form method="post" action="/feedback" class="form">

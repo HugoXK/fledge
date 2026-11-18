@@ -438,6 +438,18 @@ and the accessibility contract are fixed:
   icon package, remote asset or CSP entry is involved.
 - `stateCell(colspan, …)` is the table form; a table that still renders a bare
   `<td colspan class="muted">` is a leftover, not a style choice.
+- A **control** mark is not a state icon and does not live in `states.ts`. The
+  banner dismiss and the feedback close (`src/views/layout.ts`), the info tip and
+  the finished setup step (`src/views/pages.ts`) draw from `icon(name, size)` in
+  `src/views/icons.ts`, on the same `viewBox="0 0 24 24"` grid, with
+  `stroke="currentColor"`, `aria-hidden="true"` and `focusable="false"`, and no
+  colour literal in the stylesheet. Before it, those four sites typed `×`, `!`
+  and `✓`: a typed glyph is drawn by whatever face the platform picks, so the
+  same button was a different weight and baseline per OS and read as Latin
+  punctuation inside a Chinese sentence. `test/layout.test.ts` now renders
+  `/settings`, `/dashboard` and the shell and fails on any control whose whole
+  visible content is one of those characters, so the next component does not
+  type one again.
 - The empty state's action comes from the page that renders it: a repository
   page offers that repository's own `Run now`, the dashboard offers
   `Add repository`, Settings offers `Add provider`. No page inherits another
