@@ -531,6 +531,19 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
   Jobs that exceed the timeout are failed.
+- **One answer for "why did this not start"** (#807 review, #938, #942):
+  `Store.automationDispatchBlocker` is the single predicate behind both the
+  dispatcher's refusal and the `automation_idle_with_work` alert, so the console
+  cannot report a repository idle after the dispatcher has already named a
+  reason. It answers `user_not_ready`, `instance_not_ready` or `quota`. The quota
+  member arrived last: it applies only when the platform pays for the run
+  (`Store.platformFundedFor`, the same rule the refusal reads — a user's own
+  model or a repository's own model selection means the platform pays nothing),
+  and it asks `quotaExhausted` in `src/gateway/quota.ts`, which `quotaView` also
+  reads, so the refusal and the alert cannot disagree on the arithmetic either.
+  A caller that passes no quota rate keeps the older two-reason answer rather
+  than refusing work it cannot see; `alerts()` passes the rate its callers
+  already carry.
 - **Schedule expressions** (#544, first slice): `src/schedules/next.ts` is the
   one planner a preview and the worker will share. A schedule is either a
   five-field cron expression (numeric values, `*`, ranges, lists and steps; no
@@ -624,8 +637,20 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   schedule, the next run from `nextTime`, the newest decided instant with its
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
   last instant whose job succeeded. A value nobody recorded prints `unknown`: a
-  schedule with no occurrence row has not run, and this slice has no delivery
-  outbox, so neither is a zero. The eight facts render through `.schedule-facts`,
+  schedule with no occurrence row has not run, so it is not a zero. The delivery
+  fact is read from the outbox (`notification_outbox.job_id`, below) for the job
+  the newest decided instant dispatched: a job that queued a send reports that
+  send's state, and a finished job that queued none prints `none` — a run with
+  nothing to deliver — rather than the `unknown` of a page that did not look. A
+  job queues its notifications only when it ends (`succeeded`/`failed`), so a
+  run whose job is still queued or running prints `unknown` too: the empty read
+  is a value nobody knows yet, and a missing value is never printed as a
+  definite none. Only a decided instant answers: `skipped` queued nothing by
+  definition, while `claimed` (a worker holds it, `job_id` still NULL until the
+  job starts) and `expired` (a lease that lapsed before anyone settled it) have
+  not decided yet and print `unknown`. The outbox's own
+  `unknown` (a send that may have crossed the external boundary) is printed as
+  `unconfirmed`, so it is never confused with "nobody read the outbox". The eight facts render through `.schedule-facts`,
   a two-column grid with muted labels that stacks to one column below 640px, so
   the console does not fall back to the browser's default definition-list text.
   `src/schedules/console.ts` is that view model. The
@@ -658,9 +683,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   (`#387`) must move the count inside that claim, or two workers could each spend
   the last slot.
 - **The notification outbox** (#544, slice 7): the notifications it covers are
-  durable rows (`notification_outbox`) instead of a call whose failure lived only
-  in a log line — the digests, question mails, ops alerts and per-job/PR webhooks
-  are queued with an idempotency key, so a replayed callback or a second tick
+  durable rows (`notification_outbox`), and a send that reports on a job carries
+  its `job_id` (nullable, indexed) so the schedule console can name a run's
+  delivery without parsing the idempotency key; a row written before the column
+  existed keeps NULL and is never retro-attached to a run. A notification is a
+  row instead of a call whose failure lived only in a log line — the digests,
+  question mails, ops alerts and per-job/PR webhooks are queued with an
+  idempotency key, so a replayed callback or a second tick
   keeps one row rather than sending twice. Per-job success/failure mail and the
   transactional approval, quota, trial and feedback mail still send inline in
   this slice; they are not queued rows yet. A tick pass sweeps lapsed `sending`
@@ -860,6 +889,19 @@ command under a disclosure with a `<DATA_DIR>` placeholder, never the real host
 path. The page owns the Users section at `/admin#users`; `/admin/users` is an
 admin-only redirect to that section for older links and bookmarks, while
 `/admin/users/:id` remains the read-only support view.
+
+For a superadmin, the Release card also carries the one-click preview
+(`src/lib/releaseDispatch.ts`): the current `main`, latest tag, commit/fix/
+feature/fragment counts, computed next version, `ci-ok`, any open release PR and
+the exact reason the action is blocked. `POST /admin/release` requires superadmin,
+CSRF, a recent GitHub re-authentication, the destructive rate-limit class and an
+audit row; it re-reads the preview and then dispatches the existing
+`daily-release.yml` with `dry_run=false`. It never creates a tag, merges a pull
+request or deploys a host. The server-side `RELEASE_DISPATCH_TOKEN` is repo-scoped
+and never rendered or logged; an empty value disables the action instead of
+failing the page. Release remains separate from deploy: production may already
+run `main`, and the next infra update installs the version-bump commit after the
+release PR merges.
 
 The admin page is a hub, not an approvals-only page. Its primary sections are
 Pending, Users, Jobs, Audit, Release and Backups; Product metrics, Webhook
@@ -1433,6 +1475,17 @@ the observation back instead of re-deriving it. A pull request that was closed
 without merging is `closed`, not `open`, so the header's `(closed/merged)` is
 true as written; a job row written before that column says the observation was
 not recorded rather than borrowing a time.
+
+Since #789 the decision that produces the run is evidence-linked too:
+`decideNextJob()` is async and takes the same reader, so the chosen item's link
+is read after due-ness (a held-back repository costs no read) before it can
+become a `followup` or a `review`. A `closed` or `merged` answer turns the
+decision into a fresh `iterate` on the repository's own goal — no goal override
+and no `work_item_id` — and the stale row is marked with the state that was
+observed once the run exists, so the next tick does not choose it again. An
+`open` answer, a read that failed and an item that names no link all keep the
+previous behaviour: a failed read saw nothing, so it is not evidence that the
+work is finished.
 
 The goal also carries one **temporal delta** line (#366), built by
 `summariseDelta()` in `src/lib/temporal.ts` from two reads plus the commit

@@ -30,6 +30,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     dataDir: '/tmp/fledge-test',
     dbPath: ':memory:',
     runner: { mode: 'mock', bridgeUrl: '', bridgeToken: '', timeoutMinutes: 45, stallMinutes: 30, maxActiveJobs: 2, workCooldownMinutes: 15, queueDispatch: false, maxQueueDepth: 100, maxUserQueue: 20 },
+    release: { dispatchToken: '', repo: 'HugoXK/fledge', workflow: 'daily-release.yml', ref: 'main' },
     allowTokenLoginOnly: true,
     mail: {
       transport: 'console',
@@ -63,6 +64,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     llm: { ...base.llm, ...overrides.llm },
     quota: { ...base.quota, ...overrides.quota },
     runner: { ...base.runner, ...overrides.runner },
+    release: { ...base.release, ...overrides.release },
     metrics: { ...base.metrics, ...overrides.metrics },
     otel: { ...base.otel, ...overrides.otel },
     shutdown: { ...base.shutdown, ...overrides.shutdown },
