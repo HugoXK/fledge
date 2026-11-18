@@ -61,6 +61,7 @@ import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatche
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
+import { encodeOccurrenceSnapshot, occurrenceSnapshot } from '../schedules/snapshot.js'
 import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
@@ -4077,6 +4078,7 @@ export class Jobs {
       logicalTime: Date.now(),
       timingRevision: schedule.timing_revision,
       commandKey: parsed.key,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!created.created) return this.runNowAnswer(created.row, true)
     const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true })
@@ -4714,6 +4716,7 @@ export class Jobs {
       skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
       decision: plan.dueAt === null ? undefined : { id: randomId('occ'), at: plan.dueAt, state: 'skipped', reason, missed: plan.missed },
       cursorAt: plan.cursorAt,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     this.store.audit(repo.user_id, 'schedule.skipped', JSON.stringify({
       repo: `${repo.owner}/${repo.name}`,
@@ -4742,6 +4745,7 @@ export class Jobs {
       timingRevision: schedule.timing_revision,
       skipped: plan.skipped.map((entry) => ({ id: randomId('occ'), at: entry.at, reason: entry.reason })),
       cursorAt: plan.cursorAt,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     log.info('scheduled instants skipped', {
       repo: `${repo.owner}/${repo.name}`, count: recorded.skipped.length, at: plan.dueAt,
@@ -4752,6 +4756,13 @@ export class Jobs {
   // run is not made twice: null means another worker holds this instant and this
   // pass leaves it alone. The token is opaque and short-lived; nothing derives
   // it from the attempt count.
+  // #544: what an occurrence was decided under. Both rows are read by the
+  // caller, so this is the configuration the decision used, not a second read
+  // that could race an edit between the claim and the write.
+  private scheduleSnapshotJson(schedule: ScheduleRow, repo: RepoRow): string {
+    return encodeOccurrenceSnapshot(occurrenceSnapshot(schedule, repo))
+  }
+
   private claimScheduledOccurrence(repo: RepoRow, plan: TickPlan): string | null {
     if (plan.dueAt === null) return null
     const schedule = this.store.scheduleForRepo(repo.id)
@@ -4765,6 +4776,7 @@ export class Jobs {
       timingRevision: schedule.timing_revision,
       leaseToken,
       leaseMs: SCHEDULE_LEASE_MS,
+      snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!claim.claimed) {
       log.info('scheduled occurrence not claimed', {
