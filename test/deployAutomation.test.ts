@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { execFileSync, spawnSync } from 'node:child_process'
+import { execFileSync, spawn, spawnSync } from 'node:child_process'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -204,6 +204,10 @@ function host(build: 'ok' | 'fail' = 'ok', options: { stampSeconds?: number } = 
       FLEDGE_STOP_CMD: join(app, 'stop.sh'),
       FLEDGE_START_CMD: join(app, 'start.sh'),
       FLEDGE_ROLLOUT_URL: 'http://127.0.0.1:9',
+      // #943: the deploy lock is the one path the script does not derive from
+      // FLEDGE_APP_DIR, so a case that shares the production path is decided by
+      // whatever else on the machine holds it. Each fixture owns its own lock.
+      FLEDGE_DEPLOY_LOCK: join(dir, 'deploy.lock'),
       FLEDGE_DATA_DIR: data,
       FLEDGE_VERIFY_SCRIPT: join(dir, 'no-verifier.sh'),
     },
@@ -256,6 +260,56 @@ test('a failed build restores the release the source copy already replaced', () 
   assert.equal(failed.code, 3, `a failed build must exit 3, got ${failed.code}: ${failed.log}`)
   assert.match(failed.log, /build failed/)
   releaseIsBack(h)
+})
+
+// #943: the deploy lock is the one path the script does not derive from
+// FLEDGE_APP_DIR, so a tick that could not take it exited 0 without doing
+// anything, and the cases above read that as "the rollout was refused" or as a
+// restore that never ran. A host now owns its lock; production keeps the fixed
+// path, where that guard is the point.
+test('a host owns its deploy lock, so another tick cannot silence the case', () => {
+  assert.match(deploy, /LOCK=\$\{FLEDGE_DEPLOY_LOCK:-\/tmp\/fledge-deploy-tag\.lock\}/)
+  const first = host()
+  const second = host()
+  assert.equal(first.env.FLEDGE_DEPLOY_LOCK, join(dirname(first.app), 'deploy.lock'))
+  assert.ok(first.env.FLEDGE_DEPLOY_LOCK !== second.env.FLEDGE_DEPLOY_LOCK, 'two hosts must not share one lock')
+
+  // Hold the first host's lock the way a second cron tick on that host would,
+  // and only then run anything: no sleeping to reach the state. The path stays
+  // an argument to `flock` and never enters a shell string, so nothing
+  // interprets it, and "the lock is held" is read from a non-blocking attempt
+  // of our own rather than from a marker the holder writes.
+  const lock = String(first.env.FLEDGE_DEPLOY_LOCK)
+  const holder = spawn('flock', ['-n', lock, 'sleep', '30'], { stdio: 'ignore' })
+  try {
+    const deadline = Date.now() + 5_000
+    for (;;) {
+      const probe = spawnSync('flock', ['-n', lock, 'true'], { stdio: 'ignore' })
+      if (probe.status === 1) break // refused: the holder owns the lock
+      if (probe.status !== 0) throw new Error(`the lock probe exited ${String(probe.status)}`)
+      if (holder.exitCode !== null) throw new Error(`the lock holder exited ${String(holder.exitCode)} without taking the lock`)
+      if (Date.now() > deadline) throw new Error('the lock holder never took the lock')
+      execFileSync('sleep', ['0.05'])
+    }
+
+    // The host whose lock is held is silenced, and that is the failure the
+    // flake produced: exit 0, nothing logged, nothing done.
+    const silenced = tick(first)
+    assert.equal(silenced.code, 0, 'a tick that cannot take its lock exits 0 without running')
+    assert.equal(silenced.log, '', 'a tick that cannot take its lock logs nothing')
+
+    // The other host runs to its own refusal, because the lock it could not
+    // take is not the one it uses.
+    const unaffected = tick(second)
+    assert.equal(
+      unaffected.code,
+      3,
+      `another host's lock must not silence this one, got ${unaffected.code}: ${unaffected.log}`,
+    )
+    assert.match(unaffected.log, /rollout refused for v9\.9\.9/)
+  } finally {
+    holder.kill()
+  }
 })
 
 test('the rollback restores public/ and package.json, and its report path is not predictable', () => {

@@ -28,7 +28,11 @@ LOG=${FLEDGE_DEPLOY_LOG:-/home/xuke/work/fledge-deploy-tag.log}
 STOP=${FLEDGE_STOP_CMD:-/home/xuke/work/fledge-stop.sh}
 START=${FLEDGE_START_CMD:-/home/xuke/work/fledge-start.sh}
 HEALTH=${FLEDGE_HEALTH_URL:-http://127.0.0.1:8095/healthz}
-LOCK=/tmp/fledge-deploy-tag.lock
+# One deploy at a time per host. The path is fixed in production so a second
+# cron tick exits 0 instead of overlapping the first; an override exists because
+# a test host is not the production host, and a test that shares this path is
+# decided by whatever else on the machine holds it (#943).
+LOCK=${FLEDGE_DEPLOY_LOCK:-/tmp/fledge-deploy-tag.lock}
 
 exec 9>"$LOCK"
 if ! flock -n 9; then exit 0; fi
