@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { tmpdir } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -88,6 +88,14 @@ const GIT_ENV: NodeJS.ProcessEnv = {
 const OLD_COMMIT = 'a'.repeat(40)
 const OLD_CSS = 'body{color:#111}\n'
 const NEW_CSS = 'body{color:#222}\n'
+// The two fixtures are the same byte count across the version bump, which is
+// what makes the copy gap below reachable: rsync's quick check cannot tell the
+// old file from the new one by size.
+const OLD_PACKAGE = '{"name":"fledge","version":"0.0.1"}\n'
+const NEW_PACKAGE = '{"name":"fledge","version":"9.9.9"}\n'
+// One whole second, chosen rather than observed: both sides of the copy are
+// stamped to it, so the case never races the clock.
+const STAMP_SECONDS = Math.floor(Date.parse('2026-01-01T00:00:00Z') / 1000)
 
 function git(cwd: string, args: string[]): void {
   execFileSync('git', args, { cwd, env: GIT_ENV, stdio: ['ignore', 'pipe', 'pipe'] })
@@ -109,13 +117,16 @@ interface Host {
 // directory running an older one. `npm` is a stub (the host build is not what
 // this test is about) and the rollout gate is the fixture's, because the point
 // is what the deploy does when the gate refuses, not how the gate decides.
-function host(build: 'ok' | 'fail' = 'ok'): Host {
+// `stampSeconds` puts both sides of the source copy on one whole second, which
+// is the state #944 is about; see the case that uses it.
+function host(build: 'ok' | 'fail' = 'ok', options: { stampSeconds?: number } = {}): Host {
+  const realGit = execFileSync('sh', ['-c', 'command -v git'], { encoding: 'utf8' }).trim()
   const dir = mkdtempSync(join(tmpdir(), 'fledge-deploy-'))
   const origin = join(dir, 'origin.git')
   git(dir, ['init', '--bare', '--initial-branch=main', origin])
   const seed = join(dir, 'seed')
   git(dir, ['init', '--initial-branch=main', seed])
-  put(join(seed, 'package.json'), '{"name":"fledge","version":"9.9.9"}\n')
+  put(join(seed, 'package.json'), NEW_PACKAGE)
   put(join(seed, 'public', 'app.css'), NEW_CSS)
   put(join(seed, 'public', 'only-new.css'), '.new{}\n')
   put(join(seed, 'scripts', 'rollout-check.mjs'), "process.exit(process.env.FAKE_ROLLOUT_PASS === '1' ? 0 : 1)\n")
@@ -129,7 +140,7 @@ function host(build: 'ok' | 'fail' = 'ok'): Host {
   git(dir, ['clone', '-q', origin, src])
 
   const app = join(dir, 'app')
-  put(join(app, 'package.json'), '{"name":"fledge","version":"0.0.1"}\n')
+  put(join(app, 'package.json'), OLD_PACKAGE)
   put(join(app, 'dist', 'marker.txt'), 'old dist\n')
   put(join(app, '.build-identity'), `GIT_SHA=${OLD_COMMIT}\nBUILD_TIME=2026-01-01T00:00:00Z\n`)
   put(join(app, 'public', 'app.css'), OLD_CSS)
@@ -140,6 +151,42 @@ function host(build: 'ok' | 'fail' = 'ok'): Host {
   put(join(bin, 'npm'), build === 'ok' ? '#!/bin/sh\nexit 0\n' : '#!/bin/sh\nprintf "stub: build failed\\n" >&2\nexit 1\n', 0o755)
   // The retry loop sleeps between attempts; wall time buys nothing here.
   put(join(bin, 'sleep'), '#!/bin/sh\nexit 0\n', 0o755)
+  if (options.stampSeconds !== undefined) {
+    const seconds = options.stampSeconds
+    utimesSync(join(app, 'package.json'), seconds, seconds)
+    utimesSync(join(app, 'public', 'app.css'), seconds, seconds)
+    // The other half of the collision is the release checkout: `git worktree
+    // add` writes every file at the current second. Stamping the checkout from
+    // the fixture — never from the deploy script, and never by sleeping — is
+    // what makes the case fixed rather than racy.
+    const stamp = join(bin, 'stamp-mtimes.cjs')
+    writeFileSync(stamp, [
+      "const { readdirSync, utimesSync } = require('node:fs')",
+      "const { join } = require('node:path')",
+      'const seconds = Number(process.argv[2])',
+      'const walk = (dir) => {',
+      '  for (const entry of readdirSync(dir, { withFileTypes: true })) {',
+      '    const path = join(dir, entry.name)',
+      '    if (entry.isDirectory()) walk(path)',
+      '    else if (entry.isFile()) utimesSync(path, seconds, seconds)',
+      '  }',
+      '}',
+      'walk(process.argv[3])',
+      '',
+    ].join('\n'), { mode: 0o644 })
+    writeFileSync(join(bin, 'git'), [
+      '#!/bin/sh',
+      `"${realGit}" "$@"`,
+      'code=$?',
+      'if [ "$code" -eq 0 ]; then',
+      '  for arg in "$@"; do',
+      `    if [ -d "$arg" ]; then "${process.execPath}" "${stamp}" "${seconds}" "$arg"; fi`,
+      '  done',
+      'fi',
+      'exit "$code"',
+      '',
+    ].join('\n'), { mode: 0o755 })
+  }
   const data = join(dir, 'data')
   mkdirSync(data, { recursive: true })
   return {
@@ -217,4 +264,34 @@ test('the rollback restores public/ and package.json, and its report path is not
   assert.match(deploy, /restore_release/)
   assert.match(deploy, /--exclude "public\.bak\*"/)
   assert.doesNotMatch(deploy, /\/tmp\/fledge-rollout-\$\$/)
+})
+
+// #944: the copy must not trust size and mtime. The fixtures below are the
+// state the deploy meets by accident in production: a release that changes a
+// file's content without changing its byte count, copied in the same whole
+// second the old file was written. `rsync -a`'s default quick check skips that
+// file and replaces the rest, so the host ends up half new and half old while
+// the copy reports success. Both sides are stamped to one second here, so the
+// case is the collision itself rather than a race that reaches it.
+test('the source copy replaces a changed file whose size and mtime match', () => {
+  const h = host('ok', { stampSeconds: STAMP_SECONDS })
+  const before = tick(h, { FAKE_ROLLOUT_PASS: '1' })
+  assert.equal(before.code, 0, `the tick must deploy, got ${before.code}: ${before.log}`)
+  assert.match(before.log, /deploying v9\.9\.9/)
+  assert.match(before.log, /healthy v9\.9\.9/)
+
+  // The copy did run: the file only the release carries landed, and the file
+  // only the old host carried is gone. So a surviving old file is not a copy
+  // that never happened, it is a file the check skipped.
+  assert.equal(existsSync(join(h.app, 'public', 'only-new.css')), true, 'the release asset the host did not have must land')
+  assert.equal(existsSync(join(h.app, 'public', 'keep.css')), false, 'the asset the release does not have must be deleted')
+
+  assert.equal(readFileSync(join(h.app, 'public', 'app.css'), 'utf8'), NEW_CSS, 'the same-size asset carries the release content')
+  assert.equal(runningVersion(h.app), '9.9.9', 'the same-size package.json carries the release version')
+  assert.equal(readFileSync(join(h.app, 'package.json'), 'utf8'), NEW_PACKAGE)
+})
+
+test('the deploy docs say why the copy ignores size and mtime', () => {
+  assert.match(deploy, /rsync -a --ignore-times --delete/)
+  assert.match(doc, /--ignore-times/)
 })

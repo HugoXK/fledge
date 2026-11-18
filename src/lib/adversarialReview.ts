@@ -275,6 +275,12 @@ export interface AdversarialRecord {
   reason: string | null
   model: string | null
   promptHash: string | null
+  // #794: the packet identity is the revision it was computed for. The pass has
+  // recorded both shas all along; dropping them here let the page print a hash
+  // that names no revision at all. A record written before this reader existed
+  // returns null for both rather than borrowing a revision from somewhere else.
+  baseSha: string | null
+  tipSha: string | null
   checks: string[]
 }
 
@@ -306,6 +312,8 @@ export function parseAdversarialRecord(meta: string | null | undefined): Adversa
     reason: text(verdict.reason) ?? text(value.reason),
     model: text(value.model),
     promptHash: text(value.promptHash),
+    baseSha: text(value.baseSha),
+    tipSha: text(value.tipSha),
     checks: Array.isArray(verdict.checks) ? verdict.checks.filter((entry): entry is string => typeof entry === 'string').slice(0, 20) : [],
   }
 }

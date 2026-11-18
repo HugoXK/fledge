@@ -73,6 +73,30 @@ Ran:
 Docker image, real SMTP
 `
 
+// A generated dependency-bump body, trimmed to the shape that matters: it starts
+// with `Bumps ` and carries none of the four body rules, because dependabot
+// writes it upstream and nobody here may rewrite it.
+const DEPENDABOT_LOGIN = 'dependabot[bot]'
+
+const DEPENDABOT_BODY = `Bumps the all group with 4 updates: [@fastify/rate-limit](https://github.com/fastify/fastify-rate-limit), [nodemailer](https://github.com/nodemailer/nodemailer).
+
+Updates \`@fastify/rate-limit\` from 10.3.0 to 11.2.2
+
+---
+updated-dependencies:
+- dependency-name: "@fastify/rate-limit"
+  dependency-type: direct:production
+`
+
+// Same author, first line that is not the generator's: the exemption is the
+// pair, so this one keeps every rule.
+const DEPENDABOT_UPDATE_BODY = `Update \`@fastify/rate-limit\` from 10.3.0 to 11.2.2
+
+---
+updated-dependencies:
+- dependency-name: "@fastify/rate-limit"
+`
+
 async function bodyRules() {
   return import('../scripts/lib/pr-body.mjs')
 }
@@ -95,6 +119,9 @@ async function runScript(script: string, args: string[], env: Record<string, str
 
 interface FakeState {
   body: string
+  // The pull request's author login. Defaults to the owner, so every fixture
+  // that is not a dependency bump is written by a human and unexempt.
+  author: string
   files: string[]
   policy: unknown
   comments: Array<Record<string, unknown>>
@@ -107,6 +134,7 @@ interface FakeState {
 function state(overrides: Partial<FakeState> = {}): FakeState {
   return {
     body: BOT_SIGNED,
+    author: 'HugoXK',
     files: [],
     policy: POLICY,
     comments: [],
@@ -123,7 +151,7 @@ async function withFakeGitHub(current: FakeState, run: (env: Record<string, stri
     const url = new URL(request.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
     if (path === '/repos/o/r/pulls/7') {
-      json(response, 200, { number: 7, head: { sha: SHA }, user: { login: 'HugoXK' }, labels: [], body: current.body, ...current.size, changed_files: current.size.changed_files ?? current.files.length, commits: 0 })
+      json(response, 200, { number: 7, head: { sha: SHA }, user: { login: current.author }, labels: [], body: current.body, ...current.size, changed_files: current.size.changed_files ?? current.files.length, commits: 0 })
       return
     }
     if (path === '/repos/o/r/pulls/7/files') {
@@ -206,6 +234,50 @@ test('an empty authors list rejects every name instead of falling back to writer
   const errors = checkBody(OWNER_SIGNED_WITH_BOT, { ...POLICY, authors: [] })
   assert.equal(errors.length, 1)
   assert.match(errors[0]!, /is not in the authors list/)
+})
+
+// --- the dependency-bump exemption (#982) ----------------------------------
+// The pair decides: the author login and the generated first line. Neither half
+// alone may relax a rule, and nothing outside the four body rules moves.
+
+test('a dependabot bump body is exempt from the four body rules', async () => {
+  const { checkBody } = await bodyRules()
+  assert.deepEqual(checkBody(DEPENDABOT_BODY, POLICY, DEPENDABOT_LOGIN), [])
+})
+
+test('the same bump body posted by a human account keeps all four rules', async () => {
+  const { checkBody } = await bodyRules()
+  const errors = checkBody(DEPENDABOT_BODY, POLICY, 'HugoXK')
+  // Three here: the `Fixes #N` rule lives in pr-lint, which the workflow tests cover.
+  assert.equal(errors.length, 3)
+  assert.match(errors[0]!, /must start with "Written-by: <name>"/)
+})
+
+test('a dependabot body that does not start with Bumps keeps all four rules', async () => {
+  const { checkBody } = await bodyRules()
+  const errors = checkBody(DEPENDABOT_UPDATE_BODY, POLICY, DEPENDABOT_LOGIN)
+  assert.equal(errors.length, 3)
+  assert.match(errors[0]!, /must start with "Written-by: <name>"/)
+})
+
+test('a bump body that does carry Written-by: is still checked against the authors list', async () => {
+  const { checkBody } = await bodyRules()
+  const errors = checkBody(`Bumps x from 1.0.0 to 2.0.0\n\nWritten-by: A Stranger\n`, POLICY, DEPENDABOT_LOGIN)
+  assert.equal(errors.length, 1)
+  assert.match(errors[0]!, /Written-by "A Stranger" is not in the authors list/)
+})
+
+test('a body checked with no author at all behaves exactly as before', async () => {
+  const { checkBody } = await bodyRules()
+  assert.equal(checkBody(DEPENDABOT_BODY, POLICY).length, 3)
+})
+
+test('the exemption is the exact author login, not a name that contains it', async () => {
+  const { isDependabotBump } = await bodyRules()
+  for (const author of ['dependabot', 'dependabot[bot] ', 'app/dependabot[bot]', 'Dependabot[bot]', '']) {
+    assert.equal(isDependabotBump(DEPENDABOT_BODY, author), false, `${JSON.stringify(author)} must not be exempt`)
+  }
+  assert.equal(isDependabotBump(DEPENDABOT_BODY, DEPENDABOT_LOGIN), true)
 })
 
 test('a ## Ran: heading is reported as a heading, not as a missing section', async () => {
@@ -384,4 +456,49 @@ test('the non-closing anchor does not match inside another word', async () => {
       assert.match(result.stderr, /the PR body needs/)
     })
   }
+})
+
+// --- the dependency-bump exemption through the workflow entry point --------
+
+test('pr-lint passes a dependabot bump and does not ask it for the four body rules', async () => {
+  await withFakeGitHub(
+    state({ author: DEPENDABOT_LOGIN, body: DEPENDABOT_BODY, files: ['package.json', 'package-lock.json'] }),
+    async (env) => {
+      const result = await runScript(lintScript, ['--pr', '7'], env)
+      assert.equal(result.code, 0, result.stderr)
+      assert.match(result.stdout, /pr-lint: ok/)
+    },
+  )
+})
+
+test('the same bump body from a human account still fails pr-lint, naming Written-by first', async () => {
+  await withFakeGitHub(state({ body: DEPENDABOT_BODY, files: ['package.json'] }), async (env) => {
+    const result = await runScript(lintScript, ['--pr', '7'], env)
+    assert.equal(result.code, 1, 'a human account must not inherit the machine exemption')
+    assert.match(result.stderr, /must start with "Written-by: <name>"/)
+  })
+})
+
+test('a dependabot bump still owes its changelog fragment and its Large-PR: line', async () => {
+  const files = Array.from({ length: 21 }, (_, index) => `src/dependency-${String(index)}.ts`)
+  await withFakeGitHub(
+    state({ author: DEPENDABOT_LOGIN, body: DEPENDABOT_BODY, files, size: { changed_files: 21, additions: 900, deletions: 10 } }),
+    async (env) => {
+      const result = await runScript(lintScript, ['--pr', '7'], env)
+      assert.equal(result.code, 1)
+      assert.match(result.stderr, /changelog\.d fragment/)
+      assert.match(result.stderr, /Large-PR:/)
+    },
+  )
+})
+
+test('a dependabot bump is still labelled against the tier its paths compute', async () => {
+  await withFakeGitHub(
+    state({ author: DEPENDABOT_LOGIN, body: DEPENDABOT_BODY, files: ['scripts/pr-lint.mjs'] }),
+    async (env) => {
+      const result = await runScript(lintScript, ['--pr', '7'], env)
+      assert.equal(result.code, 0, result.stderr)
+      assert.match(result.stdout, /pr-lint: ok \(#7, T3, 1 files?\)/)
+    },
+  )
 })

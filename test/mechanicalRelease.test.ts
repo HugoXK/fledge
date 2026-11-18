@@ -10,7 +10,6 @@ import { isMechanicalPath, mechanicalRelease, releaseIdentity } from '../scripts
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 const PLAN_OK = { shouldRelease: true, nextVersion: '0.3.0', reason: 'ok' }
-const PLAIN_MERGE = { number: 7, title: 'feat: something', headRef: 'dev2/something', mergeCommitSha: 'f'.repeat(40) }
 const MECH_FILES = ['CHANGELOG.md', 'changelog.d/1.added.md', 'package.json', 'package-lock.json', 'docker-compose.yml']
 const OPEN_RELEASE = {
   number: 141,
@@ -142,19 +141,6 @@ test('a dry run never enqueues the open release PR', () => {
   assert.equal(decision.dryRun, true)
 })
 
-test('a dry run never tags the merged release PR', () => {
-  const decision = decideDrive({
-    plan: { shouldRelease: false, nextVersion: '0.3.0', reason: 'open-release-pr' },
-    mergedPrs: [{ number: 141, title: 'release: v0.3.0', headRef: 'release/v0.3.0', mergeCommitSha: 'c'.repeat(40) }],
-    tags: ['v0.2.4'],
-    ciOk: 'success',
-    dryRun: true,
-  })
-  assert.equal(decision.action, 'none')
-  assert.equal(decision.wouldHave, 'tag')
-  assert.equal(decision.tag, 'v0.3.0')
-})
-
 test('an open release PR is enqueued, never duplicated', () => {
   const decision = decideDrive({ plan: PLAN_OK, openReleasePr: OPEN_RELEASE, tags: [], ciOk: 'success' })
   assert.equal(decision.action, 'enqueue')
@@ -231,68 +217,19 @@ test('a mechanical-shaped open PR with a dependency change is not enqueued', () 
   assert.match(decision.reason, /outside the mechanical set/)
 })
 
-test('a merged release PR whose tag is missing is tagged on its squash commit', () => {
-  const decision = decideDrive({
-    plan: { shouldRelease: false, nextVersion: '0.3.0', reason: 'open-release-pr' },
-    openReleasePr: null,
-    mergedPrs: [{ number: 141, title: 'release: v0.3.0', headRef: 'release/v0.3.0', mergeCommitSha: 'c'.repeat(40) }],
-    tags: ['v0.2.4'],
-    ciOk: 'success',
-  })
-  assert.equal(decision.action, 'tag')
-  assert.equal(decision.tag, 'v0.3.0')
-  assert.equal(decision.sha, 'c'.repeat(40), 'the tag must name the merge commit, never HEAD')
-})
-
-test('an untagged release PR is found even when a later merge is the last PR', () => {
-  // #146 finding 4: scanning only the last merged PR meant one unrelated merge in
-  // between silently lost the tag.
-  const decision = decideDrive({
-    plan: { shouldRelease: false, nextVersion: '0.3.0', reason: 'open-release-pr' },
-    openReleasePr: null,
-    mergedPrs: [
-      { number: 141, title: 'release: v0.3.0', headRef: 'release/v0.3.0', mergeCommitSha: 'c'.repeat(40) },
-      PLAIN_MERGE,
-    ],
-    tags: ['v0.2.4'],
-    ciOk: 'success',
-  })
-  assert.equal(decision.action, 'tag')
-  assert.equal(decision.tag, 'v0.3.0')
-  assert.equal(decision.sha, 'c'.repeat(40))
-})
-
-test('a merged release PR that is already tagged does nothing', () => {
-  const decision = decideDrive({
+test('the release drive never decides a tag: the tag job is the only tag writer (#866)', () => {
+  // The drive's `tag` action was unreachable: the release job passes no merged
+  // PRs into it, so the action could neither execute nor be reported while
+  // docs/deploy.md said it was. The tag job owns every merged release PR without
+  // a tag, so the drive stays out of tagging even when a caller still supplies
+  // the merged list.
+  const state = {
     plan: { shouldRelease: false, nextVersion: '0.3.0', reason: 'tag-exists' },
     openReleasePr: null,
     mergedPrs: [{ number: 141, title: 'release: v0.3.0', headRef: 'release/v0.3.0', mergeCommitSha: 'c'.repeat(40) }],
-    tags: ['v0.2.4', 'v0.3.0'],
-    ciOk: 'success',
-  })
-  assert.equal(decision.action, 'none')
-})
-
-test('a release-looking merge without its release branch is never tagged on a guess', () => {
-  const decision = decideDrive({
-    plan: { shouldRelease: false, nextVersion: '0.3.0', reason: 'tag-exists' },
-    openReleasePr: null,
-    mergedPrs: [{ number: 141, title: 'release: v0.3.0', headRef: 'dev2/somewhere-else', mergeCommitSha: 'c'.repeat(40) }],
     tags: ['v0.2.4'],
     ciOk: 'success',
-  })
-  assert.equal(decision.action, 'none')
-  assert.match(decision.reason, /no readable release branch/)
-})
-
-test('a merged release PR without a merge commit sha is not tagged on HEAD', () => {
-  const decision = decideDrive({
-    plan: { shouldRelease: false, nextVersion: '0.3.0', reason: 'tag-exists' },
-    openReleasePr: null,
-    mergedPrs: [{ number: 141, title: 'release: v0.3.0', headRef: 'release/v0.3.0' }],
-    tags: ['v0.2.4'],
-    ciOk: 'success',
-  })
-  assert.equal(decision.action, 'none')
-  assert.match(decision.reason, /no merge commit sha/)
+  } as Parameters<typeof decideDrive>[0]
+  const decision = decideDrive(state)
+  assert.equal(decision.action, 'none', 'tagging belongs to the tag job, not the release drive')
 })

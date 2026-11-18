@@ -75,7 +75,7 @@ const KEPT_HREFS = [
   '/repos/:id?workState=proposed#work',
   '/repos/:id?workState=triaged#work',
   '/settings',
-  'https://fledge-docs.hugoxk.online/docs/',
+  'https://docs.fledge.hugoxk.online/',
   'https://github.com/HugoXK/fledge',
   'https://github.com/acme/demo',
   'https://hugoxk.online/status/',

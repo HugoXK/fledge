@@ -271,7 +271,9 @@ test('the release job attests the image and generates an SBOM', () => {
   assert.match(block, /id-token: write/, 'the OIDC token is what the attestation signs with')
   assert.match(block, /attestations: write/)
   assert.match(block, /^    env:\n      RELEASE_TAG: \$\{\{ inputs\.tag \|\| github\.ref_name \}\}$/m, 'the tag must be a job-level env; a step env is not visible to a step input')
-  assert.match(block, /image: \$\{\{ env\.IMAGE \}\}:\$\{\{ env\.RELEASE_TAG \}\}/, 'the SBOM must name the pushed image, not an empty tag')
+  // #883: the SBOM names the digest this run pushed, so it describes the image
+  // that was scanned and smoked instead of resolving a mutable tag again.
+  assert.match(block, /image: \$\{\{ env\.IMAGE \}\}@\$\{\{ steps\.push\.outputs\.digest \}\}/, 'the SBOM must name the digest that was pushed')
   assert.match(block, /artifact-name: fledge-sbom-\$\{\{ env\.RELEASE_TAG \}\}/, 'the SBOM artifact must name the release tag')
   assert.match(block, /contents: write/, 'a job-level block replaces the workflow set, so the release scopes must be repeated')
   assert.match(block, /packages: write/)

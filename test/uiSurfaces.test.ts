@@ -112,12 +112,12 @@ test('one radius scale, and every corner in the stylesheet takes a step of it', 
   assert.deepEqual(
     [...scale.entries()].sort(),
     [
-      ['--radius', '12px'],
-      ['--radius-lg', '12px'],
-      ['--radius-md', '10px'],
+      ['--radius', '10px'],
+      ['--radius-lg', '10px'],
+      ['--radius-md', '8px'],
       ['--radius-pill', '999px'],
-      ['--radius-sm', '8px'],
-      ['--radius-xs', '6px'],
+      ['--radius-sm', '6px'],
+      ['--radius-xs', '4px'],
     ],
     'the radius scale is one list in :root',
   )
@@ -162,7 +162,7 @@ test('cards, lists and tables keep one shell each', () => {
   const cardClasses = new Set([...source.matchAll(/class="card( [a-z-]+)?"/g)].map((match) => (match[1] ?? '').trim()).filter((value) => value !== ''))
   assert.deepEqual(
     [...cardClasses].sort(),
-    ['chief-card', 'feature', 'inbox', 'narrow', 'notices', 'provider-card'],
+    ['action-card', 'chief-card', 'feature', 'inbox', 'narrow', 'notices', 'provider-card'],
     'a card is .card plus a documented modifier; a new shell is a decision this issue did not open',
   )
 

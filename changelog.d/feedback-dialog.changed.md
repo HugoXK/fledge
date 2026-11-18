@@ -1,1 +1,0 @@
-Feedback is now a global dialog opened from the footer, so sending a note no longer leaves the page. The Settings form remains as the no-JavaScript fallback and keeps the feedback history, the duplicate feedback button in the About card is gone, and submitting returns to the page the note was written on.

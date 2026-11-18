@@ -10,44 +10,44 @@ them; this page only fixes the names and the values.
 
 | Group | Token | Value | Used for |
 |---|---|---|---|
-| Surface | `--bg` | `#0d0c0b` | page background |
-| Surface | `--bg-soft` | `#121110` | alternate page background |
-| Surface | `--panel` | `#161412` | cards |
-| Surface | `--panel-2` | `#1c1916` | raised panel, lightest surface |
-| Surface | `--surface-sunken` | `#100e0d` | inset blocks (lists, forms) |
-| Surface | `--surface-inset` | `#141210` | inline code, chips, option rows |
-| Surface | `--surface-raised` | `#191614` | bubbles, tooltips |
-| Surface | `--field` | `#12100e` | input, textarea, select |
-| Surface | `--track` | `#0a0908` | progress track |
-| Surface | `--paper` | `#fffdf8` | the white workspace iframe |
-| Surface | `--raised-top` | `#1a1714` | gradient start of a raised card |
-| Surface | `--raised-bottom` | `#131110` | gradient end of a raised card |
-| Line | `--line` | `#2a251f` | default border and divider |
-| Line | `--field-line` | `#7d7266` | input, textarea, select resting boundary (4.04:1 on `--field`) |
-| Line | `--line-strong` | `#3b342c` | emphasised border |
-| Line | `--row-line` | `#24201c` | table row divider |
-| Line | `--scroll-track` | `#8a8074` | .table-scroll scrollbar track, 641-960px only (4.74:1 on `--panel`) |
-| Line | `--scroll-thumb` | `#f0e7d9` | .table-scroll scrollbar thumb, 641-960px only (3.16:1 on `--scroll-track`) |
-| Text | `--text` | `#f3ede4` | body copy and headings |
-| Text | `--muted` | `#c8bfb1` | secondary copy |
-| Text | `--muted-2` | `#a99f91` | 10-13px meta text: `.fine`, `<small>`, `.count`, `.foot`, table headers |
-| Text | `--lede-ink` | `#d8cfc2` | landing page lede |
-| Text | `--tip-ink` | `#ece4d8` | tooltip body |
-| Accent | `--accent` | `#d97745` | links, focus ring, selected state |
-| Accent | `--accent-strong` | `#c2602f` | primary button fill |
-| Accent | `--accent-hover` | `#e3875a` | primary button hover |
-| Accent | `--accent-ink` | `#120d08` | text on the primary fill |
-| Accent | `--brand` | `#7fae9a` | brand mark, highlight (sage) |
-| Accent | `--brand-2` | `#e0b36a` | brand mark gradient end (sand) |
-| Accent | `--good` | `#7fae9a` | success |
-| Accent | `--warn` | `#e0b36a` | warning |
-| Accent | `--danger` | `#e88a7d` | error |
-| Accent | `--mint` | `#7fae9a` | feature accent |
-| Accent | `--blue` | `#9aabba` | feature accent |
-| Accent | `--violet` | `#b49a86` | feature accent |
-| Accent | `--mark-ink` | `#120d08` | letter inside the brand mark |
-| Accent | `--badge-bg` | `#241f1a` | neutral badge fill |
-| Accent | `--badge-ink` | `#d0c6b7` | neutral badge text |
+| Surface | `--bg` | `#0b100e` | page background |
+| Surface | `--bg-soft` | `#0e1512` | alternate page background |
+| Surface | `--panel` | `#101814` | cards |
+| Surface | `--panel-2` | `#16211b` | raised panel, lightest surface |
+| Surface | `--surface-sunken` | `#0c130f` | inset blocks (lists, forms) |
+| Surface | `--surface-inset` | `#0e1612` | inline code, chips, option rows |
+| Surface | `--surface-raised` | `#121c17` | bubbles, tooltips |
+| Surface | `--field` | `#0c130f` | input, textarea, select |
+| Surface | `--track` | `#080d0a` | progress track |
+| Surface | `--paper` | `#f7faf5` | the white workspace iframe |
+| Surface | `--raised-top` | `#141f19` | gradient start of a raised card |
+| Surface | `--raised-bottom` | `#0e1511` | gradient end of a raised card |
+| Line | `--line` | `#223028` | default border and divider |
+| Line | `--field-line` | `#6f8376` | input, textarea, select resting boundary (4.04:1 on `--field`) |
+| Line | `--line-strong` | `#33453a` | emphasised border |
+| Line | `--row-line` | `#1d2a22` | table row divider |
+| Line | `--scroll-track` | `#5a6b5e` | .table-scroll scrollbar track, 641-960px only (4.74:1 on `--panel`) |
+| Line | `--scroll-thumb` | `#c4d1c6` | .table-scroll scrollbar thumb, 641-960px only (3.16:1 on `--scroll-track`) |
+| Text | `--text` | `#e9efe9` | body copy and headings |
+| Text | `--muted` | `#b3c0b5` | secondary copy |
+| Text | `--muted-2` | `#94a398` | 10-13px meta text: `.fine`, `<small>`, `.count`, `.foot`, table headers |
+| Text | `--lede-ink` | `#c2cec4` | landing page lede |
+| Text | `--tip-ink` | `#e2eae4` | tooltip body |
+| Accent | `--accent` | `#8fbfa8` | links, focus ring, selected state |
+| Accent | `--accent-strong` | `#2f6b57` | primary button fill |
+| Accent | `--accent-hover` | `#3b7d65` | primary button hover |
+| Accent | `--accent-ink` | `#f4f8f2` | text on the primary fill |
+| Accent | `--brand` | `#c49a5a` | brand mark, highlight (sage) |
+| Accent | `--brand-2` | `#8fb39a` | brand mark gradient end (sand) |
+| Accent | `--good` | `#8fbfa8` | success |
+| Accent | `--warn` | `#d6a75b` | warning |
+| Accent | `--danger` | `#e08a7e` | error |
+| Accent | `--mint` | `#8fbfa8` | feature accent |
+| Accent | `--blue` | `#9fb4bd` | feature accent |
+| Accent | `--violet` | `#b7a3c2` | feature accent |
+| Accent | `--mark-ink` | `#0b100e` | letter inside the brand mark |
+| Accent | `--badge-bg` | `#1b2a22` | neutral badge fill |
+| Accent | `--badge-ink` | `#c5d2c8` | neutral badge text |
 | Spacing | `--space-1` | `4px` | tightest gap |
 | Spacing | `--space-2` | `8px` | inline gap, chip padding |
 | Spacing | `--space-3` | `12px` | list row gap |
@@ -62,16 +62,16 @@ them; this page only fixes the names and the values.
 | Type | `--text-lg` | `16px` | card heading |
 | Type | `--text-xl` | `19px` | section heading |
 | Type | `--text-2xl` | `32px` | page heading |
-| Radius | `--radius-xs` | `6px` | small chips and inline code |
-| Radius | `--radius-sm` | `8px` | controls, inputs and small panels |
-| Radius | `--radius-md` | `10px` | rows, inputs and inset blocks |
-| Radius | `--radius-lg` | `12px` | feature, hero and dialog shells |
-| Radius | `--radius` | `12px` | the card shell |
+| Radius | `--radius-xs` | `4px` | small chips and inline code |
+| Radius | `--radius-sm` | `6px` | controls, inputs and small panels |
+| Radius | `--radius-md` | `8px` | rows, inputs and inset blocks |
+| Radius | `--radius-lg` | `10px` | feature, hero and dialog shells |
+| Radius | `--radius` | `10px` | the card shell |
 | Radius | `--radius-pill` | `999px` | badges, pills and the meter |
 | Motion | `--motion-fast` | `120ms` | hover, colour change |
 | Motion | `--motion-base` | `180ms` | layout and opacity change |
 | Motion | `--ease` | `cubic-bezier(0.2, 0.7, 0.3, 1)` | standard easing |
-| Motion | `--shadow` | `0 8px 24px rgba(0, 0, 0, 0.28)` | menus, popovers and dialogs only |
+| Motion | `--shadow` | 0 8px 24px rgba(0, 0, 0, 0.28) | menus, popovers and dialogs only |
 | Layout | `--touch` | `44px` | minimum height for a tappable control |
 | Layout | `--content` | `1180px` | content max width |
 | Layout | `--nav-h` | `61px` | section nav height; `scroll-margin-top` reads it so an anchor clears the bar |
@@ -89,33 +89,33 @@ keep its alpha.
 
 | Family | Token | Value | Used for |
 |---|---|---|---|
-| accent | `--accent-a05` | `rgba(217, 119, 69, 0.05)` | 5% accent tint |
-| accent | `--accent-a10` | `rgba(217, 119, 69, 0.10)` | 10% accent tint |
-| accent | `--accent-a12` | `rgba(217, 119, 69, 0.12)` | 12% accent tint |
-| accent | `--accent-a16` | `rgba(217, 119, 69, 0.16)` | 16% accent tint |
-| accent | `--accent-a18` | `rgba(217, 119, 69, 0.18)` | 18% accent tint |
-| accent | `--accent-a26` | `rgba(217, 119, 69, 0.26)` | 26% accent tint |
-| accent | `--accent-a32` | `rgba(217, 119, 69, 0.32)` | 32% accent tint |
-| accent | `--accent-a34` | `rgba(217, 119, 69, 0.34)` | 34% accent tint |
-| accent | `--accent-a42` | `rgba(217, 119, 69, 0.42)` | 42% accent tint |
-| brand | `--brand-a08` | `rgba(127, 174, 154, 0.08)` | 8% brand tint |
-| brand | `--brand-a10` | `rgba(127, 174, 154, 0.10)` | 10% brand tint |
-| brand | `--brand-a14` | `rgba(127, 174, 154, 0.14)` | 14.000000000000002% brand tint |
-| brand | `--brand-a28` | `rgba(127, 174, 154, 0.28)` | 28.000000000000004% brand tint |
-| brand | `--brand-a30` | `rgba(127, 174, 154, 0.30)` | 30% brand tint |
-| brand | `--brand-a35` | `rgba(127, 174, 154, 0.35)` | 35% brand tint |
-| warn | `--warn-a12` | `rgba(224, 179, 106, 0.12)` | 12% warn tint |
-| warn | `--warn-a14` | `rgba(224, 179, 106, 0.14)` | 14.000000000000002% warn tint |
-| warn | `--warn-a28` | `rgba(224, 179, 106, 0.28)` | 28.000000000000004% warn tint |
-| warn | `--warn-a30` | `rgba(224, 179, 106, 0.30)` | 30% warn tint |
-| warn | `--warn-a32` | `rgba(224, 179, 106, 0.32)` | 32% warn tint |
-| danger | `--danger-a08` | `rgba(232, 138, 125, 0.08)` | 8% danger tint |
-| danger | `--danger-a10` | `rgba(232, 138, 125, 0.10)` | 10% danger tint |
-| danger | `--danger-a14` | `rgba(232, 138, 125, 0.14)` | 14.000000000000002% danger tint |
-| danger | `--danger-a26` | `rgba(232, 138, 125, 0.26)` | 26% danger tint |
-| danger | `--danger-a35` | `rgba(232, 138, 125, 0.35)` | 35% danger tint |
-| danger | `--danger-a40` | `rgba(232, 138, 125, 0.40)` | 40% danger tint |
-| danger | `--danger-a58` | `rgba(232, 138, 125, 0.58)` | 57.99999999999999% danger tint |
+| accent | `--accent-a05` | rgba(143, 191, 168, 0.05) | 5% accent tint |
+| accent | `--accent-a10` | rgba(143, 191, 168, 0.10) | 10% accent tint |
+| accent | `--accent-a12` | rgba(143, 191, 168, 0.12) | 12% accent tint |
+| accent | `--accent-a16` | rgba(143, 191, 168, 0.16) | 16% accent tint |
+| accent | `--accent-a18` | rgba(143, 191, 168, 0.18) | 18% accent tint |
+| accent | `--accent-a26` | rgba(143, 191, 168, 0.26) | 26% accent tint |
+| accent | `--accent-a32` | rgba(143, 191, 168, 0.32) | 32% accent tint |
+| accent | `--accent-a34` | rgba(143, 191, 168, 0.34) | 34% accent tint |
+| accent | `--accent-a42` | rgba(143, 191, 168, 0.42) | 42% accent tint |
+| brand | `--brand-a08` | rgba(196, 154, 90, 0.08) | 8% brand tint |
+| brand | `--brand-a10` | rgba(196, 154, 90, 0.10) | 10% brand tint |
+| brand | `--brand-a14` | rgba(196, 154, 90, 0.14) | 14.000000000000002% brand tint |
+| brand | `--brand-a28` | rgba(196, 154, 90, 0.28) | 28.000000000000004% brand tint |
+| brand | `--brand-a30` | rgba(196, 154, 90, 0.30) | 30% brand tint |
+| brand | `--brand-a35` | rgba(196, 154, 90, 0.35) | 35% brand tint |
+| warn | `--warn-a12` | rgba(214, 167, 91, 0.12) | 12% warn tint |
+| warn | `--warn-a14` | rgba(214, 167, 91, 0.14) | 14.000000000000002% warn tint |
+| warn | `--warn-a28` | rgba(214, 167, 91, 0.28) | 28.000000000000004% warn tint |
+| warn | `--warn-a30` | rgba(214, 167, 91, 0.30) | 30% warn tint |
+| warn | `--warn-a32` | rgba(214, 167, 91, 0.32) | 32% warn tint |
+| danger | `--danger-a08` | rgba(224, 138, 126, 0.08) | 8% danger tint |
+| danger | `--danger-a10` | rgba(224, 138, 126, 0.10) | 10% danger tint |
+| danger | `--danger-a14` | rgba(224, 138, 126, 0.14) | 14.000000000000002% danger tint |
+| danger | `--danger-a26` | rgba(224, 138, 126, 0.26) | 26% danger tint |
+| danger | `--danger-a35` | rgba(224, 138, 126, 0.35) | 35% danger tint |
+| danger | `--danger-a40` | rgba(224, 138, 126, 0.40) | 40% danger tint |
+| danger | `--danger-a58` | rgba(224, 138, 126, 0.58) | 57.99999999999999% danger tint |
 
 ## Naming rules (命名规则)
 
@@ -182,21 +182,21 @@ rules replace them:
   links, the current nav item, focus rings, selected chips, pills and badges.
   `--brand`, `--brand-2` and `--mint` are decoration only: the wordmark gradient
   and the meter's fill. A coloured panel never stands for something clickable.
-- **One calm surface.** Cards use `--panel` and a 1px border; the page uses one
-  background. Gradients are reserved for the wordmark and the meter, not for
-  every card, so the content, not the chrome, carries the hierarchy.
+- **One calm surface.** A section is a flat band with a 1px top rule; only the
+  current action panel and dialogs carry a `--panel` fill and a border. The page
+  uses one background, so the content, not the chrome, carries the hierarchy.
 
 `test/uiSurfaces.test.ts` pins all three, including the count (`pages.ts` may
 carry exactly one `style="`).
 
-## Warm editorial foundation (#858)
+## Flight-deck foundation (#547)
 
-The console reads as a worked page, not as a dark-blue AI template: warm
-charcoal surfaces, warm paper in light, one copper interactive accent, sage and
-sand as the only secondary hues. The token names are unchanged, so a view written
-against `var(--panel)` or `var(--accent)` did not move; only the values did.
+The console reads as a working instrument, not as a warm-cream or dark-blue
+AI template: cool graphite and mineral surfaces, sage/pine action, and brass as
+the only warm note. The token names are unchanged, so a view written against
+`var(--panel)` or `var(--accent)` did not move; only the values did.
 
-- **One accent, warm.** `--accent` is copper (`#d97745` dark, `#ad5530` light)
+- **One accent, cool.** `--accent` is sage in dark (`#8fbfa8`) and pine in light (`#2f6b57`)
   on every control and link. The brand pair is decorative: `--brand` is sage and
   `--brand-2` sand, so the wordmark gradient and the feature accents never read
   as something clickable, and the `--blue`/`--violet` feature hues are
@@ -206,8 +206,8 @@ against `var(--panel)` or `var(--accent)` did not move; only the values did.
   copy keeps the system sans stack, and `--mono` stays for code and numeric
   columns. The CJK faces sit in the display stack so a mixed heading keeps one
   texture.
-- **Smaller, flatter surfaces.** Radii are 6 / 8 / 10 / 12 with `--radius` 12,
-  a card is a `--panel` fill inside a 1px `--line` border, and the one
+- **Smaller, flatter surfaces.** Radii are 4 / 6 / 8 / 10 with `--radius` 10,
+  a card is a flat section with a 1px top rule; only the action panel and dialogs carry a `--panel` fill, and the one
   `--shadow` (`0 8px 24px`, the tightest the direction allows) is reserved for
   menus, popovers and dialogs; a card carries a border instead of a shadow.
 - **No uppercase eyebrow.** The 12-13px meta text keeps its size and colour and
@@ -236,7 +236,7 @@ share one frame instead of each builder carrying its own markup:
   not add a `prefers-color-scheme` media query, because that would need the
   forbidden `<style>` block.
 - **One wordmark and footer.** The card opens with the `Fledge` wordmark and
-  closes with the FlyBot line plus docs (`https://fledge-docs.hugoxk.online/docs/`)
+  closes with the FlyBot line plus docs (`https://docs.fledge.hugoxk.online/`)
   and status (`https://hugoxk.online/status/`) links.
 - **Text parity.** Every builder returns a `text` part beside the HTML; it keeps
   the same job, repository, PR, issue, score and link facts in a plain readable
@@ -288,28 +288,28 @@ default; the light palette redefines the same colour names:
 
 | Group | Token | Dark | Light | Light ratio |
 |---|---|---|---|---|
-| Surface | `--bg` | `#0d0c0b` | `#f6f1e7` | `--text` 15.40:1 |
-| Surface | `--bg-soft` | `#121110` | `#f1ebdf` | `--muted-2` 4.96:1 |
-| Surface | `--panel` | `#161412` | `#fffdf8` | `--muted-2` 5.79:1 |
-| Surface | `--panel-2` | `#1c1916` | `#f8f4ec` | `--muted-2` 5.37:1 |
-| Surface | `--surface-inset` | `#141210` | `#efe8db` | `--text` 14.23:1 |
-| Surface | `--field` | `#12100e` | `#fffdf8` | `--text` 17.05:1 |
-| Line | `--line` | `#2a251f` | `#ded6c6` | 1px divider, non-text |
-| Line | `--field-line` | `#7d7266` | `#8a7f6d` | 3.87:1 on `--field` and `--panel`, 3.59:1 on `--panel-2`, 3.50:1 on `--bg` |
-| Line | `--scroll-track` | `#8a8074` | `#8a7f6d` | 3.87:1 on `--panel`, 3.11:1 on `--scroll-thumb` |
-| Line | `--scroll-thumb` | `#f0e7d9` | `#3b342c` | 12.06:1 on `--panel` |
-| Surface | `--header-bg` | `rgba(13, 12, 11, 0.82)` | `rgba(246, 241, 231, 0.88)` | translucent sticky row; its ink is `--text`/`--muted` at the ratios above |
-| Surface | `--chip-bg` | `rgba(243, 237, 228, 0.03)` | `rgba(29, 26, 22, 0.04)` | translucent account pill; its ink is `--muted`/`--muted-2` |
-| Text | `--text` | `#f3ede4` | `#1d1a16` | 15.40:1 on `--bg` |
-| Text | `--muted` | `#c8bfb1` | `#5b5348` | 7.44:1 on `--panel` |
-| Text | `--muted-2` | `#a99f91` | `#6d6355` | 5.79:1 on `--panel`, 5.37:1 on `--panel-2` |
-| Accent | `--accent` | `#d97745` | `#ad5530` | 5.02:1 on `--panel`, 4.53:1 on `--bg` |
-| Accent | `--accent-ink` | `#120d08` | `#fffdf8` | 6.90:1 on `--accent-strong` |
-| Accent | `--brand` | `#7fae9a` | `#3a6653` | 6.44:1 on `--panel` |
-| Accent | `--brand-2` | `#e0b36a` | `#7a5200` | 6.81:1 on `--panel` |
-| Accent | `--good` / `--mint` | `#7fae9a` | `#3a6653` | 6.44:1 on `--panel` |
-| Accent | `--warn` | `#e0b36a` | `#7a5200` | 6.81:1 on `--panel` |
-| Accent | `--danger` | `#e88a7d` | `#a33426` | 6.71:1 on `--panel` |
+| Surface | `--bg` | #0b100e | #eef1ea | `--text` 14.59:1
+| Surface | `--bg-soft` | #0e1512 | #e8ece4 | `--muted-2` 4.82:1
+| Surface | `--panel` | #101814 | #f8faf5 | `--muted-2` 5.49:1
+| Surface | `--panel-2` | #16211b | #f0f3ec | `--muted-2` 5.15:1
+| Surface | `--surface-inset` | #0e1612 | #e6eae2 | `--text` 13.66:1
+| Surface | `--field` | #0c130f | #ffffff | `--text` 16.65:1
+| Line | `--line` | #223028 | #d4dbd0 | 1px divider, non-text
+| Line | `--field-line` | #6f8376 | #7b887c | 3.71:1 on `--field` and `--panel`, 3.31:1 on `--panel-2`, 3.25:1 on `--bg`
+| Line | `--scroll-track` | #5a6b5e | #7d8a80 | 3.43:1 on `--panel`, 3.24:1 on `--scroll-thumb`
+| Line | `--scroll-thumb` | #c4d1c6 | #2f3b33 | 11.14:1 on `--panel`
+| Surface | `--header-bg` | rgba(11, 16, 14, 0.78) | rgba(238, 241, 234, 0.86) | translucent sticky row; its ink is `--text`/`--muted` at the ratios above
+| Surface | `--chip-bg` | rgba(255, 255, 255, 0.03) | rgba(20, 30, 24, 0.04) | translucent account pill; its ink is `--muted`/`--muted-2`
+| Text | `--text` | #e9efe9 | #18201b | 14.59:1 on `--bg`
+| Text | `--muted` | #b3c0b5 | #4e5b52 | 6.79:1 on `--panel`
+| Text | `--muted-2` | #94a398 | #5c695f | 5.49:1 on `--panel`, 5.15:1 on `--panel-2`
+| Accent | `--accent` | #8fbfa8 | #2f6b57 | 5.94:1 on `--panel`, 5.48:1 on `--bg`
+| Accent | `--accent-ink` | #f4f8f2 | #ffffff | 8.30:1 on `--accent-strong`
+| Accent | `--brand` | #c49a5a | #8a5d26 | 5.44:1 on `--panel`
+| Accent | `--brand-2` | #8fb39a | #3f6b57 | 5.79:1 on `--panel`
+| Accent | `--good` / `--mint` | `#8fbfa8` | `#2f6b57` | 5.42:1 on `--panel` |
+| Accent | `--warn` | #d6a75b | #8a5d26 | 5.44:1 on `--panel`
+| Accent | `--danger` | #e08a7e | #a83e36 | 5.87:1 on `--panel`
 | Accent | `--badge-ink` on `--badge-bg` | `#d0c6b7` / `#241f1a` | `#4a4237` / `#ece5d8` | 7.89:1 |
 
 How it is selected:
@@ -466,9 +466,17 @@ moves on with the next fix and is not a review outcome.
 | Reviews | completed review jobs with a score, terminated inside the window | no such review |
 | Average score | mean of those scores, one decimal | no scored review |
 | Changes requested | `changes_requested outcomes / outcomes recorded`, `x% (a/b)` | no outcome recorded in the window |
-| PR→review | median `review finished_at − work item created_at` for reviews linked to a PR | no linked PR review |
+| PR→first decision | median `first review finished_at − work item created_at`, one sample per work item | no linked PR review |
 | PR→merge | median `merged_at − created_at` for work items merged in the window | no merge |
 | Model | the model each review ran, `label ×n` | no recorded model |
+| Overrides | `overrides / recorded changes-requested decisions`, `x% (a/b)`, plus each override's review job, model and tip | no recorded blocking decision in the window |
+
+An override is a merge that named a recorded `changes_requested` decision and
+went ahead; the denominator is those decisions in the same window, so the number
+cannot be read as a share of all reviews. A threshold-only block has no decision
+row and is not in the rate. Each override names `<review job> · <model> · <tip>`,
+and a field a row does not carry prints `not recorded` rather than an empty
+placeholder.
 
 Rules the card follows, because a reader cannot tell a confident zero from an
 unknown one:

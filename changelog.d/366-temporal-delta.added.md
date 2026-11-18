@@ -1,1 +1,0 @@
-An iterate job's goal now carries one line of temporal context — `Since 4f2c1a9: 3 commits ahead, 2 merged PRs (#812, #815)` — built from the previous finished run's base SHA, and the job page shows the same line. A first run says `Since: no previous run`, and a compare that failed or a page walk that hit its cap is marked `partial` instead of reporting a smaller number.

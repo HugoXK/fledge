@@ -1,0 +1,1 @@
+The job page lists every carry-over item it dropped — each with its link and whether it is a closed issue or a merged pull request — and every line it could not verify, naming the failed read or the spent read budget, instead of only the counts in the header. A job whose goal happens to contain a carry-over line no longer prints counts nobody computed.

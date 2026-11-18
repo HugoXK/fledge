@@ -1,11 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Store } from '../src/db.js'
+import { Store, formatReviewOutcomeDetail, parseReviewOverrideDetail } from '../src/db.js'
 import type { JobRow, RepoRow, WorkItemRow } from '../src/db.js'
 import { InstanceManager } from '../src/flybot/instances.js'
 import { PLAYBOOK_VERSION, playbookFingerprint } from '../src/flybot/playbook.js'
 import { Jobs } from '../src/jobs/service.js'
 import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureStreak, isMetaTitle, lastDurationMs } from '../src/jobs/continuity.js'
+import type { CarryOverLinkState, CarryOverReader, SchedulerState } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { metricsSnapshot } from '../src/lib/metrics.js'
@@ -2438,8 +2439,8 @@ test('carry-over is bounded, names the open work and is explicitly data', async 
   assert.match(text, /https:\/\/x\/pr\/3/)
 })
 
-test('a due repo with no open work stays idle until discovery is due', () => {
-  const next = decideNextJob({
+test('a due repo with no open work stays idle until discovery is due', async () => {
+  const next = await decideNextJob({
     repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
     lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
     lastDiscoverAt: iso(-60 * 60_000), discoverIntervalMinutes: 720,
@@ -2447,8 +2448,8 @@ test('a due repo with no open work stays idle until discovery is due', () => {
   assert.deepEqual(next, { kind: 'none', reason: 'idle' })
 })
 
-test('an idle repo runs one discovery session when the discovery interval is due', () => {
-  const next = decideNextJob({
+test('an idle repo runs one discovery session when the discovery interval is due', async () => {
+  const next = await decideNextJob({
     repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
     lastDurationMs: 1_000, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: true,
     lastDiscoverAt: iso(-13 * 60 * 60_000), discoverIntervalMinutes: 720,
@@ -2456,30 +2457,112 @@ test('an idle repo runs one discovery session when the discovery interval is due
   assert.deepEqual(next, { kind: 'discover' })
 })
 
-test('open work continues instead of starting another isolated iterate', () => {
+test('open work continues instead of starting another isolated iterate', async () => {
   const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
-  const followup = decideNextJob({
+  const followup = await decideNextJob({
     repo: repo({ repo_role: 'developer' }), now, lastRunAt: iso(-2 * 3_600_000),
     intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr], reviewerEnabled: true, reviewDue: true,
   })
   assert.equal(followup.kind, 'followup')
   assert.equal(followup.kind === 'followup' ? followup.workItemId : null, 'work_1')
 
-  const review = decideNextJob({
+  const review = await decideNextJob({
     repo: repo({ repo_role: 'maintainer' }), now, lastRunAt: iso(-2 * 3_600_000),
     intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr], reviewerEnabled: true, reviewDue: true,
   })
   assert.equal(review.kind, 'review')
   assert.equal(review.kind === 'review' ? review.prUrl : null, 'https://x/pr/3')
 
-  const scoped = decideNextJob({
+  const scoped = await decideNextJob({
     repo: repo(), now, lastRunAt: iso(-2 * 3_600_000), intervalMinutes: 60,
     lastDurationMs: 0, failureStreak: 0, openWork: [workItem()], reviewerEnabled: false, reviewDue: false,
   })
   assert.equal(scoped.kind, 'followup')
 })
 
-test('the interval respects the last duration and backs off after failures', () => {
+// -- #789: the decision that produces the run is evidence-linked too ---------
+
+function fakeArtifactReader(outcome: CarryOverLinkState | 'throw'): CarryOverReader & { reads: string[] } {
+  const reads: string[] = []
+  return {
+    reads,
+    async read(link: string) {
+      reads.push(link)
+      if (outcome === 'throw') throw new Error('the state could not be read')
+      return outcome
+    },
+  }
+}
+
+function dueState(overrides: Partial<SchedulerState> = {}): SchedulerState {
+  return {
+    repo: repo({ repo_role: 'developer' }), now, lastRunAt: iso(-2 * 3_600_000),
+    intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0,
+    openWork: [workItem()], reviewerEnabled: false, reviewDue: false, ...overrides,
+  }
+}
+
+test('a merged artifact turns the chosen item into a fresh iterate, not a continuation', async () => {
+  const read = fakeArtifactReader('merged')
+  const next = await decideNextJob(dueState({ openWork: [workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })] }), { read })
+  assert.equal(next.kind, 'iterate')
+  assert.equal(next.kind === 'iterate' ? next.staleWorkItemId : null, 'work_1')
+  assert.equal(next.kind === 'iterate' ? next.artifactState : null, 'merged')
+  assert.deepEqual(read.reads, ['https://x/pr/3'])
+
+  // A merged pull request is the finished state of the work; a due review
+  // window does not turn it back into a review job.
+  const reviewing = fakeArtifactReader('merged')
+  const reviewNext = await decideNextJob(dueState({
+    repo: repo({ repo_role: 'maintainer' }), reviewerEnabled: true, reviewDue: true,
+    openWork: [workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })],
+  }), { read: reviewing })
+  assert.equal(reviewNext.kind, 'iterate')
+})
+
+test('a closed issue is not continued either', async () => {
+  const read = fakeArtifactReader('closed')
+  const next = await decideNextJob(dueState(), { read })
+  assert.equal(next.kind, 'iterate')
+  assert.equal(next.kind === 'iterate' ? next.artifactState : null, 'closed')
+  assert.deepEqual(read.reads, ['https://github.com/octo/demo/issues/1'])
+})
+
+test('an open artifact still continues the item with one read', async () => {
+  const read = fakeArtifactReader('open')
+  const next = await decideNextJob(dueState(), { read })
+  assert.equal(next.kind, 'followup')
+  assert.equal(next.kind === 'followup' ? next.workItemId : null, 'work_1')
+  assert.deepEqual(read.reads, ['https://github.com/octo/demo/issues/1'])
+})
+
+test('a failed read keeps the item and continues it', async () => {
+  const read = fakeArtifactReader('throw')
+  const next = await decideNextJob(dueState(), { read })
+  assert.equal(next.kind, 'followup')
+  assert.equal(read.reads.length, 1)
+})
+
+test('a held-back, link-less or idle repository costs no read', async () => {
+  const notDue = fakeArtifactReader('merged')
+  const held = await decideNextJob(dueState({ lastRunAt: iso(-30 * 60_000) }), { read: notDue })
+  assert.equal(held.kind, 'none')
+  assert.deepEqual(notDue.reads, [])
+
+  const noLink = fakeArtifactReader('merged')
+  const continued = await decideNextJob(dueState({ openWork: [workItem({ issue_url: null })] }), { read: noLink })
+  assert.equal(continued.kind, 'followup')
+  assert.deepEqual(noLink.reads, [])
+
+  const idle = fakeArtifactReader('merged')
+  const none = await decideNextJob(dueState({
+    openWork: [], lastDiscoverAt: iso(-60 * 60_000), discoverIntervalMinutes: 720,
+  }), { read: idle })
+  assert.equal(none.kind, 'none')
+  assert.deepEqual(idle.reads, [])
+})
+
+test('the interval respects the last duration and backs off after failures', async () => {
   const recent = [job({ status: 'failed' }), job({ id: 'job_0', status: 'failed' })]
   assert.equal(failureStreak(recent), 2)
   assert.equal(lastDurationMs(recent), 600_000)
@@ -2497,12 +2580,12 @@ test('the interval respects the last duration and backs off after failures', () 
     ]),
     0,
   )
-  const notDue = decideNextJob({
+  const notDue = await decideNextJob({
     repo: repo(), now, lastRunAt: iso(-30 * 60_000), intervalMinutes: 60,
     lastDurationMs: 60 * 60_000, failureStreak: 1, openWork: [workItem()], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(notDue.kind, 'none')
-  const backedOff = decideNextJob({
+  const backedOff = await decideNextJob({
     repo: repo(), now, lastRunAt: iso(-90 * 60_000), intervalMinutes: 60,
     lastDurationMs: 0, failureStreak: 3, openWork: [workItem()], reviewerEnabled: false, reviewDue: true,
   })
@@ -2510,14 +2593,14 @@ test('the interval respects the last duration and backs off after failures', () 
 })
 
 
-test('discovery never runs more often than every 60 minutes', () => {
-  const early = decideNextJob({
+test('discovery never runs more often than every 60 minutes', async () => {
+  const early = await decideNextJob({
     repo: repo(), now, lastRunAt: null, intervalMinutes: 15,
     lastDurationMs: 0, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: false,
     lastDiscoverAt: iso(-30 * 60_000), discoverIntervalMinutes: 15,
   })
   assert.equal(early.kind, 'none')
-  const due = decideNextJob({
+  const due = await decideNextJob({
     repo: repo(), now, lastRunAt: null, intervalMinutes: 15,
     lastDurationMs: 0, failureStreak: 0, openWork: [], reviewerEnabled: false, reviewDue: false,
     lastDiscoverAt: iso(-61 * 60_000), discoverIntervalMinutes: 15,
@@ -2547,6 +2630,65 @@ test('the scheduler runs one discovery session when idle, then idles', async () 
     await jobs.tick()
     assert.equal(store.listJobsForRepo(repo.id).length, 1, 'discovery must not repeat before its interval')
     assert.equal(store.getRepo(repo.id)?.last_status, 'idle')
+  } finally {
+    store.close()
+  }
+})
+
+test('the scheduler starts a fresh iterate when the chosen item is stale', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'scheduler-stale', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_scheduler_stale', userId: user.id, owner: 'o', name: 'stale',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'keep the parser honest', autoIterate: true, intervalMinutes: 60,
+    })
+    store.createWorkItem({
+      id: 'work_stale', repoId: repo.id, userId: user.id, title: 'fix parser',
+      issueUrl: 'https://github.com/o/stale/issues/4', state: 'triaged',
+    })
+    jobs.carryOverReaderOverride = () => fakeArtifactReader('closed')
+
+    await jobs.tick()
+    const created = store.listJobsForRepo(repo.id)
+    assert.equal(created.length, 1)
+    assert.equal(created[0]?.kind, 'iterate')
+    assert.equal(created[0]?.trigger, 'schedule')
+    assert.equal(created[0]?.work_item_id, null, 'the run is fresh, not owned by the stale row')
+    assert.match(created[0]?.goal ?? '', /keep the parser honest/)
+    assert.doesNotMatch(created[0]?.goal ?? '', /work_stale/)
+    assert.equal(store.getWorkItem('work_stale')?.state, 'closed')
+    assert.equal(store.listOpenWorkItems(repo.id).length, 0)
+  } finally {
+    store.close()
+  }
+})
+
+test('the scheduler still continues a live item through its work item id', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'capture', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'scheduler-live', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_scheduler_live', userId: user.id, owner: 'o', name: 'live',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    store.createWorkItem({
+      id: 'work_live', repoId: repo.id, userId: user.id, title: 'fix parser',
+      issueUrl: 'https://github.com/o/live/issues/4', state: 'triaged',
+    })
+    jobs.carryOverReaderOverride = () => fakeArtifactReader('open')
+
+    await jobs.tick()
+    const created = store.listJobsForRepo(repo.id)
+    assert.equal(created.length, 1)
+    assert.equal(created[0]?.work_item_id, 'work_live')
+    assert.equal(store.getWorkItem('work_live')?.state, 'in_progress')
   } finally {
     store.close()
   }
@@ -2754,23 +2896,23 @@ test('the scheduler idles with no work and starts once a work item appears', asy
   }
 })
 
-test('an open work item starts after the short work cooldown, not the legacy interval', () => {
+test('an open work item starts after the short work cooldown, not the legacy interval', async () => {
   const item = workItem()
-  const justDone = decideNextJob({
+  const justDone = await decideNextJob({
     repo: repo(), now, lastRunAt: iso(-9 * 60_000), intervalMinutes: 15,
     lastDurationMs: 0, failureStreak: 0, openWork: [item], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(justDone.kind, 'none')
-  const ready = decideNextJob({
+  const ready = await decideNextJob({
     repo: repo(), now, lastRunAt: iso(-16 * 60_000), intervalMinutes: 15,
     lastDurationMs: 0, failureStreak: 0, openWork: [item], reviewerEnabled: false, reviewDue: true,
   })
   assert.equal(ready.kind, 'followup')
 })
 
-test('a due maintainer continues the open PR when the review interval is not due', () => {
+test('a due maintainer continues the open PR when the review interval is not due', async () => {
   const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
-  const next = decideNextJob({
+  const next = await decideNextJob({
     repo: repo({ repo_role: 'maintainer' }), now, lastRunAt: iso(-2 * 3_600_000),
     intervalMinutes: 60, lastDurationMs: 0, failureStreak: 0, openWork: [pr],
     reviewerEnabled: true, reviewDue: false,
@@ -3659,5 +3801,81 @@ test('a retried job records attempt N+1 and links it to the attempt it continues
     assert.equal(rows[0]!.retry_of, source.id)
   } finally {
     store.close()
+  }
+})
+
+test('an override records the decision it overturned — job, review, score, model and tip', async () => {
+  // #980: the override write was only asserted to exist. A detail that lost the
+  // decision identity (job, model, tip) kept the suite green, so this reads the
+  // structured record the page and the trend both consume.
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/1') {
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'abc' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true, sha: 'def' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  const tip = 'c'.repeat(40)
+  try {
+    const user = makeUser(store, { login: 'override-record-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_override_record', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_override_record', repoId: repo.id, userId: user.id, title: 'fix', prUrl: 'https://github.com/o/r/pull/1', state: 'changes_requested' })
+    const review = store.createJob({ id: 'job_override_review', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'review', callbackHash: 'review-hash', platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob(review.id, { status: 'succeeded', review_score: 60, finished_at: new Date().toISOString() })
+    // The decision row is the one source the override names, so seed it with the
+    // identity the record has to carry through.
+    store.audit(user.id, 'work_item.review_outcome', formatReviewOutcomeDetail({
+      workItemId: item.id, outcome: 'changes_requested', score: 60, reviewJobId: review.id, model: 'model-980', tip,
+    }))
+    const secret = 'override-record-secret'
+    store.createJob({ id: 'job_override_iterate', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: item.id })
+    store.updateJob('job_override_iterate', { status: 'running', branch: 'fledge/fix', pr_url: 'https://github.com/o/r/pull/1', started_at: new Date().toISOString() })
+
+    const manual = await jobs.manualMerge(repo, store.getJob('job_override_iterate')!)
+    assert.equal(manual.ok, true)
+    assert.equal(merges.length, 1)
+
+    const row = store.listAudit().find((entry) => entry.action === 'job.merge_review_override')
+    assert.ok(row, 'the override is audited')
+    const detail = row.detail ?? ''
+    assert.ok(detail.startsWith('job_override_iterate: review '), 'the detail names the iterate job that merged')
+    const parsed = parseReviewOverrideDetail(detail)
+    assert.ok(parsed, 'the detail parses as the structured record, not a bare sentence')
+    assert.equal(parsed.reviewJobId, 'job_override_review', 'the review job that made the decision')
+    assert.equal(parsed.score, 60, 'the score that decision recorded')
+    assert.equal(parsed.model, 'model-980', 'the model that answered the review')
+    assert.equal(parsed.tip, tip, 'the tip that review covered')
+    assert.match(parsed.reason, /changes_requested|review gate/i, 'the reason still names the block')
+  } finally {
+    store.close()
+    await github.close()
   }
 })

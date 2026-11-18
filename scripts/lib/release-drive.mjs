@@ -1,7 +1,7 @@
 // Decide what the daily release run does, from the state the workflow collected.
 //
-// Pure: the workflow gathers the state (tags, merged PRs, the open release PR, the
-// latest ci-ok on main) and this function names exactly one action, so the night's
+// Pure: the workflow gathers the state (tags, the open release PR, the latest
+// ci-ok on main) and this function names exactly one action, so the night's
 // behaviour is testable without GitHub, a token or a clock.
 //
 // Actions:
@@ -11,22 +11,23 @@
 //                  mechanical shape: report and stop. An orphan `release/v<next>`
 //                  branch is the same action with a different reason: it names
 //                  the branch and its sha, and the workflow turns it red (#333).
-//   tag            a merged release PR has no tag yet: tag its squash commit
 //   wait-ci        the rule is met but `ci-ok` on main has not concluded yet: the
 //                  caller re-reads it on a bounded schedule and decides again
 //   none           no release tonight; the counts go to the summary
 //
+// There is deliberately no `tag` action: the tag job is the only tag writer, and
+// it repairs a merged release PR without a tag on its own push and schedule runs
+// (#866). The action used to exist here but the release job never fed it the
+// merged list, so it could neither execute nor be reported.
+//
 // A dry run mutates nothing: `workflow_dispatch` defaults `dry_run: true`, so a
 // dry run that returned `enqueue` would set auto-merge on the default manual
-// dispatch, and one that returned `tag` would publish. Every mutating action is
-// reduced to `none` with the action it would have taken.
+// dispatch. Every mutating action is reduced to `none` with the action it would
+// have taken.
 //
 // Everything ambiguous returns an action with a reason rather than a guess.
 
 import { mechanicalRelease } from './mechanical-release.mjs'
-
-const RELEASE_PR_TITLE = /^release: v(\d+\.\d+\.\d+)$/
-const RELEASE_PR_BRANCH = /^release\/v(\d+\.\d+\.\d+)$/
 
 // A release PR is only the release PR when it is the mechanical one. A PR whose
 // title merely starts with `release: v` — a docs-only `release: v9.9.9` — must
@@ -66,9 +67,7 @@ function failingChecks(checks) {
 }
 
 function decide(state) {
-  const { plan, openReleasePr, tags, ciOk } = state ?? {}
-
-  const tagList = Array.isArray(tags) ? tags : []
+  const { plan, openReleasePr, ciOk } = state ?? {}
 
   if (openReleasePr !== null && openReleasePr !== undefined) {
     const number = Number(openReleasePr.number ?? 0)
@@ -105,42 +104,6 @@ function decide(state) {
       }
     }
     return { action: 'enqueue', reason: `enqueue the open release PR #${String(number)}`, pr: number, headSha }
-  }
-
-  // Every merged release PR that has no tag yet, newest first: the last merged PR
-  // is not necessarily the release PR — one unrelated merge after it used to mean
-  // the tag was silently never created.
-  const mergedList = Array.isArray(state?.mergedPrs) ? state.mergedPrs : []
-  const pending = mergedList
-    .filter((pr) => RELEASE_PR_TITLE.test(String(pr?.title ?? '')))
-    .map((pr) => {
-      const version = RELEASE_PR_TITLE.exec(String(pr?.title ?? ''))?.[1] ?? ''
-      return {
-        version,
-        tag: `v${version}`,
-        branch: String(pr?.headRef ?? ''),
-        number: Number(pr?.number ?? 0),
-        sha: String(pr?.mergeCommitSha ?? ''),
-      }
-    })
-    .filter((candidate) => !tagList.includes(candidate.tag))
-    .sort((left, right) => right.number - left.number)
-  if (pending.length > 0) {
-    const candidate = pending[0]
-    const branchMatch = RELEASE_PR_BRANCH.exec(candidate.branch)
-    if (branchMatch === null || branchMatch[1] !== candidate.version) {
-      return { action: 'none', reason: `the merged release PR ${candidate.tag} has no readable release branch; not tagging on a guess` }
-    }
-    if (candidate.sha === '') {
-      return { action: 'none', reason: `the merged release PR ${candidate.tag} has no merge commit sha; not tagging HEAD on a guess`, tag: candidate.tag, version: candidate.version }
-    }
-    return {
-      action: 'tag',
-      reason: `tag ${candidate.tag} on the squash commit ${candidate.sha} of the merged release PR #${String(candidate.number)}`,
-      tag: candidate.tag,
-      version: candidate.version,
-      sha: candidate.sha,
-    }
   }
 
   // A branch the routine itself pushed and then could not open a pull request for
@@ -197,10 +160,10 @@ function decide(state) {
 
 // A dry run reports, it does not act. `workflow_dispatch` defaults `dry_run` to
 // true, so this is the default path for a manual dispatch: returning `enqueue`
-// or `tag` from it would set auto-merge or publish on the first click. A dry run
-// does not wait either: sitting on a runner for ten minutes to report a fact it
-// already holds would only delay the summary.
-const MUTATING = new Set(['open-pr', 'enqueue', 'tag'])
+// from it would set auto-merge on the first click. A dry run does not wait
+// either: sitting on a runner for ten minutes to report a fact it already holds
+// would only delay the summary.
+const MUTATING = new Set(['open-pr', 'enqueue'])
 
 export function decideDrive(state) {
   const decision = decide(state)
@@ -221,9 +184,7 @@ export function decideDrive(state) {
       dryRun: true,
       wouldHave: String(decision.action),
       ...(decision.pr === undefined ? {} : { pr: decision.pr }),
-      ...(decision.tag === undefined ? {} : { tag: decision.tag }),
       ...(decision.version === undefined ? {} : { version: decision.version }),
-      ...(decision.sha === undefined ? {} : { sha: decision.sha }),
     }
   }
   return { ...decision, dryRun: true }
