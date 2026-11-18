@@ -2531,6 +2531,20 @@ queued ──► running ──► succeeded
 The claim/worker dispatch model, the `queued` meaning and the idempotent
 callback contract are decided in [decisions/0004](decisions/0004-job-queue.md).
 
+## The red-test evidence record (#367, slice 1)
+
+"Red first" is only a claim until the base run is recorded. The base run of the
+same command, on a clean tree at the base sha, is stored on the job row itself —
+command, base sha, exit code, failure signature and the sha256 of its output — so
+the audit reads one row and no file on disk can drift from it.
+
+`classifyRedRun` in `src/lib/redTest.ts` decides whether that failure is the
+intended reason. Only an assertion failure or an error thrown from the test body
+counts as red. A compile or type error, a missing module, an environment or
+network error, a timeout and a skipped test are `unverified`, never a pass; a run
+that succeeded at the base is not red at all. The order of those checks is
+load-bearing: a skipped test whose output also says `not ok` is skipped.
+
 ## Management commands (#540)
 
 Every console write used to be its own route: parse the form, check the owner,
