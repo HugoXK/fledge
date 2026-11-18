@@ -628,6 +628,21 @@ whose duplicate risk a person still has to judge; a human resend is audited as
   deletes the GitHub installation row with the account; it does not call GitHub
   to uninstall the App installation.
 
+- **Row retention windows (#281).** The scheduler's age pass deletes
+  `oauth_states`, `approval_tokens`, read and unread `notifications`, `events`,
+  `job_events`, `webhook_deliveries`, the three `notification_outbox` states,
+  finished `jobs`, `audit_log` and `quota_ledger` by a per-class window; the
+  numbers are configuration (`RETENTION_*_DAYS`) with the shipped literal as the
+  effective default. An unset window is never "keep forever": that would stop a
+  deletion the service performs today. A value that is not an integer or is
+  below 1 falls back to the default rather than becoming zero, because zero here
+  would mean "delete every row". `sessions` age out by `expires_at` and
+  `api_tokens` are revoked or removed with their account; the preview names both
+  states instead of printing a count. Before a window is shortened,
+  `node scripts/retention.mjs --dry-run --days N` counts what it would delete —
+  read-only, printing counts and never a row body, login, email or token value.
+  The `/admin` card shows the same counts for the configured windows.
+
 ### Platform emergency stop
 
 - `POST /admin/platform/stop` and `POST /admin/platform/resume` are the

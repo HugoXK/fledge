@@ -44,6 +44,7 @@ import { readReleaseNotesSources } from '../releases/notes.js'
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
+import { RETENTION_CLASSES, RETENTION_IDLE_TABLES, type RetentionId } from '../../scripts/lib/retention.mjs'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
@@ -2607,6 +2608,16 @@ function pager(path: string, pageParam: string, page: number, total: number, per
   return `<div class="pager">${prev}<span class="pager-info">${page} / ${pages} · ${total}</span>${next}</div>`
 }
 
+/** One row of the admin retention card: an age window and what it would delete now. */
+export interface RetentionRow {
+  id: RetentionId | 'sessions' | 'api_tokens'
+  /** Null for a table with no age window; `state` says why. */
+  days: number | null
+  configured: boolean
+  count: number | null
+  state?: string
+}
+
 export function adminPage(input: {
   config: Config
   locale: Locale
@@ -2619,6 +2630,8 @@ export function adminPage(input: {
   auditPage: number
   auditTotal: number
   perPage: number
+  /** #281: the effective window per retention class and its current count. */
+  retention?: RetentionRow[]
   activity?: Map<string, { repos: number; jobs: number; lastJobAt: string | null }>
   mailFailedUsers?: Set<string>
   superadmin?: boolean
@@ -2883,6 +2896,34 @@ export function adminPage(input: {
     </div>
     <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('只列出真正不符或无法读取的副本；旧副本只按大小核对，sha256 只核对最新副本。', 'Only copies that differ or cannot be read are listed; older copies are compared by size, and sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
+  // #281: the operator surface for the windows `pruneOldData` enforces. The
+  // count is what the configured window would delete right now, read through the
+  // same predicate the scheduler runs; the card is read-only and names a
+  // fallback window as `default` so a configured number cannot be mistaken for
+  // the built-in one.
+  const retentionRows = input.retention ?? []
+  const retentionLabel = (id: string): string => {
+    const timed = RETENTION_CLASSES.find((entry) => entry.id === id)
+    if (timed !== undefined) return locale === 'zh' ? timed.label[0] : timed.label[1]
+    const idle = RETENTION_IDLE_TABLES.find((entry) => entry.id === id)
+    return idle === undefined ? id : locale === 'zh' ? idle.label[0] : idle.label[1]
+  }
+  const retentionCard = `<section class="card" id="retention">
+    <div class="row between">
+      <h2>${escapeHtml(t('数据保留', 'Data retention'))}</h2>
+      <span class="fine">${escapeHtml(t('只读预览', 'read-only preview'))}</span>
+    </div>
+    <div class="list">
+      ${retentionRows.map((row) => {
+        const window = row.days === null
+          ? escapeHtml(row.state ?? '—')
+          : `${escapeHtml(t(`${row.days} 天`, `${row.days} days`))}${row.configured ? '' : ` <span class="badge">${escapeHtml(t('默认', 'default'))}</span>`}`
+        const count = row.count === null ? `<span class="muted">${escapeHtml(t('不适用', 'not applicable'))}</span>` : `<strong>${escapeHtml(String(row.count))}</strong>`
+        return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(retentionLabel(row.id))}</strong><small>${window}</small></div><div class="row">${count}</div></div>`
+      }).join('')}
+    </div>
+    <p class="muted">${escapeHtml(t('只读：窗口来自配置，未配置时是内置默认值（标为 default）。在主机的数据库副本上运行 node scripts/retention.mjs --dry-run --days N，可以在改动窗口前预览任意 N 天会删除多少行。', 'Read-only: the windows come from config, and an unset one is the built-in default (marked default). Run node scripts/retention.mjs --dry-run --days N against a host database to preview any N before changing a window.'))}</p>
+  </section>`
   // #317: the stop route reports its result once in a redirect notice, and a
   // reload drops that line.
   // The record is read fresh per request, so the banner states who stopped the
@@ -2935,6 +2976,7 @@ export function adminPage(input: {
     ${showAudit ? `<a href="#audit" data-allow-overflow>${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
     <a href="#release" data-allow-overflow>${escapeHtml(t('发布', 'Release'))}</a>
     <a href="#backups" data-allow-overflow>${escapeHtml(t('备份', 'Backups'))}</a>
+    <a href="#retention" data-allow-overflow>${escapeHtml(t('数据保留', 'Retention'))}</a>
     <a href="#operations" data-allow-overflow>${escapeHtml(t('运维', 'Operations'))}</a>
   </nav>
   <section class="card" id="pending">
@@ -2957,6 +2999,7 @@ export function adminPage(input: {
   </section>` : ''}
   ${releaseCard}
   ${backupCard}
+  ${retentionCard}
   <section class="card" id="operations">
     <div class="row between"><h2>${escapeHtml(t('运维工具', 'Operations'))}</h2><span class="fine">${escapeHtml(t('独立运维页面', 'separate operator pages'))}</span></div>
     <div class="admin-modules">

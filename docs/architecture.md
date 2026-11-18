@@ -2305,6 +2305,28 @@ all, so the console can report it only as staleness plus a mismatch; the drill
 prints its verdict and records nothing, so the card says "restore drill: none
 recorded" rather than a green it cannot prove.
 
+### Data retention windows (#281)
+
+`Store.pruneOldData` is the one age-based delete pass, run from the scheduler
+tick (at most hourly) and otherwise unchanged. Every window now comes from
+`config.retention.windows`, built in `loadConfig` from `scripts/lib/retention.mjs`
+— one table that also feeds each predicate and the preview, so the rows a preview
+counts are exactly the rows a deploy deletes. Unset keeps the literal this
+service has always used (OAuth states 7 days; approval tokens, read
+notifications, webhook deliveries and sent outbox 30; unread notifications and
+events 90; dead/blocked outbox 90; job events, finished jobs, audit log and
+unknown outbox 365; quota ledger 730), and `configured` is false for a fallback
+so the page can mark it `default`. Unset never means "keep forever": that would
+silently stop deleting rows the service deletes today. `sessions` are removed by
+`expires_at` and `api_tokens` have no age window; both are reported as such
+rather than given a number. `Store.retentionCounts` counts at the configured
+windows for the `/admin` card, which is read-only and has no window control; the
+operator tool `scripts/retention.mjs --dry-run --days N` counts any window on a
+host copy. The delete path refuses a window that is not a whole number of days of
+at least 1, before the first delete: `loadConfig` already refuses such an env
+value, and `pruneOldData({ jobs: 0 })` is a direct caller the config cannot see,
+so the store checks the same invariant rather than trusting its input.
+
 ### Operational alerts
 
 A failed job also feeds the ops signal: three consecutive failures in one

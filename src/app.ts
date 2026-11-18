@@ -8,6 +8,7 @@ import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
 import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
+import { RETENTION_IDLE_TABLES } from '../scripts/lib/retention.mjs'
 import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
 import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
@@ -5573,6 +5574,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         auditPage,
         auditTotal,
         perPage,
+        // #281: the effective window per class and what it would delete now, plus
+        // the two tables that have no age window so the page never implies one.
+        retention: [
+          ...store.retentionCounts(config.retention.windows).map((row) => ({
+            ...row,
+            configured: config.retention.configured[row.id],
+          })),
+          ...RETENTION_IDLE_TABLES.map((table) => ({ id: table.id, days: null, configured: false, count: null, state: table.state })),
+        ],
         platformStop: jobs.platformStop(),
         superadmin,
         preview: false,
