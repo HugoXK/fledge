@@ -1778,7 +1778,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // that makes `saveSchedule` reachable in the product at all. Once the row
   // exists it owns the repository's cadence, so this route is the only door to it.
   app.get('/repos/:id/schedule', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const locale = request.locale ?? 'zh'
     const t = translator(locale)
     const row = store.scheduleForRepo(repo.id)
@@ -1807,6 +1807,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       state,
+      // #903: the role the viewer holds decides which controls the page offers.
+      role,
       // #544 slice 8: the run-now form carries a key rendered once, so a double
       // click is one command and a fresh page is a new one.
       runNowKey: randomId('cmd'),
@@ -1896,13 +1898,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // makes a double click the same command; the recurrence cursor is untouched,
   // so "run this now" never moves when the schedule next fires.
   app.post('/repos/:id/schedule/run-now', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    // #903: `ownedRepo` has already answered the role question — it refuses a
+    // viewer and resolves the connection owner as the maintainer of last resort.
+    // Running now is work, so the actor's role is the rule; `repo.repo_role` is a
+    // declaration about Fledge's access to the upstream and is NULL on a
+    // repository connected today, which is why reading it locked the owner out.
+    const { repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const back = `/repos/${repo.id}/schedule`
     const t = translator(request.locale ?? 'zh')
-    if (repo.repo_role !== 'maintainer') {
-      return reply.redirect(`${back}?refused=${encodeURIComponent(t('只有 maintainer 可以立即运行排期。', 'Only a maintainer can run the schedule now.'))}`)
-    }
-    const result = await jobs.runScheduleNow(repo, form(request).command_key)
+    const result = await jobs.runScheduleNow(repo, form(request).command_key, role)
     if (!result.ok) {
       const message = result.code === 'schedule_missing'
         ? t('这个仓库还没有排期。', 'This repository has no schedule yet.')

@@ -1179,7 +1179,7 @@ export class Jobs {
     return (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo)
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string; actorRole?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
     // the answer says the platform is stopped rather than naming a work type or
@@ -1223,7 +1223,16 @@ export class Jobs {
       return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'WORK_TYPE_MISMATCH', detail: `${kind}/${workType.type}` }
     }
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
-    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+    // #903: a route that already resolved the actor's member role through
+    // `ownedRepo` states it here, so work a person is visibly allowed to start
+    // is not refused because the repository's own `repo_role` was never chosen
+    // (it is NULL on every repository connected since the backfill migration).
+    // An unknown or viewer role still refuses: this is an authorization fact the
+    // route hands over, not an escape hatch.
+    const actorRole = options.actorRole
+    const roleAllowsWork = repo.repo_role === 'maintainer' || repo.repo_role === 'developer'
+      || actorRole === 'maintainer' || actorRole === 'developer'
+    if (!roleAllowsWork) {
       return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }
     }
     if (kind === 'review' && repo.repo_role !== 'maintainer') {
@@ -4057,7 +4066,7 @@ export class Jobs {
   // the job, `skipped` with the refusal), so the console and the ledger read one
   // vocabulary. A refusal still settles the row: the same key must keep
   // answering the same thing.
-  async runScheduleNow(repo: RepoRow, rawKey: unknown): Promise<{
+  async runScheduleNow(repo: RepoRow, rawKey: unknown, actorRole?: string): Promise<{
     ok: boolean
     code?: string
     message?: string
@@ -4081,7 +4090,7 @@ export class Jobs {
       snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!created.created) return this.runNowAnswer(created.row, true)
-    const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true })
+    const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true, ...(actorRole === undefined ? {} : { actorRole }) })
     const dispatchedAt = Date.now()
     if (!result.ok || result.job === undefined) {
       const reason = result.code ?? 'dispatch-refused'

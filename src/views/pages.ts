@@ -4938,12 +4938,16 @@ export function scheduleConsolePage(input: {
   viewer: Viewer
   repo: RepoRow
   state: ScheduleConsoleState
+  // #903: the role `ownedRepo` resolved for the viewer. The console renders the
+  // controls that role can actually use, so a viewer is never shown a button
+  // whose only answer is a refusal.
+  role: string
   form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; misfire: string; grace: string; dailyRuns: string }
   runNowKey: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, repo, state, form, runNowKey, notice, error } = input
+  const { config, locale, viewer, repo, state, role, form, runNowKey, notice, error } = input
   const t = translator(locale)
   const iso = (at: number | null): string => (at === null ? 'unknown' : new Date(at).toISOString())
   const shown = (at: number | null): string => (at === null ? t('unknown', 'unknown') : humanTimeShort(new Date(at).toISOString()))
@@ -4996,8 +5000,12 @@ export function scheduleConsolePage(input: {
     `<label>${escapeHtml(label)} <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" /></label>`
   // #544 slice 8: run-now is only offered when a schedule exists and can be read;
   // a repository without one has no cadence to run out of turn.
+  // #903: and only to a role that may run it. A viewer reads the console but is
+  // told which role starts work instead of being handed a control that refuses.
   const runNow = state.kind === 'none' || state.kind === 'unreadable'
     ? ''
+    : role === 'viewer'
+    ? `<p class="fine" data-run-now-role="viewer">${escapeHtml(t('只读成员可以查看排期；立即运行需要 developer 或 maintainer 角色。', 'A viewer reads the schedule; Run now needs a developer or maintainer role.'))}</p>`
     : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/run-now" class="run-now">${csrf(viewer)}<input type="hidden" name="command_key" value="${escapeHtml(runNowKey)}" /><button type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button><span class="fine">${escapeHtml(t('从当前时刻开始一次，不改动下次运行。', 'One run from now; the next scheduled run does not move.'))}</span></form>`
   // #544 slice 9: the only new control. Pause and Resume are separate forms with
   // their own action, so a browser retry of one cannot become the other, and the
