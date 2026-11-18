@@ -222,3 +222,31 @@ test('an unreadable snapshot is unknown, not a guess', () => {
   assert.equal(parseOccurrenceSnapshot('{"version":2}'), null, 'a newer shape is not read by this build')
   assert.equal(parseOccurrenceSnapshot('{"version":1,"config":{},"authorization":{}}'), null)
 })
+
+test('the instants a catch-up leaves behind carry the snapshot they were decided under', async () => {
+  const h = harness('snapshot-once')
+  try {
+    // `once` makes up the oldest due instant and records the rest through
+    // `recordSkippedInstants`, a separate write from the decision skip. Dropping
+    // its snapshot argument used to leave the suite green, so rows that were
+    // decided like every other one would read back as unknown.
+    const every = 15 * MINUTE
+    h.store.run("UPDATE schedules SET misfire = 'once' WHERE id = ?", h.scheduleId)
+    h.store.createWorkItem({ id: 'work_snapshot_once', repoId: h.repoId, userId: h.userId, title: 'fix it', issueUrl: 'https://github.com/o/mo/issues/1', state: 'triaged' })
+    const anchor = Math.floor(Date.now() / every) * every - 3 * every
+    h.store.run('UPDATE schedules SET created_at = ?, last_occurrence_at = ? WHERE id = ?', new Date(anchor).toISOString(), anchor, h.scheduleId)
+
+    await h.jobs.tick()
+
+    const skipped = h.store.listScheduleOccurrences(h.repoId).filter((row) => row.state === 'skipped')
+    assert.ok(skipped.length >= 2, 'the instants the catch-up did not make up are their own rows')
+    for (const row of skipped) {
+      const snapshot = parseOccurrenceSnapshot(row.snapshot_json)
+      assert.notEqual(snapshot, null, 'a skipped instant records what it was decided under')
+      assert.equal(snapshot?.config.everyMs, every)
+      assert.equal(snapshot?.config.timingRevision, row.timing_revision, 'and the revision it belongs to')
+    }
+  } finally {
+    h.store.close()
+  }
+})

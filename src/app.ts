@@ -1786,6 +1786,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const state = scheduleConsole({
       repoId: repo.id,
       row,
+      // #544: today's repository row, so the frozen authorization the occurrence
+      // recorded can be shown against what the repository says now.
+      repo,
       occurrences: store.listScheduleOccurrences(repo.id, 20),
       now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,

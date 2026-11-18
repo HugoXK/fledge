@@ -13,8 +13,9 @@
 // happy zero; a run whose job is still queued or running is `unknown`, because
 // a job queues its notifications only when it ends.
 
-import type { NotificationOutboxState, ScheduleOccurrenceRow, ScheduleRow } from '../db.js'
+import type { NotificationOutboxState, RepoRow, ScheduleOccurrenceRow, ScheduleRow } from '../db.js'
 import { nextTime, type Schedule } from './next.js'
+import { parseOccurrenceSnapshot, type ScheduleOccurrenceSnapshot } from './snapshot.js'
 import { scheduleFromRow } from './tick.js'
 
 /**
@@ -82,6 +83,60 @@ export interface OccurrenceView {
   leaseExpiresAt: number | null
   jobId: string | null
   lagMs: number | null
+  /** The revision this row was decided under; its identity, next to the snapshot's claim. */
+  timingRevision: number
+  /**
+   * #544: the configuration and authorization this instant was frozen under, or
+   * null when the row recorded none — an occurrence written before the column
+   * existed, a hand-edited row, or one written by a build that speaks a newer
+   * shape. Null is a fact, not a prompt to read today's schedule.
+   */
+  snapshot: ScheduleOccurrenceSnapshot | null
+}
+
+/**
+ * The fields a later edit can move out from under an already-decided instant.
+ * The page prints their names, so a disagreement is shown rather than dropped.
+ */
+export type FrozenSnapshotField = 'kind' | 'expression' | 'everyMs' | 'timezone' | 'startAt' | 'endAt' | 'owner' | 'installation' | 'permission' | 'role' | 'revision'
+
+export interface FrozenSnapshotView {
+  /** What the newest decided instant recorded, or null when it recorded nothing. */
+  snapshot: ScheduleOccurrenceSnapshot | null
+  /** The fields where that record disagrees with today's schedule or repository row. */
+  differs: FrozenSnapshotField[]
+  /**
+   * #544: true when the snapshot's own revision is not the revision this row was
+   * decided under. The snapshot then cannot be proven to describe this instant —
+   * a row written by a hand edit or a bug — so the page says so instead of
+   * printing the values as if they belonged.
+   */
+  revisionMismatch: boolean
+}
+
+/**
+ * The frozen record beside the live rows it has drifted from. Only known values
+ * are compared: a repository the caller did not read cannot disagree.
+ */
+function frozenOf(row: ScheduleRow | undefined, repo: RepoRow | undefined, occurrence: OccurrenceView | undefined): FrozenSnapshotView {
+  const snapshot = occurrence?.snapshot ?? null
+  if (snapshot === null || row === undefined) return { snapshot, differs: [], revisionMismatch: false }
+  const revisionMismatch = occurrence!.timingRevision !== snapshot.config.timingRevision
+  const differs: FrozenSnapshotField[] = []
+  if (revisionMismatch) differs.push('revision')
+  if (snapshot.config.kind !== row.kind) differs.push('kind')
+  if (snapshot.config.expression !== row.expression) differs.push('expression')
+  if (snapshot.config.everyMs !== row.every_ms) differs.push('everyMs')
+  if (snapshot.config.timezone !== row.timezone) differs.push('timezone')
+  if (snapshot.config.startAt !== row.start_at) differs.push('startAt')
+  if (snapshot.config.endAt !== row.end_at) differs.push('endAt')
+  if (repo !== undefined) {
+    if (snapshot.authorization.userId !== repo.user_id) differs.push('owner')
+    if (snapshot.authorization.installationId !== repo.installation_id) differs.push('installation')
+    if (snapshot.authorization.permission !== repo.permission) differs.push('permission')
+    if (snapshot.authorization.repoRole !== repo.repo_role) differs.push('role')
+  }
+  return { snapshot, differs, revisionMismatch }
 }
 
 export interface ScheduleConsoleState {
@@ -122,6 +177,13 @@ export interface ScheduleConsoleState {
    * never as zero. `remaining` is null whenever either side is null.
    */
   budget: { dailyRuns: number | null; runsToday: number | null; remaining: number | null }
+  /**
+   * #544: what the newest decided instant was frozen under, and the fields where
+   * that record disagrees with today's schedule and repository row. A null
+   * snapshot means the row recorded nothing, which the page prints as unknown —
+   * the live schedule is a different question and is never substituted.
+   */
+  frozen: FrozenSnapshotView
   occurrences: OccurrenceView[]
 }
 
@@ -137,6 +199,8 @@ function viewOf(row: ScheduleOccurrenceRow, now: number): OccurrenceView {
     leaseExpiresAt: row.lease_expires_at,
     jobId: row.job_id,
     lagMs: row.lag_ms,
+    timingRevision: row.timing_revision,
+    snapshot: parseOccurrenceSnapshot(row.snapshot_json),
   }
 }
 
@@ -152,10 +216,15 @@ function viewOf(row: ScheduleOccurrenceRow, now: number): OccurrenceView {
  * `jobStatus` decides the same line: a job still queued or running has not
  * queued anything yet, so its empty read is unknown, and only a terminal job
  * whose read is empty answers `none`.
+ * `repo` is the repository row the authorization was frozen from; a caller that
+ * did not read it leaves it out, and the frozen card reports what it has without
+ * claiming a disagreement it cannot see.
  */
 export function scheduleConsole(input: {
   repoId: string
   row: ScheduleRow | undefined
+  /** #544: today's repository row, compared against the frozen authorization. */
+  repo?: RepoRow
   occurrences: ScheduleOccurrenceRow[]
   now: number
   jobStatus: (jobId: string) => string | null
@@ -190,6 +259,7 @@ export function scheduleConsole(input: {
       runsToday,
       remaining: dailyRuns === null || runsToday === null ? null : Math.max(0, dailyRuns - runsToday),
     },
+    frozen: frozenOf(row, input.repo, occurrences[0]),
     occurrences,
   }
 }
