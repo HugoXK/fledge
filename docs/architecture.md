@@ -632,7 +632,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   job queues its notifications only when it ends (`succeeded`/`failed`), so a
   run whose job is still queued or running prints `unknown` too: the empty read
   is a value nobody knows yet, and a missing value is never printed as a
-  definite none. The outbox's own
+  definite none. Only a decided instant answers: `skipped` queued nothing by
+  definition, while `claimed` (a worker holds it, `job_id` still NULL until the
+  job starts) and `expired` (a lease that lapsed before anyone settled it) have
+  not decided yet and print `unknown`. The outbox's own
   `unknown` (a send that may have crossed the external boundary) is printed as
   `unconfirmed`, so it is never confused with "nobody read the outbox". The eight facts render through `.schedule-facts`,
   a two-column grid with muted labels that stacks to one column below 640px, so

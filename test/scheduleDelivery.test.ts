@@ -109,6 +109,39 @@ test('a run whose job has not finished reads unknown; a finished job that queued
   } finally { store.close() }
 })
 
+// #959 review: only a decided instant can answer. A `claimed` row keeps its
+// `job_id` NULL until the worker starts the job, and an `expired` row is a
+// lease that lapsed before anyone settled it — reading either as `none` prints
+// "not queued" for a run that has not decided yet.
+test('a run that has not decided yet reads unknown, never none', () => {
+  const { store, repoId } = harness('delivery-undecided')
+  try {
+    const row = store.saveSchedule({ id: `sch_${repoId}`, repoId, kind: 'interval', everyMs: HOUR })
+    const logicalTime = Math.floor(NOW / HOUR) * HOUR
+    store.claimScheduleOccurrence({
+      id: `occ_${repoId}`, scheduleId: row.id, repoId, logicalTime, timingRevision: row.timing_revision,
+      leaseToken: 'tok', leaseMs: HOUR, now: NOW,
+    })
+    const claimed = store.listScheduleOccurrences(repoId, 10)
+    assert.equal(claimed[0]?.state, 'claimed', 'the fixture holds the instant')
+    assert.equal(claimed[0]?.job_id, null, 'a claimed row names no job until it dispatches')
+
+    const at = (occurrences: typeof claimed, status: string) => scheduleConsole({
+      repoId, row, occurrences, now: NOW, jobStatus: jobAt(status), jobDeliveries: fake([]),
+    }).delivery
+
+    assert.equal(at(claimed, 'running'), 'unknown', 'a claimed run has not decided whether it will queue a notification')
+    assert.equal(at(claimed, 'queued'), 'unknown')
+    assert.equal(at(claimed, 'succeeded'), 'unknown', 'no job is linked, so no job status can make the answer definite')
+
+    const expired = [{ ...claimed[0]!, state: 'expired' }]
+    assert.equal(at(expired, 'failed'), 'unknown', 'an expired lease left the instant unreconciled, so its delivery is unknown')
+
+    const skipped = [{ ...claimed[0]!, state: 'skipped', reason: 'misfire' }]
+    assert.equal(at(skipped, 'failed'), 'none', 'a decided skip dispatched no job, so it queued nothing')
+  } finally { store.close() }
+})
+
 test('several notifications read as the worst of them, because one needs attention', () => {
   const { store, repoId, userId } = harness('delivery-worst')
   try {

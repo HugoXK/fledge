@@ -50,7 +50,14 @@ function deliveryOf(
   read: ((jobId: string) => Array<{ state: NotificationOutboxState }>) | undefined,
 ): ScheduleDelivery {
   if (newest === undefined) return 'unknown'
-  if (newest.job_id === null) return 'none'
+  // Only a decided instant can answer. `dispatched` names the job whose
+  // notifications are the delivery fact, and `skipped` provably queued none.
+  // A `claimed` row keeps its `job_id` NULL until the worker starts the job,
+  // and an `expired` row is a lease that lapsed before anyone settled it, so
+  // neither has decided yet and `none` would be a lie the page prints as
+  // "not queued".
+  if (newest.state !== 'dispatched' && newest.state !== 'skipped') return 'unknown'
+  if (newest.job_id === null) return newest.state === 'skipped' ? 'none' : 'unknown'
   if (read === undefined) return 'unknown'
   // A job queues its notifications only when it ends (`succeeded`/`failed`),
   // so while it is queued or running the empty outbox read is a value nobody
