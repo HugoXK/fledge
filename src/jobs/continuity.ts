@@ -419,6 +419,12 @@ export interface SchedulerState {
   lastDiscoverAt?: string | null
   /** The repo interval; discovery runs at this cadence, not every work tick. */
   discoverIntervalMinutes?: number
+  /**
+   * #801: the newest work (iterate) job succeeded. A success is a capacity
+   * signal, not a throttle, so the next open item is due at once; a failure
+   * keeps the cooldown and the backoff exactly as they were.
+   */
+  lastWorkSucceeded?: boolean
 }
 
 export const DEFAULT_COOLDOWN_MS = 10 * 60_000
@@ -503,11 +509,28 @@ export function isDue(state: SchedulerState, cooldownMs: number = DEFAULT_COOLDO
   // WORK_SESSION_COOLDOWN_MINUTES. The last job's duration no longer pushes the
   // next work item out by another 1.5x; a finished job may be followed as soon
   // as the cooldown has passed.
-  const base = Math.max(Math.max(1, state.intervalMinutes) * 60_000, cooldownMs)
   const backoff = state.failureStreak >= 2
     ? Math.min(2 ** (state.failureStreak - 1), 4)
     : 1
+  // #801: a successful work job is the opposite of a capacity signal. The user's
+  // model is "a role finishes, the next item starts", so a success that is owed
+  // no backoff makes the next open item due immediately. A failure never takes
+  // this path — `lastWorkSucceeded` is read from the newest iterate row, which
+  // is the same row `failureStreak` counts — so the backoff below is untouched.
+  if (backoff === 1 && state.lastWorkSucceeded === true) return true
+  const base = Math.max(Math.max(1, state.intervalMinutes) * 60_000, cooldownMs)
   return state.now - last >= base * backoff
+}
+
+//: #801: whether the newest work job succeeded, by the same rule `failureStreak`
+//: uses to call one failed. `zero` and `meta` outputs are failures there, so they
+//: are not a success here either.
+export function lastWorkSucceeded(jobs: JobRow[]): boolean {
+  for (const job of jobs) {
+    if (job.kind !== 'iterate') continue
+    return job.status === 'succeeded' && job.output_kind !== 'zero' && job.output_kind !== 'meta'
+  }
+  return false
 }
 
 export function failureStreak(jobs: JobRow[]): number {

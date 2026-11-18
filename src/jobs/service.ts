@@ -56,7 +56,7 @@ import { GithubClient, GithubError, prepareRepo, prepareRepoWithInstallation, re
 import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
-import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
+import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, lastWorkSucceeded, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
 import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatched, type DispatchBlockReason } from './automationHealth.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
@@ -4568,6 +4568,10 @@ export class Jobs {
         intervalMinutes: plan === null ? Math.min(repo.interval_minutes, this.config.runner.workCooldownMinutes) : 0,
         lastDurationMs: lastDurationMs(recent),
         failureStreak: failureStreak(recent),
+        // #801: the success path starts the next open item at once; the failure
+        // path keeps its cooldown and backoff. The scheduler decides, not the
+        // caller, so one place owns the difference.
+        lastWorkSucceeded: lastWorkSucceeded(recent),
         openWork,
         reviewerEnabled: repo.reviewer_enabled === 1,
         reviewDue: this.dueReview(repo),
