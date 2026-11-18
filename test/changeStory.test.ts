@@ -115,6 +115,64 @@ test('the bare Ran: line the house PR template uses is read like the heading', (
   assert.doesNotMatch(ran?.text ?? '', /Docker/, 'Not run: belongs to no section and must not be swallowed')
 })
 
+// #993: AGENTS.md:183 prescribes `Not run: Docker image, real SMTP` — one line,
+// text after the colon — and that is also what this pull request's own body
+// carries. Matching only a bare `Not run:` appended the whole line to `Ran` and
+// left the Not-verified row saying `not stated` while the body stated it.
+test('the inline Not run: line AGENTS.md prescribes is read like the heading', () => {
+  const body = [
+    '## What changed',
+    'something',
+    'Ran:',
+    '- `npm run check` — pass',
+    'Not run: Docker image, real SMTP',
+  ].join('\n')
+  const story = storyOf(body)
+  const ran = story.sections.find((section) => section.key === 'ran')
+  const notVerified = story.sections.find((section) => section.key === 'notVerified')
+  assert.match(ran?.text ?? '', /npm run check/)
+  assert.doesNotMatch(ran?.text ?? '', /Docker/, 'the inline Not run: text belongs to the Not-run row, not to Ran')
+  assert.equal(notVerified?.text, 'Docker image, real SMTP')
+})
+
+test('a headed Not run: list keeps working beside the inline form', () => {
+  const body = [
+    '## What changed',
+    'something',
+    'Ran:',
+    '- `npm run check` — pass',
+    'Not run:',
+    '- Docker image',
+    '- real SMTP',
+  ].join('\n')
+  const story = storyOf(body)
+  const ran = story.sections.find((section) => section.key === 'ran')
+  const notVerified = story.sections.find((section) => section.key === 'notVerified')
+  assert.doesNotMatch(ran?.text ?? '', /Docker/, 'the headed list must not be swallowed by Ran')
+  assert.match(notVerified?.text ?? '', /Docker image/)
+  assert.match(notVerified?.text ?? '', /real SMTP/)
+})
+
+// #993: `scripts/lib/pr-body.mjs` accepts a qualified line — `Ran (author, at
+// tree <sha>):` — and this pull request's own body uses it. Matching only the
+// bare form dropped the commands under it, and when the line followed a fact
+// heading they were appended to that fact instead.
+test('a qualified Ran: line keeps its bullets in Ran, not in the fact above it', () => {
+  const body = [
+    '## Risks',
+    'small, the parser only',
+    'Ran (author, at tree `b231bcb6` — the tip\'s tree):',
+    '- `npm run check` — pass',
+    '- `npx tsx --test test/changeStory.test.ts` — 21/21 pass',
+  ].join('\n')
+  const story = storyOf(body)
+  const ran = story.sections.find((section) => section.key === 'ran')
+  const risks = story.sections.find((section) => section.key === 'risks')
+  assert.match(ran?.text ?? '', /npm run check/)
+  assert.match(ran?.text ?? '', /21\/21/)
+  assert.doesNotMatch(risks?.text ?? '', /npm run check/, 'the commands below the qualified line belong to Ran, not to the fact above')
+})
+
 test('a value from the body is escaped by the page, never rendered as markup', async () => {
   const github = await startFakeServer((request, response) => {
     if ((request.url ?? '').startsWith('/repos/acme/demo/pulls/9/files')) {

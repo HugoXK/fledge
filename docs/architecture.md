@@ -2133,8 +2133,15 @@ would understate it.
 
 `src/lib/changeStory.ts` is pure. It recognises `## What changed`, `## Risks`,
 `## Ran`, `## Alternatives considered`, `## Uncertainty` (or residual risk) and a
-`### Not run` heading at any level, plus the bare `Ran:` and `Not run:` lines this
-repository's PR template uses; a repeated heading keeps the last occurrence and
+`### Not run` heading at any level, plus the `Ran:` and `Not run:` shapes this
+repository's PR template and body rule use. `Ran:` is read in two shapes: the
+bare line that starts a list, and the qualified line that names the tree the
+numbers belong to (`Ran (author, at tree <sha>):`) — both keep their bullets in
+`Ran`, even when the line follows another fact heading. `Not run:` is read in two
+shapes: the bare line that starts a list, and the single line that carries the
+text inline (`Not run: Docker image, real SMTP`); both produce the Not-verified
+row, and neither leaks into `Ran`. A repeated
+heading keeps the last occurrence and
 the block says so, so an edited body cannot silently show the abandoned draft. A
 heading the body does not carry renders `not stated` and is never filled from
 another section, and an empty `Not run:` list is a row that says `not stated`

@@ -105,18 +105,26 @@ function headingKey(line: string): ChangeStoryKey | null {
   return HEADINGS[text] ?? null
 }
 
-// A bare `Not run:` line is the list of what the agent did not verify. Slice 1
+// A `Not run` line is the list of what the agent did not verify. Slice 1
 // treated it only as the end of `Ran`; #793 reads it as a fact of its own, so
-// the text under it is captured instead of thrown away.
-function isNotRun(line: string): boolean {
-  return /^not\s+run\s*:?\s*$/i.test(line.trim())
+// the text under it is captured instead of thrown away. Returns the text the
+// line carries after the colon — `Not run: Docker image` is one line and means
+// what AGENTS.md's template says — and `''` for the bare form that starts a
+// list, so both shapes produce the fact.
+function notRunLine(line: string): string | null {
+  const match = /^not\s+run\s*(?:[:：]\s*(.*))?$/i.exec(line.trim())
+  if (match === null) return null
+  return (match[1] ?? '').trim()
 }
 
 // The house PR template uses a bare `Ran:` line rather than a heading, so the
 // block reads this repository's own pull requests and not only PRs that adopted
-// heading style.
-function isBareRan(line: string): boolean {
-  return /^ran\s*:?\s*$/i.test(line.trim())
+// heading style. `scripts/lib/pr-body.mjs` also accepts a qualified line —
+// `Ran (author, at tree 1234abc):` — and that shape starts the fact too; matching
+// only the bare form dropped its commands, and after a fact heading it appended
+// them to that fact instead.
+function isRanLine(line: string): boolean {
+  return /^ran(?:\s*[^:：\n]*[:：])?\s*$/i.test(line.trim())
 }
 
 function isFence(line: string): boolean {
@@ -156,14 +164,18 @@ export function parseChangeStoryBody(body: string): ChangeStorySection[] {
         current = key
         continue
       }
-      if (isBareRan(line)) {
+      if (isRanLine(line)) {
         flush()
         current = 'ran'
         continue
       }
-      if (isNotRun(line)) {
+      const inlineNotRun = notRunLine(line)
+      if (inlineNotRun !== null) {
         flush()
         current = 'notVerified'
+        // The single-line form carries its text on the line itself; the bare
+        // form leaves the buffer for the list that follows.
+        if (inlineNotRun !== '') buffer.push(inlineNotRun)
         continue
       }
       if (endsSection(line)) {
