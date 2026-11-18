@@ -331,6 +331,10 @@ export type NextJob =
   | { kind: 'discover' }
   | { kind: 'followup'; workItemId: string; prUrl?: string; branch?: string }
   | { kind: 'review'; workItemId: string; prUrl: string; branch?: string }
+  // #789: the chosen row's artifact is finished, so the run does not continue it.
+  // The row is named so the dispatcher can mark it; the run itself is a fresh
+  // iterate on the repository's own goal.
+  | { kind: 'iterate'; staleWorkItemId: string; artifactState: 'closed' | 'merged' }
   // #807: a ready item that does not start names what held it back, and when it
   // became dispatchable, so the dispatcher can publish why instead of a gap.
   | { kind: 'none'; reason: 'not due'; blockedBy: 'cooldown' | 'failure_backoff'; readyAt: number | null }
@@ -359,7 +363,14 @@ export const MIN_DISCOVERY_INTERVAL_MINUTES = 60
 
 //: Pick the next scheduled job kind. This never blocks a due repo (the #219
 //: lesson): when work is open it changes *what* runs, not whether a run happens.
-export function decideNextJob(state: SchedulerState, options: { cooldownMs?: number } = {}): NextJob {
+//: #789: the run must also be supported by the item's live artifact, so the
+//: reader is consulted after due-ness (a held-back repo costs no read) and only
+//: for an item that names a GitHub link. A read that fails keeps the item: a
+//: failed read saw nothing, so it is not evidence that the work is finished.
+export async function decideNextJob(
+  state: SchedulerState,
+  options: { cooldownMs?: number; read?: CarryOverReader } = {},
+): Promise<NextJob> {
   const work = state.openWork
     .filter((item) => item.state !== 'merged' && item.state !== 'closed')
     .sort((a, b) => b.priority - a.priority || a.created_at.localeCompare(b.created_at))
@@ -384,6 +395,22 @@ export function decideNextJob(state: SchedulerState, options: { cooldownMs?: num
   }
   const item = work[0]
   if (item === undefined) return { kind: 'none', reason: 'idle' }
+  // #789: the pull request is the finished state of the work when there is one,
+  // so it governs; only an item with no pull request is judged by its issue.
+  const link = cleanLink(item.pr_url) ?? cleanLink(item.issue_url)
+  if (link !== null && options.read !== undefined) {
+    let artifactState: CarryOverLinkState | 'unverified'
+    try {
+      artifactState = await options.read.read(link)
+    } catch {
+      artifactState = 'unverified'
+    }
+    // `unverified` keeps the item: the read saw no state, which is exactly
+    // slice 1's rule for a thrown line read.
+    if (artifactState === 'closed' || artifactState === 'merged') {
+      return { kind: 'iterate', staleWorkItemId: item.id, artifactState }
+    }
+  }
   if (item.pr_url) {
     const canReview = state.reviewerEnabled && state.repo.repo_role === 'maintainer'
     // A review that is not due never skips a due repo (#219). Continue the same

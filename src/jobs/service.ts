@@ -1170,6 +1170,12 @@ export class Jobs {
     }
   }
 
+  // One live-state source for both readers: the scheduler's evidence gate on the
+  // chosen item (#789) and the carry-over block it is about to build (#365).
+  private liveArtifactReader(repo: RepoRow): CarryOverReader {
+    return (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo)
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
@@ -1281,7 +1287,7 @@ export class Jobs {
       ? await buildCarryOver({
         recent: this.store.listJobsForRepo(repo.id, 3),
         openWork: this.store.listOpenWorkItems(repo.id),
-        read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
+        read: this.liveArtifactReader(repo),
       })
       : null
     const carryOver = carryOverBlock?.text ?? ''
@@ -4486,7 +4492,10 @@ export class Jobs {
         continue
       }
       const recent = this.store.listJobsForRepo(repo.id, 6)
-      const next = decideNextJob({
+      // #789: the scheduler decides on evidence too. The same reader that checks
+      // the carry-over lines checks the chosen item, and only after due-ness, so
+      // a held-back repository costs no read.
+      const next = await decideNextJob({
         repo,
         now,
         lastRunAt: repo.last_run_at,
@@ -4502,7 +4511,7 @@ export class Jobs {
         reviewDue: this.dueReview(repo),
         lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
         discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
-      }, plan === null ? {} : { cooldownMs: 0 })
+      }, { ...(plan === null ? {} : { cooldownMs: 0 }), read: this.liveArtifactReader(repo) })
       if (next.kind === 'none') {
         // #807: a held-back item names its holder; an empty backlog clears the
         // idle reading rather than leaving the last wait on the dashboard.
@@ -4530,12 +4539,20 @@ export class Jobs {
         ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
         : next.kind === 'discover'
           ? await this.enqueue(repo, 'schedule', undefined, 'discover')
-          : await this.enqueue(repo, 'followup', undefined, 'iterate', {
-              workItemId: next.workItemId,
-              ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
-              ...(next.branch === undefined ? {} : { branch: next.branch }),
-            })
+          : next.kind === 'iterate'
+            // #789: the row's artifact is finished, so this is a fresh iterate on
+            // the repository's own goal, not a continuation: no goal override and
+            // no work-item id, and the due run still happens (the #219 rule).
+            ? await this.enqueue(repo, 'schedule', undefined, 'iterate')
+            : await this.enqueue(repo, 'followup', undefined, 'iterate', {
+                workItemId: next.workItemId,
+                ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
+                ...(next.branch === undefined ? {} : { branch: next.branch }),
+              })
       if (result.ok) {
+        // #789: mark the stale row only once the run exists, so a refused enqueue
+        // leaves it for the next tick instead of dropping the fresh iterate.
+        if (next.kind === 'iterate') this.store.updateWorkItem(next.staleWorkItemId, { state: next.artifactState })
         recordDispatched({
           repo,
           kind: next.kind === 'review' ? 'review' : next.kind === 'discover' ? 'discover' : 'iterate',

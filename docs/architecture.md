@@ -1476,6 +1476,17 @@ without merging is `closed`, not `open`, so the header's `(closed/merged)` is
 true as written; a job row written before that column says the observation was
 not recorded rather than borrowing a time.
 
+Since #789 the decision that produces the run is evidence-linked too:
+`decideNextJob()` is async and takes the same reader, so the chosen item's link
+is read after due-ness (a held-back repository costs no read) before it can
+become a `followup` or a `review`. A `closed` or `merged` answer turns the
+decision into a fresh `iterate` on the repository's own goal — no goal override
+and no `work_item_id` — and the stale row is marked with the state that was
+observed once the run exists, so the next tick does not choose it again. An
+`open` answer, a read that failed and an item that names no link all keep the
+previous behaviour: a failed read saw nothing, so it is not evidence that the
+work is finished.
+
 The goal also carries one **temporal delta** line (#366), built by
 `summariseDelta()` in `src/lib/temporal.ts` from two reads plus the commit
 lookup that dates them, all against the previous finished run's base:
