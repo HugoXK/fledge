@@ -23,6 +23,9 @@ export interface WatchdogWorkflowRun {
   path?: string
   status?: string
   conclusion?: string | null
+  // `push`, `pull_request` or `workflow_dispatch`; the planner reads it only to
+  // recognise the one repair this watchdog dispatches at a head SHA.
+  event?: string
 }
 
 export interface WatchdogEntry {
@@ -33,7 +36,7 @@ export interface WatchdogEntry {
   runs?: WatchdogWorkflowRun[]
 }
 
-export type WatchdogAction = 'dispatch' | 'skip'
+export type WatchdogAction = 'dispatch' | 'skip' | 'stall'
 export type WatchdogReason =
   | 'not-open'
   | 'fork'
@@ -41,6 +44,8 @@ export type WatchdogReason =
   | 'no-head'
   | 'active-ci'
   | 'has-ci-run'
+  | 'cancelled-ci-run'
+  | 'cancelled-repair'
   | 'no-ci-run'
 
 export interface WatchdogDecision {
@@ -73,5 +78,7 @@ export declare const DEFAULT_DISPATCH_LIMIT: number
 export declare function isSameRepoPullRequest(pr?: WatchdogPullRequest): boolean
 export declare function isCiRun(run?: WatchdogWorkflowRun): boolean
 export declare function activeCiRun(runs?: WatchdogWorkflowRun[]): WatchdogWorkflowRun | null
+export declare function isCancelledCiRun(run?: WatchdogWorkflowRun): boolean
+export declare function repairCiRun(runs?: WatchdogWorkflowRun[]): WatchdogWorkflowRun | null
 export declare function classifyPullRequest(entry?: WatchdogEntry): WatchdogDecision
 export declare function planCiWatchdog(input?: { entries?: WatchdogEntry[]; limit?: number }): WatchdogPlan

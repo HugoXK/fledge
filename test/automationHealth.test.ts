@@ -46,21 +46,21 @@ function state(overrides: Partial<SchedulerState> = {}): SchedulerState {
   }
 }
 
-test('a not-due repository names the cooldown it waits for, and a failing one names the backoff', () => {
-  const cooling = decideNextJob(state({ lastRunAt: '2026-11-16T11:59:30.000Z' }))
+test('a not-due repository names the cooldown it waits for, and a failing one names the backoff', async () => {
+  const cooling = await decideNextJob(state({ lastRunAt: '2026-11-16T11:59:30.000Z' }))
   assert.equal(cooling.kind, 'none')
   if (cooling.kind !== 'none' || cooling.reason !== 'not due') throw new Error('expected a blocked decision')
   assert.equal(cooling.blockedBy, 'cooldown')
   assert.equal(cooling.readyAt, Date.parse('2026-11-16T11:59:30.000Z'))
 
-  const failing = decideNextJob(state({ lastRunAt: '2026-11-16T11:59:30.000Z', failureStreak: 2 }))
+  const failing = await decideNextJob(state({ lastRunAt: '2026-11-16T11:59:30.000Z', failureStreak: 2 }))
   assert.equal(failing.kind, 'none')
   if (failing.kind !== 'none' || failing.reason !== 'not due') throw new Error('expected a blocked decision')
   assert.equal(failing.blockedBy, 'failure_backoff')
 
   // A failure that is not yet backing off is still the plain cooldown, because
   // `isDue` only multiplies the wait from the second consecutive failure.
-  const oneFailure = decideNextJob(state({ lastRunAt: '2026-11-16T11:59:30.000Z', failureStreak: 1 }))
+  const oneFailure = await decideNextJob(state({ lastRunAt: '2026-11-16T11:59:30.000Z', failureStreak: 1 }))
   if (oneFailure.kind !== 'none' || oneFailure.reason !== 'not due') throw new Error('expected a blocked decision')
   assert.equal(oneFailure.blockedBy, 'cooldown')
 })

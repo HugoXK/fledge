@@ -114,7 +114,7 @@ test('team console reads live state and sends guidance', async () => {
 
     const consolePage = await built.app.inject({ method: 'GET', url: '/console', headers: { cookie } })
     assert.equal(consolePage.statusCode, 200)
-    assert.match(consolePage.body, /FlyBot 在等你回答/)
+    assert.match(consolePage.body, /工作区在等你回答/)
     assert.match(consolePage.body, /Which path should the next job take\?/)
     assert.match(consolePage.body, new RegExp(`/repos/${repo.id}/team/answer`))
     assert.match(consolePage.body, /openJiuwen-ai\/DigitalMate/)
@@ -124,7 +124,7 @@ test('team console reads live state and sends guidance', async () => {
 
     const dashboardPage = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
     assert.equal(dashboardPage.statusCode, 200)
-    assert.match(dashboardPage.body, /FlyBot 在等你回答/)
+    assert.match(dashboardPage.body, /工作区在等你回答/)
     assert.match(dashboardPage.body, /Which path should the next job take\?/)
 
     const api = await built.app.inject({ method: 'GET', url: `/api/repos/${repo.id}/team`, headers: { cookie } })

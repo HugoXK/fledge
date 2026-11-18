@@ -140,7 +140,7 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
     },
     {
       key: 'instance',
-      title: t('启动 FlyBot 实例', 'Start the FlyBot instance'),
+      title: t('启动工作区', 'Start workspace'),
       done: state.instanceReady,
       action: { href: repoHref, label: t('打开仓库启动', 'Open the repository') },
       blocked: !state.modelConfigured && !state.platformAvailable

@@ -1,0 +1,1 @@
+The normal-user pages — dashboard, console, repository page and settings — now say workspace instead of FlyBot instance, and the start, stop and reinitialize controls are named for the workspace and each carry a one-line hint. The footer brand line and the stage-mode form values are unchanged.

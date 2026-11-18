@@ -315,6 +315,34 @@ status and how many reads were made, and a tip that never concludes ends the slo
 with `none` and that run id in the reason. A dry run never waits: it reports what
 a real run would have done.
 
+#### Superadmin one-click release (#897)
+
+The Admin page has a superadmin-only release action. It reads the live GitHub
+state and shows the current `main`, latest tag, commits/fixes/features/fragments
+since that tag, the computed next version, `ci-ok` and the exact reason a release
+is blocked. The action is enabled only when the normal rule is met, no release
+PR/branch/tag is in flight and `ci-ok` is green.
+
+The submit button requires `RELEASE <version>` to be typed, a CSRF token, a
+recent GitHub re-authentication, the destructive rate-limit class and an audit
+row. It dispatches the existing `daily-release.yml` with `dry_run=false`; it
+never creates a tag, merges a pull request or deploys a host. The existing
+release PR, `ci-ok`, `review-gate`, auto-merge, tag job and `release.yml` publish
+chain stay in charge.
+
+The dispatch credential is `RELEASE_DISPATCH_TOKEN` in the server `.env`, scoped
+to the Fledge repository with `Actions: write` to dispatch the workflow and
+`Contents: read`, `Checks: read` and `Pull requests: read` to read the preview;
+prefer a fine-grained token, and grant no write scope on contents or pull
+requests. A token minted with only `Actions: write` answers `403` on the first
+preview read, and the Admin page names the scope it needs.
+An empty value disables the action instead of failing the Admin page. The token
+is never rendered, logged or returned by the route.
+
+A release is not a deploy. Production may already run `main` ahead of the latest
+tag; the next infra `service-update-fledge.sh` run installs the version-bump
+commit after the release PR merges. A separate operator action owns any restart.
+
 #### Reliable slot trigger
 
 GitHub's `schedule` event is best-effort: on 2026-11-14 the then-`14:30Z` slot
@@ -575,10 +603,12 @@ for someone to notice. A scheduled run acts on the merge commit of the merged
 later merge the tip is no longer that merge and the identity check would correctly
 refuse it; a scheduled run that cannot name exactly one such pull request keeps
 the tip, and the identity check then refuses it with its own reason rather than
-guessing a release to repair. The release job's drive still reports `tag` (a merged
-release pull request with no tag) — that is the night's summary line, not the
-writer. **The tag job is the only tag writer**: the release job never creates a
-tag, and its `tag` action is documented here rather than executed.
+guessing a release to repair. **The tag job is the only tag writer**: the release
+job never creates a tag, and its drive no longer carries a `tag` action at all.
+That action was unreachable — the release job never fed it the merged pull request
+list, so it could neither execute nor be reported — and it was removed rather than
+left as a claim in the code; a merged release pull request without a tag is found
+by the tag job itself (#866).
 
 Two recovery steps remain owner actions, unchanged by this slice: an orphan
 `release/vX.Y.Z` branch still cannot be deleted through the `keep release

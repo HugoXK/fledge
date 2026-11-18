@@ -1,0 +1,1 @@
+A cancelled final CI run no longer counts as "CI reached the tip". The CI watchdog now dispatches one repair for a head whose `CI` runs were all cancelled, and prints the pull request as stalled when that repair is cancelled too, instead of leaving it with no `ci-ok` and no repair.

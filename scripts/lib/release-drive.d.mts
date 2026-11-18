@@ -24,18 +24,9 @@ export interface DriveOpenReleasePr {
   sameRepo?: boolean
 }
 
-export interface DriveMergedPr {
-  number: number
-  title: string
-  headRef?: string
-  mergeCommitSha?: string
-  mergedAt?: string
-}
-
 export interface DriveState {
   plan?: DrivePlan
   openReleasePr?: DriveOpenReleasePr | null
-  mergedPrs?: DriveMergedPr[]
   lastMergedPr?: { number: number; title: string; headRef: string } | null
   tags?: string[]
   ciOk?: string
@@ -46,12 +37,10 @@ export interface DriveState {
 }
 
 export interface DriveDecision {
-  action: 'open-pr' | 'enqueue' | 'report-blocked' | 'tag' | 'wait-ci' | 'none'
+  action: 'open-pr' | 'enqueue' | 'report-blocked' | 'wait-ci' | 'none'
   reason: string
   pr?: number
   headSha?: string
-  tag?: string
-  sha?: string
   version?: string
   failing?: string[]
   branch?: string

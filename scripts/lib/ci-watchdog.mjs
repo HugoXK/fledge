@@ -15,9 +15,15 @@
 // Invariants:
 //   - only a same-repo pull request is a target. A fork ref is not a ref this
 //     repository's token can dispatch against.
-//   - any `CI` run at the head SHA means CI already reached the tip, even when
-//     the conclusion is red or the run was cancelled: the watchdog leaves it
-//     alone. Re-dispatching a completed run that produced no checks would loop.
+//   - a completed `CI` run at the head SHA means CI already reached the tip,
+//     even when the conclusion is red: the watchdog leaves it alone.
+//     Re-dispatching a completed run that produced no checks would loop.
+//   - a cancelled run is not evidence that CI reached the tip: it can end
+//     before any job exists, so it leaves the head with no `ci-ok` and nothing
+//     to repair it. Such a head is dispatched once. The repair is bounded per
+//     head SHA by the `workflow_dispatch` run it starts: when that repair is
+//     cancelled too, the head is reported `stall` instead of being dispatched
+//     again every tick.
 //   - a queued or in-progress `CI` run is not duplicated.
 //   - another workflow's check run (CodeQL, a review bot) does not mean CI ran;
 //     the decision is based on `CI` workflow runs, not on the check-run count.
@@ -52,6 +58,27 @@ export function activeCiRun(runs) {
   return list.find((run) => isCiRun(run) && ACTIVE_STATUSES.has(String(run?.status ?? ''))) ?? null
 }
 
+export function isCancelledCiRun(run) {
+  return (
+    isCiRun(run) &&
+    String(run?.status ?? '') === 'completed' &&
+    String(run?.conclusion ?? '') === 'cancelled'
+  )
+}
+
+// The one repair a head gets: a `CI` run started by `workflow_dispatch`, which
+// is what this watchdog dispatches. A cancelled repair is the signal to report a
+// stall rather than dispatch another, so a head cannot loop.
+export function repairCiRun(runs) {
+  const list = Array.isArray(runs) ? runs : []
+  return list.find((run) => isCiRun(run) && String(run?.event ?? '') === 'workflow_dispatch') ?? null
+}
+
+function ciRuns(runs) {
+  const list = Array.isArray(runs) ? runs : []
+  return list.filter((run) => isCiRun(run))
+}
+
 function decision(pr, action, reason, extra = {}) {
   return {
     action,
@@ -72,8 +99,17 @@ export function classifyPullRequest({ pr, runs = [] } = {}) {
   }
   const active = activeCiRun(runs)
   if (active !== null) return decision(pr, 'skip', 'active-ci', { activeRunId: Number(active?.id ?? 0) })
-  const previous = (Array.isArray(runs) ? runs : []).find((run) => isCiRun(run)) ?? null
-  if (previous !== null) return decision(pr, 'skip', 'has-ci-run', { previousRunId: Number(previous?.id ?? 0) })
+  const previous = ciRuns(runs)
+  if (previous.length > 0) {
+    if (!previous.every((run) => isCancelledCiRun(run))) {
+      return decision(pr, 'skip', 'has-ci-run', { previousRunId: Number(previous[0]?.id ?? 0) })
+    }
+    const repair = repairCiRun(previous)
+    if (repair !== null) {
+      return decision(pr, 'stall', 'cancelled-repair', { previousRunId: Number(repair?.id ?? 0) })
+    }
+    return decision(pr, 'dispatch', 'cancelled-ci-run', { previousRunId: Number(previous[0]?.id ?? 0) })
+  }
   return decision(pr, 'dispatch', 'no-ci-run')
 }
 

@@ -1,1 +1,0 @@
-The GitHub star link in the footer and the Settings About card now uses a drawn line-star icon with a compact label instead of the `★` text glyph. The URL, the About copy and the accessible name are unchanged.

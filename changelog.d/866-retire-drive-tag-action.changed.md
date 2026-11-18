@@ -1,0 +1,1 @@
+The daily release drive no longer carries a `tag` action. The release job never supplied it the merged pull request list, so the action could neither run nor be reported while `docs/deploy.md` said it was; the tag job remains the only tag writer and repairs a merged release pull request without a tag on its push and scheduled runs.

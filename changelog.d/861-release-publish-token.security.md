@@ -1,1 +1,0 @@
-The release publish job no longer leaves the workflow token in `.git/config` while it installs dependencies from the tag, so a dependency lifecycle script cannot read a token that carries `contents: write`, `packages: write`, `id-token: write` and `attestations: write`.
