@@ -285,3 +285,27 @@ test('an override whose decision predates the identity says so on the page', () 
     seeded.store.close()
   }
 })
+
+test('a look-alike item id does not lend its newer decision to the item an override names', () => {
+  // #980: the lookup interpolated the item id into a LIKE pattern, so `_` acted
+  // as a single-character wildcard. `item_a` matched `itemXa`, and because the
+  // query took the newest row, the override named the look-alike's decision.
+  const seeded = seed('look-alike')
+  const { store, user } = seeded
+  try {
+    store.audit(user.id, 'work_item.review_outcome', `item_a: changes_requested score=41 review=job_real tip=${TIP_A} model=model-real`)
+    store.audit(user.id, 'work_item.review_outcome', `itemXa: changes_requested score=99 review=job_other tip=${TIP_B} model=model-other`)
+
+    const anyOutcome = store.latestReviewOutcome('item_a')
+    assert.equal(anyOutcome?.workItemId, 'item_a', 'the newest decision for item_a must belong to item_a')
+    assert.equal(anyOutcome?.score, 41, 'and carry item_a\'s score, not the look-alike\'s')
+    assert.equal(anyOutcome?.reviewJobId, 'job_real', 'and the review job that decided item_a')
+
+    const blocking = store.latestReviewOutcome('item_a', 'changes_requested')
+    assert.equal(blocking?.workItemId, 'item_a', 'the outcome filter must not widen the item id either')
+    assert.equal(blocking?.score, 41)
+    assert.equal(blocking?.model, 'model-real', 'the override would have named the look-alike\'s model')
+  } finally {
+    seeded.store.close()
+  }
+})

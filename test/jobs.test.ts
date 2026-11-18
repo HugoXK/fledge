@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { Store } from '../src/db.js'
+import { Store, formatReviewOutcomeDetail, parseReviewOverrideDetail } from '../src/db.js'
 import type { JobRow, RepoRow, WorkItemRow } from '../src/db.js'
 import { InstanceManager } from '../src/flybot/instances.js'
 import { PLAYBOOK_VERSION, playbookFingerprint } from '../src/flybot/playbook.js'
@@ -3659,5 +3659,81 @@ test('a retried job records attempt N+1 and links it to the attempt it continues
     assert.equal(rows[0]!.retry_of, source.id)
   } finally {
     store.close()
+  }
+})
+
+test('an override records the decision it overturned — job, review, score, model and tip', async () => {
+  // #980: the override write was only asserted to exist. A detail that lost the
+  // decision identity (job, model, tip) kept the suite green, so this reads the
+  // structured record the page and the trend both consume.
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/1') {
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'abc' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true, sha: 'def' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  const tip = 'c'.repeat(40)
+  try {
+    const user = makeUser(store, { login: 'override-record-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_override_record', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const item = store.createWorkItem({ id: 'work_override_record', repoId: repo.id, userId: user.id, title: 'fix', prUrl: 'https://github.com/o/r/pull/1', state: 'changes_requested' })
+    const review = store.createJob({ id: 'job_override_review', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'review', callbackHash: 'review-hash', platformTokenHash: '', kind: 'review', workItemId: item.id })
+    store.updateJob(review.id, { status: 'succeeded', review_score: 60, finished_at: new Date().toISOString() })
+    // The decision row is the one source the override names, so seed it with the
+    // identity the record has to carry through.
+    store.audit(user.id, 'work_item.review_outcome', formatReviewOutcomeDetail({
+      workItemId: item.id, outcome: 'changes_requested', score: 60, reviewJobId: review.id, model: 'model-980', tip,
+    }))
+    const secret = 'override-record-secret'
+    store.createJob({ id: 'job_override_iterate', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', workItemId: item.id })
+    store.updateJob('job_override_iterate', { status: 'running', branch: 'fledge/fix', pr_url: 'https://github.com/o/r/pull/1', started_at: new Date().toISOString() })
+
+    const manual = await jobs.manualMerge(repo, store.getJob('job_override_iterate')!)
+    assert.equal(manual.ok, true)
+    assert.equal(merges.length, 1)
+
+    const row = store.listAudit().find((entry) => entry.action === 'job.merge_review_override')
+    assert.ok(row, 'the override is audited')
+    const detail = row.detail ?? ''
+    assert.ok(detail.startsWith('job_override_iterate: review '), 'the detail names the iterate job that merged')
+    const parsed = parseReviewOverrideDetail(detail)
+    assert.ok(parsed, 'the detail parses as the structured record, not a bare sentence')
+    assert.equal(parsed.reviewJobId, 'job_override_review', 'the review job that made the decision')
+    assert.equal(parsed.score, 60, 'the score that decision recorded')
+    assert.equal(parsed.model, 'model-980', 'the model that answered the review')
+    assert.equal(parsed.tip, tip, 'the tip that review covered')
+    assert.match(parsed.reason, /changes_requested|review gate/i, 'the reason still names the block')
+  } finally {
+    store.close()
+    await github.close()
   }
 })

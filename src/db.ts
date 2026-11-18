@@ -4841,10 +4841,21 @@ export class Store {
    * whatever job happens to be newest at merge time.
    */
   latestReviewOutcome(itemId: string, outcome?: 'approved' | 'changes_requested'): ReviewDecisionRecord | undefined {
-    const row = this.get<{ detail: string }>(
-      "SELECT detail FROM audit_log WHERE action = 'work_item.review_outcome' AND detail LIKE ? ORDER BY id DESC LIMIT 1",
-      outcome === undefined ? `${itemId}: %` : `${itemId}: ${outcome} score=%`,
-    )
+    // #980: compare the item id literally instead of interpolating it into a
+    // LIKE pattern. `_` is a single-character wildcard there, so `item_a`
+    // matched a newer `itemXa` row and the override named another item's
+    // decision. The prefix before the first `:` is the id the writer stored,
+    // which is what the trend reader beside this one already compares.
+    const row = outcome === undefined
+      ? this.get<{ detail: string }>(
+        "SELECT detail FROM audit_log WHERE action = 'work_item.review_outcome' AND substr(detail, 1, instr(detail, ':') - 1) = ? ORDER BY id DESC LIMIT 1",
+        itemId,
+      )
+      : this.get<{ detail: string }>(
+        "SELECT detail FROM audit_log WHERE action = 'work_item.review_outcome' AND substr(detail, 1, instr(detail, ':') - 1) = ? AND substr(detail, instr(detail, ':') + 2) LIKE ? ORDER BY id DESC LIMIT 1",
+        itemId,
+        `${outcome} score=%`,
+      )
     return row === undefined ? undefined : parseReviewOutcomeDetail(row.detail)
   }
 
