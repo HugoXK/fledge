@@ -22,8 +22,8 @@ test('the page CSP allows only the DeepWiki MCP origin', () => {
 test('DeepWiki is labelled third-party and model-generated in both locales', () => {
   assert.match(script, /DeepWiki 是第三方、模型生成的/)
   assert.match(script, /DeepWiki is third-party and model-generated/)
-  assert.match(script, /https:\/\/mcp\.deepwiki\.com\/mcp/)
-  assert.match(script, /https:\/\/deepwiki\.com\//)
+  assert.ok(script.includes('https://mcp.deepwiki.com/mcp'))
+  assert.ok(script.includes('https://deepwiki.com/'))
 })
 
 test('the DeepWiki panel uses the console design tokens', () => {
