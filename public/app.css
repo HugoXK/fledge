@@ -750,6 +750,13 @@ input, textarea, select {
   transition: border-color 0.15s, box-shadow 0.15s;
 }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-a16); }
+/* The visual gate (issue 870): four selects rendered 40-43px tall because their
+   own rule never carried the --touch floor, while every other field kept it. */
+select { min-height: var(--touch); }
+/* A disclosure row is a full-width target, and
+   WCAG 2.5.8 asks for 24px in both axes. Its text line alone is 22px, so the
+   row gains the two pixels rather than being waived. */
+summary { min-height: 24px; }
 /* A forced-colours theme paints no box-shadow and forces border-color to a
    system colour, so the ring above leaves a focused field with no indicator.
    This block repeats the same selectors after it: at equal specificity the

@@ -199,7 +199,7 @@ export function notificationStack(locale: Locale, entries: PageNotification[]): 
   const messages = ordered
     .map(
       (entry) =>
-        `<div class="${LEVEL_CLASS[entry.level]}" data-notification data-level="${entry.level}"><span class="banner-text">${entry.html ?? bannerHtml(entry.text ?? '', entry.link ?? null)}</span><button type="button" class="banner-dismiss" data-dismiss aria-label="${dismissLabel}" title="${dismissLabel}">${icon('close', 16)}</button></div>`,
+        `<div class="${LEVEL_CLASS[entry.level]}" data-notification data-level="${entry.level}"><span class="banner-text">${entry.html ?? bannerHtml(entry.text ?? '', entry.link ?? null)}</span><button type="button" class="banner-dismiss" data-dismiss data-compact-target aria-label="${dismissLabel}" title="${dismissLabel}">${icon('close', 16)}</button></div>`,
     )
     .join('')
   return `<section class="banner-stack" aria-live="polite" data-notification-stack>${messages}</section>`

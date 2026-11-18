@@ -6,7 +6,21 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
-import { VISUAL_NARROW_CASES, VISUAL_PATHS, VISUAL_WIDTHS, overflowFailure, pageSlug, viewportHeight } from '../src/lib/visualMatrix.js'
+import {
+  GATE_SCHEMES,
+  GATE_WIDTHS,
+  VISUAL_NARROW_CASES,
+  VISUAL_PATHS,
+  VISUAL_WIDTHS,
+  focusFailures,
+  leftoverFailures,
+  nameFailures,
+  overflowFailure,
+  pageSlug,
+  touchFailures,
+  viewportHeight,
+} from '../src/lib/visualMatrix.js'
+import type { FocusStyle } from '../src/lib/visualMatrix.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const port = Number(process.env.VISUAL_PORT ?? '18180')
@@ -238,6 +252,9 @@ async function main(): Promise<void> {
         }
       }
       await context.close()
+      // #870: the measured gate runs after the screenshot sweep, so a screenshot
+      // failure and a gate failure are still one job with one list.
+      await runGatePass(browser, locale)
     }
   } finally {
     await browser?.close()
@@ -251,7 +268,224 @@ async function main(): Promise<void> {
     return
   }
   console.log(`visual matrix: ${VISUAL_PATHS.length} pages x ${VISUAL_WIDTHS.length} widths x 2 locales + ${String(VISUAL_NARROW_CASES.length)} narrow case(s) clean`)
+  console.log(`visual gate: ${VISUAL_PATHS.length} pages x ${GATE_WIDTHS.length} widths x ${GATE_SCHEMES.length} schemes x 2 locales, touch/focus/name/leftover clean`)
   console.log(`screenshots: ${outDir}`)
+}
+
+// #870: the gate pass. Nine widths stay the screenshot sweep; the measured
+// matrix is three widths by two schemes, because a colour scheme the host
+// happened to carry is not a decision the matrix made. Every failure names the
+// four coordinates and the control, so a red job points at one row of the board
+// instead of a screenshot nobody can diff.
+async function checkGatePage(
+  page: import('playwright').Page,
+  locale: string,
+  width: number,
+  scheme: string,
+  path: string,
+): Promise<void> {
+  await page.goto(`${base}${path}`, { waitUntil: 'domcontentloaded' })
+  await page.waitForTimeout(150)
+  // No helper functions inside `evaluate`: the runner's esbuild pass injects a
+  // `__name` helper into named functions and the browser context has no such
+  // binding (the overflow walk above hit the same wall).
+  const collected = await page.evaluate(() => {
+    const selector = 'button, .btn, input, select, textarea, summary, .section-nav a'
+    const elements = Array.from(document.querySelectorAll(selector))
+    const controls: {
+      index: number
+      name: string
+      width: number
+      height: number
+      compact: boolean
+      inline: boolean
+      disclosure: boolean
+    }[] = []
+    const names: { tag: string; text: string; ariaLabel: string | null; title: string | null; hasSvg: boolean }[] = []
+    const baseline: { index: number; style: FocusStyle }[] = []
+    let index = 0
+    for (const element of elements) {
+      const tag = element.tagName.toLowerCase()
+      const classes = typeof element.className === 'string'
+        ? element.className.trim().split(/\s+/).filter((value) => value !== '').slice(0, 2).join('.')
+        : ''
+      const name = classes === '' ? tag : `${tag}.${classes}`
+      const rendered = (element as unknown as { checkVisibility?: () => boolean }).checkVisibility?.() ?? true
+      // A checkbox is 13px by nature; the label around it is the box a pointer
+      // hits, so the label is what the 44px floor measures.
+      const label = element.tagName === 'INPUT' ? element.closest('label') : null
+      const target = label ?? element
+      const rect = target.getBoundingClientRect()
+      // A closed `<details>` keeps a non-zero rect in Chromium but is not
+      // rendered (`checkVisibility()` is false), so a control inside it is not a
+      // target a reader can reach until the disclosure opens.
+      if (rendered && rect.width > 0 && rect.height > 0) {
+        element.setAttribute('data-gate-index', String(index))
+        const style = getComputedStyle(element)
+        baseline.push({
+          index,
+          style: {
+            outlineWidth: style.outlineWidth,
+            outlineStyle: style.outlineStyle,
+            boxShadow: style.boxShadow,
+            borderColor: style.borderColor,
+            backgroundColor: style.backgroundColor,
+          },
+        })
+        controls.push({
+          index,
+          name,
+          width: rect.width,
+          height: rect.height,
+          compact: element.hasAttribute('data-compact-target'),
+          inline: element.hasAttribute('data-inline-target'),
+          disclosure: tag === 'summary',
+        })
+        index += 1
+      }
+      if (rendered && (tag === 'button' || tag === 'a')) {
+        names.push({
+          tag,
+          text: ((element as HTMLElement).innerText ?? '').trim(),
+          ariaLabel: element.getAttribute('aria-label'),
+          title: element.getAttribute('title'),
+          hasSvg: element.querySelector('svg') !== null,
+        })
+      }
+    }
+    return { controls, names, baseline, html: document.documentElement.outerHTML }
+  })
+
+  // A programmatic `focus()` does not match `:focus-visible` in this browser, so
+  // the resting style stays put and every control reads as unringed. Tabbing is
+  // how a keyboard reader actually reaches the control, and it is the only way
+  // the product's `*:focus-visible` rule is exercised.
+  const focused = new Map<number, FocusStyle>()
+  const wanted = new Set(collected.baseline.map((entry) => entry.index))
+  const limit = Math.min(400, wanted.size + 15)
+  for (let press = 0; press < limit && focused.size < wanted.size; press += 1) {
+    await page.keyboard.press('Tab')
+    const hit = await page.evaluate(() => {
+      const active = document.activeElement as HTMLElement | null
+      const raw = active === null ? null : active.getAttribute('data-gate-index')
+      if (raw === null || active === null) return null
+      const style = getComputedStyle(active)
+      return {
+        index: Number(raw),
+        style: {
+          outlineWidth: style.outlineWidth,
+          outlineStyle: style.outlineStyle,
+          boxShadow: style.boxShadow,
+          borderColor: style.borderColor,
+          backgroundColor: style.backgroundColor,
+        },
+      }
+    })
+    if (hit !== null && !focused.has(hit.index)) focused.set(hit.index, hit.style)
+  }
+
+  const prefix = `${locale} width=${String(width)} scheme=${scheme} ${path}`
+  for (const message of touchFailures(collected.controls)) failures.push(`${prefix}: ${message}`)
+  const samples: { name: string; before: FocusStyle; after: FocusStyle }[] = []
+  for (const entry of collected.baseline) {
+    const after = focused.get(entry.index)
+    if (after === undefined) continue
+    const control = collected.controls.find((candidate) => candidate.index === entry.index)
+    samples.push({ name: control?.name ?? `control #${String(entry.index)}`, before: entry.style, after })
+  }
+  for (const message of focusFailures(samples)) failures.push(`${prefix}: ${message}`)
+  for (const message of nameFailures(collected.names)) failures.push(`${prefix}: ${message}`)
+  for (const message of leftoverFailures(collected.html)) failures.push(`${prefix}: ${message}`)
+}
+
+/**
+ * An explicit palette has to win over the host preference: the stylesheet keeps
+ * a light media branch and pins an explicit `data-theme`, and only a real
+ * document shows which one painted the page. The host is asked for light while
+ * the saved choice is dark, so a page that quietly follows the host fails here
+ * instead of passing because both sides agreed.
+ */
+async function checkExplicitTheme(
+  browser: import('playwright').Browser,
+  locale: string,
+  width: number,
+): Promise<void> {
+  const context = await browser.newContext({
+    viewport: { width, height: viewportHeight(width) },
+    locale: locale === 'en' ? 'en-US' : 'zh-CN',
+    colorScheme: 'light',
+  })
+  try {
+    await context.addCookies([{ name: 'fledge_theme', value: 'dark', url: base }])
+    const page = await context.newPage()
+    await page.goto(`${base}/auth/dev`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${base}/lang/${locale}?next=/dashboard`, { waitUntil: 'domcontentloaded' })
+    await page.goto(`${base}/dashboard`, { waitUntil: 'domcontentloaded' })
+    const seen = await page.evaluate(() => ({
+      theme: document.documentElement.getAttribute('data-theme') ?? '',
+      meta: document.querySelector('meta[name="color-scheme"]')?.getAttribute('content') ?? '',
+      background: getComputedStyle(document.body).backgroundColor,
+    }))
+    if (seen.theme !== 'dark' || seen.meta !== 'dark') {
+      failures.push(
+        `${locale} width=${String(width)} scheme=explicit-dark /dashboard: the saved dark theme did not win over a light host preference (data-theme="${seen.theme}", color-scheme meta="${seen.meta}")`,
+      )
+    }
+    if (seen.background === 'rgb(238, 241, 234)' || seen.background === 'rgb(248, 250, 245)') {
+      failures.push(
+        `${locale} width=${String(width)} scheme=explicit-dark /dashboard: the page kept the light palette (body background ${seen.background})`,
+      )
+    }
+  } finally {
+    await context.close()
+  }
+}
+
+async function runGatePass(browser: import('playwright').Browser, locale: string): Promise<void> {
+  for (const width of GATE_WIDTHS) {
+    for (const scheme of GATE_SCHEMES) {
+      const signedIn = await browser.newContext({
+        viewport: { width, height: viewportHeight(width) },
+        locale: locale === 'en' ? 'en-US' : 'zh-CN',
+        colorScheme: scheme,
+      })
+      try {
+        const page = await signedIn.newPage()
+        await page.goto(`${base}/auth/dev`, { waitUntil: 'domcontentloaded' })
+        await page.goto(`${base}/lang/${locale}?next=/dashboard`, { waitUntil: 'domcontentloaded' })
+        for (const path of VISUAL_PATHS) {
+          // `/` answers 302 to /dashboard once a session exists; the guest
+          // context below is the only place it can be measured.
+          if (path === '/') continue
+          try {
+            await checkGatePage(page, locale, width, scheme, path)
+          } catch (error) {
+            failures.push(`${locale} width=${String(width)} scheme=${scheme} ${path}: ${error instanceof Error ? error.message : String(error)}`)
+          }
+        }
+      } finally {
+        await signedIn.close()
+      }
+      // The landing page only exists for a signed-out visitor (#453).
+      const guest = await browser.newContext({
+        viewport: { width, height: viewportHeight(width) },
+        locale: locale === 'en' ? 'en-US' : 'zh-CN',
+        colorScheme: scheme,
+      })
+      try {
+        const page = await guest.newPage()
+        await page.goto(`${base}/lang/${locale}?next=/`, { waitUntil: 'domcontentloaded' })
+        try {
+          await checkGatePage(page, locale, width, scheme, '/')
+        } catch (error) {
+          failures.push(`${locale} width=${String(width)} scheme=${scheme} /: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      } finally {
+        await guest.close()
+      }
+    }
+    await checkExplicitTheme(browser, locale, width)
+  }
 }
 
 void main()
