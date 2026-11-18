@@ -40,7 +40,7 @@ import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { parseVerification } from './lib/verification.js'
 import { cachedRouterProbe } from './lib/routerHealth.js'
-import { readChangeStory, type ChangeStory } from './lib/changeStory.js'
+import { changeStoryAttribution, readChangeStory, type ChangeStory } from './lib/changeStory.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl, parsePrUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
@@ -984,24 +984,28 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job.pr_url === null || job.pr_url === '') return { story: undefined, tip: null }
     const cached = changeStoryCache.get(job.id)
     if (cached !== undefined && Date.now() - cached.at < changeStoryTtlMs) return { story: cached.story, tip: cached.tip }
+    // #793: which model and role did the work is on the job row, so it is read
+    // here rather than from the pull request body. The row can be read even when
+    // GitHub cannot, which is why every branch below carries it.
+    const attribution = changeStoryAttribution({ modelJson: job.model_json, attributionJson: job.attribution_json })
     const parsed = parsePrUrl(repo, job.pr_url, config.github.apiBase)
     let story: ChangeStory
     let tip: PullTip | null = null
     if (!parsed.ok) {
-      story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+      story = readChangeStory({ body: null, totals: null, diffState: 'unreadable', attribution })
     } else {
       try {
         const token = await repoGithubToken(repo, config, githubApp, store)
         const client = new GithubClient(token, config.github.apiBase)
         const pr = await client.getPullRequest(parsed.ref.owner, parsed.ref.name, parsed.ref.number)
         const diff = await client.pullRequestDiffTotals(parsed.ref.owner, parsed.ref.name, parsed.ref.number, pr.changedFiles)
-        story = readChangeStory({ body: pr.body, totals: diff.totals, diffState: diff.complete ? 'ok' : 'capped' })
+        story = readChangeStory({ body: pr.body, totals: diff.totals, diffState: diff.complete ? 'ok' : 'capped', attribution })
         tip = { headSha: pr.headSha, state: pr.state, draft: pr.draft, mergeableState: pr.mergeableState }
       } catch (error) {
         // A read that failed is a fact the block reports, not a reason to fail
         // the page: the evidence below it is what the maintainer came for.
         log.warn('change story read failed', { repo: repo.id, job: job.id, error: error instanceof Error ? error.message : String(error) })
-        story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+        story = readChangeStory({ body: null, totals: null, diffState: 'unreadable', attribution })
       }
     }
     if (changeStoryCache.size >= 200) {

@@ -2131,14 +2131,20 @@ the existing changed-file walk. When that walk hits its own cap the totals are
 reported as unavailable rather than summed: a number taken from part of a change
 would understate it.
 
-`src/lib/changeStory.ts` is pure. It recognises `## What changed`, `## Risks`
-and `## Ran` at any heading level, and the bare `Ran:` line this repository's PR
-template uses; a repeated heading keeps the last occurrence and the block says
-so, so an edited body cannot silently show the abandoned draft. A heading the
-body does not carry renders `not stated` and is never filled from another
-section. A read that fails — 404, no token, a capped list — leaves the page at
-200 and names the unavailable fact instead, because a page that 500s on a read
-it did not need is worse than no block.
+`src/lib/changeStory.ts` is pure. It recognises `## What changed`, `## Risks`,
+`## Ran`, `## Alternatives considered`, `## Uncertainty` (or residual risk) and a
+`### Not run` heading at any level, plus the bare `Ran:` and `Not run:` lines this
+repository's PR template uses; a repeated heading keeps the last occurrence and
+the block says so, so an edited body cannot silently show the abandoned draft. A
+heading the body does not carry renders `not stated` and is never filled from
+another section, and an empty `Not run:` list is a row that says `not stated`
+rather than a row that disappears. The eighth row names the model and the role
+that did the work: both come from the job row (`model_json` and `writtenBy`, else
+`implementedBy`), never from the body, so the row survives a pull request that
+cannot be read and a body that claims a model cannot forge it. A read that fails
+— 404, no token, a capped list — leaves the page at 200 and names the unavailable
+fact instead, because a page that 500s on a read it did not need is worse than no
+block.
 
 ### Review and merge as one action
 

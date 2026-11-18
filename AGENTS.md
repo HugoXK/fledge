@@ -98,10 +98,11 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    npm run dev          # when the change is user-visible
    ```
 
-6. **PR.** Imperative English title, `Fixes #N`, what changed, what you ran and
-   did not run, risks, and a `Docs-not-needed:` line only when the docs really
-   say nothing about the change. Add one changelog fragment for a user-visible
-   change. One branch, one PR — query open PRs for the head before opening.
+6. **PR.** Imperative English title, `Fixes #N`, what changed, alternatives
+   considered, uncertainty and residual risk, what you ran and did not run, risks,
+   and a `Docs-not-needed:` line only when the docs really say nothing about the
+   change. Add one changelog fragment for a user-visible change. One branch, one
+   PR — query open PRs for the head before opening.
 7. **Review.** `ci-ok` covers the build; `review-gate` and `pr-lint` are also
    required. T0/T1 merge on green `ci-ok`. T2/T3 need a PASS at the same tip
    from a reviewer in `.github/agent/review-policy.json`; the author of the tip
