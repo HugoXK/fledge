@@ -2847,6 +2847,42 @@ pull request on the user's repository: proposing the four lanes and opening one
 gate pull request after a human confirms is a later slice of #543, and it keeps
 the human-confirmed shape.
 
+## The visual and accessibility gate (#870)
+
+`npm run visual:matrix` (`.github/workflows/ci.yml`, the `visual` job) runs two
+passes over the throwaway instance. The first is the screenshot sweep it always
+had: six paths at nine widths in both locales, failing on document or element
+overflow and on the `/settings#tokens` anchor. The second is the measured gate:
+the same six paths at `GATE_WIDTHS` (360, 768, 1280) in `GATE_SCHEMES` (light and
+dark) in both locales, three widths by two schemes because a scheme the host
+happened to carry is not a decision the matrix made. `src/lib/visualMatrix.ts`
+holds the constants and four pure checkers, so each rule can be pinned with a
+broken fixture without a browser: `touchFailures` holds every control the product
+styles as one (`button`, `.btn`, `input`, `select`, `textarea`, `summary`,
+`.section-nav a`) to the `--touch` 44px floor; `focusFailures` requires one of
+outline width/style, box-shadow, border colour or background colour to change
+when the control is focused; `nameFailures` requires an icon-only `button` or `a`
+to carry `aria-label` or `title`; `leftoverFailures` scans the rendered document
+for `{infoTip(`, `class="undefined"`, `[object Object]` and an unrendered `${`.
+A failure names all four coordinates and the control
+(`en width=768 scheme=dark /settings: select is 292x43px, under the 44px touch
+floor`), so a red job points at one row instead of a screenshot.
+
+The runner measures focus by tabbing: a programmatic `focus()` does not match
+`:focus-visible` in Chromium, so the resting style would read as unchanged for
+every control. It skips a control a closed `<details>` keeps out of the rendering
+(`checkVisibility()` is false while the rect is not), and it measures a checkbox
+through its `<label>`, the box a pointer hits. Three shapes are exempt by an
+attribute or a named category, never by a selector list: a 24px banner dismiss
+carries `data-compact-target` and is held to 24px, not less; a 15px info marker
+carries `data-inline-target` (WCAG 2.5.8's inline exception) and is skipped by
+the size check but still needs its accessible name; and a `summary` is a
+full-width disclosure row held to 24px. One pass per width saves the dark theme
+while the host prefers light and reads the rendered `data-theme` and
+`color-scheme` meta back, so the explicit choice is measured rather than assumed.
+There is no pixel comparison and no baseline file: screenshots stay CI artifacts,
+and the gate is computed style and geometry plus a text scan.
+
 ## Trust boundaries
 
 | Boundary | Control |
