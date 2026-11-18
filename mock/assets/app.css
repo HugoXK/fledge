@@ -1375,6 +1375,40 @@ html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus:
 .section-nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
 .section-nav a[aria-current="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
 .section-nav ~ .card[id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
+
+/* Issue 860: the settings page answers four questions, not six, so its nav is four
+   group links. Below 961px the strip above is unchanged. From there the same
+   four links become a sticky rail inside a two-column shell — one nav, one set
+   of links, both layouts by media query — and the shell's inner anchors take
+   the same sticky offset the card rule above promises, because `#tokens` and
+   `#sessions` are now sub-blocks rather than cards. */
+.settings-shell [id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
+.settings-shell .sub + .sub { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--line); }
+@media (min-width: 961px) {
+  .settings-shell { display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: var(--space-5); align-items: start; }
+  .settings-shell > .section-nav {
+    /* The shell is a grid, so the rail has to name its cell: without this,
+       auto-placement put the second and fourth card inside the 208px rail column
+       and left the content column empty beside them (#998). Spanning the four
+       group cards is also what keeps the rail sticky for the whole page rather
+       than only alongside the first card. */
+    grid-column: 1; grid-row: 1 / span 4;
+    align-self: start; position: sticky; top: var(--header-h); z-index: 15;
+    flex-direction: column; align-items: stretch; gap: 2px;
+    margin: 0; padding: 0; overflow: visible;
+    border-bottom: 0; background: transparent;
+  }
+  .settings-shell > .section-nav a {
+    justify-content: flex-start; white-space: normal;
+    border-bottom: 0; border-left: 2px solid transparent; border-radius: 0;
+    padding: 0 var(--space-3);
+  }
+  .settings-shell > .section-nav a:hover,
+  .settings-shell > .section-nav a[aria-current="true"] {
+    border-bottom-color: transparent; border-left-color: var(--accent);
+  }
+  .settings-shell [id] { scroll-margin-top: var(--header-h); }
+}
 .confirm-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 22px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
 .confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
 .confirm-dialog h2 { margin-bottom: 10px; }

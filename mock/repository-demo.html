@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>HugoXK/demo-app · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=ec89402f9b54" />
+  <link rel="stylesheet" href="assets/app.css?v=41e8b6317013" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -241,25 +241,25 @@
     </select>
   </label>
         <textarea id="goal-settings" name="goal" rows="5" placeholder="这个仓库每次迭代应该关注什么？">Add focused tests for the highest-risk paths.</textarea>
-        <label>目标分支<button type="button" class="info-tip" aria-label="PR 会合入这个分支；Fledge 仍会新建工作分支，不会直接 push 目标分支。留空使用仓库默认分支。" aria-expanded="false" data-tip="PR 会合入这个分支；Fledge 仍会新建工作分支，不会直接 push 目标分支。留空使用仓库默认分支。">!</button> <input name="targetBranch" value="main" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
-        <label>你的角色<button type="button" class="info-tip" aria-label="角色来自你在这个 GitHub 仓库的权限。admin/maintain 可选 maintainer 或 developer；其他权限只能选 developer。平台管理员不能替你改。" aria-expanded="false" data-tip="角色来自你在这个 GitHub 仓库的权限。admin/maintain 可选 maintainer 或 developer；其他权限只能选 developer。平台管理员不能替你改。">!</button> <select name="repoRole" required><option value="developer" selected>开发者</option></select></label>
+        <label>目标分支<button type="button" class="info-tip" aria-label="PR 合入这个分支，Fledge 仍新建工作分支而不直接 push，留空用默认分支。" aria-expanded="false" data-tip="PR 合入这个分支，Fledge 仍新建工作分支而不直接 push，留空用默认分支。">!</button> <input name="targetBranch" value="main" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
+        <label>你的角色<button type="button" class="info-tip" aria-label="角色来自你在这个仓库的 GitHub 权限：admin/maintain 可选 maintainer 或 developer，其他只能是 developer。" aria-expanded="false" data-tip="角色来自你在这个仓库的 GitHub 权限：admin/maintain 可选 maintainer 或 developer，其他只能是 developer。">!</button> <select name="repoRole" required><option value="developer" selected>开发者</option></select></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1"  /> 自动迭代</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" checked /> 启用</label>
-          <label>发现间隔<button type="button" class="info-tip" aria-label="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。" aria-expanded="false" data-tip="没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。">!</button> <select name="interval" id="repo-settings-interval"><option value="60" selected>每小时</option><option value="120">每 2 小时</option><option value="180">每 3 小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440">每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
+          <label>发现间隔<button type="button" class="info-tip" aria-label="没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。" aria-expanded="false" data-tip="没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。">!</button> <select name="interval" id="repo-settings-interval"><option value="60" selected>每小时</option><option value="120">每 2 小时</option><option value="180">每 3 小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440">每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1"  disabled data-role-can-review="0" /> 启用 PR 审核</label>
           <label>审核间隔 <select name="reviewInterval" id="repo-settings-review-interval" disabled><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
         </div>
         <div class="row" data-merge-group>
-          <label class="check"><input type="checkbox" name="autoMerge" value="1"  disabled /> 允许 maintainer 自动合并 PR<button type="button" class="info-tip" aria-label="默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。" aria-expanded="false" data-tip="默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。">!</button></label>
+          <label class="check"><input type="checkbox" name="autoMerge" value="1"  disabled /> 允许 maintainer 自动合并 PR<button type="button" class="info-tip" aria-label="只有 maintainer 能开启，开启后 Fledge 在检查通过且无 changes requested 时 squash merge。" aria-expanded="false" data-tip="只有 maintainer 能开启，开启后 Fledge 在检查通过且无 changes requested 时 squash merge。">!</button></label>
         </div>
-        <label class="check"><input type="checkbox" name="planRequired" value="1"  /> 先出计划，批准后执行<button type="button" class="info-tip" aria-label="开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。" aria-expanded="false" data-tip="开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。">!</button></label>
+        <label class="check"><input type="checkbox" name="planRequired" value="1"  /> 先出计划，批准后执行<button type="button" class="info-tip" aria-label="开启后“立即运行”先生成计划，maintainer 批准后才写代码。" aria-expanded="false" data-tip="开启后“立即运行”先生成计划，maintainer 批准后才写代码。">!</button></label>
         <details class="advanced-help" data-advanced="repo-settings">
           <summary>高级：运维设置（路径、阶段门禁、预算、模型）</summary>
         <div class="row">
-          <label class="grow">允许修改路径（可选）<button type="button" class="info-tip" aria-label="逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。" aria-expanded="false" data-tip="逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。">!</button> <input name="allowPaths" value="" placeholder="src/, docs/" /></label>
+          <label class="grow">允许修改路径（可选）<button type="button" class="info-tip" aria-label="逗号或换行分隔，批准计划时填入执行 prompt，不是硬性沙箱。" aria-expanded="false" data-tip="逗号或换行分隔，批准计划时填入执行 prompt，不是硬性沙箱。">!</button> <input name="allowPaths" value="" placeholder="src/, docs/" /></label>
           <label class="grow">禁止修改路径（可选） <input name="denyPaths" value="" placeholder=".github/, deploy/" /></label>
         </div>
         <div class="row">
@@ -268,8 +268,9 @@
         </div>
         <p class="fine">强制模式下，实现任务必须带范围、验收标准、失败/通过测试证据和 Dev/Test 分工，审核任务必须带 Reviewer 和评分；否则任务失败且不会自动合并。观察模式只记录不阻断。</p>
         <div class="row">
-          <label class="check"><input type="checkbox" name="requireProtection" value="1" checked /> 自动合并前要求 branch protection<button type="button" class="info-tip" aria-label="开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。" aria-expanded="false" data-tip="开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。">!</button></label>
+          <label class="check"><input type="checkbox" name="requireProtection" value="1" checked /> 自动合并前要求 branch protection<button type="button" class="info-tip" aria-label="开启后，自动合并前必须先读到 branch protection。" aria-expanded="false" data-tip="开启后，自动合并前必须先读到 branch protection。">!</button></label>
         </div>
+        <p class="fine">自动合并要求 branch protection：Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。</p>
         <p class="fine">Branch protection: <code>unknown</code></p>
         <div class="row">
           <label>仓库月度预算（元） <input name="monthlyBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
@@ -284,13 +285,13 @@
         </div>
         <p class="fine">本月已用 ¥0.00</p>
         <div class="row">
-          <label>仓库预算（元）<button type="button" class="info-tip" aria-label="这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。" aria-expanded="false" data-tip="这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。">!</button> <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
+          <label>仓库预算（元）<button type="button" class="info-tip" aria-label="这个仓库最近 30 天所有任务的成本上限，为空或 0 表示不设上限。" aria-expanded="false" data-tip="这个仓库最近 30 天所有任务的成本上限，为空或 0 表示不设上限。">!</button> <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
           <label>超出仓库预算时
             <select name="repoBudgetAction"><option value="alert" selected>只提醒（默认）</option><option value="pause">暂停任务，可从断点恢复</option><option value="cancel">取消任务</option></select>
           </label>
         </div>
         <div class="row">
-          <label>用户预算（元）<button type="button" class="info-tip" aria-label="这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。" aria-expanded="false" data-tip="这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。">!</button> <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
+          <label>用户预算（元）<button type="button" class="info-tip" aria-label="这个仓库的发起人最近 30 天在所有仓库的成本上限，为空或 0 表示不设上限。" aria-expanded="false" data-tip="这个仓库的发起人最近 30 天在所有仓库的成本上限，为空或 0 表示不设上限。">!</button> <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="0.00" /></label>
           <label>超出用户预算时
             <select name="principalBudgetAction"><option value="alert" selected>只提醒（默认）</option><option value="pause">暂停任务，可从断点恢复</option><option value="cancel">取消任务</option></select>
           </label>
@@ -302,12 +303,12 @@
         </table></div>
         
         <div class="row">
-          <label class="grow">可用模型<button type="button" class="info-tip" aria-label="提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。" aria-expanded="false" data-tip="提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。">!</button>
+          <label class="grow">可用模型<button type="button" class="info-tip" aria-label="提供方和模型在 Settings 里管理，这里只选这个仓库允许使用的模型。" aria-expanded="false" data-tip="提供方和模型在 Settings 里管理，这里只选这个仓库允许使用的模型。">!</button>
             <span class="list"><div class="mb-6"><strong>DeepSeek</strong><br /><label class="check"><input type="checkbox" name="modelIds" value="pvm_mock"  /> DeepSeek Chat <small class="muted">deepseek-chat</small></label></div></span>
           </label>
         </div>
         <div class="row">
-          <label class="grow">允许的提供方（可选）<button type="button" class="info-tip" aria-label="只允许这个仓库使用勾选的提供方；一个都不勾表示不限制。提供方本身由你在 Settings 里添加。" aria-expanded="false" data-tip="只允许这个仓库使用勾选的提供方；一个都不勾表示不限制。提供方本身由你在 Settings 里添加。">!</button>
+          <label class="grow">允许的提供方（可选）<button type="button" class="info-tip" aria-label="只允许这个仓库使用勾选的提供方，不勾表示不限制，提供方在 Settings 里添加。" aria-expanded="false" data-tip="只允许这个仓库使用勾选的提供方，不勾表示不限制，提供方在 Settings 里添加。">!</button>
             <span class="list"><label class="check"><input type="checkbox" name="allowedProviderIds" value="prv_mock"  /> DeepSeek <small class="muted">cn</small> · <a class="link" href="https://api-docs.deepseek.com/" rel="noreferrer noopener" target="_blank">数据政策</a></label></span>
           </label>
           <label>区域约束（可选） <input name="providerRegion" value="" maxlength="80" placeholder="eu" /></label>

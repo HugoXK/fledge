@@ -825,7 +825,8 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
   review requests changes, and the branch protection rule confirms the required
-  checks and approvals before it performs a squash merge. It also refuses when
+  checks and approvals before it performs a squash merge; a protection rule that
+  cannot be read is a refusal, not a pass. It also refuses when
   the linked work item is `changes_requested` or the newest succeeded review job
   for that PR has a score below `AUTO_MERGE_MIN_REVIEW_SCORE` (default 80). A
   manual maintainer merge may override the review-score gate, and the override

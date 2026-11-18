@@ -2251,3 +2251,140 @@ test('every workspace state names itself, its own action and never calls a non-r
     store.close()
   }
 })
+
+// #871: a tooltip answers "what is this field", not "what is the policy". These
+// assertions read the rendered `data-tip` attribute rather than the source, so a
+// tip that is only long because one language was edited is caught as well.
+const TIP_ABBREVIATIONS = ['e.g.', 'i.e.', 'v1.', 'v2.', 'etc.', 'vs.', 'approx.']
+const TIP_LIMIT = 120
+
+function decodedTip(attribute: string): string {
+  return attribute
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
+function tipsOf(html: string): string[] {
+  return [...html.matchAll(/data-tip="([^"]*)"/g)].map((match) => decodedTip(match[1] ?? ''))
+}
+
+// `e.g.`, `v1.` and friends are not sentence ends, so they are neutralised
+// before the terminators are counted; without that list punctuation could be
+// used to dodge the rule, which is the point of the list living here.
+function sentenceEnds(text: string): number {
+  let rest = text
+  for (const abbreviation of TIP_ABBREVIATIONS) rest = rest.split(abbreviation).join(' ')
+  const cjk = (rest.match(/[。！？]/g) ?? []).length
+  const latin = (rest.match(/[.!?](?=\s|$)/g) ?? []).length
+  return cjk + latin
+}
+
+function densityApp(): { config: ReturnType<typeof testConfig>; store: Store; viewer: ReturnType<typeof densityViewer>; repo: ReturnType<Store['createRepo']> } {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const user = makeUser(store, { login: 'density-user', status: 'approved' })
+  const repo = store.createRepo({ id: 'repo_density', userId: user.id, owner: 'o', name: 'density', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+  return { config, store, viewer: densityViewer(store, user.id), repo }
+}
+
+function densityViewer(store: Store, userId: string): { user: NonNullable<ReturnType<Store['userById']>>; csrfToken: string } {
+  return { user: store.userById(userId)!, csrfToken: 'csrf' }
+}
+
+function densityPages(): Array<{ page: string; locale: 'zh' | 'en'; html: string }> {
+  const { config, store, viewer, repo } = densityApp()
+  try {
+    const out: Array<{ page: string; locale: 'zh' | 'en'; html: string }> = []
+    for (const locale of ['zh', 'en'] as const) {
+      out.push({ page: 'dashboard', locale, html: dashboardPage({ config, locale, viewer, repos: [repo], jobs: [], notifications: [] }) })
+      out.push({ page: 'repo', locale, html: repoPage({ config, locale, viewer, repo, jobs: [] }) })
+      out.push({ page: 'settings', locale, html: settingsPage({ config, locale, viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] }) })
+      out.push({
+        page: 'appRepos',
+        locale,
+        html: appReposPage({
+          config,
+          locale,
+          viewer,
+          installations: [{ installation_id: 1, account_login: 'acme', account_type: 'User' }],
+          installationId: 1,
+          repos: [{ fullName: 'acme/repo', owner: 'acme', name: 'repo', private: false, defaultBranch: 'main' }],
+        }),
+      })
+    }
+    return out
+  } finally {
+    store.close()
+  }
+}
+
+test('no tooltip is a paragraph', () => {
+  const offenders: string[] = []
+  for (const { page, locale, html } of densityPages()) {
+    for (const tip of tipsOf(html)) {
+      const ends = sentenceEnds(tip)
+      if (tip.length > TIP_LIMIT) offenders.push(`${page} ${locale}: ${tip.length} characters — ${tip}`)
+      if (ends > 1) offenders.push(`${page} ${locale}: ${ends} sentence ends — ${tip}`)
+      if (/[；;]/.test(tip)) offenders.push(`${page} ${locale}: chained clauses with a semicolon — ${tip}`)
+    }
+  }
+  assert.deepEqual(offenders, [], `every tooltip is one sentence of at most ${TIP_LIMIT} characters`)
+})
+
+test('both languages of every tooltip stay in step', () => {
+  const pages = densityPages()
+  for (const page of ['dashboard', 'repo', 'settings', 'appRepos']) {
+    const zh = tipsOf(pages.find((entry) => entry.page === page && entry.locale === 'zh')!.html)
+    const en = tipsOf(pages.find((entry) => entry.page === page && entry.locale === 'en')!.html)
+    assert.equal(zh.length, en.length, `${page} renders the same number of tooltips in both languages`)
+    for (const [index, tip] of zh.entries()) {
+      const english = en[index] ?? ''
+      assert.ok(tip.trim() !== '', `${page} tooltip ${index} has Chinese text`)
+      assert.ok(english.trim() !== '', `${page} tooltip ${index} has English text`)
+      assert.ok(tip.length <= TIP_LIMIT, `${page} tooltip ${index} is within the cap in Chinese`)
+      assert.ok(english.length <= TIP_LIMIT, `${page} tooltip ${index} is within the cap in English`)
+    }
+  }
+})
+
+test('the token expiry rule is read, not hovered', () => {
+  const { config, store, viewer } = densityApp()
+  try {
+    const zh = settingsPage({ config, locale: 'zh', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const en = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const zhAfter = zh.slice(zh.indexOf('name="expiryDays"'))
+    const enAfter = en.slice(en.indexOf('name="expiryDays"'))
+    assert.match(zhAfter, /<p class="fine">[^<]*个人 token 必须有期限/, 'the expiry rule is printed under the select in Chinese')
+    assert.match(enAfter, /<p class="fine">[^<]*A personal token must expire/, 'the expiry rule is printed under the select in English')
+    assert.deepEqual(tipsOf(zh).filter((tip) => tip.includes('必须有期限')), [], 'the expiry rule is not left inside a tooltip')
+    assert.deepEqual(tipsOf(en).filter((tip) => tip.includes('must expire')), [], 'the expiry rule is not left inside a tooltip')
+  } finally {
+    store.close()
+  }
+})
+
+test('the auto-merge protection rule is read, not hovered', () => {
+  const { config, store, viewer, repo } = densityApp()
+  try {
+    const zh = repoPage({ config, locale: 'zh', viewer, repo, jobs: [] })
+    const en = repoPage({ config, locale: 'en', viewer, repo, jobs: [] })
+    const zhAfter = zh.slice(zh.indexOf('name="requireProtection"'))
+    const enAfter = en.slice(en.indexOf('name="requireProtection"'))
+    assert.match(zhAfter, /<p class="fine">[^<]*自动合并要求 branch protection/, 'the protection rule is printed under the checkbox in Chinese')
+    assert.match(enAfter, /<p class="fine">[^<]*Auto-merge requires branch protection/, 'the protection rule is printed under the checkbox in English')
+    assert.deepEqual(tipsOf(zh).filter((tip) => tip.includes('自动合并要求')), [], 'the protection rule is not left inside a tooltip')
+    assert.deepEqual(tipsOf(en).filter((tip) => tip.includes('Auto-merge requires')), [], 'the protection rule is not left inside a tooltip')
+  } finally {
+    store.close()
+  }
+})
+
+test('no page prints the tooltip helper or an unrendered template', () => {
+  for (const { page, locale, html } of densityPages()) {
+    assert.doesNotMatch(html, /\{infoTip\(/, `${page} ${locale} interpolates the helper instead of printing it`)
+    assert.doesNotMatch(html, /\$\{/, `${page} ${locale} has no unrendered template expression`)
+  }
+})
