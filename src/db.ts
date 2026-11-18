@@ -64,7 +64,7 @@ const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: st
 // restore check (#652) has to prove a fixture written by an older build still
 // migrates to exactly this number, and a literal in two places would let the
 // check and the migration disagree.
-export const SCHEMA_VERSION = 47
+export const SCHEMA_VERSION = 48
 
 export type UserStatus = 'onboarding' | 'pending' | 'approved' | 'rejected'
 export type UserRole = 'user' | 'admin' | 'superadmin'
@@ -344,6 +344,10 @@ export interface NotificationOutboxRow {
   /** The account the email belongs to; null for a webhook. Delivery re-checks
    * that account and its current notification address before sending. */
   user_id: string | null
+  /** #544: the job whose outcome this notification reports, when it reports one.
+   * A scheduled run's delivery is read through it, so the console never has to
+   * parse the idempotency key to guess which send belongs to which run. */
+  job_id: string | null
   payload_json: string
   /** Reused by a human resend: the same logical notification, not a second one. */
   idempotency_key: string
@@ -2190,6 +2194,9 @@ CREATE TABLE IF NOT EXISTS notification_outbox (
   transport TEXT NOT NULL,
   destination TEXT NOT NULL,
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+  -- #544: the job this send reports, when it reports one. Null for a send that
+  -- is not about a job (a digest, an ops alert without a job).
+  job_id TEXT,
   payload_json TEXT NOT NULL,
   idempotency_key TEXT NOT NULL,
   state TEXT NOT NULL,
@@ -2522,6 +2529,7 @@ export class Store {
     this.migrateScheduleMisfireColumns()
     this.migrateScheduleBudgetColumns()
     this.migrateSchedulePauseColumns()
+    this.migrateNotificationJobColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -2565,6 +2573,17 @@ export class Store {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
     if (!columns.includes('status')) this.db.exec("ALTER TABLE schedules ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
     if (!columns.includes('paused_at')) this.db.exec('ALTER TABLE schedules ADD COLUMN paused_at INTEGER')
+  }
+
+  // #544: the console answers a scheduled run's delivery through the job the
+  // occurrence dispatched, so an outbox row has to name that job. The column is
+  // added in place with no backfill: a row written before it cannot be attached
+  // to a run afterwards, and guessing from the idempotency key would attach the
+  // wrong one. Such rows answer `none` for an old run, never a fabricated state.
+  private migrateNotificationJobColumns(): void {
+    const columns = this.all<{ name: string }>('PRAGMA table_info(notification_outbox)').map((column) => column.name)
+    if (!columns.includes('job_id')) this.db.exec('ALTER TABLE notification_outbox ADD COLUMN job_id TEXT')
+    this.run('CREATE INDEX IF NOT EXISTS notification_outbox_job_idx ON notification_outbox(job_id, created_at DESC)')
   }
 
   private migrateScheduleOccurrenceColumns(): void {
@@ -5904,6 +5923,8 @@ export class Store {
     transport: NotificationTransport
     destination: string
     userId?: string | null
+    /** #544: the job this send reports, so a scheduled run's delivery is readable. */
+    jobId?: string | null
     payload: unknown
     idempotencyKey: string
     now?: number
@@ -5911,14 +5932,15 @@ export class Store {
     const now = input.now ?? Date.now()
     const result = this.db.prepare(
       `INSERT INTO notification_outbox
-         (id, transport, destination, user_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
+         (id, transport, destination, user_id, job_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
        ON CONFLICT(transport, idempotency_key) DO NOTHING`,
     ).run(...clean([
       `ntf_${randomBytes(8).toString('hex')}`,
       input.transport,
       input.destination.slice(0, 500),
       input.userId ?? null,
+      input.jobId ?? null,
       JSON.stringify(input.payload),
       input.idempotencyKey.slice(0, 300),
       now,
@@ -5935,6 +5957,16 @@ export class Store {
 
   getNotificationOutbox(id: string): NotificationOutboxRow | undefined {
     return this.get<NotificationOutboxRow>('SELECT * FROM notification_outbox WHERE id = ?', id)
+  }
+
+  // #544: every send a job produced, newest first. The console asks this for the
+  // job an occurrence dispatched; an empty answer is a run that queued nothing,
+  // which is `none` on the page rather than an unread `unknown`.
+  notificationsForJob(jobId: string): NotificationOutboxRow[] {
+    return this.all<NotificationOutboxRow>(
+      'SELECT * FROM notification_outbox WHERE job_id = ? ORDER BY created_at DESC, rowid DESC',
+      jobId,
+    )
   }
 
   // Claiming is one transaction, like the occurrence lease: the due rows are

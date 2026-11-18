@@ -1741,7 +1741,7 @@ export class Jobs {
         issueUrl: issueUrl,
         summary: redact(result.summary ?? job.summary ?? ''),
         error: redact(result.error ?? job.error ?? ''),
-      }, `job.${job.id}:${result.status}:webhook`)
+      }, `job.${job.id}:${result.status}:webhook`, job.id)
     }
     const repo = this.store.getRepo(job.repo_id)
     if (repo !== undefined && repo.job_budget_cny > 0) {
@@ -1853,7 +1853,7 @@ export class Jobs {
         jobId,
         recurrenceKey: record.recurrence.recurrence_key,
         count: record.recurrence.count,
-      }, `postmortem.recurring:${record.postmortem.repo_id}:${record.recurrence.recurrence_key}:${record.recurrence.count}`)
+      }, `postmortem.recurring:${record.postmortem.repo_id}:${record.recurrence.recurrence_key}:${record.recurrence.count}`, jobId)
     } catch (error) {
       log.warn('postmortem write failed', { trace: jobId, error: String(error) })
       // #666: a postmortem that was not written is a repair job, not a no-op, so
@@ -1980,7 +1980,7 @@ export class Jobs {
     this.store.setSetting(key, nowIso())
     this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。`)
     this.store.audit(job.user_id, 'ops.repeated_failures', `${label}: 3 consecutive failures`)
-    this.queueWebhook('repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id }, `repo.repeated_failures:${job.repo_id}:${job.id}`)
+    this.queueWebhook('repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id }, `repo.repeated_failures:${job.repo_id}:${job.id}`, job.id)
   }
 
   private async refreshRepoAccess(repo: RepoRow): Promise<RepoRow | undefined> {
@@ -2815,7 +2815,7 @@ export class Jobs {
   // webhook call; the settings keys above are what make the pass idempotent.
   private notifyPlan(job: JobRow, message: string, code: string): void {
     this.store.notify(job.user_id, 'job', message, code)
-    this.queueWebhook(code, { text: message, repoId: job.repo_id, jobId: job.id }, `${code}:${job.id}`)
+    this.queueWebhook(code, { text: message, repoId: job.repo_id, jobId: job.id }, `${code}:${job.id}`, job.id)
   }
 
   private async releaseAllPendingFollowups(): Promise<void> {
@@ -3310,12 +3310,15 @@ export class Jobs {
   // logical event, so a replayed callback or a second tick keeps one row instead
   // of sending twice. With no webhook configured there is no destination to
   // record, which is the same no-op the old fire-and-forget call had.
-  private queueWebhook(event: string, payload: Record<string, unknown>, key: string): void {
+  private queueWebhook(event: string, payload: Record<string, unknown>, key: string, jobId?: string | null): void {
     if (this.config.notifyWebhookUrl === '') return
     try {
       this.store.enqueueNotification({
         transport: 'webhook',
         destination: 'webhook',
+        // #544: a send about a job names it, so a scheduled run's delivery is
+        // readable without parsing the key.
+        ...(jobId === undefined ? {} : { jobId }),
         payload: { event, ...payload },
         idempotencyKey: key,
       })

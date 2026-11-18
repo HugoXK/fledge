@@ -8,12 +8,67 @@
 // formula.
 //
 // Every value it cannot know is `null`, and the page prints `unknown`. A schedule
-// with no occurrence row has not run yet, which is not "zero runs"; a delivery has
-// no outbox in this slice, so its result is `unknown` rather than a happy zero.
+// with no occurrence row has not run yet, which is not "zero runs"; a run whose
+// job has finished and queued no notification is `none`, which is also not a
+// happy zero; a run whose job is still queued or running is `unknown`, because
+// a job queues its notifications only when it ends.
 
-import type { ScheduleOccurrenceRow, ScheduleRow } from '../db.js'
+import type { NotificationOutboxState, ScheduleOccurrenceRow, ScheduleRow } from '../db.js'
 import { nextTime, type Schedule } from './next.js'
 import { scheduleFromRow } from './tick.js'
+
+/**
+ * What the console can say about the newest run's delivery. `none` is a finished
+ * run that queued nothing; `unknown` is a caller that read nothing, a schedule
+ * that never ran, or a run whose job has not finished; `unconfirmed` is an
+ * outbox row whose send may have crossed the boundary and is never resent
+ * automatically.
+ */
+export type ScheduleDelivery = 'unknown' | 'none' | 'unconfirmed' | 'dead' | 'blocked' | 'retry' | 'sending' | 'pending' | 'sent'
+
+// One row per state, worst first: a state that needs a person outranks one that
+// needs time, which outranks one that is in flight, which outranks one that is
+// already done. Several sends for one job (a webhook that is retrying beside one
+// that was accepted) must not read as the accepted one. `dead` outranks
+// `blocked` even though both need a person: a dead send spent its retries
+// against a destination that exists and is lost without one, while a blocked
+// send never left — its destination was never reachable — and the row is still
+// intact for a person to fix and resend.
+const DELIVERY_RANK: Record<NotificationOutboxState, number> = {
+  unknown: 0, dead: 1, blocked: 2, retry: 3, sending: 4, pending: 5, sent: 6,
+}
+
+function worstDelivery(states: NotificationOutboxState[]): ScheduleDelivery {
+  let worst = states[0] ?? 'sent'
+  for (const state of states) if (DELIVERY_RANK[state] < DELIVERY_RANK[worst]) worst = state
+  return worst === 'unknown' ? 'unconfirmed' : worst
+}
+
+function deliveryOf(
+  newest: ScheduleOccurrenceRow | undefined,
+  jobStatus: (jobId: string) => string | null,
+  read: ((jobId: string) => Array<{ state: NotificationOutboxState }>) | undefined,
+): ScheduleDelivery {
+  if (newest === undefined) return 'unknown'
+  // Only a decided instant can answer. `dispatched` names the job whose
+  // notifications are the delivery fact, and `skipped` provably queued none.
+  // A `claimed` row keeps its `job_id` NULL until the worker starts the job,
+  // and an `expired` row is a lease that lapsed before anyone settled it, so
+  // neither has decided yet and `none` would be a lie the page prints as
+  // "not queued".
+  if (newest.state !== 'dispatched' && newest.state !== 'skipped') return 'unknown'
+  if (newest.job_id === null) return newest.state === 'skipped' ? 'none' : 'unknown'
+  if (read === undefined) return 'unknown'
+  // A job queues its notifications only when it ends (`succeeded`/`failed`),
+  // so while it is queued or running the empty outbox read is a value nobody
+  // knows yet — printing `none` there would deny a notification the run may
+  // still queue. A job the store cannot find is unknown for the same reason:
+  // the console cannot prove it will never queue one.
+  const status = jobStatus(newest.job_id)
+  if (status === null || status === 'queued' || status === 'running') return 'unknown'
+  const rows = read(newest.job_id)
+  return rows.length === 0 ? 'none' : worstDelivery(rows.map((row) => row.state))
+}
 
 export interface OccurrenceView {
   id: string
@@ -52,8 +107,15 @@ export interface ScheduleConsoleState {
   last: OccurrenceView | null
   /** The newest dispatched instant whose job has succeeded. */
   lastSuccess: OccurrenceView | null
-  /** There is no delivery outbox in this slice, so the result is never known. */
-  delivery: 'unknown'
+  /**
+   * #544: the delivery of the newest decided instant, read through the job it
+   * dispatched. `unknown` means nobody read the outbox, nothing has run, or the
+   * run's job has not finished — a job queues its notifications only when it
+   * ends; `none` means a finished job queued no notification. The outbox's own
+   * `unknown` — the send may have crossed the external boundary — is reported as
+   * `unconfirmed` so it is never mistaken for "nobody looked".
+   */
+  delivery: ScheduleDelivery
   /**
    * #544 slice 6: the schedule layer of the run budget. `dailyRuns` null is
    * unbounded; `runsToday` null is unknown, which the page prints as unknown and
@@ -85,6 +147,11 @@ function viewOf(row: ScheduleOccurrenceRow, now: number): OccurrenceView {
  * a success; an unknown job answers null and is not counted as either.
  * `runsToday` is `Store.countScheduleDispatchesBetween` over the current UTC day;
  * a caller that did not read it leaves it out, and the page says unknown.
+ * `jobDeliveries` resolves the notifications a job queued; a caller that did not
+ * read the outbox leaves it out, and the page says unknown rather than `none`.
+ * `jobStatus` decides the same line: a job still queued or running has not
+ * queued anything yet, so its empty read is unknown, and only a terminal job
+ * whose read is empty answers `none`.
  */
 export function scheduleConsole(input: {
   repoId: string
@@ -93,6 +160,7 @@ export function scheduleConsole(input: {
   now: number
   jobStatus: (jobId: string) => string | null
   runsToday?: number
+  jobDeliveries?: (jobId: string) => Array<{ state: NotificationOutboxState }>
 }): ScheduleConsoleState {
   const { row, now } = input
   const schedule = row === undefined ? null : scheduleFromRow(row)
@@ -116,7 +184,7 @@ export function scheduleConsole(input: {
     nextAt: schedule === null ? null : nextTime(schedule, now),
     last: occurrences[0] ?? null,
     lastSuccess,
-    delivery: 'unknown',
+    delivery: deliveryOf(input.occurrences[0], input.jobStatus, input.jobDeliveries),
     budget: {
       dailyRuns,
       runsToday,

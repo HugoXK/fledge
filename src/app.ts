@@ -1774,6 +1774,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       occurrences: store.listScheduleOccurrences(repo.id, 20),
       now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
+      // #544: the delivery fact is the state of the notification the newest run's
+      // job queued, read from the outbox rather than assumed unknown. A job that
+      // queued nothing answers empty, which the console prints as `none`.
+      jobDeliveries: (jobId) => store.notificationsForJob(jobId),
       // #544 slice 6: the same count function the worker charges with, read over
       // today's UTC day — the worker charges the *instant's* day, so a catch-up
       // run can spend a past day while this fact answers "how much of today is

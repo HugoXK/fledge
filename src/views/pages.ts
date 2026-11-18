@@ -4890,6 +4890,24 @@ export function scheduleConsolePage(input: {
     : last.leaseHeld
       ? t(`持有中，至 ${shown(last.leaseExpiresAt)}`, `held until ${shown(last.leaseExpiresAt)}`)
       : t(`未被持有（尝试 ${last.attempts} 次）`, `not held (${last.attempts} attempt${last.attempts === 1 ? '' : 's'})`)
+  // #544: the delivery is the state of the notification the newest run's job
+  // queued. `unknown` means nothing was read, nothing has run, or the run's job
+  // has not finished (a job queues its notifications only when it ends); the
+  // outbox's own unknown is `unconfirmed`, because a send that may have crossed
+  // the boundary is a different fact from a page that did not look.
+  const deliveryLine = ((): string => {
+    switch (state.delivery) {
+      case 'none': return t('未排队（这次运行没有外部通知）', 'not queued (this run queued no external notification)')
+      case 'sent': return t('已发送', 'sent')
+      case 'pending': return t('排队中', 'queued')
+      case 'sending': return t('发送中', 'sending')
+      case 'retry': return t('等待重试', 'retry scheduled')
+      case 'dead': return t('发送失败', 'failed')
+      case 'blocked': return t('被阻止（需要人处理）', 'blocked (a person must fix it)')
+      case 'unconfirmed': return t('未确认（不会自动重发）', 'unconfirmed (never resent automatically)')
+      default: return t('未知（没有读取、还没有运行，或运行未结束）', 'unknown (nothing read, nothing has run, or the run has not finished)')
+    }
+  })()
   const occurrenceRows = state.occurrences.length === 0
     ? `<tr><td colspan="6" class="muted">${escapeHtml(t('还没有决定过任何时刻。', 'No instant has been decided yet.'))}</td></tr>`
     : state.occurrences.map((occurrence) => `<tr>
@@ -4936,7 +4954,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('上次成功', 'Last success'))}</dt><dd data-last-success="${escapeHtml(iso(state.lastSuccess?.logicalTime ?? null))}">${escapeHtml(shown(state.lastSuccess?.logicalTime ?? null))}</dd>
         <dt>${escapeHtml(t('最后决定', 'Last decision'))}</dt><dd>${lastLine}</dd>
         <dt>${escapeHtml(t('租约', 'Lease'))}</dt><dd>${leaseLine}</dd>
-        <dt>${escapeHtml(t('投递结果', 'Delivery'))}</dt><dd data-delivery="${escapeHtml(state.delivery)}">${escapeHtml(t('unknown（这一片还没有投递箱）', 'unknown (no delivery outbox in this slice)'))}</dd>
+        <dt>${escapeHtml(t('投递结果', 'Delivery'))}</dt><dd data-delivery="${escapeHtml(state.delivery)}">${escapeHtml(deliveryLine)}</dd>
         <dt>${escapeHtml(t('有效期', 'Window'))}</dt><dd>${window}</dd>
         <dt>${escapeHtml(t('时序版本', 'Timing revision'))}</dt><dd>${escapeHtml(state.timingRevision === null ? t('unknown', 'unknown') : String(state.timingRevision))} · ${escapeHtml(state.misfire === null ? t('unknown', 'unknown') : state.misfire)}</dd>
         <dt>${escapeHtml(t('宽限', 'Grace'))}</dt><dd data-schedule-grace="${escapeHtml(state.graceMs === null ? 'none' : String(state.graceMs))}">${escapeHtml(state.graceMs === null ? t('不限（默认）', 'unbounded (default)') : t(`${Math.round(state.graceMs / 60_000)} 分钟`, `${Math.round(state.graceMs / 60_000)} minutes`))}</dd>
