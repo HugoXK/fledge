@@ -1390,7 +1390,18 @@ runner names, matched on word boundaries) whose conclusion is `success`:
 `skipped` and `neutral` are completions without a verdict, so they leave the
 evidence unverified rather than contradicted, and a claim that no test check
 supports blocks the merge with "Test evidence is claimed but no test check
-passed." A claimed green test with a failing test check is contradicted and
+passed." That check proves a test job ran and passed; it does not prove the test
+was red at the base for the reason the fix addresses. `src/lib/redTest.ts` reads
+a base run's output and classifies it: an assertion failure, or an error thrown
+from a test file, is `red`; a compile or type error, a missing module, an
+environment or network error, a timeout, a skipped test and any unrecognised
+shape are `unverified`, and a run that exits 0 at the base is `passed`. The
+record keeps the command, the base SHA, the exit code, the signature and the
+sha256 of the output, and a second run of the same command at the same base that
+disagrees makes it `unverified` and flaky. Nothing enforces it yet: the base run
+has no producer, so requiring the record would block every pull request rather
+than prove one.
+A claimed green test with a failing test check is contradicted and
 blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
 `POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. `ready` requires
