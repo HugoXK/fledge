@@ -1428,6 +1428,22 @@ card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the
 guard as the reason its claim was lowered.
 
+### Quarantined tests
+
+A green test check is not proof on its own while the same test has been changing
+its mind. `quarantineTests` in `src/lib/verification.ts` groups the recorded runs
+by test name, counts the flips between pass and fail, and quarantines a test that
+alternated at least twice inside at least three runs; a single failure, or a
+first failure that has not alternated, is not a quarantine, because the rule is
+the alternation and not the red. The evidence snapshot reads the same runs: a
+quarantined test's green check moves out of `greenChecks` and into
+`quarantinedChecks`, so it can be shown as information but cannot be the only
+reason the evidence is `verified`. A red from a quarantined test still
+contradicts — the quarantine is about a green nobody should trust, not about
+excusing a failure. Nothing feeds recorded runs into the rule yet; the stored
+ledger and the page that lists selected and quarantined tests are the next slice
+of #378, so the merge gate still sees the rule's default of no recorded runs.
+
 ### The independent adversarial review
 
 The last gate before an automatic merge is a second read of the same change by a

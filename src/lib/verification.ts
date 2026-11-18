@@ -6,6 +6,19 @@ export interface TestEvidence {
   claimed: boolean
   greenChecks: string[]
   failingChecks: string[]
+  quarantinedChecks: string[]
+}
+
+export interface TestRun {
+  name: string
+  passed: boolean
+}
+
+export interface TestStability {
+  name: string
+  runs: number
+  alternations: number
+  state: 'quarantined' | 'stable' | 'insufficient-evidence'
 }
 
 export interface VerificationResult {
@@ -42,14 +55,51 @@ const TEST_CHECK = /\b(tests?|specs?|pytest|jest|vitest|mocha|cargo|go[- ]test)\
 const GREEN = new Set(['success'])
 const IGNORED = new Set(['neutral', 'skipped'])
 
-export function evaluateTestEvidence(claimed: boolean, checks: Array<{ name: string; status: string; conclusion: string | null }>): TestEvidence {
-  const greenChecks = checks.filter((check) => check.status === 'completed' && GREEN.has(check.conclusion ?? '') && TEST_CHECK.test(check.name)).map((check) => check.name)
+// #378: a check that is green now is not evidence a change works if the same
+// test has been changing its mind. A test that alternates pass/fail across
+// recorded runs is quarantined: it still runs and its result is still shown, but
+// it cannot be the only reason to call a pull request verified. The threshold is
+// two flips inside at least three runs, so a single failure — or a first
+// failure that has not alternated yet — is never a quarantine.
+export function quarantineTests(runs: TestRun[], threshold = 2): TestStability[] {
+  const order: string[] = []
+  const ledger = new Map<string, { runs: number; alternations: number; last: boolean | null }>()
+  for (const run of runs) {
+    let entry = ledger.get(run.name)
+    if (entry === undefined) {
+      entry = { runs: 0, alternations: 0, last: null }
+      ledger.set(run.name, entry)
+      order.push(run.name)
+    }
+    if (entry.last !== null && entry.last !== run.passed) entry.alternations += 1
+    entry.runs += 1
+    entry.last = run.passed
+  }
+  return order.map((name) => {
+    const entry = ledger.get(name) as { runs: number; alternations: number }
+    const enough = entry.runs >= threshold + 1
+    return {
+      name,
+      runs: entry.runs,
+      alternations: entry.alternations,
+      state: enough && entry.alternations >= threshold ? 'quarantined' : enough ? 'stable' : 'insufficient-evidence',
+    }
+  })
+}
+
+export function evaluateTestEvidence(claimed: boolean, checks: Array<{ name: string; status: string; conclusion: string | null }>, runs: TestRun[] = []): TestEvidence {
+  const quarantined = new Set(quarantineTests(runs).filter((entry) => entry.state === 'quarantined').map((entry) => entry.name))
+  const green = checks.filter((check) => check.status === 'completed' && GREEN.has(check.conclusion ?? '') && TEST_CHECK.test(check.name)).map((check) => check.name)
+  const greenChecks = green.filter((name) => !quarantined.has(name))
+  const quarantinedChecks = green.filter((name) => quarantined.has(name))
+  // A quarantined test does not excuse a red: a failure is still a failure, it
+  // just cannot be counted on when it is green.
   const failingChecks = checks.filter((check) => check.status === 'completed' && !GREEN.has(check.conclusion ?? '') && !IGNORED.has(check.conclusion ?? '') && TEST_CHECK.test(check.name)).map((check) => check.name)
-  if (!claimed) return { state: 'unverified', claimed: false, greenChecks, failingChecks }
-  if (failingChecks.length > 0) return { state: 'contradicted', claimed: true, greenChecks, failingChecks }
-  if (greenChecks.length > 0) return { state: 'verified', claimed: true, greenChecks, failingChecks }
-  if (checks.length === 0) return { state: 'contradicted', claimed: true, greenChecks, failingChecks }
-  return { state: 'unverified', claimed: true, greenChecks, failingChecks }
+  if (!claimed) return { state: 'unverified', claimed: false, greenChecks, failingChecks, quarantinedChecks }
+  if (failingChecks.length > 0) return { state: 'contradicted', claimed: true, greenChecks, failingChecks, quarantinedChecks }
+  if (greenChecks.length > 0) return { state: 'verified', claimed: true, greenChecks, failingChecks, quarantinedChecks }
+  if (checks.length === 0) return { state: 'contradicted', claimed: true, greenChecks, failingChecks, quarantinedChecks }
+  return { state: 'unverified', claimed: true, greenChecks, failingChecks, quarantinedChecks }
 }
 
 export function parseVerification(value: string | null): VerificationResult | null {
