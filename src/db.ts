@@ -2281,6 +2281,22 @@ CREATE TABLE IF NOT EXISTS schedules (
   updated_at TEXT NOT NULL
 );
 
+-- #544 slice 10: the project and tenant layers of the run budget. The schedule
+-- layer stays schedules.daily_runs; this table carries the same per-logical-
+-- UTC-day run limit for the #541 project (one per repository) and tenant (one
+-- per owner). A missing row is unbounded, and the tick stops at the first layer
+-- whose day is already spent, in schedule -> project -> tenant order, so adding
+-- a repository cannot bypass a tenant limit. category is reserved for the later
+-- report/development and model/cost split; this slice writes runs.
+CREATE TABLE IF NOT EXISTS schedule_budgets (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'runs',
+  daily_limit INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (scope, scope_id, category)
+);
+
 -- #544 slice 3B: one row per decided logical instant. Slice A recorded a
 -- decision only as an audit line, so a skip had no row and a second tick could
 -- not be told that the instant had already been decided. The unique key is that
@@ -6029,6 +6045,67 @@ export class Store {
       `SELECT COUNT(*) AS count FROM schedule_occurrences
         WHERE schedule_id = ? AND state = 'dispatched' AND logical_time >= ? AND logical_time < ?`,
       scheduleId, from, to,
+    )
+    return Number(row?.count ?? 0)
+  }
+
+  // #544 slice 10: the project and tenant layers of the run budget. The #541
+  // identity rows map one project to each repository and one tenant to each
+  // owner, so a tenant limit covers every repository the owner runs in the same
+  // logical UTC day. Null means the layer is unbounded.
+  projectForRepo(repoId: string): { id: string; tenant_id: string } | undefined {
+    return this.get<{ id: string; tenant_id: string }>('SELECT id, tenant_id FROM projects WHERE repo_id = ?', repoId)
+  }
+
+  saveScheduleBudget(input: {
+    scope: 'project' | 'tenant'
+    scopeId: string
+    category?: string
+    dailyLimit: number | null
+  }): void {
+    const category = input.category ?? 'runs'
+    if (input.dailyLimit === null) {
+      this.run(
+        'DELETE FROM schedule_budgets WHERE scope = ? AND scope_id = ? AND category = ?',
+        input.scope, input.scopeId, category,
+      )
+      return
+    }
+    if (!Number.isSafeInteger(input.dailyLimit) || input.dailyLimit < 1) {
+      throw new Error('a schedule budget must be a positive integer or null')
+    }
+    this.run(
+      `INSERT INTO schedule_budgets (scope, scope_id, category, daily_limit, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(scope, scope_id, category) DO UPDATE SET daily_limit = excluded.daily_limit, updated_at = excluded.updated_at`,
+      input.scope, input.scopeId, category, input.dailyLimit, nowIso(),
+    )
+  }
+
+  scheduleBudget(scope: 'project' | 'tenant', scopeId: string, category = 'runs'): number | null {
+    const row = this.get<{ daily_limit: number }>(
+      'SELECT daily_limit FROM schedule_budgets WHERE scope = ? AND scope_id = ? AND category = ?',
+      scope, scopeId, category,
+    )
+    return row?.daily_limit ?? null
+  }
+
+  countProjectScheduleDispatchesBetween(projectId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences o
+         JOIN projects p ON p.repo_id = o.repo_id
+        WHERE p.id = ? AND o.state = 'dispatched' AND o.logical_time >= ? AND o.logical_time < ?`,
+      projectId, from, to,
+    )
+    return Number(row?.count ?? 0)
+  }
+
+  countTenantScheduleDispatchesBetween(tenantId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences o
+         JOIN projects p ON p.repo_id = o.repo_id
+        WHERE p.tenant_id = ? AND o.state = 'dispatched' AND o.logical_time >= ? AND o.logical_time < ?`,
+      tenantId, from, to,
     )
     return Number(row?.count ?? 0)
   }
