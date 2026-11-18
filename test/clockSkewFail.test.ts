@@ -228,3 +228,69 @@ test('a deployment with no App is not a clock verdict', async () => {
     await h.close()
   }
 })
+
+// #915: the refusal is a verdict with no expiry of its own. Every path that can
+// take a new measurement (`appJwt`) runs after admission, so on a quiet instance
+// a corrected host clock left the gate refusing forever. One test for the repair
+// path and one for its fail-closed edge.
+test('the scheduler re-measures a failing clock and lifts the refusal once it is corrected', async () => {
+  resetMetrics()
+  const options = { aheadSeconds: 1688 }
+  const h = await harness(options)
+  const realNow = Date.now
+  const measuredAt = 1_800_000_000_000
+  try {
+    Date.now = () => measuredAt
+    assert.equal(await h.built.githubApp.measureSkew(), 1688)
+    assert.equal(h.built.githubApp.clockState().state, 'fail')
+
+    // The operator corrects the host clock. Nothing in the app calls GitHub:
+    // no push, no auto-merge candidate, no page open, no running job.
+    options.aheadSeconds = 2
+    Date.now = () => measuredAt + 6 * 60_000
+    const rateLimitsBefore = h.calls.filter((call) => call.endsWith('/rate_limit')).length
+
+    await h.built.jobs.tick()
+
+    assert.equal(h.built.githubApp.clockState().state, 'ok', 'the tick did not re-measure a failing clock')
+    const accepted = await h.built.jobs.enqueue(h.repo, 'manual', 'ship it')
+    assert.equal(accepted.ok, true, `enqueue still refused a corrected clock: ${String(accepted.code)}`)
+    const rateLimitsAfter = h.calls.filter((call) => call.endsWith('/rate_limit')).length
+    assert.equal(rateLimitsAfter - rateLimitsBefore, 1, 'the six minutes cost more than one re-measurement')
+  } finally {
+    Date.now = realNow
+    await h.close()
+  }
+})
+
+test('a re-measurement that fails keeps the refusal and says how old the reading is', async () => {
+  resetMetrics()
+  const options = { aheadSeconds: 1688 }
+  const h = await harness(options)
+  const realNow = Date.now
+  const measuredAt = 1_800_000_000_000
+  try {
+    Date.now = () => measuredAt
+    assert.equal(await h.built.githubApp.measureSkew(), 1688)
+    options.aheadSeconds = 2
+    // GitHub is unreachable for this refresh: a timeout is not a reading, so the
+    // verdict must stand rather than being forgotten on the way out.
+    await h.stopGithub()
+    Date.now = () => measuredAt + 6 * 60_000
+    await h.built.jobs.tick()
+
+    assert.equal(h.built.githubApp.clockState().state, 'fail', 'an unreachable GitHub was read as a repaired clock')
+    const refused = await h.built.jobs.enqueue(h.repo, 'manual', 'ship it')
+    assert.equal(refused.ok, false)
+    assert.equal(refused.code, 'CLOCK_SKEW')
+    assert.equal(refused.measuredAt, new Date(measuredAt).toISOString(), 'the refusal did not carry when the reading was taken')
+    assert.equal(refused.measuredAgeSeconds, 360, 'the refusal did not carry how old the reading is')
+
+    const ready = await h.built.app.inject({ method: 'GET', url: '/readyz' })
+    assert.equal(ready.statusCode, 503)
+    assert.equal((ready.json() as { clock?: { measuredAt?: string } }).clock?.measuredAt, new Date(measuredAt).toISOString(), '/readyz dropped when the reading was taken')
+  } finally {
+    Date.now = realNow
+    await h.close()
+  }
+})
