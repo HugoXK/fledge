@@ -210,6 +210,7 @@ export interface PrincipalRow {
   user_id: string | null
   tenant_id: string | null
   authorization_revision: number
+  disabled_at: string | null
   created_at: string
 }
 
@@ -453,6 +454,13 @@ export interface JobRow {
   id: string
   repo_id: string
   user_id: string
+  /**
+   * #749: the service principal this run executes under, if any. NULL is a
+   * human-owned job, which is what every row written before the column is.
+   */
+  principal_id: string | null
+  /** The principal revision the run was created at; a later bump makes it stale. */
+  principal_revision: number | null
   status: JobStatus
   trigger: string
   goal: string
@@ -1346,6 +1354,10 @@ CREATE TABLE IF NOT EXISTS jobs (
   id TEXT PRIMARY KEY,
   repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
   user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  -- #749: the execution identity. NULL is a human-owned run; a service principal
+  -- run names its principals row and the revision it resolved at.
+  principal_id TEXT REFERENCES principals(id) ON DELETE SET NULL,
+  principal_revision INTEGER,
   status TEXT NOT NULL,
   trigger TEXT NOT NULL,
   goal TEXT NOT NULL,
@@ -2055,6 +2067,9 @@ CREATE TABLE IF NOT EXISTS principals (
   user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
   tenant_id TEXT REFERENCES tenants(id),
   authorization_revision INTEGER NOT NULL DEFAULT 0,
+  -- #749: a disabled principal keeps its rows and history but resolves no actor.
+  -- The audited disable flow is the follow-up slice; this slice only refuses.
+  disabled_at TEXT,
   created_at TEXT NOT NULL
 );
 CREATE UNIQUE INDEX IF NOT EXISTS principals_user_idx ON principals(user_id) WHERE user_id IS NOT NULL;
@@ -2537,6 +2552,7 @@ export class Store {
     this.migrateScheduleBudgetColumns()
     this.migrateSchedulePauseColumns()
     this.migrateNotificationJobColumns()
+    this.migratePrincipalColumns()
     this.migrateReleaseColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
@@ -2591,6 +2607,15 @@ export class Store {
     const columns = this.all<{ name: string }>('PRAGMA table_info(notification_outbox)').map((column) => column.name)
     if (!columns.includes('job_id')) this.db.exec('ALTER TABLE notification_outbox ADD COLUMN job_id TEXT')
     this.run('CREATE INDEX IF NOT EXISTS notification_outbox_job_idx ON notification_outbox(job_id, created_at DESC)')
+  }
+
+  // #749: a service principal is refused when it is disabled, but the audited
+  // disable flow belongs to the follow-up slice. The column is added in place
+  // with no backfill: every existing row is an enabled principal, which is the
+  // behaviour it has today.
+  private migratePrincipalColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(principals)').map((row) => row.name))
+    if (!columns.has('disabled_at')) this.run('ALTER TABLE principals ADD COLUMN disabled_at TEXT')
   }
 
   private migrateScheduleOccurrenceColumns(): void {
@@ -2896,6 +2921,8 @@ export class Store {
     if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
     if (!jobColumns.has('work_item_id')) this.run('ALTER TABLE jobs ADD COLUMN work_item_id TEXT')
+    if (!jobColumns.has('principal_id')) this.run('ALTER TABLE jobs ADD COLUMN principal_id TEXT')
+    if (!jobColumns.has('principal_revision')) this.run('ALTER TABLE jobs ADD COLUMN principal_revision INTEGER')
     if (!jobColumns.has('priority')) this.run('ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('queue_seq')) this.run('ALTER TABLE jobs ADD COLUMN queue_seq INTEGER NOT NULL DEFAULT 0')
     // Backfill the ticket in arrival order, which is the order those rows were
@@ -6179,7 +6206,7 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string; principalId?: string | null }): JobRow {
     // #433 slice 2: the job records the strategy it was created under, from the
     // same sources the strategy page reads, so the page a maintainer opens and
     // the strategy a job names cannot disagree. An unfrozen strategy keeps its
@@ -6192,14 +6219,23 @@ export class Store {
     const strategyVersion = strategy === null
       ? null
       : (this.get<{ version: number }>('SELECT version FROM strategy_bundles WHERE repo_id = ? AND hash = ?', input.repoId, strategy.hash)?.version ?? null)
+    // #749: a run under a service principal records the revision it was created
+    // at. Inside the same write as the row, so a revision bump that lands after
+    // the read cannot leave a job whose snapshot is newer than its grant: the
+    // resolver refuses the job instead of guessing.
+    const servicePrincipal = input.principalId === undefined || input.principalId === null
+      ? null
+      : this.get<{ authorization_revision: number }>('SELECT authorization_revision FROM principals WHERE id = ?', input.principalId)
     // The ticket is taken inside the insert, so two jobs created at the same
     // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, principal_id, principal_revision, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
+      input.principalId ?? null,
+      servicePrincipal?.authorization_revision ?? null,
       input.trigger,
       input.goal,
       input.callbackHash,
