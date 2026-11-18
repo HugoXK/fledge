@@ -1204,16 +1204,16 @@ export function dashboardPage(input: {
         .join('')
   const manualForm = `      <form method="post" action="/repos" class="form">
         ${csrf(viewer)}
-        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))}${infoTip(t('Fledge 会检查并在需要时创建你的 fork；开发分支推到 fork，issue 和 PR 提到上游。若上游 owner 就是你，则直接在原仓库开分支。', 'Fledge checks and creates your fork when needed; branches go to the fork while issues and PRs target the upstream. If you own the upstream, work directly in it.'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
-        <label>${escapeHtml(t('GitHub token', 'GitHub token'))}${infoTip(t('token 需要能读取上游、创建 fork、写入 fork，并在上游创建 issue/PR；建议只授权实际需要的仓库。token 会加密保存，页面不会回显。', 'The token must read the upstream, create and write the fork, and open issues/PRs on the upstream. Grant only the repositories you need. It is encrypted and never shown again.'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
+        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))}${infoTip(t('Fledge 会在需要时创建 fork（上游就是你自己的仓库则直接用），开发分支推到 fork，issue 和 PR 提到上游。', 'Fledge forks when needed, branches go to the fork and issues/PRs stay upstream (own upstream: work directly).'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
+        <label>${escapeHtml(t('GitHub token', 'GitHub token'))}${infoTip(t('token 需要能读上游、写 fork，加密保存且不回显。', 'The token must read the upstream and write the fork, and it is stored encrypted and never shown again.'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
         ${goalTemplateSelect(t, 'goal-new')}
-        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定，模板会填入一个可执行的目标。', 'The more concrete the goal, the steadier the output, and a template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。', 'With no open work one discovery runs per interval (60 min minimum, one issue at most), otherwise the global cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
         </div>
         <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用；审核任务独立于迭代任务。', 'Available only with the maintainer role and GitHub admin/maintain permission; review jobs run separately from iterate jobs.'))}</label>
+          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时可启用，审核任务独立于迭代。', 'Only with the maintainer role and admin/maintain permission, and review jobs run apart from iterate jobs.'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
         </div>
         <p class="fine">${escapeHtml(t('添加后请选择你的角色；未选择前不会启动任务。', 'Choose your role after adding; jobs stay paused until you do.'))}</p>
@@ -1908,25 +1908,25 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         ${commandHidden(commands.settings)}
         ${goalTemplateSelect(t, 'goal-settings')}
         <textarea id="goal-settings" name="goal" rows="5" placeholder="${escapeHtml(t('这个仓库每次迭代应该关注什么？', 'What should each iteration focus on for this repository?'))}">${escapeHtml(repo.goal)}</textarea>
-        <label>${escapeHtml(t('目标分支', 'Target branch'))}${infoTip(t('PR 会合入这个分支；Fledge 仍会新建工作分支，不会直接 push 目标分支。留空使用仓库默认分支。', 'Pull requests target this branch; Fledge still creates a working branch and never pushes to the target branch. Leave blank for the repository default.'))} <input name="targetBranch" value="${escapeHtml(targetBranch)}" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
-        <label>${escapeHtml(t('你的角色', 'Your role'))}${infoTip(t('角色来自你在这个 GitHub 仓库的权限。admin/maintain 可选 maintainer 或 developer；其他权限只能选 developer。平台管理员不能替你改。', 'The role comes from your permission on this GitHub repository. admin/maintain can choose maintainer or developer; every other permission can only be developer. Platform admins cannot change it for you.'))} <select name="repoRole" required>${repoRole === null ? `<option value="" selected disabled>${escapeHtml(t('请选择…', 'Choose…'))}</option>` : ''}${allowedRoles.map((role) => `<option value="${role}"${repoRole === role ? ' selected' : ''}>${escapeHtml(repoRoleLabel(t, role))}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('目标分支', 'Target branch'))}${infoTip(t('PR 合入这个分支，Fledge 仍新建工作分支而不直接 push，留空用默认分支。', 'Pull requests target this branch, Fledge still works on its own branch, and blank means the default.'))} <input name="targetBranch" value="${escapeHtml(targetBranch)}" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
+        <label>${escapeHtml(t('你的角色', 'Your role'))}${infoTip(t('角色来自你在这个仓库的 GitHub 权限：admin/maintain 可选 maintainer 或 developer，其他只能是 developer。', 'Your role follows your GitHub permission here: admin/maintain pick maintainer or developer, everyone else developer.'))} <select name="repoRole" required>${repoRole === null ? `<option value="" selected disabled>${escapeHtml(t('请选择…', 'Choose…'))}</option>` : ''}${allowedRoles.map((role) => `<option value="${role}"${repoRole === role ? ' selected' : ''}>${escapeHtml(repoRoleLabel(t, role))}</option>`).join('')}</select></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
-          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval" id="repo-settings-interval"${fieldErrorAttrs(intervalFieldError, intervalFocus)}>${intervalOptions(t, Math.max(60, repo.interval_minutes), DISCOVERY_INTERVALS)}</select></label>${fieldErrorHtml(intervalFieldError)}
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。', 'With no open work one discovery runs per interval (60 min minimum, one issue at most), otherwise the global cooldown.'))} <select name="interval" id="repo-settings-interval"${fieldErrorAttrs(intervalFieldError, intervalFocus)}>${intervalOptions(t, Math.max(60, repo.interval_minutes), DISCOVERY_INTERVALS)}</select></label>${fieldErrorHtml(intervalFieldError)}
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" id="repo-settings-review-interval" ${canReview ? '' : 'disabled'}${fieldErrorAttrs(reviewFieldError, reviewFocus)}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>${fieldErrorHtml(reviewFieldError)}
         </div>
         <div class="row" data-merge-group>
-          <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。', 'Off by default. Only a maintainer can enable it. When on, Fledge squash-merges a PR only after checks are green and no changes are requested. Developers cannot enable it.'))}</label>
+          <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('只有 maintainer 能开启，开启后 Fledge 在检查通过且无 changes requested 时 squash merge。', 'Only a maintainer can enable it, and Fledge then squash-merges once checks pass with no changes requested.'))}</label>
         </div>
-        <label class="check"><input type="checkbox" name="planRequired" value="1" ${repo.plan_required === 1 ? 'checked' : ''} /> ${escapeHtml(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}${infoTip(t('开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。', 'When on, Run now creates a plan; code is written only after a maintainer approves it.'))}</label>
+        <label class="check"><input type="checkbox" name="planRequired" value="1" ${repo.plan_required === 1 ? 'checked' : ''} /> ${escapeHtml(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}${infoTip(t('开启后“立即运行”先生成计划，maintainer 批准后才写代码。', 'When on, Run now writes a plan and code follows only after a maintainer approves it.'))}</label>
         <details class="advanced-help" data-advanced="repo-settings">
           <summary>${escapeHtml(t('高级：运维设置（路径、阶段门禁、预算、模型）', 'Advanced: operator settings (paths, stage gate, budgets, models)'))}</summary>
         <div class="row">
-          <label class="grow">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。', 'Comma or newline separated. Included in the execution prompt at plan approval; not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
+          <label class="grow">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔，批准计划时填入执行 prompt，不是硬性沙箱。', 'Comma or newline separated, filled into the execution prompt at plan approval, and not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
           <label class="grow">${escapeHtml(t('禁止修改路径（可选）', 'Forbidden paths (optional)'))} <input name="denyPaths" value="${escapeHtml(repo.deny_paths)}" placeholder=".github/, deploy/" /></label>
         </div>
         <div class="row">
@@ -1935,8 +1935,9 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('强制模式下，实现任务必须带范围、验收标准、失败/通过测试证据和 Dev/Test 分工，审核任务必须带 Reviewer 和评分；否则任务失败且不会自动合并。观察模式只记录不阻断。', 'In enforced mode an implement job needs scope, acceptance criteria, red/green test evidence and Dev/Test roles; a review job needs a Reviewer and a score. Shadow mode records without blocking.'))}</p>
         <div class="row">
-          <label class="check"><input type="checkbox" name="requireProtection" value="1" ${repo.require_protection === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}${infoTip(t('开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。', 'When on, Fledge checks the protection rule, required checks and required approvals; if the rule cannot be read, it will not auto-merge.'))}</label>
+          <label class="check"><input type="checkbox" name="requireProtection" value="1" ${repo.require_protection === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}${infoTip(t('开启后，自动合并前必须先读到 branch protection。', 'When on, auto-merge needs a readable branch protection rule.'))}</label>
         </div>
+        <p class="fine">${escapeHtml(t('自动合并要求 branch protection：Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。', 'Auto-merge requires branch protection: Fledge checks the protection rule, required checks and required approvals; if the rule cannot be read, it will not auto-merge.'))}</p>
         <p class="fine">${escapeHtml(t('Branch protection', 'Branch protection'))}: <code>${escapeHtml(repo.protection_state ?? 'unknown')}</code>${repo.protection_checked_at === null ? '' : ` · ${escapeHtml(humanTimeShort(repo.protection_checked_at))}`}</p>
         <div class="row">
           <label>${escapeHtml(t('仓库月度预算（元）', 'Monthly repository budget (CNY)'))} <input name="monthlyBudget" type="number" min="0" max="10000" step="0.01" value="${repo.monthly_budget_cny.toFixed(2)}" /></label>
@@ -1951,13 +1952,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         <div class="row">
-          <label>${escapeHtml(t('仓库预算（元）', 'Repository budget (CNY)'))}${infoTip(t('这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。', 'A cap on this repository\'s spend over the last 30 days; empty or 0 means no cap.'))} <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="${repositoryScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('仓库预算（元）', 'Repository budget (CNY)'))}${infoTip(t('这个仓库最近 30 天所有任务的成本上限，为空或 0 表示不设上限。', 'A cap on this repository\'s spend over the last 30 days, and empty or 0 means no cap.'))} <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="${repositoryScope.capCny.toFixed(2)}" /></label>
           <label>${escapeHtml(t('超出仓库预算时', 'When the repository budget is exceeded'))}
             <select name="repoBudgetAction">${budgetActionOptions(repositoryScope.action)}</select>
           </label>
         </div>
         <div class="row">
-          <label>${escapeHtml(t('用户预算（元）', 'User budget (CNY)'))}${infoTip(t('这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。', 'A cap on what the person who starts work spends across all repositories in the last 30 days; empty or 0 means no cap.'))} <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="${principalScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('用户预算（元）', 'User budget (CNY)'))}${infoTip(t('这个仓库的发起人最近 30 天在所有仓库的成本上限，为空或 0 表示不设上限。', 'A cap on what this repository\'s starter spends across all repositories in 30 days, where empty or 0 means no cap.'))} <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="${principalScope.capCny.toFixed(2)}" /></label>
           <label>${escapeHtml(t('超出用户预算时', 'When the user budget is exceeded'))}
             <select name="principalBudgetAction">${budgetActionOptions(principalScope.action)}</select>
           </label>
@@ -1969,14 +1970,14 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </table></div>`}
         ${budgetScopeRows.filter((row) => row.unknownCount > 0).map((row) => `<p class="fine">${escapeHtml(`${row.label}: ${t(`有 ${row.unknownCount} 次调用无法计价，因此这里的已用金额是下界。`, `${row.unknownCount} calls could not be priced, so this spend is a lower bound.`)}`)}</p>`).join('')}
         <div class="row">
-          <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
+          <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理，这里只选这个仓库允许使用的模型。', 'Providers and models live in Settings, and here you only choose the ones this repository may use.'))}
             ${models.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有模型。先到 Settings 添加提供方和模型。', 'No models yet. Add a provider and models in Settings.'))}</span>`
               : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div class="mb-6"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"${retiredOn(model) === '' ? '' : ` data-retired-model="${escapeHtml(model.id)}"`}><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)}${retiredMark(model, t)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
           </label>
         </div>
         <div class="row">
-          <label class="grow">${escapeHtml(t('允许的提供方（可选）', 'Allowed providers (optional)'))}${infoTip(t('只允许这个仓库使用勾选的提供方；一个都不勾表示不限制。提供方本身由你在 Settings 里添加。', 'Restrict this repository to the checked providers; none checked means no allowlist. Providers are added in Settings.'))}
+          <label class="grow">${escapeHtml(t('允许的提供方（可选）', 'Allowed providers (optional)'))}${infoTip(t('只允许这个仓库使用勾选的提供方，不勾表示不限制，提供方在 Settings 里添加。', 'Restrict this repository to the checked providers, none checked means no allowlist, and providers are added in Settings.'))}
             ${providers.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有提供方。先到 Settings 添加。', 'No providers yet. Add one in Settings.'))}</span>`
               : `<span class="list">${providers.map((provider) => `<label class="check"><input type="checkbox" name="allowedProviderIds" value="${escapeHtml(provider.id)}" ${provider.allowed === 1 ? (providerPolicy.has(provider.id) ? 'checked' : '') : 'disabled'} /> ${escapeHtml(provider.label)} <small class="muted">${escapeHtml(provider.region === '' ? t('未标注区域', 'no region') : provider.region)}${provider.allowed === 1 ? '' : ` · ${escapeHtml(t('已停用', 'disabled'))}`}</small>${provider.data_policy_url === '' ? '' : ` · <a class="link" href="${escapeHtml(provider.data_policy_url)}" rel="noreferrer noopener" target="_blank">${escapeHtml(t('数据政策', 'Data policy'))}</a>`}</label>`).join('')}</span>`}
@@ -2351,12 +2352,13 @@ export function settingsPage(input: {
           <option value="jobs:read">${escapeHtml(t('任务读取：只读 /api/v1/jobs', 'Jobs: read /api/v1/jobs only'))}</option>
         </select>
       </label>
-      <label>${escapeHtml(t('有效期', 'Expires'))}${infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
+      <label>${escapeHtml(t('有效期', 'Expires'))}${infoTip(t('个人 token 到期后网关直接拒绝。', 'The gateway refuses an expired personal token.'))}
         <select name="expiryDays">
           ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
           ${viewer.user.role === 'admin' || viewer.user.role === 'superadmin' ? `<option value="never">${escapeHtml(t('永不过期（运维）', 'Never (operator)'))}</option>` : ''}
         </select>
       </label>
+      <p class="fine">${escapeHtml(t('个人 token 必须有期限，到期后网关直接拒绝；永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire and the gateway refuses it afterwards; a token without an expiry is only for an operator token created by an admin.'))}</p>
       <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
     <p class="fine">${escapeHtml(t('范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。', 'The scope is the capability boundary: gateway may call /v1 only, jobs:read may read /api/v1/jobs only, and neither substitutes for the other.'))}</p>
     </div>
@@ -4100,10 +4102,10 @@ export function appReposPage(input: {
   const commonFields = `
     <div class="card"><h3>${escapeHtml(t('仓库设置', 'Repository settings'))}</h3>
       ${goalTemplateSelect(t, 'goal-app')}
-      <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+      <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定，模板会填入一个可执行的目标。', 'The more concrete the goal, the steadier the output, and a template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
       <div class="row">
         <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-        <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
+        <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。', 'With no open work one discovery runs per interval (60 min minimum, one issue at most), otherwise the global cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
       </div>
       <div class="row">
         <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用。', 'Available only with the maintainer role and GitHub admin/maintain permission.'))}</label>

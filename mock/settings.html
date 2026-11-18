@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>设置 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=ec89402f9b54" />
+  <link rel="stylesheet" href="assets/app.css?v=41e8b6317013" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -48,19 +48,55 @@
 <div class="banner" data-mock-snapshot>静态快照 · 由 <code>npm run mock:snapshot</code> 从真实视图生成；表单和链接不会提交。Static snapshot generated from the real views; forms and links are inert.</div>
     
     
-    <nav class="section-nav" aria-label="页面导航">
-    <a href="#account" data-allow-overflow>账户</a>
+    <div class="settings-shell">
+  <nav class="section-nav" aria-label="页面导航">
+    <a href="#account-access" data-allow-overflow>账户与访问</a>
     <a href="#model-providers" data-allow-overflow>模型</a>
     <a href="#notifications" data-allow-overflow>通知</a>
-    <a href="#tokens" data-allow-overflow>API token</a>
-    <a href="#sessions" data-allow-overflow>登录设备</a>
     <a href="#feedback" data-allow-overflow>反馈</a>
   </nav>
-  <section class="card" id="account">
+  <section class="card" id="account-access">
+    <h2>账户与访问</h2>
+    <div class="sub" id="account">
     <div class="eyebrow">账户</div>
     <h1>@HugoXK</h1>
     <p class="muted">h***@example.com · 加入于 2026-11-15 12:00:00 UTC · 平台额度 ¥50.00 / ¥50.00</p>
     
+    </div>
+
+    <div class="sub" id="sessions">
+    <h2>登录设备</h2>
+    <p class="muted">这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。</p>
+    <div class="table-scroll"><table><thead><tr><th>IP</th><th>客户端</th><th>登录时间</th><th></th></tr></thead><tbody><tr><td>127.0.0.0</td><td>mock-snapshot</td><td>2026-11-15 12:00:00 UTC</td><td><span class="badge good">当前</span></td></tr></tbody></table></div>
+    <div class="row">
+      <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">退出其他会话</button></form>
+      <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">轮换当前会话</button></form>
+    </div>
+    </div>
+
+    <div class="sub" id="tokens">
+    <h2>API token</h2>
+    <p class="muted">给脚本或工作区调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。</p>
+    
+    <div class="table-scroll"><table><thead><tr><th>前缀</th><th>名称</th><th>范围</th><th>有效期</th><th>最近使用</th><th></th></tr></thead><tbody><tr><td><code>flg_mock…</code></td><td>laptop-cli</td><td><code>gateway</code></td><td>2026-12-15</td><td>—</td><td><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="link" type="submit">撤销</button></form></td></tr></tbody></table></div>
+    <form method="post" action="#" class="row" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input name="name" placeholder="用途，例如 laptop-cli" required />
+      <label>范围
+        <select name="scope">
+          <option value="gateway">网关：调用模型接口</option>
+          <option value="jobs:read">任务读取：只读 /api/v1/jobs</option>
+        </select>
+      </label>
+      <label>有效期<button type="button" class="info-tip" aria-label="个人 token 到期后网关直接拒绝。" aria-expanded="false" data-tip="个人 token 到期后网关直接拒绝。">!</button>
+        <select name="expiryDays">
+          <option value="30">30 天</option><option value="90" selected>90 天</option><option value="365">365 天</option>
+          
+        </select>
+      </label>
+      <p class="fine">个人 token 必须有期限，到期后网关直接拒绝；永不过期只对管理员创建的运维 token 开放。</p>
+      <button class="btn" type="submit">创建 token</button></form>
+    <p class="fine">范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。</p>
+    </div>
+
   </section>
 
   <section class="card" id="model-providers">
@@ -146,38 +182,6 @@
     <p class="fine">审批和额度邮件不受这个开关影响。每日摘要默认在 9:00（Asia/Shanghai）发送。</p>
   </section>
 
-  <section class="card" id="tokens">
-    <h2>API token</h2>
-    <p class="muted">给脚本或工作区调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。</p>
-    
-    <div class="table-scroll"><table><thead><tr><th>前缀</th><th>名称</th><th>范围</th><th>有效期</th><th>最近使用</th><th></th></tr></thead><tbody><tr><td><code>flg_mock…</code></td><td>laptop-cli</td><td><code>gateway</code></td><td>2026-12-15</td><td>—</td><td><form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="link" type="submit">撤销</button></form></td></tr></tbody></table></div>
-    <form method="post" action="#" class="row" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input name="name" placeholder="用途，例如 laptop-cli" required />
-      <label>范围
-        <select name="scope">
-          <option value="gateway">网关：调用模型接口</option>
-          <option value="jobs:read">任务读取：只读 /api/v1/jobs</option>
-        </select>
-      </label>
-      <label>有效期<button type="button" class="info-tip" aria-label="个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。" aria-expanded="false" data-tip="个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。">!</button>
-        <select name="expiryDays">
-          <option value="30">30 天</option><option value="90" selected>90 天</option><option value="365">365 天</option>
-          
-        </select>
-      </label>
-      <button class="btn" type="submit">创建 token</button></form>
-    <p class="fine">范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。</p>
-  </section>
-
-  <section class="card" id="sessions">
-    <h2>登录设备</h2>
-    <p class="muted">这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。</p>
-    <div class="table-scroll"><table><thead><tr><th>IP</th><th>客户端</th><th>登录时间</th><th></th></tr></thead><tbody><tr><td>127.0.0.0</td><td>mock-snapshot</td><td>2026-11-15 12:00:00 UTC</td><td><span class="badge good">当前</span></td></tr></tbody></table></div>
-    <div class="row">
-      <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">退出其他会话</button></form>
-      <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">轮换当前会话</button></form>
-    </div>
-  </section>
-
   <section class="card" id="feedback">
     <div class="eyebrow">反馈</div>
     <h2>反馈给开发者</h2>
@@ -202,6 +206,7 @@
     </form>
     
   </section>
+  </div>
 
   </main>
   <footer class="foot">
