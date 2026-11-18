@@ -896,6 +896,30 @@ textarea { resize: vertical; min-height: 70px; }
   border-top: 1px solid var(--line); padding: var(--space-4) 0; margin-bottom: 0;
 }
 .secondary-body > .quota-card { flex-wrap: wrap; gap: var(--space-3); }
+/* issue 865: the job header leads with one primary action, so the rest sit behind one
+   More actions disclosure, and the four read-back cards open on demand. Each
+   summary is its own 44px target (WCAG 2.5.5) and reuses the .secondary caret. */
+.job-more { max-width: 100%; margin: 0; }
+.job-more > summary,
+.job-detail > summary {
+  display: flex; align-items: center; gap: var(--space-2);
+  min-height: var(--touch); padding: 0 var(--space-3);
+  color: var(--muted); font-size: var(--text-sm); font-weight: 600;
+  cursor: pointer; list-style: none;
+}
+.job-more > summary { border: 1px solid var(--line-strong); border-radius: var(--radius-sm); }
+.job-detail { margin: 0 0 var(--section-gap); }
+.job-detail > summary { border-top: 1px solid var(--line); }
+.job-more > summary::-webkit-details-marker,
+.job-detail > summary::-webkit-details-marker { display: none; }
+.job-more > summary::before,
+.job-detail > summary::before { content: '▸'; color: var(--accent); }
+.job-more[open] > summary::before,
+.job-detail[open] > summary::before { content: '▾'; }
+.job-more > summary:hover,
+.job-detail > summary:hover { color: var(--text); }
+.job-more > .row { margin-top: var(--space-2); }
+.job-detail > .card { margin-top: var(--space-2); }
 .workspace-hero { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; padding: 28px 0 24px; }
 /* The dashboard masthead: one large statement, a compact data line, and the loop. */
 .masthead {

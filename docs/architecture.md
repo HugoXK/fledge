@@ -45,6 +45,20 @@ per-bot model assignment. `<details>` still submits its inputs, so
 the per-bot model restart stays its own form and therefore outside the settings
 form.
 
+The job page leads with one primary action (#865). The header picks it by what a
+reader must do first: *Acknowledge rule change* when a verification records an
+unacknowledged rule change, then *Execute this plan* for an approved plan, then
+*Resume* for a paused job, then *Retry / Resume from checkpoint* for a failed
+one; a queued or running job has nothing to advance and so shows no primary.
+Every other action keeps its form and its `action=` URL and becomes a
+`.btn-ghost` inside one `<details class="job-more">` labelled *More actions*.
+Pause and Cancel stay outside that disclosure — a stop control behind "more" is
+how a runaway job runs another hour. The four read-back cards (work type,
+why-this-change, postmortem, team participation) keep their sections and
+attributes unchanged inside a collapsed `<details class="job-detail">` named
+after the card; the operating state — result, evidence, PR verification,
+timeline, priority, relations, decision, plan approval, triage — stays visible.
+
 Page messages are not per-page markup. `notificationStack` in
 `src/views/layout.ts` renders every `notice`/`error` a route hands the layout as
 one `section.banner-stack` with a single `aria-live="polite"` region inside it,

@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>任务 job_mock_failed · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=41e8b6317013" />
+  <link rel="stylesheet" href="assets/app.css?v=d62e212f5a12" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -59,11 +59,9 @@
         <a class="btn btn-ghost" href="repository.html">返回仓库</a>
         <a class="btn btn-ghost" href="#">工作区</a>
         
-        
-        
-        
-        
         <form method="post" action="#" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="expected_revision" value="1" /><input type="hidden" name="idempotency_key" value="cmd_mock" /><button class="btn" type="submit">重试这个任务</button></form>
+        
+        
       </div>
     </div>
     
@@ -105,7 +103,7 @@
   
   
   
-  <section class="card" data-work-type="iterate">
+  <details class="job-detail"><summary>工作类型</summary><section class="card" data-work-type="iterate">
     <h2>工作类型</h2>
     <p><strong>迭代</strong> — 写代码修一个问题，先红后绿，开一个 PR</p>
     <div class="list">
@@ -115,7 +113,7 @@
       <div class="list-row"><div class="list-main"><strong>可创建分支/PR</strong><small>是</small></div></div>
       <div class="list-row"><div class="list-main"><strong>可自动合并</strong><small>是</small></div></div>
     </div>
-  </section>
+  </section></details>
   
   
   <section class="card" data-job-strategy-block>
