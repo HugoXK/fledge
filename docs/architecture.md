@@ -2431,6 +2431,16 @@ at least 1, before the first delete: `loadConfig` already refuses such an env
 value, and `pruneOldData({ jobs: 0 })` is a direct caller the config cannot see,
 so the store checks the same invariant rather than trusting its input.
 
+The `settings` markers are the second table the pass empties (#1008): ten prefix
+families (`followup:`, `question_notified:`, `digest_sent:`, `email_test:`,
+`webhook_delivery:`, `email_reply:`, `github_app_state:`,
+`installation_sender:`, `plan_reminded:`, `plan_expired:`), each with its own
+window. Their table lives in the same module beside the classes, and one
+function decides expiration for both the delete and the count, because a
+family's instant sits inside its value rather than in a column. The card and
+the dry-run tool print them as one `settings_markers` row with the count and
+`per-prefix` instead of a single window number, which the families do not have.
+
 ### Operational alerts
 
 A failed job also feeds the ops signal: three consecutive failures in one

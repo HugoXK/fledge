@@ -10,7 +10,7 @@ import { Store } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
 import type { Runner } from '../src/jobs/runner.js'
 import { adminPage } from '../src/views/pages.js'
-import type { RetentionWindows } from '../scripts/lib/retention.mjs'
+import { SETTINGS_RETENTION, type RetentionWindows } from '../scripts/lib/retention.mjs'
 import { MemoryMailer, makeUser, testConfig } from './helpers.js'
 
 // #281: `pruneOldData` enforced ten age windows as literals inside one function,
@@ -321,3 +321,45 @@ test('pruneOldData refuses a zero-day window instead of deleting every row in it
 // imported for parity with the other tool tests and used here so lint does not
 // read it as dead weight.
 void execFileSync
+
+// #1008: the second retention table. `pruneOldData` also removes ten marker
+// families from `settings`, and the preview counted none of them, so an operator
+// read "nothing to delete" while a pass removed user-visible markers. The
+// families are read from the table the delete uses, never from a copy: a copy
+// would pass this test while the two lists drifted apart.
+test('the preview counts every settings marker the prune deletes', () => {
+  const store = new Store(':memory:')
+  try {
+    const now = Date.now()
+    for (const family of SETTINGS_RETENTION) {
+      store.setSetting(`${family.prefix}preview`, new Date(now - (family.days + 1) * DAY).toISOString())
+    }
+    // The store writes its own settings rows at migration time, so the fixture
+    // counts only the families this table owns.
+    const markers = (): number => SETTINGS_RETENTION.reduce((total, family) => total
+      + (store.get<{ n: number }>('SELECT COUNT(*) AS n FROM settings WHERE key LIKE ?', `${family.prefix}%`)?.n ?? 0), 0)
+    const before = markers()
+    assert.equal(before, SETTINGS_RETENTION.length, 'one stale marker per family is seeded')
+
+    const row = store.retentionCounts().find((entry) => entry.id === 'settingsMarkers')
+    assert.ok(row, 'the preview names the settings class instead of omitting it')
+    assert.equal(row.count, SETTINGS_RETENTION.length, 'every stale marker is counted, not only the job tables')
+
+    store.pruneOldData()
+    const after = markers()
+    assert.equal(before - after, row.count, 'the preview count equals the rows the pass removes')
+  } finally { store.close() }
+})
+
+test('a settings marker still inside its window is neither counted nor deleted', () => {
+  const store = new Store(':memory:')
+  try {
+    const now = Date.now()
+    const fresh = 'digest_sent:recent'
+    store.setSetting(fresh, new Date(now - 1 * DAY).toISOString())
+    const row = store.retentionCounts().find((entry) => entry.id === 'settingsMarkers')
+    assert.equal(row?.count ?? 0, 0, 'a 14-day marker written yesterday is not deletable')
+    store.pruneOldData()
+    assert.notEqual(store.getSetting(fresh), undefined, 'and the pass leaves it in place')
+  } finally { store.close() }
+})
