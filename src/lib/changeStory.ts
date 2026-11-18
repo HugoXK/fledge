@@ -124,7 +124,7 @@ function notRunLine(line: string): string | null {
 // only the bare form dropped its commands, and after a fact heading it appended
 // them to that fact instead.
 function isRanLine(line: string): boolean {
-  return /^ran(?:\s*[^:：\n]*[:：])?\s*$/i.test(line.trim())
+  return /^ran\b(?:\s*[^:：\n]*[:：])?\s*$/i.test(line.trim())
 }
 
 function isFence(line: string): boolean {

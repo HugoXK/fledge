@@ -2173,7 +2173,9 @@ would understate it.
 repository's PR template and body rule use. `Ran:` is read in two shapes: the
 bare line that starts a list, and the qualified line that names the tree the
 numbers belong to (`Ran (author, at tree <sha>):`) — both keep their bullets in
-`Ran`, even when the line follows another fact heading. `Not run:` is read in two
+`Ran`, even when the line follows another fact heading. The keyword is matched as
+a whole word, so a `Range:`, `Randomized:` or `Rants:` line inside another fact
+stays in that fact instead of opening `Ran`. `Not run:` is read in two
 shapes: the bare line that starts a list, and the single line that carries the
 text inline (`Not run: Docker image, real SMTP`); both produce the Not-verified
 row, and neither leaks into `Ran`. A repeated
