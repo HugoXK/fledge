@@ -116,14 +116,17 @@ real identity starts.
 
 - A fork pull request is skipped: a fork ref is not dispatchable with this
   repository's token.
-- A pull request with a `CI` run already at its head SHA is skipped, whatever
+- A pull request with a completed `CI` run at its head SHA is skipped, whatever
   that run's conclusion; another workflow's check run does not count, because
   `CodeQL` or a review bot can leave a check on a tip `CI` never visited.
 - A queued or in-progress `CI` run is never duplicated.
-- A head whose only `CI` run is `cancelled` is skipped too. A superseded run is
-  marked `cancelled` before any job exists, so it carries no `ci-ok`, and
-  re-dispatching that head would race the run that replaced it: such a head is a
-  human's to re-dispatch, not the watchdog's to loop on.
+- A cancelled run is not evidence that `CI` reached the tip: it can end before any
+  job exists, so the head carries no `ci-ok` and nothing repairs it. A head whose
+  `CI` runs are all `cancelled` is dispatched once. That repair is bounded per head
+  SHA by the `workflow_dispatch` run it starts: when the repair is cancelled too,
+  the watchdog prints the pull request as `stalled (cancelled-repair)` instead of
+  dispatching it again on the next tick, and re-dispatching it becomes a human's
+  decision.
 - At most 5 pull requests are dispatched per tick, so an outage cannot start an
   unbounded number of full CI runs in one pass.
 
@@ -469,6 +472,19 @@ run's input and passes `gh` in as the runner. A pull request or merge-queue ref 
 never reach the write: the job's condition and the module both refuse anything
 but `refs/heads/main`.
 
+The reporter itself can fail, and that failure needs its own durable signal
+(#929): until it had one, a `main-health` run that crashed after `ci-ok` had
+failed — a malformed `gh` answer, a refused write — printed its error, exited 1,
+and left nothing, which is the same silence the tracker was built to end. The
+runner's catch now opens one label-less issue titled `ci: main-health failed to
+report`, naming the commit, the run and the original error, and still exits 1.
+Label-less on purpose: a labelled create is rejected before the issue exists
+when the label is missing, so it would depend on the same bootstrap that can
+fail the reporter, and nothing ever searches for this issue — a human reads it
+and closes it. A crash off the default branch writes nothing (the same gate as
+the decision), and the signal's own `gh` call is guarded so a signal that
+cannot be opened cannot mask the failure it reports.
+
 ### Write sessions, one PR per branch, and verification servers
 
 Hard rule 8 in `AGENTS.md` points at these four rules; they are repeated here
@@ -807,7 +823,13 @@ association test only for `issue_comment`, so a stranger cannot start the
 The association gate is per job, not per workflow: any job holding `actions:
 write` must test `author_association` on every event a stranger can trigger, and
 `review-gate-repair` does the same for `pull_request_review` (reading
-`github.event.review.author_association`). `scripts/action-pins.mjs` enforces the
+`github.event.review.author_association`). The comment job holds no second test of
+the comment's shape: a word list in its `if:` was a second definition of "a
+verdict" and it drifted — `## REVIEW` started nothing while the parser accepted it
+(#931). The job now names only the event and the association, and the guard step
+asks `parseConclusion` itself after checking the default branch out, so one
+expression decides for both halves and a pull request cannot edit the copy that
+decides. `scripts/action-pins.mjs` enforces the
 rule for the whole tree — a job with `actions: write` on a stranger-reachable
 event without the matching association test reds the required `action-pins` job.
 The scan counts the permission in each form it takes: a block mapping, an inline

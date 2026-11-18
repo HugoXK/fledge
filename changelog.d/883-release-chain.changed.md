@@ -1,1 +1,0 @@
-A release now closes its own chain: the publish job scans and smoke-tests the exact digest it pushes, runs the verification it used to leave to an operator, attaches the SBOM to the GitHub Release instead of an expiring Actions artifact, and refuses to repoint the `vX.Y.Z` image tag at a different digest.

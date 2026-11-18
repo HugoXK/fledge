@@ -431,7 +431,7 @@ test('a database written at schema 46 gains the analysis column and keeps its re
 
     const upgraded = new Store(path)
     const version = upgraded.get<{ user_version: number }>('PRAGMA user_version')?.user_version
-    assert.equal(version, 47)
+    assert.equal(version, 48, 'the 46 shape migrates through the release column and the notification job link to the current version')
     const columns = upgraded.all<{ name: string }>('PRAGMA table_info(repo_releases)').map((row) => row.name)
     assert.ok(columns.includes('analysis_json'), 'the upgrade adds the column')
     const kept = upgraded.releaseById(release.id)

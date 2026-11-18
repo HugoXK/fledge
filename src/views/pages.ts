@@ -31,7 +31,7 @@ import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
-import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromGoal, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
+import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromBlock, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { reviewMergeCard, reviewMergeState, type PullTip } from './reviewMerge.js'
@@ -39,6 +39,7 @@ import { parseAdversarialRecord, type AdversarialRecord } from '../lib/adversari
 import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
+import type { ReleaseDispatchPreview } from '../lib/releaseDispatch.js'
 import { readReleaseNotesSources } from '../releases/notes.js'
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
@@ -2631,6 +2632,10 @@ export function adminPage(input: {
   release?: ReleaseSurface
   /** The release chain recorded by `node scripts/verify-release.mjs`; null when none is recorded. */
   releaseStatus?: ReleaseStatusSnapshot | null
+  /** #897: the live GitHub preview for the superadmin release action. */
+  releaseDispatch?: ReleaseDispatchPreview | null
+  /** A readable reason when the live preview could not be fetched. */
+  releaseDispatchError?: string
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
   /** Defaults to reading `<dataDir>/backup-drill.json`; a test passes a fixture record. */
@@ -2708,6 +2713,8 @@ export function adminPage(input: {
   // recorded and never calls GitHub itself. The running row is the only live
   // fact — this process knows the version and the commit stamp it booted with.
   const releaseStatus = input.releaseStatus ?? null
+  const releaseDispatch = input.releaseDispatch ?? null
+  const releaseDispatchError = input.releaseDispatchError ?? ''
   const stateBadge = (state: string) => {
     if (state === 'ok') return `<span class="badge good">${escapeHtml(t('正常', 'ok'))}</span>`
     if (state === 'missing') return `<span class="badge bad">${escapeHtml(t('缺失', 'missing'))}</span>`
@@ -2767,6 +2774,23 @@ export function adminPage(input: {
         ${problemLinks.length === 0 ? `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('发布链', 'Release chain'))}</strong><small>${escapeHtml(t('所有发布产物一致；完整证据可展开。', 'All release artifacts agree; open the evidence for the full chain.'))}</small></div><div class="row">${stateBadge('ok')}</div></div>` : ''}
       </div>
       <details class="advanced-help"><summary>${escapeHtml(t('发布链证据', 'Release chain evidence'))}${releaseStatus.checkedAt === '' ? '' : ` · ${escapeHtml(t(`检查于 ${releaseStatus.checkedAt}`, `checked ${releaseStatus.checkedAt}`))}`}</summary><div class="list">${fullRows}</div></details>`
+  const releaseDispatchBlock = (() => {
+    if (!superadmin) return ''
+    if (releaseDispatchError !== '') {
+      return `<div class="banner bad" data-release-dispatch-error><strong>${escapeHtml(t('一键发布暂不可用', 'One-click release is unavailable'))}</strong> ${escapeHtml(releaseDispatchError)}</div>`
+    }
+    if (releaseDispatch === null) {
+      return `<p class="fine" data-release-dispatch>${escapeHtml(t('一键发布未配置：设置 RELEASE_DISPATCH_TOKEN 后可用。', 'One-click release is not configured: set RELEASE_DISPATCH_TOKEN to enable it.'))}</p>`
+    }
+    const preview = releaseDispatch
+    const counts = `${escapeHtml(t('领先', 'ahead'))} ${preview.aheadCommits} · ${escapeHtml(t('修复', 'fix'))} ${preview.fixes} · ${escapeHtml(t('功能', 'feat'))} ${preview.features} · ${escapeHtml(t('其他', 'other'))} ${preview.others} · ${escapeHtml(t('片段', 'fragments'))} ${preview.fragments}`
+    const facts = `<p class="fine" data-release-dispatch-facts>${escapeHtml(t('当前', 'current'))} <code>${escapeHtml(preview.mainSha.slice(0, 12))}</code> · ${escapeHtml(t('最新标签', 'latest tag'))} <code>${escapeHtml(preview.latestTag || '—')}</code> · ${counts} · <code>ci-ok ${escapeHtml(preview.ciOk)}</code></p>`
+    if (!preview.eligible) {
+      return `<div class="list-row" data-release-dispatch><div class="list-main"><strong>${escapeHtml(t('一键发布当前不可用', 'One-click release is not available'))}</strong><small>${facts}</small><small>${escapeHtml(preview.reason)}</small></div><div class="row"><span class="badge busy">${escapeHtml(t('不可用', 'blocked'))}</span></div></div>`
+    }
+    const confirm = `RELEASE ${preview.nextVersion}`
+    return `<div class="list-row" data-release-dispatch><div class="list-main"><strong>${escapeHtml(t(`发布 v${preview.nextVersion}`, `Release v${preview.nextVersion}`))}</strong><small>${facts}</small><small>${escapeHtml(t('只创建发布 PR；tag 与 publish 仍走现有门禁。不会部署或重启服务。', 'Creates the release pull request only; tagging and publishing stay on the existing gates. It does not deploy or restart the service.'))}</small><form method="post" action="/admin/release" class="row" data-release-dispatch-form>${csrf(viewer)}<label class="fine">${escapeHtml(t('输入确认', 'Type to confirm'))} <code>${escapeHtml(confirm)}</code> <input name="confirm" type="text" autocomplete="off" required /></label><button class="btn" type="submit">${escapeHtml(t('创建发布 PR', 'Create release PR'))}</button></form></div><div class="row"><span class="badge good">${escapeHtml(t('可用', 'ready'))}</span></div></div>`
+  })()
   const releaseCard = `<section class="card" id="release">
     <div class="row between">
       <div>
@@ -2780,6 +2804,7 @@ export function adminPage(input: {
       </div>
     </div>
     ${releaseDetails}
+    ${releaseDispatchBlock}
   </section>`
 
   // The console can only show what the writer leaves on disk: a copy and its
@@ -3415,11 +3440,27 @@ export function jobPage(input: {
   const carryOverHeader = job.continuity_used !== 1
     ? ''
     : carryOverReport === null
-      ? carryOverHeaderFromGoal(job.goal)
+      ? carryOverHeaderFromBlock(job.goal)
       : carryOverHeaderText(carryOverReport)
   const carryOverLine = carryOverHeader === ''
     ? ''
     : `<p class="fine" data-carry-over>${escapeHtml(carryOverHeader)}</p>`
+  // #791: the header counts, the rows name. Each dropped item carries its link
+  // and why it went, each unverified one the class of the failure, all read from
+  // the stored report so the list cannot spell a count the header does not.
+  const carryOverItems = carryOverReport === null || carryOverHeader === '' ? [] : carryOverReport.items
+  const carryOverItemRows = carryOverItems.length === 0
+    ? ''
+    : `<div class="list" data-carry-over-items>${carryOverItems.map((entry) => {
+      const reason = entry.reason === 'closed' ? t('已关闭的 issue', 'Closed issue')
+        : entry.reason === 'merged' ? t('已合并的 PR', 'Merged pull request')
+          : entry.reason === 'failed read' ? t('读取失败', 'Read failed')
+            : entry.reason === 'budget spent' ? t('读取额度已用完', 'Read budget spent')
+              : entry.kind === 'dropped'
+                ? t('已丢弃（原因未记录）', 'Dropped (reason not recorded)')
+                : t('未验证（原因未记录）', 'Unverified (reason not recorded)')
+      return `<div class="list-row" data-carry-over-item data-kind="${escapeHtml(entry.kind)}" data-reason="${escapeHtml(entry.reason ?? '')}"><div class="list-main"><strong>${escapeHtml(reason)}</strong><small><code>${escapeHtml(entry.link)}</code></small></div></div>`
+    }).join('')}</div>`
   // Nothing to attach an observation to when the page shows no carry-over line
   // at all (a pre-#365 row, or a goal that lost the block), so nothing is claimed.
   const carryOverObservations = job.continuity_used !== 1 || carryOverHeader === ''
@@ -3708,6 +3749,7 @@ export function jobPage(input: {
       ${untrustedLine}
       ${providerLine}
       ${carryOverLine}
+      ${carryOverItemRows}
       ${carryOverObservations}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
       <p class="fine">${jobLinks(job)}</p>
@@ -4908,6 +4950,24 @@ export function scheduleConsolePage(input: {
     : last.leaseHeld
       ? t(`持有中，至 ${shown(last.leaseExpiresAt)}`, `held until ${shown(last.leaseExpiresAt)}`)
       : t(`未被持有（尝试 ${last.attempts} 次）`, `not held (${last.attempts} attempt${last.attempts === 1 ? '' : 's'})`)
+  // #544: the delivery is the state of the notification the newest run's job
+  // queued. `unknown` means nothing was read, nothing has run, or the run's job
+  // has not finished (a job queues its notifications only when it ends); the
+  // outbox's own unknown is `unconfirmed`, because a send that may have crossed
+  // the boundary is a different fact from a page that did not look.
+  const deliveryLine = ((): string => {
+    switch (state.delivery) {
+      case 'none': return t('未排队（这次运行没有外部通知）', 'not queued (this run queued no external notification)')
+      case 'sent': return t('已发送', 'sent')
+      case 'pending': return t('排队中', 'queued')
+      case 'sending': return t('发送中', 'sending')
+      case 'retry': return t('等待重试', 'retry scheduled')
+      case 'dead': return t('发送失败', 'failed')
+      case 'blocked': return t('被阻止（需要人处理）', 'blocked (a person must fix it)')
+      case 'unconfirmed': return t('未确认（不会自动重发）', 'unconfirmed (never resent automatically)')
+      default: return t('未知（没有读取、还没有运行，或运行未结束）', 'unknown (nothing read, nothing has run, or the run has not finished)')
+    }
+  })()
   const occurrenceRows = state.occurrences.length === 0
     ? `<tr><td colspan="6" class="muted">${escapeHtml(t('还没有决定过任何时刻。', 'No instant has been decided yet.'))}</td></tr>`
     : state.occurrences.map((occurrence) => `<tr>
@@ -4954,7 +5014,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('上次成功', 'Last success'))}</dt><dd data-last-success="${escapeHtml(iso(state.lastSuccess?.logicalTime ?? null))}">${escapeHtml(shown(state.lastSuccess?.logicalTime ?? null))}</dd>
         <dt>${escapeHtml(t('最后决定', 'Last decision'))}</dt><dd>${lastLine}</dd>
         <dt>${escapeHtml(t('租约', 'Lease'))}</dt><dd>${leaseLine}</dd>
-        <dt>${escapeHtml(t('投递结果', 'Delivery'))}</dt><dd data-delivery="${escapeHtml(state.delivery)}">${escapeHtml(t('unknown（这一片还没有投递箱）', 'unknown (no delivery outbox in this slice)'))}</dd>
+        <dt>${escapeHtml(t('投递结果', 'Delivery'))}</dt><dd data-delivery="${escapeHtml(state.delivery)}">${escapeHtml(deliveryLine)}</dd>
         <dt>${escapeHtml(t('有效期', 'Window'))}</dt><dd>${window}</dd>
         <dt>${escapeHtml(t('时序版本', 'Timing revision'))}</dt><dd>${escapeHtml(state.timingRevision === null ? t('unknown', 'unknown') : String(state.timingRevision))} · ${escapeHtml(state.misfire === null ? t('unknown', 'unknown') : state.misfire)}</dd>
         <dt>${escapeHtml(t('宽限', 'Grace'))}</dt><dd data-schedule-grace="${escapeHtml(state.graceMs === null ? 'none' : String(state.graceMs))}">${escapeHtml(state.graceMs === null ? t('不限（默认）', 'unbounded (default)') : t(`${Math.round(state.graceMs / 60_000)} 分钟`, `${Math.round(state.graceMs / 60_000)} minutes`))}</dd>

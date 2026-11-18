@@ -69,19 +69,6 @@ import { isRuleChange, loadRepoRules, RulesError, type RepoRules } from '../rule
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
 
-// #732: the platform pays only when the job has no own model to use. A
-// repository selection is an own model too: the bridge patches the instance from
-// `listRepoModelSelection` and the gateway resolves the same row, so checking
-// only the legacy users.own_llm_* columns refused a job that would never spend
-// platform quota.
-function platformFundedFor(user: UserRow, store: Store, repoId: string): boolean {
-  const legacyOwnModel =
-    user.own_llm_base_url !== null &&
-    user.own_llm_base_url !== '' &&
-    user.own_llm_key_enc !== null
-  return !legacyOwnModel && store.listRepoModelSelection(repoId).length === 0
-}
-
 export const DEFAULT_GOAL =
   'Review this repository for one high-value defect or improvement. Write a failing test first, implement the smallest correct fix, run the relevant tests, and open a pull request. Do not refactor unrelated code.'
 
@@ -1183,6 +1170,12 @@ export class Jobs {
     }
   }
 
+  // One live-state source for both readers: the scheduler's evidence gate on the
+  // chosen item (#789) and the carry-over block it is about to build (#365).
+  private liveArtifactReader(repo: RepoRow): CarryOverReader {
+    return (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo)
+  }
+
   async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
@@ -1294,7 +1287,7 @@ export class Jobs {
       ? await buildCarryOver({
         recent: this.store.listJobsForRepo(repo.id, 3),
         openWork: this.store.listOpenWorkItems(repo.id),
-        read: (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo),
+        read: this.liveArtifactReader(repo),
       })
       : null
     const carryOver = carryOverBlock?.text ?? ''
@@ -1310,7 +1303,9 @@ export class Jobs {
     const jobId = `job_${randomToken(10)}`
     const callbackSecret = randomToken(24)
     const callbackHash = sha256Hex(callbackSecret)
-    const platformFunded = platformFundedFor(user, this.store, repo.id)
+    // #942: the rule lives on the store, so the refusal and the scheduler
+    // predicate cannot answer differently about whether the platform pays.
+    const platformFunded = this.store.platformFundedFor(user, repo.id)
 
     if (platformFunded && quotaView(user, this.config).exhausted) {
       const job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: '', kind, workType: workType.type, ownerStarted: this.ownerStartedFor(trigger, options) })
@@ -1752,7 +1747,7 @@ export class Jobs {
         issueUrl: issueUrl,
         summary: redact(result.summary ?? job.summary ?? ''),
         error: redact(result.error ?? job.error ?? ''),
-      }, `job.${job.id}:${result.status}:webhook`)
+      }, `job.${job.id}:${result.status}:webhook`, job.id)
     }
     const repo = this.store.getRepo(job.repo_id)
     if (repo !== undefined && repo.job_budget_cny > 0) {
@@ -1864,7 +1859,7 @@ export class Jobs {
         jobId,
         recurrenceKey: record.recurrence.recurrence_key,
         count: record.recurrence.count,
-      }, `postmortem.recurring:${record.postmortem.repo_id}:${record.recurrence.recurrence_key}:${record.recurrence.count}`)
+      }, `postmortem.recurring:${record.postmortem.repo_id}:${record.recurrence.recurrence_key}:${record.recurrence.count}`, jobId)
     } catch (error) {
       log.warn('postmortem write failed', { trace: jobId, error: String(error) })
       // #666: a postmortem that was not written is a repair job, not a no-op, so
@@ -1991,7 +1986,7 @@ export class Jobs {
     this.store.setSetting(key, nowIso())
     this.store.notify(job.user_id, 'job', `${label} 连续 3 个任务失败，自动迭代已暂停；请检查 bridge、GitHub 凭据和模型额度后手动重新开启。`)
     this.store.audit(job.user_id, 'ops.repeated_failures', `${label}: 3 consecutive failures`)
-    this.queueWebhook('repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id }, `repo.repeated_failures:${job.repo_id}:${job.id}`)
+    this.queueWebhook('repo.repeated_failures', { text: `${label}: 3 consecutive job failures; auto-iterate paused`, repoId: job.repo_id, jobId: job.id }, `repo.repeated_failures:${job.repo_id}:${job.id}`, job.id)
   }
 
   private async refreshRepoAccess(repo: RepoRow): Promise<RepoRow | undefined> {
@@ -2826,7 +2821,7 @@ export class Jobs {
   // webhook call; the settings keys above are what make the pass idempotent.
   private notifyPlan(job: JobRow, message: string, code: string): void {
     this.store.notify(job.user_id, 'job', message, code)
-    this.queueWebhook(code, { text: message, repoId: job.repo_id, jobId: job.id }, `${code}:${job.id}`)
+    this.queueWebhook(code, { text: message, repoId: job.repo_id, jobId: job.id }, `${code}:${job.id}`, job.id)
   }
 
   private async releaseAllPendingFollowups(): Promise<void> {
@@ -3321,12 +3316,15 @@ export class Jobs {
   // logical event, so a replayed callback or a second tick keeps one row instead
   // of sending twice. With no webhook configured there is no destination to
   // record, which is the same no-op the old fire-and-forget call had.
-  private queueWebhook(event: string, payload: Record<string, unknown>, key: string): void {
+  private queueWebhook(event: string, payload: Record<string, unknown>, key: string, jobId?: string | null): void {
     if (this.config.notifyWebhookUrl === '') return
     try {
       this.store.enqueueNotification({
         transport: 'webhook',
         destination: 'webhook',
+        // #544: a send about a job names it, so a scheduled run's delivery is
+        // readable without parsing the key.
+        ...(jobId === undefined ? {} : { jobId }),
         payload: { event, ...payload },
         idempotencyKey: key,
       })
@@ -4123,7 +4121,7 @@ export class Jobs {
     } catch (error) {
       return fail(`任务密钥无法解密：${String(error)}`)
     }
-    const platformFunded = platformFundedFor(user, this.store, repo.id)
+    const platformFunded = this.store.platformFundedFor(user, repo.id)
     if (platformFunded && quotaView(user, this.config).exhausted) {
       this.finish(job.id, { status: 'quota_exhausted', error: '平台额度已用完，请在 Settings → Model 配置自己的模型 API。' }, revoke)
       await this.quotaNotifier.notify(user)
@@ -4494,7 +4492,10 @@ export class Jobs {
         continue
       }
       const recent = this.store.listJobsForRepo(repo.id, 6)
-      const next = decideNextJob({
+      // #789: the scheduler decides on evidence too. The same reader that checks
+      // the carry-over lines checks the chosen item, and only after due-ness, so
+      // a held-back repository costs no read.
+      const next = await decideNextJob({
         repo,
         now,
         lastRunAt: repo.last_run_at,
@@ -4510,7 +4511,7 @@ export class Jobs {
         reviewDue: this.dueReview(repo),
         lastDiscoverAt: this.store.getSetting(`discover:${repo.id}`),
         discoverIntervalMinutes: Math.max(MIN_DISCOVERY_INTERVAL_MINUTES, repo.interval_minutes),
-      }, plan === null ? {} : { cooldownMs: 0 })
+      }, { ...(plan === null ? {} : { cooldownMs: 0 }), read: this.liveArtifactReader(repo) })
       if (next.kind === 'none') {
         // #807: a held-back item names its holder; an empty backlog clears the
         // idle reading rather than leaving the last wait on the dashboard.
@@ -4538,12 +4539,20 @@ export class Jobs {
         ? await this.enqueue(repo, 'schedule', undefined, 'review', { workItemId: next.workItemId, prUrl: next.prUrl })
         : next.kind === 'discover'
           ? await this.enqueue(repo, 'schedule', undefined, 'discover')
-          : await this.enqueue(repo, 'followup', undefined, 'iterate', {
-              workItemId: next.workItemId,
-              ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
-              ...(next.branch === undefined ? {} : { branch: next.branch }),
-            })
+          : next.kind === 'iterate'
+            // #789: the row's artifact is finished, so this is a fresh iterate on
+            // the repository's own goal, not a continuation: no goal override and
+            // no work-item id, and the due run still happens (the #219 rule).
+            ? await this.enqueue(repo, 'schedule', undefined, 'iterate')
+            : await this.enqueue(repo, 'followup', undefined, 'iterate', {
+                workItemId: next.workItemId,
+                ...(next.prUrl === undefined ? {} : { prUrl: next.prUrl }),
+                ...(next.branch === undefined ? {} : { branch: next.branch }),
+              })
       if (result.ok) {
+        // #789: mark the stale row only once the run exists, so a refused enqueue
+        // leaves it for the next tick instead of dropping the fresh iterate.
+        if (next.kind === 'iterate') this.store.updateWorkItem(next.staleWorkItemId, { state: next.artifactState })
         recordDispatched({
           repo,
           kind: next.kind === 'review' ? 'review' : next.kind === 'discover' ? 'discover' : 'iterate',

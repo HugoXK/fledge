@@ -253,7 +253,6 @@ jobs:
                       checks: [],
                       sameRepo: open.head?.repo?.full_name === open.base?.repo?.full_name,
                     },
-                mergedPrs: [],
                 tags: state.tags,
                 orphanBranches: state.orphanBranches,
                 ciOk: state.ciOk,

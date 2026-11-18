@@ -1,1 +1,0 @@
-Deleting a model provider, or one of its models, no longer silently moves the repositories that used it onto the platform default model. The affected workspaces are marked as needing a model restart and the console names how many repositories were affected, so the change in spend is a visible decision instead of a silent one.

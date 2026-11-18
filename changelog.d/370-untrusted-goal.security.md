@@ -1,1 +1,0 @@
-Issue text sent to the agent from `/fledge plan` and `/fledge fix` is now wrapped in a labelled untrusted block. A forged fence is escaped, control characters are stripped, the 4,000-character cap is kept, and the job audit records the label and a hash instead of the body.

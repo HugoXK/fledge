@@ -4,10 +4,10 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="color-scheme" content="light dark" />
-  <meta name="theme-color" content="#f6f1e7" media="(prefers-color-scheme: light)" />
-  <meta name="theme-color" content="#0d0c0b" media="(prefers-color-scheme: dark)" />
+  <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
+  <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>排期控制台 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=cf958854359d" />
+  <link rel="stylesheet" href="assets/app.css?v=eed2b384789d" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -53,6 +53,7 @@
       
       <dl class="schedule-facts">
         <dt>排期</dt><dd data-schedule-kind="cron">cron <code>0 9 * * 1-5</code> · Asia/Shanghai</dd>
+        <dt>状态</dt><dd data-schedule-status="active">运行中</dd>
         <dt>下次运行</dt><dd data-schedule-next="2026-11-16T01:00:00.000Z">2026-11-16 01:00:00 UTC</dd>
         <dt>上次成功</dt><dd data-last-success="2026-11-14T01:00:00.000Z">2026-11-14 01:00:00 UTC</dd>
         <dt>最后决定</dt><dd>skipped · active-job</dd>
@@ -64,6 +65,7 @@
         <dt>每日运行上限</dt><dd data-schedule-daily-runs="none">不限（默认） · 今天已运行 0 次</dd>
       </dl>
       <form method="post" action="#" class="run-now" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="command_key" value="cmd_mock" /><button type="submit">立即运行</button><span class="fine">从当前时刻开始一次，不改动下次运行。</span></form>
+      <form method="post" action="#" class="schedule-state" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">暂停排期</button><span class="fine">暂停期间走过的时刻记为 skipped，原因为 paused。</span></form>
     </section>
     <section class="card"><h2>编辑排期</h2>
       <p class="muted">排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。</p>
