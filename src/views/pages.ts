@@ -3549,7 +3549,7 @@ export function jobPage(input: {
   // is data from the pull request: escaped, never markup.
   const changeStoryCard = input.changeStory === undefined
     ? ''
-    : `<section class="card" data-change-story>
+    : `<details class="job-detail"><summary>${escapeHtml(t('为什么有这个改动', 'Why this change'))}</summary><section class="card" data-change-story>
       <h2>${escapeHtml(t('为什么有这个改动', 'Why this change'))}</h2>
       <div class="list">
         ${changeStoryFacts(input.changeStory, {
@@ -3560,22 +3560,58 @@ export function jobPage(input: {
           files: (count) => t(`${count} 个文件`, `${count} files`),
         }).map((fact) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(changeStoryLabel(t, fact.key))}</strong><small class="job-report">${escapeHtml(fact.value)}</small>${fact.note === '' ? '' : `<small class="muted">${escapeHtml(fact.note)}</small>`}</div></div>`).join('')}
       </div>
-    </section>`
-  const retry = job.status === 'failed'
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}${retryHidden}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
+    </section></details>`
+  // #865: the header used to render four independent primaries, so a failed job
+  // whose verification recorded a rule change showed Retry and Acknowledge side by
+  // side and nothing said which came first. One action is primary now, chosen by
+  // what a reader must do first; every other action keeps its form and action URL
+  // and becomes a ghost inside one More actions disclosure.
+  const ruleChange = verification?.ruleChange ?? null
+  const rulePaths = ruleChange === null ? [] : ruleChange.paths
+  const retryAvailable = job.status === 'failed'
+  const resumeAvailable = job.status === 'paused'
+  const executeAvailable = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
+  const ackAvailable = ruleChange !== null && !ruleChange.acknowledged && repo.repo_role === 'maintainer'
+  const primaryAction = ackAvailable
+    ? 'ack-rule-change'
+    : executeAvailable
+      ? 'execute'
+      : resumeAvailable
+        ? 'resume'
+        : retryAvailable
+          ? 'retry'
+          : ''
+  const commandForm = (action: string, label: string, hidden: string, primary: boolean): string =>
+    `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/${action}">${csrf(viewer)}${hidden}<button class="${primary ? 'btn' : 'btn btn-ghost'}" type="submit">${escapeHtml(label)}</button></form>`
+  const retry = retryAvailable
+    ? commandForm('retry', job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'), retryHidden, primaryAction === 'retry')
     : ''
   const recheck = job.pr_url === null || supportMode ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新核实 PR', 'Re-check PR'))}</button></form>`
-  const ackRuleChange = verification?.ruleChange === undefined || verification.ruleChange.acknowledged || repo.repo_role !== 'maintainer'
-    ? ''
-    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/ack-rule-change">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t(`确认规则变更（${verification.ruleChange.paths.length} 个文件）`, `Acknowledge rule change (${verification.ruleChange.paths.length} files)`))}</button></form>`
-  const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}${executeHidden}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
+  const ackRuleChange = ackAvailable
+    ? commandForm('ack-rule-change', t(`确认规则变更（${rulePaths.length} 个文件）`, `Acknowledge rule change (${rulePaths.length} files)`), '', primaryAction === 'ack-rule-change')
+    : ''
+  const ackRuleChangeGhost = ackRuleChange === '' ? '' : commandForm('ack-rule-change', t(`确认规则变更（${rulePaths.length} 个文件）`, `Acknowledge rule change (${rulePaths.length} files)`), '', false)
+  const execute = executeAvailable
+    ? commandForm('execute', t('执行这个计划', 'Execute this plan'), executeHidden, primaryAction === 'execute')
+    : ''
+  const resume = resumeAvailable
+    ? commandForm('resume', t('恢复', 'Resume'), resumeHidden, primaryAction === 'resume')
     : ''
   const control = job.status === 'queued' || job.status === 'running'
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}${pauseHidden}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}${cancelHidden}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
-    : job.status === 'paused'
-      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/resume">${csrf(viewer)}${resumeHidden}<button class="btn" type="submit">${escapeHtml(t('恢复', 'Resume'))}</button></form>`
-      : ''
+    : ''
+  const primaryHtml = primaryAction === 'ack-rule-change'
+    ? ackRuleChange
+    : primaryAction === 'execute'
+      ? execute
+      : primaryAction === 'resume'
+        ? resume
+        : primaryAction === 'retry'
+          ? retry
+          : ''
+  // Retry, execute, resume and re-check keep their order in the disclosure; the
+  // primary is removed from it, and acknowledge is primary whenever it exists.
+  const secondaryHtml = [retry, execute, resume, recheck].filter((html) => html !== '' && html !== primaryHtml).join('')
   const planCard = job.kind === 'plan' && job.status === 'succeeded'
     ? `<section class="card">
         <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
@@ -3589,7 +3625,10 @@ export function jobPage(input: {
   // instead of restating it. An unknown or missing type renders as iterate, which
   // is what every row written before the column means.
   const workType = resolveWorkType(job.work_type) ?? contractOf('iterate')
-  const workTypeCard = `<section class="card" data-work-type="${escapeHtml(workType.type)}">
+  // #865: the four read-back cards are reference material, not operating state,
+  // so each keeps its own section untouched inside a collapsed disclosure named
+  // after the card.
+  const workTypeCard = `<details class="job-detail"><summary>${escapeHtml(t('工作类型', 'Work type'))}</summary><section class="card" data-work-type="${escapeHtml(workType.type)}">
     <h2>${escapeHtml(t('工作类型', 'Work type'))}</h2>
     <p><strong>${escapeHtml(workTypeLabel(t, workType.type))}</strong> — ${escapeHtml(workTypePurpose(t, workType.type))}</p>
     <div class="list">
@@ -3599,7 +3638,7 @@ export function jobPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可创建分支/PR', 'May open a branch/PR'))}</strong><small>${escapeHtml(workType.branch ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可自动合并', 'May auto-merge'))}</strong><small>${escapeHtml(workType.autoMerge ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
     </div>
-  </section>`
+  </section></details>`
   const triageReport = parseTriageJson(job.triage_json)
   const triageRows = triageReport === null
     ? ''
@@ -3617,7 +3656,7 @@ export function jobPage(input: {
   const jobLoading = job.status === 'queued' || job.status === 'running'
     ? renderState({ kind: 'loading', title: job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'), body: job.status === 'queued' ? t('前面的任务结束后自动开始；这个页面会自己更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队进度会写进下面的时间线，不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'), skeletonLines: 2 })
     : ''
-  const postmortemCard = postmortem === null ? '' : `<section class="card" id="postmortem">
+  const postmortemCard = postmortem === null ? '' : `<details class="job-detail"><summary>${escapeHtml(t('复盘', 'Postmortem'))}</summary><section class="card" id="postmortem">
     <div class="row between">
       <div><div class="eyebrow">${escapeHtml(t('故障复盘', 'Incident'))}</div><h2>${escapeHtml(t('复盘', 'Postmortem'))}</h2><p class="muted">${escapeHtml(postmortem.evidence_state === 'verified' ? t('证据来自这个任务的错误、心跳、阶段和实例状态。', 'Evidence comes from this job’s error, heartbeat, stage and instance state.') : t('没有可用的证据：原因保持未核实，不做猜测。', 'No usable evidence: the cause stays unverified and is not guessed.'))}</p></div>
       <span class="badge ${postmortem.status === 'closed' ? 'good' : 'busy'}">${escapeHtml(postmortem.status === 'closed' ? t('已关闭', 'Closed') : t('未关闭', 'Open'))}</span>
@@ -3631,7 +3670,7 @@ export function jobPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('首次 / 最近', 'First / last'))}</strong><small>${escapeHtml(humanTimeShort(postmortem.first_seen_at))} / ${escapeHtml(humanTimeShort(postmortem.last_seen_at))}</small></div></div>
     </div>
     <p class="fine"><a class="link" href="/repos/${escapeHtml(repo.id)}#postmortems">${escapeHtml(postmortem.status === 'closed' ? t('查看已关闭的复盘', 'View the closed postmortem') : t('打开复盘记录', 'Open postmortem'))}</a></p>
-  </section>`
+  </section></details>`
   // #565: a queued job shows its place in the real (instance-wide) line as a
   // count, the priority it competes on, the viewer's own jobs ahead of it, and —
   // when other accounts are ahead — only how many. No identifier of another
@@ -3761,11 +3800,9 @@ export function jobPage(input: {
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
         ${supportMode ? '' : `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>`}
         ${advanced && !supportMode ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
+        ${supportMode ? '' : primaryHtml}
         ${supportMode ? '' : control}
-        ${supportMode ? '' : execute}
-        ${supportMode ? '' : recheck}
-        ${supportMode ? '' : ackRuleChange}
-        ${supportMode ? '' : retry}
+        ${supportMode || secondaryHtml === '' ? '' : `<details class="job-more"><summary>${escapeHtml(t('更多操作', 'More actions'))}</summary><div class="row">${secondaryHtml}</div></details>`}
       </div>
     </div>
     ${queueBlock}
@@ -3811,7 +3848,7 @@ export function jobPage(input: {
     <div class="row between">
       <div>${readinessBadge(t, readiness.state)}${readiness.reasons.length === 0 ? '' : `<p class="fine">${escapeHtml(readiness.reasons.slice(0, 6).join(' · '))}</p>`}</div>
       ${recheck}
-      ${ackRuleChange}
+      ${ackRuleChangeGhost}
     </div>
     ${verification === null
       ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`
@@ -3843,10 +3880,10 @@ export function jobPage(input: {
       ? renderState({ kind: 'empty', title: t('还没有任务事件。', 'No job events yet.'), body: t('任务开始后，每一次状态变化都会记录在这里。', 'Every state change is recorded here once the job starts.'), action: job.status === 'failed' ? { formAction: `/repos/${repo.id}/jobs/${job.id}/retry`, label: t('重试这个任务', 'Retry this job'), csrf: csrf(viewer), fields: input.retry === undefined ? undefined : [{ name: 'expected_revision', value: String(input.retry.revision) }, { name: 'idempotency_key', value: input.retry.idempotencyKey }] } : { href: `/repos/${repo.id}`, label: t('返回仓库', 'Back to repository') } })
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('角色/步骤', 'Role/step'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${events.map((entry) => `<tr><td>${escapeHtml(humanTimeShort(entry.at))}</td><td><code>${escapeHtml(entry.kind)}</code></td><td>${escapeHtml([entry.role, entry.step].filter((value) => value !== null && value !== '').join(' · ') || '—')}</td><td>${escapeHtml(jobEventDetail(t, entry))}</td></tr>`).join('')}</tbody></table></div>`}
   </section>
-  ${advanced ? `<section class="card">
+  ${advanced ? `<details class="job-detail"><summary>${escapeHtml(t('团队参与', 'Team participation'))}</summary><section class="card">
     <h2>${escapeHtml(t('团队参与', 'Team participation'))}</h2>
     ${teamRows}
-  </section>` : ''}`
+  </section></details>` : ''}`
   return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
 }
 
