@@ -785,7 +785,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   the linked work item is `changes_requested` or the newest succeeded review job
   for that PR has a score below `AUTO_MERGE_MIN_REVIEW_SCORE` (default 80). A
   manual maintainer merge may override the review-score gate, and the override
-  is audited as `job.merge_review_override`. The agent prompt always forbids
+  is audited as `job.merge_review_override`. The row names the decision it
+  overturned — the review job, its score, the model that answered and the tip
+  that review covered — so a reader can tell which review a merge went past; a
+  decision that recorded no revision leaves that field unknown rather than
+  borrowing the merge tip. The agent prompt always forbids
   merging. The switch is stored on the repository and included in the job
   payload for reporting. A stale or downgraded role blocks the merge.
   A merge also needs the newest `iterate` job for that pull request to have
@@ -1107,6 +1111,20 @@ fewer than `REVIEW_TREND_SMALL_SAMPLE` (5) reviews are shown with a
 `Small sample n=<n>` badge rather than smoothed into a trend. What each cell
 means is fixed in [ui.md](ui.md).
 
+The identity of a decision travels with it. The `work_item.review_outcome` row
+names the review job, the score, the model that answered and the tip that review
+covered (`formatReviewOutcomeDetail`/`parseReviewOutcomeDetail`, in `src/db.ts`
+beside the trend that reads them). A row written before those fields existed
+still parses, with the newer fields unknown, and the page says `revision not
+recorded` rather than printing a hash or an id that belongs to nothing. The
+PR→first-decision median takes one sample per work item, at its first successful
+review, so a PR reviewed four times is one first decision and not four; the
+override rate is `overrides / recorded changes-requested decisions` in the same
+window, its numerator being merges that named such a decision and went ahead.
+A threshold-only block is derived at merge time and has no decision row: its
+override is audited on the job page but has no denominator here, and the card
+says so rather than folding it into a rate it cannot explain.
+
 `GET /api/read/metrics` exposes the same read model as JSON for an external
 control room: a normal user gets `personal`, a super admin gets the global sections.
 The route is read-only and session-scoped.
@@ -1338,8 +1356,11 @@ named fields only — base sha, tip sha, the pull-request patches, the verifier
 result at the tip and the repository policy — so the author's summary and its
 claimed test output are not in the request at all; a caller that still holds them
 cannot pass them through. Each automatic merge attempt records one
-`job.adversarial` event with the model, the prompt hash and the evidence the
-reviewer saw.
+`job.adversarial` event with the model, the prompt hash, the base and tip sha and
+the evidence the reviewer saw. The job page reads the tip back beside the hash,
+so a verdict cannot be read against the wrong revision; a record written before
+the reader carried the tip says `revision not recorded` instead of printing a
+hash with no revision.
 
 The answer must be one of two shapes: `Concrete risk: <path>:<line>` with a
 failure mode and a repro, or `No concrete risk` with the checks it ran. A bare
