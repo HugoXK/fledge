@@ -31,7 +31,7 @@ import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
-import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromGoal, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
+import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromBlock, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { mergeReadiness, parsePathGuard, parseVerification } from '../lib/verification.js'
 import { reviewMergeCard, reviewMergeState, type PullTip } from './reviewMerge.js'
@@ -3397,11 +3397,27 @@ export function jobPage(input: {
   const carryOverHeader = job.continuity_used !== 1
     ? ''
     : carryOverReport === null
-      ? carryOverHeaderFromGoal(job.goal)
+      ? carryOverHeaderFromBlock(job.goal)
       : carryOverHeaderText(carryOverReport)
   const carryOverLine = carryOverHeader === ''
     ? ''
     : `<p class="fine" data-carry-over>${escapeHtml(carryOverHeader)}</p>`
+  // #791: the header counts, the rows name. Each dropped item carries its link
+  // and why it went, each unverified one the class of the failure, all read from
+  // the stored report so the list cannot spell a count the header does not.
+  const carryOverItems = carryOverReport === null || carryOverHeader === '' ? [] : carryOverReport.items
+  const carryOverItemRows = carryOverItems.length === 0
+    ? ''
+    : `<div class="list" data-carry-over-items>${carryOverItems.map((entry) => {
+      const reason = entry.reason === 'closed' ? t('已关闭的 issue', 'Closed issue')
+        : entry.reason === 'merged' ? t('已合并的 PR', 'Merged pull request')
+          : entry.reason === 'failed read' ? t('读取失败', 'Read failed')
+            : entry.reason === 'budget spent' ? t('读取额度已用完', 'Read budget spent')
+              : entry.kind === 'dropped'
+                ? t('已丢弃（原因未记录）', 'Dropped (reason not recorded)')
+                : t('未验证（原因未记录）', 'Unverified (reason not recorded)')
+      return `<div class="list-row" data-carry-over-item data-kind="${escapeHtml(entry.kind)}" data-reason="${escapeHtml(entry.reason ?? '')}"><div class="list-main"><strong>${escapeHtml(reason)}</strong><small><code>${escapeHtml(entry.link)}</code></small></div></div>`
+    }).join('')}</div>`
   // Nothing to attach an observation to when the page shows no carry-over line
   // at all (a pre-#365 row, or a goal that lost the block), so nothing is claimed.
   const carryOverObservations = job.continuity_used !== 1 || carryOverHeader === ''
@@ -3690,6 +3706,7 @@ export function jobPage(input: {
       ${untrustedLine}
       ${providerLine}
       ${carryOverLine}
+      ${carryOverItemRows}
       ${carryOverObservations}
       ${job.checkpoint === null || job.checkpoint === '' ? '' : `<p class="fine"><strong>${escapeHtml(t('断点', 'Checkpoint'))}:</strong> ${escapeHtml(job.checkpoint)}</p>`}
       <p class="fine">${jobLinks(job)}</p>
