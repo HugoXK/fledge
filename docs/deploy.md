@@ -658,6 +658,12 @@ Both scripts accept `FLEDGE_APP_DIR`, `FLEDGE_SOURCE_DIR`, `FLEDGE_DATA_DIR`,
 so two cron ticks cannot overlap, and the deploy script exits without changing
 anything when production is already at the newest tag or ahead of it.
 
+The deploy lock is a fixed path, `/tmp/fledge-deploy-tag.lock`, so a second cron
+tick on the same host exits 0 without touching anything. `FLEDGE_DEPLOY_LOCK`
+moves it, and only a test host should: a fixture that shares the production path
+is decided by whatever else on the machine holds it, which is how the deploy
+cases failed once on a busy shard and passed on a replay (#943).
+
 ### Gate a rollout on the release it claims
 
 A version string is not a rollout. On 2026-11-14 production answered
