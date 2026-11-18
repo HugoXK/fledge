@@ -100,6 +100,12 @@ export interface EnqueueResult {
   // The value a refusal names, such as the missing target branch, so the banner
   // can say which one instead of a bare sentence.
   detail?: string
+  // #915: a `fail` verdict is a stored reading, not a fresh fact. These carry
+  // when it was taken and how old it is, so a refusal minutes after the last
+  // measurement can say so instead of presenting 28 minutes as the current
+  // offset. Optional because every other refusal has no reading behind it.
+  measuredAt?: string
+  measuredAgeSeconds?: number
 }
 
 // #544 slice 3A: where a schedule's search starts when it has never fired. The
@@ -1196,11 +1202,14 @@ export class Jobs {
     const clock = this.githubApp.clockState()
     if (clock.state === 'fail') {
       incCounter('fledge_admission_rejected_total', { reason: 'clock_skew' }, 1, 'Queue admission rejections')
+      const ageSeconds = clock.measuredAt === null ? undefined : Math.max(0, Math.round((Date.now() - Date.parse(clock.measuredAt)) / 1000))
       return {
         ok: false,
         error: `平台时钟与 GitHub 相差 ${String(clock.skewSeconds)} 秒，超过 ${String(clock.thresholdSeconds)} 秒上限，任务没有开始。`,
         code: 'CLOCK_SKEW',
         detail: String(clock.skewSeconds),
+        ...(clock.measuredAt === null ? {} : { measuredAt: clock.measuredAt }),
+        ...(ageSeconds === undefined ? {} : { measuredAgeSeconds: ageSeconds }),
       }
     }
     // #390: the work type is resolved before the gates, and an unknown one is
@@ -4374,6 +4383,11 @@ export class Jobs {
   }
 
   private async tickOnce(): Promise<void> {
+    // #915: the clock gate refuses every trigger and nothing that runs after it
+    // can re-measure, so a quiet instance could never leave `fail`. The tick is
+    // the one loop that runs without a job, a webhook or a page view; while the
+    // state is healthy this is a state read and spends no GitHub call.
+    await this.githubApp.refreshSkewWhileFailed()
     const handled = new Set<string>()
     setGauge('fledge_jobs_active', this.store.countActiveJobs(), {}, 'Active jobs')
     setGauge('fledge_jobs_queued', this.store.listQueuedJobs().length, {}, 'Queued jobs')

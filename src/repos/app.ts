@@ -126,6 +126,20 @@ export class GithubApp {
     }
   }
 
+  // #915: a `fail` verdict has no expiry of its own, and every path that can take
+  // a new reading (`appJwt`) runs after admission. The scheduler tick calls this
+  // while the state is `fail`, so an operator who corrects the host clock is
+  // rewarded within one refresh interval without a restart or an unrelated GitHub
+  // call. It costs nothing while the clock is healthy (the JWT path already
+  // refreshes there) and reuses `skewAt`, so a failed attempt is throttled like a
+  // reading instead of turning the tick into a retry per minute.
+  async refreshSkewWhileFailed(): Promise<void> {
+    if (!this.configured) return
+    if (this.clockState().state !== 'fail') return
+    if (Date.now() - this.skewAt <= SKEW_REFRESH_MS) return
+    await this.measureSkew()
+  }
+
   /** The last measured skew in seconds, or null when no measurement succeeded. */
   clockSkewSeconds(): number | null {
     return this.measuredSkewSeconds
