@@ -707,6 +707,19 @@ node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` 
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
 writer, and any `risk:T*` label against the computed tier.
 
+One exemption is structural and keyed on a **pair**: when the pull request's
+author login is exactly `dependabot[bot]` *and* the body's first line starts with
+`Bumps `, the four body rules are not asked of it (#982). A generated dependency
+bump cannot carry a signature, a `Ran:` line or an issue reference, and nobody
+here rewrites a bot's body, so the rules would keep it red forever. The
+exemption is the pair and never a label, a branch prefix, or `dependabot`
+appearing somewhere in the text — a label is rights a person can grant
+themselves, and a human account posting the same body is refused exactly as
+before. Every later rule still applies to a bump: the changelog fragment, the
+docs obligation, the `Large-PR:` line, the computed tier and its `risk:T*` label,
+and the whole `ci-ok`/`review-gate` set. A PASS is still required at the tip for
+T2/T3, and a dependency bump that changes a T3 path is judged at T3.
+
 Both checks read the pull request's file and commit lists, and both used to stop
 at a fixed page cap. A list longer than the cap was judged from its prefix, which
 is enough to hide the only T3 path — or a reviewer-authored commit — past the cap
