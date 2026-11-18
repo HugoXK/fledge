@@ -578,9 +578,9 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
   is optional and lives under an advanced disclosure, so a reader who only wants
   "weekdays at 09:30" never types cron or an ISO offset.
-  Layered budgets beyond a schedule's own daily run limit and event
-  subscriptions are not built yet (the misfire policy and the notification
-  outbox are, see the slices below).
+  Event subscriptions and the report/development and model/cost split are not
+  built yet (the misfire policy and the notification outbox are, see the slices
+  below); the project and tenant layers of the run budget are added there.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
   most one per repository — makes `nextTime` the only rule for when a work run is
   due, and `repos.interval_minutes` stops deciding for that repository. A
@@ -688,7 +688,20 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   not run is deleted or its window closed. This is the run-count layer only: the
   cost layer stays where it is — `repos.monthly_budget_cny` / `job_budget_cny`
   for a repository and the account quota for a user — so the two are counted
-  separately. The console prints the limit, today's used count and what is left,
+  separately.
+  Slice 10 adds the project and tenant run layers: `schedule_budgets` carries a
+  `runs` daily limit for a project (the #541 `projects` row, one per repository)
+  and a tenant (the `tenants` row, one per owner). The tick checks the layers in
+  schedule -> project -> tenant order and stops at the first layer whose logical
+  day is already spent (`runBudgetStop`); the project and tenant counts join
+  `schedule_occurrences` to `projects` on the repository, so a tenant limit
+  covers every repository the owner runs in the same UTC day and adding a
+  repository cannot bypass it. The counts are still charged to the instant's
+  logical day, so a retry keeps the original bucket. A missing row is unbounded;
+  `category` is reserved for the later report/development and model/cost split.
+  The console still reads the schedule layer; the project and tenant values are
+  set through the store until a form exists. The console prints the limit,
+  today's used count and what is left,
   and a value nobody read prints `unknown` rather than zero. One process ticks, so
   the count and the claim are sequential in one pass and the claim's own
   transaction still makes the instant single-dispatch; a distributed worker

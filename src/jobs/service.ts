@@ -62,7 +62,7 @@ import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStat
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
 import { encodeOccurrenceSnapshot, occurrenceSnapshot } from '../schedules/snapshot.js'
-import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
+import { runBudgetStop, utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
@@ -4536,14 +4536,27 @@ export class Jobs {
         if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
         continue
       }
-      // #544 slice 6: the schedule layer of the run budget. The instant is
-      // charged to its own logical UTC day, so a late or recovered run spends the
-      // day it was scheduled for and crossing midnight grants no fresh allowance.
-      // At the limit the instant is decided — a skipped row naming the reason —
-      // rather than left due, or every tick would re-decide it.
-      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined && scheduleRow.daily_runs !== null) {
-        const used = this.store.countScheduleDispatchesBetween(scheduleRow.id, utcDayStart(plan.dueAt), utcDayEnd(plan.dueAt))
-        if (used >= scheduleRow.daily_runs) {
+      // #544 slice 6/10: the layered run budget. The schedule layer lives on
+      // the row; the project and tenant layers live in `schedule_budgets` and
+      // cover every repository the owner runs in the same logical UTC day. The
+      // first spent layer decides the instant, in schedule -> project -> tenant
+      // order, so adding a repository cannot bypass a tenant limit. The count is
+      // charged to the instant's own logical day, so a late or recovered run
+      // spends the day it was scheduled for and crossing midnight grants no
+      // fresh allowance.
+      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined) {
+        const from = utcDayStart(plan.dueAt)
+        const to = utcDayEnd(plan.dueAt)
+        const identity = this.store.projectForRepo(repo.id)
+        const scheduleLimit = scheduleRow.daily_runs
+        const projectLimit = identity === undefined ? null : this.store.scheduleBudget('project', identity.id)
+        const tenantLimit = identity === undefined ? null : this.store.scheduleBudget('tenant', identity.tenant_id)
+        const stop = runBudgetStop([
+          { scope: 'schedule', limit: scheduleLimit, used: scheduleLimit === null ? 0 : this.store.countScheduleDispatchesBetween(scheduleRow.id, from, to) },
+          { scope: 'project', limit: projectLimit, used: projectLimit === null || identity === undefined ? 0 : this.store.countProjectScheduleDispatchesBetween(identity.id, from, to) },
+          { scope: 'tenant', limit: tenantLimit, used: tenantLimit === null || identity === undefined ? 0 : this.store.countTenantScheduleDispatchesBetween(identity.tenant_id, from, to) },
+        ])
+        if (stop !== null) {
           this.skipScheduledOccurrence(repo, plan, 'budget-exceeded')
           continue
         }

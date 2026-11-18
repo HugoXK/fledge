@@ -1,0 +1,1 @@
+The scheduler now checks a schedule's daily run limit against the project's and the owner tenant's limits as well, counting dispatches on the instant's logical UTC day. A spent project or tenant layer records the due instant as skipped with `budget-exceeded`, so a tenant limit covers every repository in the day and adding a repository cannot bypass it.
