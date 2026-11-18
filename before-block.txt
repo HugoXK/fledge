@@ -1,0 +1,20 @@
+[Carry-over - auto-generated state, not a new goal]
+carry-over: 2 used, 0 dropped (closed/merged)
+Continue the open work item when one exists; do not create a duplicate issue/PR.
+Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.
+Recent runs:
+- 2026-11-15T11:00 iterate succeeded: wrote the night summary and named nothing it could link to
+Open work:
+- work_bare priority=0 title=carry the night summary forward
+
+--- report ---
+{
+  "used": 2,
+  "dropped": 0,
+  "unverified": 0,
+  "reads": 0,
+  "droppedLinks": [],
+  "unverifiedLinks": [],
+  "observations": [],
+  "items": []
+}
