@@ -1,1 +1,0 @@
-A verdict comment written as `## REVIEW — PASS` now starts the `review-gate` job like any other case. The comment job's prefilter used to hold its own word list, which disagreed with the parser; it now asks the parser directly, after checking out the default branch, so the shapes that start the gate and the shapes the gate accepts cannot drift apart again.

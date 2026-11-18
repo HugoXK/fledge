@@ -1,1 +1,0 @@
-A successful work job no longer makes the repository wait out the 15-minute work-session cooldown: the next ready item is dispatched on the next scheduler tick, so a role that finishes is followed by the next item instead of a pause. The wait after a run that did not succeed and the doubling backoff after two unproductive runs are unchanged.
