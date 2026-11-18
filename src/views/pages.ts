@@ -3280,12 +3280,17 @@ function priorityLevelLabel(t: Translate, level: string): string {
   return t('非核心打磨', 'non-core polish')
 }
 
-// #373: the four facts the block names, in the reader's language. The values
-// themselves come from the pull request and are never translated.
+// #373: the facts the block names, in the reader's language. The values
+// themselves come from the pull request and are never translated. #793 adds the
+// three body sections the decision needs and the model/role row from the job.
 function changeStoryLabel(t: Translate, key: ChangeStoryFact['key']): string {
   if (key === 'whatChanged') return t('改动了什么', 'What changed')
   if (key === 'risks') return t('风险', 'Risks')
   if (key === 'ran') return t('运行了什么', 'Ran')
+  if (key === 'alternatives') return t('考虑过的其他方案', 'Alternatives considered')
+  if (key === 'uncertainty') return t('不确定性与残余风险', 'Uncertainty and residual risk')
+  if (key === 'notVerified') return t('未验证', 'Not verified')
+  if (key === 'attribution') return t('模型与角色', 'Model and role')
   return t('改动规模', 'Diff')
 }
 
