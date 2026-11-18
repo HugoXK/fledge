@@ -885,6 +885,53 @@ test('the dashboard shows a personal delivery card with a selectable window', ()
   }
 })
 
+test('the dashboard names a non-USD bucket instead of converting it', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'currency-bucket-dashboard', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const page = dashboardPage({
+      config,
+      locale: 'en',
+      viewer,
+      repos: [],
+      jobs: [],
+      notifications: [],
+      personal: {
+        repos: 1,
+        jobs: 1,
+        succeeded: 1,
+        failed: 0,
+        prs: 0,
+        merged: 0,
+        costUsd: 0.3,
+        otherCurrencies: [{ currency: 'CNY', amount: 10, requests: 1 }],
+        openWorkItems: 0,
+        lastJobAt: null,
+      },
+    })
+    // The USD figure is the USD-billed spend, converted at the configured rate.
+    assert.match(page, new RegExp(quotaMoney(0.3 * config.quota.usdCny).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    // The CNY row is named in its own currency and never converted.
+    assert.match(page, /10\.0000 CNY/)
+    assert.doesNotMatch(page, /¥74\.16/)
+    // A window with only USD rows says nothing about other currencies.
+    const usdOnly = dashboardPage({
+      config,
+      locale: 'en',
+      viewer,
+      repos: [],
+      jobs: [],
+      notifications: [],
+      personal: { repos: 1, jobs: 1, succeeded: 1, failed: 0, prs: 0, merged: 0, costUsd: 0.3, otherCurrencies: [], openWorkItems: 0, lastJobAt: null },
+    })
+    assert.doesNotMatch(usdOnly, /Other currencies/)
+  } finally {
+    store.close()
+  }
+})
+
 test('the admin metrics page shows delivery, cost and alerts', () => {
   const config = testConfig()
   const store = new Store(':memory:')

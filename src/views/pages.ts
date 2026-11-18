@@ -1096,6 +1096,9 @@ export function dashboardPage(input: {
     prs: number
     merged: number
     costUsd: number
+    // #957: priced rows billed in another currency. They are shown beside the
+    // USD figure in their own currency, never converted into it.
+    otherCurrencies?: Array<{ currency: string; amount: number; requests: number }>
     openWorkItems: number
     lastJobAt: string | null
   }
@@ -1274,6 +1277,7 @@ export function dashboardPage(input: {
         <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : personal.repos}</strong><small>${escapeHtml(t('仓库', 'Repositories'))}</small></div></div>
       </div>
     </div>
+    ${personal === undefined || (personal.otherCurrencies ?? []).length === 0 ? '' : `<p class="fine" data-other-currencies>${escapeHtml(t(`另有按原币计费的调用，不按汇率折算：${otherCurrencyText(personal.otherCurrencies ?? [])}`, `Other currencies, not converted: ${otherCurrencyText(personal.otherCurrencies ?? [])}`))}</p>`}
   </section>
 
   <section class="card" id="repositories">
@@ -3819,6 +3823,12 @@ export function jobPage(input: {
 function currencyAmount(amount: number, currency: string): string {
   const digits = amount !== 0 && Math.abs(amount) < 0.01 ? 6 : 4
   return `${amount.toFixed(digits)} ${currency}`
+}
+
+// #957: the dashboard tile multiplies its USD figure by `USD_CNY_RATE`, so the
+// buckets in another currency are named beside it in their own currency.
+function otherCurrencyText(buckets: Array<{ currency: string; amount: number }>): string {
+  return buckets.map((row) => currencyAmount(row.amount, row.currency)).join(' · ')
 }
 
 // #807: one compact row on the metrics page, not a second metrics page. The

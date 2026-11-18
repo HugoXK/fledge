@@ -5039,6 +5039,10 @@ export class Store {
     prs: number
     merged: number
     costUsd: number
+    // #957: the buckets `costUsd` deliberately leaves out. The page names them in
+    // their own currency; folding them in would multiply a CNY amount by
+    // USD_CNY_RATE and invent a rate between buckets.
+    otherCurrencies: Array<{ currency: string; amount: number; requests: number }>
     openWorkItems: number
     lastJobAt: string | null
   } {
@@ -5051,7 +5055,14 @@ export class Store {
       failed: count("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND status = 'failed' AND created_at >= ?"),
       prs: count('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND pr_url IS NOT NULL AND created_at >= ?'),
       merged: count("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND pr_state = 'merged' AND created_at >= ?"),
-      costUsd: Number(this.get<{ n: number | null }>('SELECT SUM(cost_usd) AS n FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)?.n ?? 0),
+      costUsd: Number(this.get<{ n: number | null }>(`SELECT SUM(cost_usd) AS n FROM quota_ledger WHERE user_id = ? AND at >= ? AND cost_known = 1 AND ${usdBilled()}`, userId, sinceIso)?.n ?? 0),
+      otherCurrencies: this.all<{ currency: string; amount: number; requests: number }>(
+        `SELECT currency, SUM(cost_usd) AS amount, COUNT(*) AS requests FROM quota_ledger
+          WHERE user_id = ? AND at >= ? AND cost_known = 1 AND NOT ${usdBilled()}
+          GROUP BY currency
+          ORDER BY currency`,
+        userId, sinceIso,
+      ).map((row) => ({ currency: row.currency, amount: Number(row.amount), requests: Number(row.requests) })),
       openWorkItems: Number(this.get<{ n: number }>("SELECT COUNT(*) AS n FROM work_items WHERE user_id = ? AND state NOT IN ('merged', 'closed')", userId)?.n ?? 0),
       lastJobAt: last?.at ?? null,
     }
