@@ -357,6 +357,10 @@ How it is selected:
   the signed-in navigation panel. On a phone the popover is pinned to the viewport under the header,
   so it cannot open past either edge whichever side the summary sits on; the
   quota pill is the one item that may leave the 420px row, never a 44px target.
+  Below 360 the same row has to fit 320, the reflow width WCAG 1.4.10 names, so
+  the 359px band takes the slack out of the spacing — the side padding, the row
+  gap, the language switch's frame and the sign-out button's own padding — and
+  every destination and 44px target stays (#950).
 
 ### Provider metadata (提供方元数据)
 
@@ -499,7 +503,11 @@ the landing page first, in a signed-out context, because `/` answers 302 to
 `/dashboard` for a visitor with a session: capturing it after the development
 login photographed the dashboard twice. It then signs in and renders the
 dashboard, settings, admin, add-repository and workspace surfaces at
-360/390/430/640/768/1024/1280/1440/1920 in both languages. It fails when the
+360/390/430/640/768/1024/1280/1440/1920 in both languages. The workspace surface
+is also rendered at 320×844, below the sweep: `VISUAL_NARROW_CASES` in
+`src/lib/visualMatrix.ts` holds a page whose narrowest layout needs a width the
+cross-product does not carry, so that width is measured for that page instead of
+being swept over pages nobody has measured (#950). It fails when the
 document leaves the viewport, or when an element does and nothing can scroll it
 into view. An element is waived only on evidence: a `.table-scroll` ancestor, or
 any ancestor whose computed `overflow-x` is `auto`/`scroll`, counts only while it

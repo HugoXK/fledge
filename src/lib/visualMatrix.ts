@@ -2,6 +2,26 @@ export const VISUAL_WIDTHS = [360, 390, 430, 640, 768, 1024, 1280, 1440, 1920] a
 
 export const VISUAL_PATHS = ['/', '/dashboard', '/settings', '/admin', '/repos/new', '/console'] as const
 
+export type VisualPath = (typeof VISUAL_PATHS)[number]
+
+/**
+ * One page measured at a width the default sweep does not render.
+ *
+ * The sweep is cross-product: a width added to `VISUAL_WIDTHS` is rendered for
+ * every path, so a narrow width that one surface needs would put every other
+ * page into the failure list before anyone had measured them (#950). This is
+ * the seam for a page whose narrowest layout has to be guarded now.
+ */
+export interface VisualNarrowCase {
+  readonly path: VisualPath
+  readonly width: number
+}
+
+/** `/console` is the surface #950 measured at 320; the rest of the sweep stays at 360 and up. */
+export const VISUAL_NARROW_CASES: readonly VisualNarrowCase[] = [
+  { path: '/console', width: 320 },
+]
+
 export function viewportHeight(width: number): number {
   if (width <= 430) return 844
   if (width <= 640) return 900

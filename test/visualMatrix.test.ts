@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import * as visualMatrix from '../src/lib/visualMatrix.js'
 import { VISUAL_PATHS, VISUAL_WIDTHS, overflowFailure, pageSlug, viewportHeight } from '../src/lib/visualMatrix.js'
 
 test('the matrix covers phones, tablets and desktop widths', () => {
@@ -19,6 +20,47 @@ test('the viewport height follows the width band', () => {
   assert.equal(viewportHeight(360), 844)
   assert.equal(viewportHeight(768), 1024)
   assert.equal(viewportHeight(1280), 900)
+})
+
+// #950: the sweep starts at 360, so a 320-only overflow reached `main` as a
+// clean run — the width was never rendered. The fix is a case, not a wider
+// cross-product: 320 in `VISUAL_WIDTHS` would put every page nobody measured
+// into the failure list. Read through the module object so this file still
+// loads on a tree that has no such export.
+test('the matrix renders the console at 320, below the sweep that starts at 360', () => {
+  const cases = (visualMatrix as unknown as { VISUAL_NARROW_CASES?: readonly { path: string; width: number }[] }).VISUAL_NARROW_CASES
+  assert.ok(cases !== undefined, 'the matrix needs a narrow-case list; without one the 320 row cannot exist')
+  assert.ok(
+    cases.some((entry) => entry.path === '/console' && entry.width === 320),
+    'the console has to be measured at 320, the reflow baseline WCAG 1.4.10 names',
+  )
+  assert.equal(viewportHeight(320), 844, 'a narrow case keeps the phone viewport height')
+  assert.ok(!(VISUAL_WIDTHS as readonly number[]).includes(320), '320 stays outside the cross-product so no unmeasured page is swept into it')
+})
+
+test('the runner turns a narrow case into a failure, not a screenshot', () => {
+  const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
+  assert.match(script, /for \(const narrow of VISUAL_NARROW_CASES\)/, 'the runner must visit each narrow case')
+  assert.match(
+    script,
+    /failures\.push\(`\$\{locale\} \$\{narrow\.width\}px \$\{narrow\.path\}: /,
+    'a narrow case has to report locale, width and path like every other row',
+  )
+})
+
+// The narrow band is the spacing half of the same fix. It is CSS text, so the
+// contract kept here is the one that matters: a band below the first swept
+// width exists and it tightens the four boxes that made the row too wide.
+test('the phone header a 320 case renders is the tight band, below every swept width', () => {
+  const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
+  const start = css.indexOf('@media (max-width: 359px)')
+  assert.ok(start !== -1, 'the header needs a band below 360 where the row has to fit without its spacing')
+  const body = css.slice(start, css.indexOf('\n}', start))
+  for (const selector of ['.top-inner', '.lang', '.account', '.account-exit']) {
+    assert.match(body, new RegExp(`${selector.replace('.', '\\.')}\\s*\\{`), `the 359 band must tighten ${selector}`)
+  }
+  assert.match(body, /\.top-inner\s*\{[^}]*padding:\s*0 6px/, 'the row keeps its side padding but halves it')
+  assert.match(body, /\.account-exit\s*\{[^}]*padding:\s*0;/, 'the sign-out button loses the side padding its min-width already covers')
 })
 
 test('the slug names a stable screenshot file', () => {
