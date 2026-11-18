@@ -1230,6 +1230,24 @@ a.list-row:hover strong { color: var(--accent); }
   .brand > span:not(.mark) { display: none; }
 }
 
+/* issue 950: the 420px band above is clean from 360px up, but at 320 — the reflow
+   baseline WCAG 1.4.10 names — the row needed 355px, so the account pill ended
+   21px (zh) and 25px (en) past the viewport and the page scrolled sideways.
+   Nothing in the row can leave the phone header and every control keeps its
+   44px target, so the slack comes out of the spacing instead: the side padding
+   and the row gap halve, the language switch drops its own frame padding (its
+   two links keep the floor), and the sign-out button loses the 6px it carried
+   on each side, which its `min-width` already covers. */
+@media (max-width: 359px) {
+  .top-inner { padding: 0 6px; gap: 4px; }
+  @supports (padding: env(safe-area-inset-top)) {
+    .top-inner { padding: 0 calc(6px + env(safe-area-inset-right)) 0 calc(6px + env(safe-area-inset-left)); }
+  }
+  .lang { padding: 0; }
+  .account { padding: 2px; gap: 4px; }
+  .account-exit { padding: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   * { transition: none !important; animation: none !important; }

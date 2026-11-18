@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
-import { VISUAL_PATHS, VISUAL_WIDTHS, overflowFailure, pageSlug, viewportHeight } from '../src/lib/visualMatrix.js'
+import { VISUAL_NARROW_CASES, VISUAL_PATHS, VISUAL_WIDTHS, overflowFailure, pageSlug, viewportHeight } from '../src/lib/visualMatrix.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const port = Number(process.env.VISUAL_PORT ?? '18180')
@@ -203,6 +203,17 @@ async function main(): Promise<void> {
           }
         }
       }
+      // #950: a page whose narrowest layout needs a width below the sweep is
+      // measured here, so a 320-only overflow reaches a failure instead of a
+      // clean run because the width was never rendered.
+      for (const narrow of VISUAL_NARROW_CASES) {
+        await page.setViewportSize({ width: narrow.width, height: viewportHeight(narrow.width) })
+        try {
+          await checkPage(page, locale, narrow.width, narrow.path)
+        } catch (error) {
+          failures.push(`${locale} ${narrow.width}px ${narrow.path}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
       await context.close()
     }
   } finally {
@@ -216,7 +227,7 @@ async function main(): Promise<void> {
     process.exitCode = 1
     return
   }
-  console.log(`visual matrix: ${VISUAL_PATHS.length} pages x ${VISUAL_WIDTHS.length} widths x 2 locales clean`)
+  console.log(`visual matrix: ${VISUAL_PATHS.length} pages x ${VISUAL_WIDTHS.length} widths x 2 locales + ${String(VISUAL_NARROW_CASES.length)} narrow case(s) clean`)
   console.log(`screenshots: ${outDir}`)
 }
 
