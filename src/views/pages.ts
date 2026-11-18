@@ -2307,19 +2307,54 @@ export function settingsPage(input: {
   // itself still never scrolls sideways (the matrix's document rule), and the
   // strip is the scroller the reader swipes. `data-allow-overflow` says so to the
   // matrix, which otherwise reads a deliberate scroller as clipped content.
-  const body = `<nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
-    <a href="#account" data-allow-overflow>${escapeHtml(t('账户', 'Account'))}</a>
+  const body = `<div class="settings-shell">
+  <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
+    <a href="#account-access" data-allow-overflow>${escapeHtml(t('账户与访问', 'Account & access'))}</a>
     <a href="#model-providers" data-allow-overflow>${escapeHtml(t('模型', 'Models'))}</a>
     <a href="#notifications" data-allow-overflow>${escapeHtml(t('通知', 'Notifications'))}</a>
-    <a href="#tokens" data-allow-overflow>${escapeHtml(t('API token', 'API tokens'))}</a>
-    <a href="#sessions" data-allow-overflow>${escapeHtml(t('登录设备', 'Sessions'))}</a>
     <a href="#feedback" data-allow-overflow>${escapeHtml(t('反馈', 'Feedback'))}</a>
   </nav>
-  <section class="card" id="account">
+  <section class="card" id="account-access">
+    <h2>${escapeHtml(t('账户与访问', 'Account & access'))}</h2>
+    <div class="sub" id="account">
     <div class="eyebrow">${escapeHtml(t('账户', 'Account'))}</div>
     <h1>@${escapeHtml(user.login)}</h1>
     <p class="muted">${escapeHtml(user.email === null || user.email === '' ? t('未公开邮箱', 'No public email') : maskEmail(user.email))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))} · ${escapeHtml(t('平台额度', 'Platform quota'))} ${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : `${quotaMoney(quota.remainingCny)} / ${money(quota.initialCny)}`}</p>
     ${user.github_token_enc !== null ? `<p class="fine">${escapeHtml(t('登录时保存了一个默认 GitHub token；添加仓库时仍以仓库表单里的 token 为准。', 'A default GitHub token was saved at sign-in; the token in the repository form still takes precedence.'))}</p>` : ''}
+    </div>
+
+    <div class="sub" id="sessions">
+    <h2>${escapeHtml(t('登录设备', 'Sessions'))}</h2>
+    <p class="muted">${escapeHtml(t('这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。', 'These are the live sign-ins. Revoking one ends that cookie immediately; signing out the others keeps this one.'))}</p>
+    <div class="table-scroll"><table><thead><tr><th>IP</th><th>${escapeHtml(t('客户端', 'Client'))}</th><th>${escapeHtml(t('登录时间', 'Signed in'))}</th><th></th></tr></thead><tbody>${sessionRows}</tbody></table></div>
+    <div class="row">
+      <form method="post" action="/settings/sessions/revoke-others">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出其他会话', 'Sign out other sessions'))}</button></form>
+      <form method="post" action="/settings/sessions/rotate">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('轮换当前会话', 'Rotate this session'))}</button></form>
+    </div>
+    </div>
+
+    <div class="sub" id="tokens">
+    <h2>${escapeHtml(t('API token', 'API tokens'))}</h2>
+    <p class="muted">${escapeHtml(t('给脚本或工作区调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。', 'Gateway tokens (flg_…) for scripts or the workspace. They are neither your GitHub token nor a model key.'))}</p>
+    ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('前缀', 'Prefix'))}</th><th>${escapeHtml(t('名称', 'Name'))}</th><th>${escapeHtml(t('范围', 'Scope'))}</th><th>${escapeHtml(t('有效期', 'Expires'))}</th><th>${escapeHtml(t('最近使用', 'Last used'))}</th><th></th></tr></thead><tbody>${tokenRows}</tbody></table></div>
+    <form method="post" action="/settings/tokens" class="row">${csrf(viewer)}<input name="name" placeholder="${escapeHtml(t('用途，例如 laptop-cli', 'Purpose, e.g. laptop-cli'))}" required />
+      <label>${escapeHtml(t('范围', 'Scope'))}
+        <select name="scope">
+          <option value="gateway">${escapeHtml(t('网关：调用模型接口', 'Gateway: call the model endpoints'))}</option>
+          <option value="jobs:read">${escapeHtml(t('任务读取：只读 /api/v1/jobs', 'Jobs: read /api/v1/jobs only'))}</option>
+        </select>
+      </label>
+      <label>${escapeHtml(t('有效期', 'Expires'))}${infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
+        <select name="expiryDays">
+          ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
+          ${viewer.user.role === 'admin' || viewer.user.role === 'superadmin' ? `<option value="never">${escapeHtml(t('永不过期（运维）', 'Never (operator)'))}</option>` : ''}
+        </select>
+      </label>
+      <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
+    <p class="fine">${escapeHtml(t('范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。', 'The scope is the capability boundary: gateway may call /v1 only, jobs:read may read /api/v1/jobs only, and neither substitutes for the other.'))}</p>
+    </div>
+
   </section>
 
   <section class="card" id="model-providers">
@@ -2413,38 +2448,6 @@ export function settingsPage(input: {
     <p class="fine">${escapeHtml(t(`审批和额度邮件不受这个开关影响。每日摘要默认在 ${config.digest.hour}:00（${config.digest.timeZone}）发送。`, `Approval and quota mail are not affected by these switches. The daily summary is sent at ${config.digest.hour}:00 (${config.digest.timeZone}).`))}</p>
   </section>
 
-  <section class="card" id="tokens">
-    <h2>${escapeHtml(t('API token', 'API tokens'))}</h2>
-    <p class="muted">${escapeHtml(t('给脚本或工作区调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。', 'Gateway tokens (flg_…) for scripts or the workspace. They are neither your GitHub token nor a model key.'))}</p>
-    ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('前缀', 'Prefix'))}</th><th>${escapeHtml(t('名称', 'Name'))}</th><th>${escapeHtml(t('范围', 'Scope'))}</th><th>${escapeHtml(t('有效期', 'Expires'))}</th><th>${escapeHtml(t('最近使用', 'Last used'))}</th><th></th></tr></thead><tbody>${tokenRows}</tbody></table></div>
-    <form method="post" action="/settings/tokens" class="row">${csrf(viewer)}<input name="name" placeholder="${escapeHtml(t('用途，例如 laptop-cli', 'Purpose, e.g. laptop-cli'))}" required />
-      <label>${escapeHtml(t('范围', 'Scope'))}
-        <select name="scope">
-          <option value="gateway">${escapeHtml(t('网关：调用模型接口', 'Gateway: call the model endpoints'))}</option>
-          <option value="jobs:read">${escapeHtml(t('任务读取：只读 /api/v1/jobs', 'Jobs: read /api/v1/jobs only'))}</option>
-        </select>
-      </label>
-      <label>${escapeHtml(t('有效期', 'Expires'))}${infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
-        <select name="expiryDays">
-          ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
-          ${viewer.user.role === 'admin' || viewer.user.role === 'superadmin' ? `<option value="never">${escapeHtml(t('永不过期（运维）', 'Never (operator)'))}</option>` : ''}
-        </select>
-      </label>
-      <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
-    <p class="fine">${escapeHtml(t('范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。', 'The scope is the capability boundary: gateway may call /v1 only, jobs:read may read /api/v1/jobs only, and neither substitutes for the other.'))}</p>
-  </section>
-
-  <section class="card" id="sessions">
-    <h2>${escapeHtml(t('登录设备', 'Sessions'))}</h2>
-    <p class="muted">${escapeHtml(t('这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。', 'These are the live sign-ins. Revoking one ends that cookie immediately; signing out the others keeps this one.'))}</p>
-    <div class="table-scroll"><table><thead><tr><th>IP</th><th>${escapeHtml(t('客户端', 'Client'))}</th><th>${escapeHtml(t('登录时间', 'Signed in'))}</th><th></th></tr></thead><tbody>${sessionRows}</tbody></table></div>
-    <div class="row">
-      <form method="post" action="/settings/sessions/revoke-others">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出其他会话', 'Sign out other sessions'))}</button></form>
-      <form method="post" action="/settings/sessions/rotate">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('轮换当前会话', 'Rotate this session'))}</button></form>
-    </div>
-  </section>
-
   <section class="card" id="feedback">
     <div class="eyebrow">${escapeHtml(t('反馈', 'Feedback'))}</div>
     <h2>${escapeHtml(t('反馈给开发者', 'Send feedback'))}</h2>
@@ -2478,6 +2481,7 @@ export function settingsPage(input: {
       }).join('')}
     </div>`}
   </section>
+  </div>
 `
   return layout({ title: t('设置', 'Settings'), viewer, body, config, locale, path: '/settings', active: 'settings', notice, error })
 }

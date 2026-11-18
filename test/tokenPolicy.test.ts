@@ -188,7 +188,11 @@ test('the settings page shows the scope and the expiry of each token', async () 
     // header must name six columns in that order. Counting cells is the half the
     // earlier assertions could not see: a four-cell header still contains the
     // word `gateway` and the date, only under the wrong column.
-    const table = page.body.slice(page.body.indexOf('<table'), page.body.indexOf('</table>'))
+    // #860 moved the token card inside the Account & access group, after the
+    // sessions sub-block; read the table from the token block itself rather than
+    // from "the first table on the page", which is now the sessions table.
+    const tokenBlock = page.body.indexOf('<div class="sub" id="tokens">')
+    const table = page.body.slice(page.body.indexOf('<table', tokenBlock), page.body.indexOf('</table>', tokenBlock))
     const head = table.slice(0, table.indexOf('</thead>'))
     const firstRow = table.slice(table.indexOf('<tbody>'), table.indexOf('</tr>', table.indexOf('<tbody>')))
     // `<thead>` starts with the same three characters, so count opening tags

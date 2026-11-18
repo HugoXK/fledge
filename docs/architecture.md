@@ -130,10 +130,19 @@ header, not a section — so at the top of that page nothing has passed and
 `#release`, the first chip, is marked. That fallback is the accepted state, not a
 defect.
 
-`/settings` also carries a Feedback card and an About card. The feedback form
-posts to `/feedback`, stores a `feedback` row and mails the address in
-`FEEDBACK_EMAIL` (falling back to `ADMIN_EMAIL`); the About card and the footer
-link to the public GitHub repository with a Star call-to-action. An unexpected
+`/settings` also carries a Feedback card. The feedback form posts to `/feedback`,
+stores a `feedback` row and mails the address in `FEEDBACK_EMAIL` (falling back to
+`ADMIN_EMAIL`); the footer, not a settings card, links to the public GitHub
+repository with a Star call-to-action.
+
+`/settings` draws its content as four group cards rather than six: `#account-access`
+(with `#account`, `#sessions` and `#tokens` as sub-blocks), `#model-providers`,
+`#notifications` and `#feedback`. The nav therefore has four links, one per
+`.card[id]` in draw order. Below 961px the nav is the same chip strip `/admin` uses;
+from 961px up those same four links become a sticky left rail inside
+`.settings-shell`, so there is one nav and one set of links at every width. The
+old inner ids stay in place, and the shell's inner anchors carry the sticky offset
+too, because a sub-block can be a deep-link target. An unexpected
 HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
 is rendered; the page shows the data scope, requires the consent checkbox, then
 offers one POST to `/errors/:ref/report`, which claims the row atomically and

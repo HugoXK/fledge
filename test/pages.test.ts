@@ -2023,6 +2023,28 @@ test('every in-page anchor on the settings page has a matching target', () => {
   }
 })
 
+// #860: six chips for four jobs. The nav and the page's cards must stay one list
+// in the same order, so grouping the chips means the page grows four group cards
+// and the old six become sub-blocks inside them.
+test('the settings page groups its six old cards into four sections with four chips', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'settings-groups', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const html = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const nav = /<nav class="section-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? ''
+    const links = [...nav.matchAll(/href="#([A-Za-z][\w:-]*)"/g)].map((match) => match[1])
+    assert.deepEqual(links, ['account-access', 'model-providers', 'notifications', 'feedback'], 'the nav is one link per group, in the order the page draws them')
+    assert.match(html, /<section class="card" id="account-access">/, 'the three access cards share one group card')
+    const inner = /<section class="card" id="account-access">([\s\S]*?)<\/section>/.exec(html)?.[1] ?? ''
+    const ids = [...inner.matchAll(/id="(account|sessions|tokens)"/g)].map((match) => match[1])
+    assert.deepEqual(ids, ['account', 'sessions', 'tokens'], 'the old anchors survive as sub-blocks, in their reading order')
+  } finally {
+    store.close()
+  }
+})
+
 test('the job page shows the adversarial verdict and says when the answer was rejected', () => {
   const config = testConfig()
   const store = new Store(':memory:')
