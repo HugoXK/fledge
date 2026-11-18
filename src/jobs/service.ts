@@ -4473,7 +4473,12 @@ export class Jobs {
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.dueReview(repo)) continue
       const result = await this.enqueue(repo, 'schedule', undefined, 'review')
-      if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
+      // #960: the quota answer is per user, this scan is per instance. Ending the
+      // pass here starved every repository behind this one, and because a review
+      // refusal never moves `last_review_at`, the refused repository kept the head
+      // of the scan and broke the pass again on every tick. Skip this repository
+      // and let each further one be decided on its own user's quota.
+      if (!result.ok && result.code === 'QUOTA_EXHAUSTED') continue
       log.info('scheduled review', {
         repo: `${repo.owner}/${repo.name}`,
         ok: result.ok,
@@ -4633,7 +4638,10 @@ export class Jobs {
         // Nothing was decided: release the lease so the next pass can take this
         // instant immediately instead of waiting for it to lapse.
         if (plan !== null && lease !== null) this.releaseScheduledOccurrence(repo, plan, lease, 'quota-exhausted')
-        break
+        // #960: same rule as the review scan above — one user's exhausted quota
+        // records a refusal on this repository and moves on, instead of ending a
+        // pass that other users' repositories are still waiting behind.
+        continue
       }
       if (plan !== null && lease !== null) {
         const dueAt = plan.dueAt

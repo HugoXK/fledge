@@ -120,6 +120,14 @@ stream ends. A request that is already in flight is allowed to finish; the
   never as idle with work — before the attempt and however long the refusal
   lasts. A user with their own model, or a repository with its own model
   selection, never spends platform quota, so quota is never their refusal.
+- A refusal is recorded per repository and never ends a dispatch pass (#960).
+  The scheduled-review and automatic scans walk every eligible repository in one
+  tick, so a user at zero balance gets the `quota_exhausted` row on their own
+  repository and the pass continues with the next one. Ending the pass at the
+  first refusal starved every repository behind it, and because a review refusal
+  does not move `last_review_at` — the column the scan is ordered by — the
+  refused repository kept the head of the scan and repeated the refusal on every
+  tick until that user's balance reset.
 
 402 body:
 
