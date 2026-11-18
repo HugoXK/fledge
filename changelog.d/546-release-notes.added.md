@@ -1,1 +1,0 @@
-A draft Release prepared for a connected repository now carries notes built from the release range — the merged pull requests and commits between the previous tag and the confirmed target — with each source listed once and linked, instead of a placeholder sentence. The repository page lists the exact sources the draft was built from.

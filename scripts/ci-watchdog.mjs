@@ -117,6 +117,15 @@ async function main() {
       console.log(`ci-watchdog: PR #${decision.number} ${head} — skipped (${decision.reason})`)
       continue
     }
+    if (decision.action === 'stall') {
+      // A cancelled repair is not dispatched again: that head would loop every
+      // tick. The stall is stated here, the one place this tool reports state,
+      // so a human can re-dispatch deliberately.
+      console.log(
+        `ci-watchdog: PR #${decision.number} ${head} — stalled (${decision.reason}); the repair run at this head was cancelled too, so a human re-dispatch is needed`,
+      )
+      continue
+    }
     if (!selected.has(decision.number)) {
       console.log(`ci-watchdog: PR #${decision.number} ${head} — over the ${plan.cap}-dispatch cap; next tick`)
       continue

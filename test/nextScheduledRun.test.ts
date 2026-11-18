@@ -283,7 +283,7 @@ test('the dashboard answers with the schedule row, not the interval, when one ex
     const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}`, headers: { cookie } })
     assert.equal(dashboard.statusCode, 200)
     assert.equal(page.statusCode, 200)
-    const section = /<section class="card" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
+    const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
     assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card, where the next run is named')
 
     const schedule = scheduleFromRow(row)
@@ -371,7 +371,7 @@ test('the dashboard never names a paused repository while an enabled one has a n
 
     const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
     assert.equal(dashboard.statusCode, 200)
-    const section = /<section class="card" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
+    const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
     assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card, where the next run is named')
     assert.match(section, /下次自动运行：acme\/enabled/, 'the enabled repository is the next automatic run')
     assert.doesNotMatch(section, /acme\/paused/, 'a paused repository is never named as the next automatic run')
@@ -395,7 +395,7 @@ test('with only paused repositories the dashboard says runs are paused and names
 
     const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
     assert.equal(dashboard.statusCode, 200)
-    const section = /<section class="card" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
+    const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
     assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card')
     assert.match(section, /自动运行暂停：acme\/paused · 仓库已停用，自动运行不会开始/, 'the card says why nothing runs')
     assert.doesNotMatch(section, /\d{2}:\d{2}/, 'no instant is printed for a paused repository')

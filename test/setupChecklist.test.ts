@@ -170,8 +170,8 @@ test('the dashboard shows platform quota instead of a model requirement when the
     assert.match(page.body, /Only ¥1\.00 of platform quota is left/)
     assert.match(page.body, /may not cover the first run/)
     assert.match(page.body, /setup-warning/)
-    const nextAction = page.body.match(/<section class="card" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
-    assert.match(nextAction, /Start the FlyBot instance/, 'the platform-funded run does not stop at the model step')
+    const nextAction = page.body.match(/<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
+    assert.match(nextAction, /Start workspace/, 'the platform-funded run does not stop at the model step')
     assert.doesNotMatch(nextAction, /Add a model provider/, 'the optional model step is not the primary action')
   } finally {
     await built.app.close()

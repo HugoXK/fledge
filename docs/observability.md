@@ -52,6 +52,25 @@ Core series:
   header, positive when the process clock is ahead. The series is **absent** when
   nothing has been measured, so an empty panel means "unknown", not "aligned"; a
   scrape with no reading removes it rather than publishing a `0`.
+- `fledge_router_up`, `fledge_router_probe_seconds` — the shared model router,
+  and only while `MODEL_ROUTER_URL` is set. `up` is 1 when the last probe read a
+  health answer; `probe_seconds` is how long that read took.
+  `fledge_router_mode_rate_total` and `fledge_router_mode_budget_total` count
+  what the router reported, while `fledge_router_all_keys_rate_limited_total`
+  and `fledge_router_all_keys_exhausted_total` are incremented **only** when
+  every key the router reports is capped with that one cause — a single cooling
+  key never reaches the all-keys names, and a mixed cap (one key budget-capped,
+  the others rate-capped) increments neither, because the names say why nothing
+  can serve and a mixed cause is reported in `router.state` instead.
+  `fledge_router_unreachable_total` counts probes that could
+  not read an answer. The gauges are `fledge_router_key_spend{key}`,
+  `fledge_router_key_max{key}`, `fledge_router_rate_cooldown_seconds`,
+  `fledge_router_budget_cooldown_seconds` and `fledge_router_queue_depth`; `key`
+  is one of the fixed aliases `primary`, `alt`, `third` and never a key value, a
+  key file or a repository. A probe that cannot read an answer removes every
+  label combination of those gauges, the per-key ones included, instead of
+  leaving the previous reading, so an empty panel means "unknown", and a
+  deployment with no `MODEL_ROUTER_URL` publishes none of these series.
 
 The `/admin/metrics` page carries the same three numbers as one `Automation
 health` card — repositories with ready work and no active job, the mean dispatch
@@ -151,6 +170,46 @@ invalid credentials and budgets near their limit are notified to the repository
 owner in-app, posted to the optional notification webhook as `ops.alert`, and
 deduplicated for `OPS_ALERT_COOLDOWN_MINUTES`. Resolving an alert clears its
 marker, so a later recurrence notifies again.
+
+## Model router
+
+The shared model router is a separate service, and Fledge probes it only when
+`MODEL_ROUTER_URL` is set. `/readyz` then carries a `router` object beside the
+database, instance and clock fields, with `state` (`ok`, `rate-limited`,
+`budget-exhausted`, `unreachable`) and `latencyMs` and nothing else. Readiness
+fails only on `unreachable` or on a router whose every reported key is capped:
+`mode: rate` with one key cooling is a detail, not an outage, and a deployment
+with no `MODEL_ROUTER_URL` answers exactly as it did before the probe existed.
+An answer Fledge cannot parse — non-200, truncated, missing or unknown `mode` —
+reads as `unreachable`, and `FledgeRouterUnavailable` pages on `fledge_router_up == 0`.
+
+The ops alert goes to the superadmin (`ADMIN_GITHUB_LOGIN`) through the same
+cooldown, event row and `ops.alert` webhook every other alert uses, because a
+router with no serving key is not one repository's problem. The alert text and
+the metric labels carry the state and the fixed key aliases only.
+
+Operating the router:
+
+- **Add a key.** Write the provider key to the router's key file and restart the
+  router (`MODEL_ROUTER_PRIMARY_KEY_FILE`, `MODEL_ROUTER_ALT_KEY_FILE`,
+  `MODEL_ROUTER_THIRD_KEY_FILE`; `MODEL_ROUTER_THIRD_MAX_BUDGET` caps the third).
+  Fledge needs no change: the next probe reports the new key's spend and budget,
+  and `/readyz` flips back to `ok` as soon as a key can serve.
+- **Rotate a key.** Replace the file, restart the router, and watch
+  `fledge_router_key_spend{key}` return to 0 with `fledge_router_key_max{key}`
+  set. The spend history lives in the router's state file
+  (`MODEL_ROUTER_STATE`) and follows the key alias, not the secret, so a rotation
+  does not reset a budget that was already exhausted.
+- **Tune the cooldowns.** `MODEL_ROUTER_RATE_WINDOW_MS` (default 60000) is how
+  long a key stays cooling after a 429; `MODEL_ROUTER_QUEUE_DEPTH` (default 32)
+  and `MODEL_ROUTER_MAX_WAIT_MS` (default 2000) bound the queue in front of the
+  keys. Raising the window keeps a throttled key out of rotation longer, and the
+  cooldown gauges show the effect immediately.
+- **When every key is capped**, `/readyz` answers 503 with
+  `router.state` naming `rate-limited` or `budget-exhausted`, the ops alert opens
+  once per `OPS_ALERT_COOLDOWN_MINUTES`, and the fix is on the router: wait for
+  the rate window, or add or rotate a key. Fledge does not retry, queue or spend
+  on the router's behalf — it only reports.
 
 ## Instance health
 

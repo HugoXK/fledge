@@ -88,10 +88,13 @@ jobs:
     # A verdict is only read from an owner, member or collaborator (the same
     # associations `scripts/lib/review-gate.mjs` filters), so a stranger's comment
     # cannot start this `actions: write` job and paint someone else's tip red.
-    # A comment that cannot be a verdict never needs a runner. The step below
-    # still parses the exact first line; this is only a prefilter so ordinary
-    # discussion does not start a job that would immediately skip its steps.
-    if: github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association) && (contains(github.event.comment.body, 'Verdict') || contains(github.event.comment.body, 'verdict') || contains(github.event.comment.body, 'VERDICT') || contains(github.event.comment.body, 'Review') || contains(github.event.comment.body, 'review'))
+    # #931: the job does not test the comment's shape. A word list here was a
+    # second definition of "a verdict" and it drifted — it listed `Review` and
+    # `review`, so a `## REVIEW` verdict started nothing while the parser accepted
+    # it. The guard step below asks the parser itself, after checking the default
+    # branch out, so one expression decides for both halves and a pull request
+    # cannot weaken it by editing its own copy.
+    if: github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -100,23 +103,21 @@ jobs:
       issues: read
       actions: write
     steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.repository.default_branch }}
       - name: Only a verdict comment starts the gate
         id: verdict
         env:
           BODY: ${{ github.event.comment.body }}
         run: |
-          # The same shapes scripts/lib/review-gate.mjs reads: `Verdict: ...` or a
-          # `## Review — PASS` heading, on the first non-empty line, any case.
-          line=$(printf '%s' "$BODY" | awk 'NF { print; exit }')
-          if printf '%s' "$line" | grep -qiE '^(Verdict:[[:space:]]+(PASS|INC|REQUEST_CHANGES)[[:space:]]+at[[:space:]]|##[[:space:]]*Review[[:space:]]*(—|:|-)[[:space:]]*(PASS|FAIL|INC|REQUEST_CHANGES)\b)'; then
+          # `parseConclusion` is the only definition of a verdict: a `Verdict: ...`
+          # line or a `## Review — PASS` heading, first non-empty line, any case.
+          if node --input-type=module -e 'import("./scripts/lib/review-gate.mjs").then((m) => process.exit(m.parseConclusion(process.env.BODY) === null ? 1 : 0))'; then
             echo "match=true" >> "$GITHUB_OUTPUT"
           else
             echo "match=false" >> "$GITHUB_OUTPUT"
           fi
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        if: steps.verdict.outputs.match == 'true'
-        with:
-          ref: ${{ github.event.repository.default_branch }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         if: steps.verdict.outputs.match == 'true'
         with:

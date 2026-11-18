@@ -73,4 +73,25 @@ export declare function issueCreateArgs(issue?: Partial<IssuePayload>): string[]
 export declare function issueCommentArgs(number: string | number, body: string): string[]
 export declare function issueCloseArgs(number: string | number, body: string): string[]
 
+// #929: the reporter's own failure signal, opened label-less from the runner's
+// catch when the reporter itself fails on the default branch.
+export declare const REPORTER_JOB: string
+export declare const REPORTER_ALERT_TITLE: string
+
+export interface ReporterAlertInput {
+  ref?: string
+  sha?: string
+  runUrl?: string
+  error?: string
+}
+
+export interface ReporterAlertIssue {
+  title: string
+  body: string
+}
+
+export declare function reporterAlertBody(input?: ReporterAlertInput): string
+export declare function reporterAlertIssue(input?: ReporterAlertInput): ReporterAlertIssue | undefined
+export declare function alertIssueCreateArgs(issue?: Partial<ReporterAlertIssue>): string[]
+
 export declare function apply(result: MainHealthDecision, run: GhRunner): Promise<string>

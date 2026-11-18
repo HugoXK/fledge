@@ -55,6 +55,7 @@ Key settings:
 | `ALLOW_PRIVATE_MODEL_URLS` | Keep `false` for untrusted users |
 | `PAT_EXPIRY_DAYS` | Default lifetime of a new personal `flg_` gateway token, in days (default 90); only an admin may create one without an expiry |
 | `METRICS_TOKEN` | Required in production: `/metrics`, and the `commit`/`builtAt` fields of `/healthz`, answer only `Authorization: Bearer <token>` |
+| `MODEL_ROUTER_URL` / `MODEL_ROUTER_TIMEOUT_MS` | Optional: base URL of the shared model router. Unset means `/readyz` says nothing about it and the probe cannot make the process unready. Set, `/readyz` adds `router.state` and `router.latencyMs` and answers 503 when the router is unreachable or every key it reports is capped. The timeout defaults to 1000 ms and is clamped to 50–10000; the probe is cached for 2 seconds, so a monitor's cadence decides how often the router is asked |
 | `RECENT_AUTH_MINUTES` | How many minutes a destructive action's GitHub re-authentication counts for (default 15, minimum 1). Raising it asks users to re-authenticate less often, lowering it more. It sets the window only: the ceiling on those routes is a code constant, described in `docs/security.md` |
 | `PLAN_EXPIRY_DAYS` / `PLAN_REMINDER_DAYS` | How long an unapproved plan may wait before the work item closes with `closed_reason = plan_expired` (default 7), and how many days before that deadline the single reminder is sent (default 2). They are one deadline pair: `PLAN_REMINDER_DAYS` must be smaller than `PLAN_EXPIRY_DAYS`, and Fledge refuses to start with both names in the message otherwise, because a reminder at or after the deadline is sent immediately |
 | `LIMIT_REPOS_PER_USER` | How many repositories one user may connect (default 10; `0` means no ceiling). Admins and superadmins are exempt, and lowering it never touches repositories that already exist — only new adds are refused. A bulk add from a GitHub App installation counts each selected repository once and may fill the last free slots exactly; a selection with nothing new to add is not refused |
@@ -315,6 +316,34 @@ status and how many reads were made, and a tip that never concludes ends the slo
 with `none` and that run id in the reason. A dry run never waits: it reports what
 a real run would have done.
 
+#### Superadmin one-click release (#897)
+
+The Admin page has a superadmin-only release action. It reads the live GitHub
+state and shows the current `main`, latest tag, commits/fixes/features/fragments
+since that tag, the computed next version, `ci-ok` and the exact reason a release
+is blocked. The action is enabled only when the normal rule is met, no release
+PR/branch/tag is in flight and `ci-ok` is green.
+
+The submit button requires `RELEASE <version>` to be typed, a CSRF token, a
+recent GitHub re-authentication, the destructive rate-limit class and an audit
+row. It dispatches the existing `daily-release.yml` with `dry_run=false`; it
+never creates a tag, merges a pull request or deploys a host. The existing
+release PR, `ci-ok`, `review-gate`, auto-merge, tag job and `release.yml` publish
+chain stay in charge.
+
+The dispatch credential is `RELEASE_DISPATCH_TOKEN` in the server `.env`, scoped
+to the Fledge repository with `Actions: write` to dispatch the workflow and
+`Contents: read`, `Checks: read` and `Pull requests: read` to read the preview;
+prefer a fine-grained token, and grant no write scope on contents or pull
+requests. A token minted with only `Actions: write` answers `403` on the first
+preview read, and the Admin page names the scope it needs.
+An empty value disables the action instead of failing the Admin page. The token
+is never rendered, logged or returned by the route.
+
+A release is not a deploy. Production may already run `main` ahead of the latest
+tag; the next infra `service-update-fledge.sh` run installs the version-bump
+commit after the release PR merges. A separate operator action owns any restart.
+
 #### Reliable slot trigger
 
 GitHub's `schedule` event is best-effort: on 2026-11-14 the then-`14:30Z` slot
@@ -419,8 +448,8 @@ before retrying.
 ### Verify a release
 
 The publish run records what it produced in the GitHub Release body — the image
-reference with its digest, the SBOM artifact name and the attested digest — so
-the chain can be read back through the API alone:
+reference with its digest, the SBOM asset URL and the attested digest — so the
+chain can be read back through the API alone:
 
 ```sh
 # the whole chain, from the plan to the running instance. METRICS_TOKEN is what
@@ -431,6 +460,28 @@ GITHUB_TOKEN=… METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3
 GITHUB_TOKEN=… METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3.2 \
   --base-url https://fledge.hugoxk.online --write "${DATA_DIR}/release-status.json"
 ```
+
+`release.yml` runs that same check itself as its last step (#883), so a release
+whose body claims a digest, an SBOM or an attestation it does not have fails the
+publish instead of leaving the claim for an operator to find. The publish side is
+closed in five places:
+
+- the image is built once and published under a commit tag
+  (`ghcr.io/hugoxk/fledge:sha-<12 hex>`), and the digest that push produced is
+  the only identity later steps read;
+- that exact digest is scanned by Trivy at the CI threshold, and the container is
+  started from it and asserted on `/healthz`, so the image a host will pull is
+  the image this run proved;
+- the SBOM is generated from the same digest and uploaded as a Release asset, and
+  the body names its download URL;
+- `vX.Y.Z` is an alias created from the verified digest. A run that finds the
+  alias already naming another digest stops: repointing it would silently change
+  what every record that named it points at (`scripts/lib/release-alias.mjs`);
+- the whole chain is verified after the Release exists, with the job token.
+
+A redispatch of a tag that already has a Release still stops at the guard before
+anything is built; what the alias rule adds is that a tag without a Release
+cannot move a name that already published one.
 
 It exits `0` only when every link is present and agrees: the plan's base `main`
 sha, the `release/v<version>` branch and tip, the merged release pull request,
@@ -553,10 +604,12 @@ for someone to notice. A scheduled run acts on the merge commit of the merged
 later merge the tip is no longer that merge and the identity check would correctly
 refuse it; a scheduled run that cannot name exactly one such pull request keeps
 the tip, and the identity check then refuses it with its own reason rather than
-guessing a release to repair. The release job's drive still reports `tag` (a merged
-release pull request with no tag) — that is the night's summary line, not the
-writer. **The tag job is the only tag writer**: the release job never creates a
-tag, and its `tag` action is documented here rather than executed.
+guessing a release to repair. **The tag job is the only tag writer**: the release
+job never creates a tag, and its drive no longer carries a `tag` action at all.
+That action was unreachable — the release job never fed it the merged pull request
+list, so it could neither execute nor be reported — and it was removed rather than
+left as a claim in the code; a merged release pull request without a tag is found
+by the tag job itself (#866).
 
 Two recovery steps remain owner actions, unchanged by this slice: an orphan
 `release/vX.Y.Z` branch still cannot be deleted through the `keep release
@@ -587,6 +640,10 @@ or the rollout check fails. A refused rollout leaves the host on the release it
 was running, and the next tick retries the same tag instead of reading the new
 version and exiting as already deployed. It never runs `git push`, `--admin`, a
 merge or a rollback to an older tag. On success it invokes the verifier.
+
+The source copy is `rsync -a --ignore-times --delete`: `--ignore-times` makes it
+copy a changed file whatever its size and mtime say, which rsync's default quick
+check would otherwise skip and leave one file at the old release.
 
 `fledge-verify-release.sh` reads `GITHUB_TOKEN` from the environment or the
 `GITHUB_TOKEN` entry in `FLEDGE_SECRETS_FILE` (default
@@ -1415,6 +1472,54 @@ Run it from a timer only after a dry run has shown the candidates:
 # 04:10 daily, as the service user, after the dry run above has been reviewed
 10 4 * * *  cd /opt/fledge && node scripts/artifact-retention.mjs --root /var/lib/fledge/flybot-users --apply
 ```
+
+### Data retention windows
+
+`pruneOldData` runs in the scheduler tick (at most hourly) and deletes rows older
+than a per-class window. Each window is an environment variable; unset takes the
+built-in value, which is the number the service already enforced:
+
+| Variable | Class | Default |
+|---|---|---|
+| `RETENTION_OAUTH_STATES_DAYS` | `oauth_states` | 7 |
+| `RETENTION_APPROVAL_TOKENS_DAYS` | `approval_tokens` (expired or used) | 30 |
+| `RETENTION_NOTIFICATIONS_READ_DAYS` | read `notifications` | 30 |
+| `RETENTION_NOTIFICATIONS_UNREAD_DAYS` | unread `notifications` | 90 |
+| `RETENTION_EVENTS_DAYS` | `events` | 90 |
+| `RETENTION_JOB_EVENTS_DAYS` | `job_events` | 365 |
+| `RETENTION_WEBHOOK_DELIVERIES_DAYS` | `webhook_deliveries` | 30 |
+| `RETENTION_OUTBOX_SENT_DAYS` | sent `notification_outbox` | 30 |
+| `RETENTION_OUTBOX_DEAD_DAYS` | dead/blocked `notification_outbox` | 90 |
+| `RETENTION_OUTBOX_UNKNOWN_DAYS` | unknown `notification_outbox` | 365 |
+| `RETENTION_JOBS_DAYS` | finished `jobs` | 365 |
+| `RETENTION_AUDIT_LOG_DAYS` | `audit_log` | 365 |
+| `RETENTION_QUOTA_LEDGER_DAYS` | `quota_ledger` | 730 |
+
+An unset window is the default, never "keep forever", and a value that is not an
+integer or is below 1 falls back to the default rather than being read as zero
+(zero here would mean "delete every row"). `sessions` are removed by
+`expires_at` and `api_tokens` have no age window; neither is configurable here.
+
+The store refuses as well as the config. `Store.pruneOldData` throws on a window
+that is not a whole number of days of at least 1 — including a caller that passes
+`{ jobs: 0 }` directly, which without the guard would delete every finished job —
+and it refuses before the first delete, so a call that cannot be honoured removes
+nothing.
+
+Preview any change before making it. The tool opens the database read-only, holds
+no write lock, prints one `count=` line per class and two states instead of a
+number:
+
+```sh
+sudo -u fledge DB_PATH=/var/lib/fledge/fledge.db node scripts/retention.mjs --dry-run --days 30
+```
+
+`--days` is required; it never guesses a window. `--dry-run` is accepted for
+symmetry with `npm run artifacts:prune`, and the tool never deletes rows with or
+without it. The output is counts only — never a row body, login, email or token
+value — so the preview can be pasted into a log. The same counts for the
+configured windows appear on `/admin`'s **Data retention** card, with an unset
+window marked `default`.
 
 ## 10. Go-live checklist
 
