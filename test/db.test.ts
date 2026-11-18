@@ -581,6 +581,15 @@ test('job events, personal delivery and cost read models are windowed', () => {
     assert.equal(personal.jobs, 2)
     assert.equal(personal.merged, 1)
     assert.ok(Math.abs(personal.costUsd - 0.3) < 1e-9)
+    assert.deepEqual(personal.otherCurrencies, [])
+
+    // #957: `cost_usd` holds the row's own currency, so a CNY row must not enter
+    // the column the page multiplies by USD_CNY_RATE. It keeps its own bucket in
+    // the same window instead of being dropped.
+    store.recordUsage(user.id, null, 10, JSON.stringify({ model: 'model-cny' }), null, { currency: 'CNY', model: 'deepseek-chat', priceSnapshot: null })
+    const personalWithCny = store.personalMetrics(user.id, since)
+    assert.ok(Math.abs(personalWithCny.costUsd - 0.3) < 1e-9)
+    assert.deepEqual(personalWithCny.otherCurrencies, [{ currency: 'CNY', amount: 10, requests: 1 }])
 
     const repoCosts = store.repoCostMetrics(since)
     assert.equal(repoCosts[0]?.repoId, repo.id)

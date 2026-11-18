@@ -1102,7 +1102,11 @@ shutdown check) have no job in scope and deliberately carry no `trace`.
 
 The repository page adds a compact delivery board grouped by work-item state; each state tile links to a filtered work-item list (`?workState=`) and shows its share of the total, or `—` while the board has no items and there is nothing to divide by. The work-item rows keep their actions behind one disclosure, and the create form is a header button and dialog. The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
 user's own delivery metrics: jobs, success rate, PRs, merged PRs, cost, open
-work items and the last job. `/admin/metrics` shows the global window with the
+work items and the last job. The cost tile is USD-billed spend converted at
+`USD_CNY_RATE`; a window that also holds priced rows in another currency names
+each of those buckets beside it in its own currency, because
+`Store.personalMetrics` keeps them out of `costUsd` rather than inventing a rate
+between buckets (#957). `/admin/metrics` shows the global window with the
 product funnel, delivery efficiency (success and merge rate, median job and
 merge duration, review duration and score), cost by repository and by model,
 daily trend buckets, and current alerts. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
