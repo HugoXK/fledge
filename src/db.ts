@@ -3725,6 +3725,26 @@ export class Store {
     return this.get('SELECT installation_id, user_id, account_login, account_type FROM github_installations WHERE installation_id = ?', installationId)
   }
 
+  /**
+   * #544: the installation re-check for a queued notification. A row that
+   * reports on a job must not reach a destination when the installation that
+   * authorized the job's repository no longer resolves, so the delivery pass
+   * asks this before it calls a transport and blocks the row with the reason.
+   * A job whose repository names no installation is not refused here: there is
+   * nothing to re-read, and the transports keep their own destination checks.
+   */
+  jobInstallationRefusal(jobId: string): string | null {
+    const row = this.get<{ installation_id: number | null }>(
+      `SELECT r.installation_id AS installation_id
+         FROM jobs j JOIN repos r ON r.id = j.repo_id
+        WHERE j.id = ?`,
+      jobId,
+    )
+    if (row === undefined) return null
+    if (row.installation_id === null) return null
+    return this.getInstallation(row.installation_id) === undefined ? 'installation-revoked' : null
+  }
+
   deleteInstallation(installationId: number): void {
     this.run('DELETE FROM github_installations WHERE installation_id = ?', installationId)
   }

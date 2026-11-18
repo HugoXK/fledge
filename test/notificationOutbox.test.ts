@@ -303,3 +303,61 @@ test('email failures classify by the SMTP response code', () => {
   assert.equal(classifyEmailError(Object.assign(new Error('refused'), { responseCode: 550 })), 'dead')
   assert.equal(classifyEmailError(Object.assign(new Error('timeout'), { code: 'ETIMEDOUT' })), 'unknown')
 })
+
+// #544, the installation re-check: a queued notification that reports on a job
+// must re-read the installation that authorized that job's repository
+// immediately before delivery. An installation revoked after the row was queued
+// must not receive the protected content, and the row that cannot be delivered
+// says why — a named refusal a human can fix, not a silent drop.
+function jobRow(store: Store, name: string, installationId: number | null): { repoId: string; jobId: string } {
+  const user = makeUser(store, { login: `${name}-owner`, status: 'approved' })
+  const repo = store.createRepo({
+    id: `repo_${name}`, userId: user.id, owner: 'o', name, defaultBranch: 'main',
+    tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440,
+  })
+  if (installationId !== null) store.run('UPDATE repos SET installation_id = ? WHERE id = ?', installationId, repo.id)
+  const job = store.createJob({ id: `job_${name}`, repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: `cb_${name}`, platformTokenHash: '' })
+  return { repoId: repo.id, jobId: job.id }
+}
+
+test('a send for a job whose installation is gone is blocked, before the transport is called', async () => {
+  const store = new Store(':memory:')
+  try {
+    const { jobId } = jobRow(store, 'inst-gone', 555)
+    store.enqueueNotification({
+      transport: 'webhook', destination: 'webhook', userId: null,
+      payload: { event: 'job.succeeded', jobId }, idempotencyKey: `job.${jobId}:webhook`, jobId, now: T0,
+    })
+    const calls: string[] = []
+    const transports = {
+      webhook: { send: async () => { calls.push('webhook'); return { state: 'sent' as const } } },
+      email: { send: async () => { calls.push('email'); return { state: 'sent' as const } } },
+    }
+    const result = await deliverOutbox(store, transports, { now: T0 })
+    assert.deepEqual(calls, [], 'the transport never sees a payload for a revoked installation')
+    assert.equal(result.blocked, 1, 'the row is blocked, not retried: the cause needs a person')
+    const settled = store.listNotificationOutbox({}, 10, 0)[0]
+    assert.equal(settled?.state, 'blocked')
+    assert.equal(settled?.last_error, 'installation-revoked', 'the refusal names the cause')
+  } finally { store.close() }
+})
+
+test('a send whose installation still resolves is delivered', async () => {
+  const store = new Store(':memory:')
+  try {
+    const { jobId } = jobRow(store, 'inst-held', 777)
+    store.saveInstallation({ installationId: 777, userId: store.get<{ user_id: string }>('SELECT user_id FROM repos WHERE id = ?', 'repo_inst-held')!.user_id, accountLogin: 'acme', accountType: 'Organization' })
+    store.enqueueNotification({
+      transport: 'webhook', destination: 'webhook', userId: null,
+      payload: { event: 'job.succeeded', jobId }, idempotencyKey: `job.${jobId}:webhook`, jobId, now: T0,
+    })
+    const calls: string[] = []
+    const transports = {
+      webhook: { send: async () => { calls.push('webhook'); return { state: 'sent' as const } } },
+      email: { send: async () => { calls.push('email'); return { state: 'sent' as const } } },
+    }
+    await deliverOutbox(store, transports, { now: T0 })
+    assert.deepEqual(calls, ['webhook'], 'a live installation delivers as before')
+    assert.equal(store.listNotificationOutbox({}, 10, 0)[0]?.state, 'sent')
+  } finally { store.close() }
+})
