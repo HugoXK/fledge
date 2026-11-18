@@ -3,6 +3,8 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Store } from '../src/db.js'
 import { layout } from '../src/views/layout.js'
+import { dashboardPage, settingsPage } from '../src/views/pages.js'
+import type { SetupState } from '../src/views/checklist.js'
 import { declarationsFor, lastValue, parseRules } from './cssRules.js'
 import { makeUser, testConfig } from './helpers.js'
 
@@ -379,4 +381,122 @@ test('the language switch announces the active language with aria-current, not a
   assert.ok(background !== undefined, '.lang a[aria-current="true"] must carry the highlight background')
   assert.ok(color !== undefined, '.lang a[aria-current="true"] must carry the accent colour')
   assert.equal(lastValue(rules, '.lang a[aria-pressed="true"]', 'background', 1280), null, 'no rule may keep keying the highlight on the button state')
+})
+
+// #867: a control whose whole visible content is one typed glyph — `×` on the
+// two close buttons, `!` on an info tip, `✓` on a finished setup step — is drawn
+// in whatever face the platform picks, so the same button is a different weight
+// and baseline on macOS and Windows, and a Chinese reader sees Latin punctuation
+// inside a Chinese sentence. The rule is about controls, not prose: the `×` in a
+// review count and the `→` in `Settings → Model` are copy and stay (#871).
+const CONTROL_GLYPHS = ['×', '✕', '✓', '★', '!', '•', '⚠']
+
+interface RenderedControl {
+  tag: string
+  attrs: string
+  inner: string
+}
+
+function renderedControls(html: string): RenderedControl[] {
+  return [...html.matchAll(/<(button|a)\b([^>]*)>([\s\S]*?)<\/\1>/g)].map((match) => ({
+    tag: match[1] ?? '',
+    attrs: match[2] ?? '',
+    inner: match[3] ?? '',
+  }))
+}
+
+// What the control shows once tags are stripped: an SVG contributes no text.
+function controlText(inner: string): string {
+  return inner
+    .replace(/<svg[\s\S]*?<\/svg>/g, '')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&[a-z#0-9]+;/gi, ' ')
+    .replace(/\s+/g, '')
+}
+
+function iconAttributes(inner: string): void {
+  assert.match(inner, /^<svg [^>]*viewBox="0 0 24 24"/, 'an icon must be an inline SVG on the shared 24px grid')
+  assert.match(inner, /aria-hidden="true"/, 'an icon is decorative; the words that name the control stay in aria-label')
+  assert.match(inner, /focusable="false"/, 'an SVG must not become a tab stop in Internet Explorer')
+  assert.match(inner, /stroke="currentColor"/, 'an icon inherits its colour; it must not add a literal')
+  assert.doesNotMatch(inner, /(?:fill|stroke)="#/, 'no colour literal may reach the markup')
+}
+
+test('no control is a typed glyph, and every drawn icon keeps its label', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'glyph-867', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf-token' }
+    const settings = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const setup: SetupState = {
+      repos: 0,
+      roleChosen: true,
+      providerConfigured: false,
+      modelConfigured: false,
+      // Platform quota on, own model missing, balance under the comfort figure:
+      // that is the branch whose advice carries the `Settings → Model` copy the
+      // prose assertion below pins.
+      platformAvailable: true,
+      platformQuotaRemainingCny: 10,
+      platformQuotaUnlimited: false,
+      platformQuotaComfortCny: 50,
+      instanceReady: false,
+      jobs: 0,
+      firstJobStatus: null,
+      firstPrUrl: null,
+      repoHref: null,
+    }
+    const dashboard = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup })
+    // A banner is the only way the dismiss button is on screen, and it is one of
+    // the four sites this card replaces.
+    const shell = layout({ title: 'x', viewer, body: '', config, locale: 'en', path: '/dashboard', active: 'dashboard', notifications: [{ level: 'error', text: 'a banner the reader can dismiss' }] })
+    const rendered: Array<[string, string]> = [['/settings', settings], ['/dashboard', dashboard], ['the shell', shell]]
+
+    for (const [name, html] of rendered) {
+      const controls = renderedControls(html)
+      assert.ok(controls.length > 0, `the ${name} page rendered no control to check`)
+      for (const control of controls) {
+        const text = controlText(control.inner)
+        assert.ok(
+          !CONTROL_GLYPHS.includes(text),
+          `the ${name} page's <${control.tag}>${control.attrs.slice(0, 40)} is the bare glyph ${JSON.stringify(text)}; a control must draw its mark as SVG`,
+        )
+        if (text === '' && control.inner.includes('<svg')) {
+          assert.match(control.attrs, /aria-label="[^"]+"|title="[^"]+"/, `the ${name} page's icon-only <${control.tag}> has no aria-label or title`)
+        }
+      }
+    }
+
+    // The three content sites draw their mark: banner dismiss, info tip, and the
+    // finished step of the checklist. The dialog close shares the banner's icon.
+    const dismiss = [...shell.matchAll(/<button[^>]*class="banner-dismiss"[^>]*>([\s\S]*?)<\/button>/g)].map((match) => match[1] ?? '')
+    assert.ok(dismiss.length > 0, 'the shell rendered no dismissible banner')
+    for (const inner of dismiss) iconAttributes(inner)
+
+    const tips = [...settings.matchAll(/<button[^>]*class="info-tip"[^>]*>([\s\S]*?)<\/button>/g)].map((match) => match[1] ?? '')
+    assert.ok(tips.length > 0, 'the settings page rendered no info tip')
+    for (const inner of tips) iconAttributes(inner)
+    assert.match(settings, /class="info-tip"[^>]*aria-expanded="false"/, 'the info tip keeps its expanded state')
+
+    // A finished step draws a check and no longer types one; a pending step still
+    // shows its number, because the number is the order, not a mark.
+    const done = [...dashboard.matchAll(/<li class="setup-step is-done[^"]*"[\s\S]*?<span class="setup-mark"[^>]*>([\s\S]*?)<\/span>/g)].map((match) => match[1] ?? '')
+    assert.ok(done.length > 0, 'the dashboard rendered no finished setup step')
+    for (const inner of done) {
+      iconAttributes(inner)
+      assert.doesNotMatch(inner, /✓/, 'a finished step must draw its check, not type one')
+    }
+    const pending = [...dashboard.matchAll(/<li class="setup-step(?! is-done)[^"]*"[\s\S]*?<span class="setup-mark"[^>]*>([\s\S]*?)<\/span>/g)].map((match) => match[1] ?? '')
+    assert.ok(pending.some((inner) => /^\d+$/.test(inner)), 'a pending step still shows its index')
+
+    // Prose is copy, not an icon: the breadcrumb arrow in the setup advice stays,
+    // and the multiplication sign still builds a review count. A test that forbade
+    // every glyph character would force the copy change this card does not own
+    // (#871), so the rule is about controls, not about characters in sentences.
+    assert.match(dashboard, /Settings → Model/, 'the breadcrumb arrow in the setup advice is copy and must stay')
+    assert.match(readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8'), /×\$\{model\.reviews\}/, 'the multiplication sign still builds a review count')
+  } finally {
+    store.close()
+  }
 })

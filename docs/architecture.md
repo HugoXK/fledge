@@ -111,7 +111,11 @@ a geometry instead of five font glyphs. The state contract and its evidence are
 in [docs/ui.md](ui.md). No page composes a state by hand: `/search` used to, and
 its own empty state carried a text `0` where the icon belongs, so
 `test/uiStates.test.ts` renders that page's two empty branches and asserts the
-shared `<svg>` in the slot with no bare glyph beside it.
+shared `<svg>` in the slot with no bare glyph beside it. Control marks — the two
+close buttons, an info tip and the finished setup step — draw from `icon()` in
+`src/views/icons.ts` instead of typing `×`, `!` or `✓`, so a button no longer
+changes weight with the platform's font; `test/layout.test.ts` asserts that no
+control renders one of those characters as its whole visible content.
 
 The console renders UTC and says so: every timestamp goes through
 `humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an

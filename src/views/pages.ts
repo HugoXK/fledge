@@ -19,6 +19,7 @@ import { renderState, stateCell, type StateAction } from './states.js'
 import { maskEmail, maskIp, redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta } from '../lib/temporal.js'
+import { icon } from './icons.js'
 import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
@@ -165,7 +166,7 @@ function retiredMark(model: { retired_at?: string | null }, t: Translate): strin
 }
 
 function infoTip(text: string): string {
-  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
+  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">${icon('info', 12)}</button>`
 }
 
 function recurrenceRepositories(json: string): string[] {
@@ -777,7 +778,7 @@ function setupSection(setup: SetupState | undefined, t: Translate, primaryElsewh
   const rows = checklist.steps
     .map((step, index) => {
       const current = checklist.next?.key === step.key
-      const mark = step.done ? '✓' : String(index + 1)
+      const mark = step.done ? icon('check', 14) : String(index + 1)
       const status = step.done
         ? `<span class="setup-done">${escapeHtml(step.note ?? t('已完成', 'Done'))}</span>`
         : step.blocked === null
