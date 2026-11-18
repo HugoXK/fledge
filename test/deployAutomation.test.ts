@@ -275,17 +275,18 @@ test('a host owns its deploy lock, so another tick cannot silence the case', () 
   assert.ok(first.env.FLEDGE_DEPLOY_LOCK !== second.env.FLEDGE_DEPLOY_LOCK, 'two hosts must not share one lock')
 
   // Hold the first host's lock the way a second cron tick on that host would,
-  // and only then run anything: no sleeping to reach the state.
-  const marker = join(dirname(first.app), 'lock-held')
+  // and only then run anything: no sleeping to reach the state. The path stays
+  // an argument to `flock` and never enters a shell string, so nothing
+  // interprets it, and "the lock is held" is read from a non-blocking attempt
+  // of our own rather than from a marker the holder writes.
   const lock = String(first.env.FLEDGE_DEPLOY_LOCK)
-  const holder = spawn(
-    'sh',
-    ['-c', 'exec 9>"$1" || exit 1; flock -n 9 || exit 2; : > "$2"; sleep 30', 'sh', lock, marker],
-    { stdio: 'ignore' },
-  )
+  const holder = spawn('flock', ['-n', lock, 'sleep', '30'], { stdio: 'ignore' })
   try {
     const deadline = Date.now() + 5_000
-    while (!existsSync(marker)) {
+    for (;;) {
+      const probe = spawnSync('flock', ['-n', lock, 'true'], { stdio: 'ignore' })
+      if (probe.status === 1) break // refused: the holder owns the lock
+      if (probe.status !== 0) throw new Error(`the lock probe exited ${String(probe.status)}`)
       if (holder.exitCode !== null) throw new Error(`the lock holder exited ${String(holder.exitCode)} without taking the lock`)
       if (Date.now() > deadline) throw new Error('the lock holder never took the lock')
       execFileSync('sleep', ['0.05'])
