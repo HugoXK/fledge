@@ -57,17 +57,41 @@ export function checkAttribution(body, policy) {
   return `Written-by "${writer}" is not in the ${name} list of .github/agent/review-policy.json`
 }
 
+// The dependency-bump exemption (#982).
+//
+// A generated dependency bump cannot carry a signature, a `Ran:` line or an
+// issue reference: dependabot writes that body upstream and nobody here may
+// rewrite it, so the four body rules would keep the pull request red forever.
+// The exemption is the *pair* — this exact author login and the generator's own
+// first line — and never a label, a branch prefix, or `dependabot` appearing
+// somewhere in the text: a label is rights a human can grant itself, and a
+// substring is something any body can contain.
+const DEPENDABOT_LOGIN = 'dependabot[bot]'
+const DEPENDABOT_FIRST_LINE = /^Bumps /
+
+export function isDependabotBump(body, author) {
+  if (String(author ?? '') !== DEPENDABOT_LOGIN) return false
+  return DEPENDABOT_FIRST_LINE.test(firstLine(body).trim())
+}
+
 // The three body checks plus attribution, in the order pr-lint reports them.
 // A `Ran:` heading is rejected as a heading rather than reported as a missing
 // section: the check reads a line that starts with `Ran:`, which is also the
 // shape the review gate requires of a verdict body.
-export function checkBody(body, policy) {
+//
+// `author` is the pull request's author login, and it only ever *narrows* what
+// this function asks: the exemption skips the four rules a generated body cannot
+// satisfy and nothing else. Every other rule stays in `scripts/pr-lint.mjs`,
+// where the paths are known, so it applies to a bump exactly as it does to any
+// other pull request.
+export function checkBody(body, policy, author = '') {
   const text = String(body ?? '')
+  const bump = isDependabotBump(text, author)
   const errors = []
-  if (!/^Written-by:\s*\S+/.test(firstLine(text).trim())) {
+  if (!bump && !/^Written-by:\s*\S+/.test(firstLine(text).trim())) {
     errors.push('the PR body must start with "Written-by: <name>"')
   }
-  if (!hasRanSection(text)) {
+  if (!bump && !hasRanSection(text)) {
     const heading = ranHeading(text)
     errors.push(
       heading === null
@@ -75,7 +99,7 @@ export function checkBody(body, policy) {
         : `the PR body has a "${heading}" heading; "Ran:" must start a line, not a heading`,
     )
   }
-  if (!hasNotRunSection(text)) {
+  if (!bump && !hasNotRunSection(text)) {
     const heading = notRunHeading(text)
     errors.push(
       heading === null
