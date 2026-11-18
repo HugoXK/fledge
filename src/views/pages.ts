@@ -28,7 +28,7 @@ import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '..
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { changeStoryFacts, type ChangeStory, type ChangeStoryFact } from '../lib/changeStory.js'
 import type { PreviewResult } from '../schedules/preview.js'
-import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
+import { intervalFieldText, type FrozenSnapshotField, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromBlock, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
@@ -5059,6 +5059,76 @@ export function scheduleConsolePage(input: {
     : state.kind === 'unreadable'
       ? `<p class="banner bad">${escapeHtml(t('这个排期读不出来（cron 行缺少表达式或时区），worker 会跳过它。请重新保存。', 'This schedule cannot be read (a cron row is missing its expression or zone), so the worker skips it. Save it again.'))}</p>`
       : ''
+  // #544: what the newest decided instant was frozen under. The frozen value
+  // wins over today's rows, and a row that recorded nothing prints unknown
+  // rather than borrowing the live schedule — that substitution is the defect
+  // this card closes, so it must never be the fallback for a missing snapshot.
+  const frozenLabels: Record<FrozenSnapshotField, [string, string]> = {
+    kind: ['类型', 'Kind'],
+    expression: ['表达式', 'Expression'],
+    everyMs: ['间隔', 'Interval'],
+    timezone: ['时区', 'Timezone'],
+    startAt: ['开始', 'Start'],
+    endAt: ['结束', 'End'],
+    owner: ['所有者', 'Owner'],
+    installation: ['安装', 'Installation'],
+    permission: ['权限', 'Permission'],
+    role: ['角色', 'Role'],
+    revision: ['时序版本', 'Revision'],
+  }
+  const frozenCard = state.last === null ? '' : (() => {
+    const snapshot = state.frozen.snapshot
+    const unknownText = t('unknown', 'unknown')
+    const cell = (attr: string, label: string, value: string | null): string => {
+      const machine = snapshot === null ? 'unknown' : (value ?? '—')
+      const display = snapshot === null ? unknownText : (value ?? '—')
+      return `<dt>${escapeHtml(label)}</dt><dd data-snapshot-${attr}="${escapeHtml(machine)}">${escapeHtml(display)}</dd>`
+    }
+    const instant = (at: number | null): string => (at === null ? t('不限', 'open') : new Date(at).toISOString())
+    const interval = snapshot === null || snapshot.config.everyMs === null ? null : intervalFieldText(snapshot.config.everyMs)
+    const window = snapshot === null ? null : `${instant(snapshot.config.startAt)} → ${instant(snapshot.config.endAt)}`
+    const installation = snapshot === null
+      ? null
+      : snapshot.authorization.installationId === null ? t('无', 'none') : String(snapshot.authorization.installationId)
+    const role = snapshot === null ? null : snapshot.authorization.repoRole ?? t('无', 'none')
+    const differs = state.frozen.differs
+    const names = differs.map((field) => t(frozenLabels[field][0], frozenLabels[field][1])).join(t('、', ', '))
+    // A snapshot whose own revision is not this row's cannot be proven to belong
+    // to the instant it is printed beside, so it gets its own sentence rather
+    // than the ordinary drift note.
+    const revisionNote = state.frozen.revisionMismatch
+      ? `<p class="banner bad" data-snapshot-revision-mismatch="${escapeHtml(t('不匹配', 'mismatch'))}">${escapeHtml(t(
+        `记录里的时序版本是 ${String(snapshot!.config.timingRevision)}，而这一行属于版本 ${String(state.last!.timingRevision)}。这些值仍是当时写下的，但无法证明属于这个时刻。`,
+        `The record carries timing revision ${String(snapshot!.config.timingRevision)}, while this row belongs to revision ${String(state.last!.timingRevision)}. The values are what was written, but they cannot be proven to belong to this instant.`,
+      ))}</p>`
+      : ''
+    const diffNote = differs.length === 0
+      ? ''
+      : `<p class="banner warn" data-snapshot-differs="${escapeHtml(differs.join(','))}">${escapeHtml(t(
+        `冻结的记录与现在的值不同：${names}。上面的信息是现在的值，本卡片是这次运行当时使用的值，以它为准。`,
+        `The frozen record differs from today's values: ${names}. The facts above are today's; this card is what the run used, and it wins.`,
+      ))}</p>`
+    return `<section class="card" data-snapshot="${snapshot === null ? 'unknown' : 'frozen'}"><h2>${escapeHtml(t('认领时冻结的记录', 'Frozen at claim'))}${snapshot === null ? '' : ` · ${escapeHtml(t('时序版本', 'revision'))} ${escapeHtml(String(snapshot.config.timingRevision))}`}</h2>
+      <p class="muted">${escapeHtml(t(
+        `这次时刻（${new Date(state.last!.logicalTime).toISOString()}）被认领时记录的配置与授权。它们不随后来的排期修改或仓库变更而变化。`,
+        `The configuration and authorization recorded when this instant (${new Date(state.last!.logicalTime).toISOString()}) was claimed. They do not follow later edits to the schedule or the repository.`,
+      ))}</p>
+      ${revisionNote}
+      ${diffNote}
+      <dl class="schedule-facts">
+        ${cell('kind', t('类型', 'Kind'), snapshot === null ? null : snapshot.config.kind)}
+        ${cell('expression', t('表达式', 'Expression'), snapshot === null ? null : snapshot.config.expression)}
+        ${cell('interval', t('间隔', 'Interval'), interval)}
+        ${cell('timezone', t('时区', 'Timezone'), snapshot === null ? null : snapshot.config.timezone)}
+        ${cell('window', t('有效期', 'Window'), window)}
+        ${cell('owner', t('所有者', 'Owner'), snapshot === null ? null : snapshot.authorization.userId)}
+        ${cell('installation', t('安装', 'Installation'), installation)}
+        ${cell('permission', t('权限', 'Permission'), snapshot === null ? null : snapshot.authorization.permission)}
+        ${cell('role', t('角色', 'Role'), role)}
+        ${cell('revision', t('时序版本', 'Revision'), snapshot === null ? null : String(snapshot.config.timingRevision))}
+      </dl>
+    </section>`
+  })()
   const body = `<a class="back" href="/repos/${escapeHtml(repo.id)}">← ${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('排期控制台', 'Schedule console'))}</div><h1>${escapeHtml(`${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`)}</h1>
       ${kindNote}
@@ -5078,6 +5148,7 @@ export function scheduleConsolePage(input: {
       ${runNow}
       ${pauseControls}
     </section>
+    ${frozenCard}
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
       <p class="muted">${escapeHtml(t('排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。', 'A schedule is a five-field cron or a fixed interval, one of the two; cron needs an IANA zone. The start/end instants need an offset.'))}</p>
       <form method="post" action="/repos/${escapeHtml(repo.id)}/schedule" class="form">${csrf(viewer)}<div class="row">

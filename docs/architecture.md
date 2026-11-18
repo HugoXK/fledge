@@ -631,6 +631,15 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   written before the column existed, or one whose snapshot cannot be read,
   answers null and is reported as unknown rather than back-filled from the live
   schedule.
+  The console (`/repos/:id/schedule`) reads that record back: the frozen card
+  beside the live facts prints the kind, expression or interval, zone, window and
+  the authorization (owner, installation, permission, role) the newest decided
+  instant recorded, and names the fields where it disagrees with today's schedule
+  or repository row. The frozen value wins on that card, because the facts above
+  it are today's answer to a different question; a row that recorded nothing
+  prints unknown for every field and never borrows the live schedule — that
+  substitution would make "what did this run as" unanswerable while looking
+  answered.
   The lease (slice 3B-B2) answers the second worker: a dispatch claims the row
   before it creates the job, and `lease_token` is compared at settle, so only the
   holder's result lands. A live lease is refused (`leased`), a lapsed one is
