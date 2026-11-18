@@ -407,6 +407,11 @@ pill buttons. An empty release chain is an expected state, and its operator
 command stays under a disclosure with a `<DATA_DIR>` placeholder instead of the
 real host path.
 
+`/settings` is the one documented exception: below 961px it uses the same chip
+strip, and from 961px up the same four links become a sticky left rail beside the
+cards (`.settings-shell`), with a 2px left rule on the current group. One
+`<nav class="section-nav">`, one set of links, both layouts by media query.
+
 ## Console states (控制台状态)
 
 Every list, panel and stream in the console renders through `renderState` in
