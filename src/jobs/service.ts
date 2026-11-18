@@ -44,7 +44,8 @@ import {
   type AdversarialReview,
   type AdversarialVerdict,
 } from '../lib/adversarialReview.js'
-import { evaluateTestEvidence, type VerificationResult } from '../lib/verification.js'
+import { evaluateTestEvidence, isTestCheckName, type VerificationResult } from '../lib/verification.js'
+import { selectTests, type TestImpact } from '../lib/testImpact.js'
 import { observedAttribution } from '../lib/teamStats.js'
 import { normalizeReviewInstruction, reviewInstructionLine } from '../lib/followUpInstruction.js'
 import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
@@ -412,6 +413,14 @@ function adversarialAssetExempt(filename: string): boolean {
 export type PreparedStop =
   | { ok: true; stop: { sent?: boolean; stopped?: number; requested?: number }; apply: () => void; afterCommit?: () => void }
   | { ok: false; error: string }
+
+// #378: the impact map's bounds. A repository with thousands of test files must
+// not turn one verification into a tree walk, and a hand-written import map is
+// read only up to a size a person could have written.
+const TEST_FILES_LIMIT = 300
+const IMPACT_MAP_PATH = '.fledge/test-impact.json'
+const IMPACT_MAP_ENTRIES = 200
+const IMPACT_CACHE_LIMIT = 32
 
 export class Jobs {
   private timer: NodeJS.Timeout | null = null
@@ -937,6 +946,10 @@ export class Jobs {
   }
 
   private rulesCache = new Map<string, { at: number; rules: RepoRules }>()
+  // #378: the impact map is bounded and cached per repository, head sha and
+  // changed-file set, so a re-check of the same tip does not re-walk the test
+  // directory or re-read the repository's import map.
+  private impactCache = new Map<string, TestImpact>()
 
   private async loadRules(
     repo: RepoRow,
@@ -2117,6 +2130,63 @@ export class Jobs {
     return listed.files.map((file) => file.filename).filter(isRuleChange)
   }
 
+  // #378: the change-to-test map. The changed files are the ones the path guard
+  // already walked when it had a rule to check; otherwise they are listed once
+  // here, bounded by the count the pull request reports. The test directory and
+  // the repository's own import map are read at the head sha, and the result is
+  // cached per (repository, sha, changed set) so a re-check pays nothing.
+  private async testImpactFor(
+    client: GithubClient,
+    owner: string,
+    name: string,
+    number: number,
+    repo: RepoRow,
+    sha: string,
+    knownFiles: string[],
+    reportedFiles: number,
+  ): Promise<TestImpact> {
+    const changed = knownFiles.length > 0
+      ? knownFiles
+      : (await client.listPullRequestFiles(owner, name, number, reportedFiles)).files.map((file) => file.filename)
+    const key = `${repo.id}:${sha}:${sha256Hex([...changed].sort().join('\n')).slice(0, 12)}`
+    const cached = this.impactCache.get(key)
+    if (cached !== undefined) return cached
+    const directory = await client.listDirectory(owner, name, 'test', sha)
+    const testFiles = (directory ?? [])
+      .filter((entry) => entry.type === 'file')
+      .map((entry) => entry.path)
+      .slice(0, TEST_FILES_LIMIT)
+    const impact = selectTests({ changed, testFiles, imports: await this.repoImpactImports(client, owner, name, sha) })
+    if (this.impactCache.size >= IMPACT_CACHE_LIMIT) {
+      const oldest = this.impactCache.keys().next().value
+      if (oldest !== undefined) this.impactCache.delete(oldest)
+    }
+    this.impactCache.set(key, impact)
+    return impact
+  }
+
+  // The repository may name its own dependents (`{"imports": {"test/x.test.ts":
+  // ["src/a.ts"]}}`). Without the file there is nothing to read imports from, so
+  // only the naming convention applies and the page says which reason it had.
+  private async repoImpactImports(client: GithubClient, owner: string, name: string, sha: string): Promise<Record<string, string[]>> {
+    const raw = await client.getRepoFile(owner, name, IMPACT_MAP_PATH, sha).catch(() => null)
+    if (raw === null || raw === '') return {}
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw)
+    } catch {
+      return {}
+    }
+    const imports = (parsed as { imports?: unknown } | null)?.imports
+    if (imports === null || typeof imports !== 'object' || Array.isArray(imports)) return {}
+    const out: Record<string, string[]> = {}
+    for (const [testPath, imported] of Object.entries(imports as Record<string, unknown>).slice(0, IMPACT_MAP_ENTRIES)) {
+      if (!Array.isArray(imported)) continue
+      out[testPath] = imported.filter((entry): entry is string => typeof entry === 'string').slice(0, IMPACT_MAP_ENTRIES)
+    }
+    return out
+  }
+
   // A truncated walk and a protected-path violation are different refusals. A
   // notification that names the path when the list was merely cut off accuses
   // the change of something it did not do, so the phrase follows `truncated`.
@@ -2158,7 +2228,13 @@ export class Jobs {
       const failing = checks.filter((run) => run.status === 'completed' && !['success', 'neutral', 'skipped'].includes(run.conclusion ?? '')).map((run) => run.name)
       const pending = checks.filter((run) => run.status !== 'completed').map((run) => run.name)
       const claimedTest = parseEvidenceJson(job.evidence_json)?.testGreen !== undefined
-      const testEvidence = evaluateTestEvidence(claimedTest, checks)
+      // #378: a test job's result is recorded before it is read back, so an
+      // alternating run shows up on the run that completes the pattern. The
+      // ledger is keyed by `(job, name)`: re-checking this job is not a new run.
+      this.store.recordTestRuns(job.repo_id, job.id, checks
+        .filter((run) => run.status === 'completed' && isTestCheckName(run.name))
+        .map((run) => ({ name: run.name, passed: run.conclusion === 'success' })))
+      const testEvidence = evaluateTestEvidence(claimedTest, checks, this.store.testRunHistory(job.repo_id))
       const reasons: string[] = []
       if (pr.merged) reasons.push('PR is already merged.')
       else if (pr.state !== 'open') reasons.push(`PR is ${pr.state}.`)
@@ -2188,6 +2264,7 @@ export class Jobs {
         reasons,
       }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
+      verification.testImpact = await this.testImpactFor(client, owner, name, number, repo, pr.headSha, guard.files, pr.changedFiles)
       const rulePaths = await this.ruleChangePaths(job, client, owner, name, number, pr.changedFiles, guard.files)
       if (rulePaths.length > 0) {
         const acknowledged = this.store.getSetting(`rule_change_ack:${job.id}:${pr.headSha}`) !== undefined
@@ -2596,7 +2673,12 @@ export class Jobs {
       // the same evidence rule the panel applies. This is the gate that actually
       // merges, so the refusal the snapshot records needs a reader here too.
       const claimedTest = parseEvidenceJson(job.evidence_json)?.testGreen !== undefined
-      if (claimedTest && evaluateTestEvidence(true, checks).state !== 'verified') {
+      // #378: the gate that actually merges reads the same ledger the panel does,
+      // so a quarantined test cannot be the sole PASS evidence here either.
+      this.store.recordTestRuns(job.repo_id, job.id, checks
+        .filter((run) => run.status === 'completed' && isTestCheckName(run.name))
+        .map((run) => ({ name: run.name, passed: run.conclusion === 'success' })))
+      if (claimedTest && evaluateTestEvidence(true, checks, this.store.testRunHistory(job.repo_id)).state !== 'verified') {
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: claimed test evidence is not verified`)
         return { ok: false, message: 'PR 声称有测试证据，但没有通过的测试 check。' }
       }

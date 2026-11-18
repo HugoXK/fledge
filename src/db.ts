@@ -210,6 +210,11 @@ export function parseReviewOverrideDetail(detail: string): ReviewOverrideRecord 
 // letting one score read as a trend.
 export const REVIEW_TREND_SMALL_SAMPLE = 5
 
+// #378: how many runs of one test the flaky ledger keeps, and the window the
+// quarantine rule reads. Twelve is enough to see an alternation and cheap enough
+// to read on every verification.
+export const TEST_RUN_HISTORY = 12
+
 export interface UserRow {
   id: string
   github_id: number
@@ -1743,6 +1748,21 @@ CREATE TABLE IF NOT EXISTS settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
+
+-- #378: one row per test-named check run, so an alternating pass/fail can be
+-- read across jobs. A (job_id, name) pair is unique because re-checking the same
+-- job must not count as a second run; the ledger is bounded per (repo_id, name)
+-- when a run is recorded, not by a retention window.
+CREATE TABLE IF NOT EXISTS test_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  name TEXT NOT NULL,
+  passed INTEGER NOT NULL,
+  recorded_at TEXT NOT NULL,
+  UNIQUE(job_id, name)
+);
+CREATE INDEX IF NOT EXISTS test_runs_repo_name_idx ON test_runs(repo_id, name, id DESC);
 
 CREATE TABLE IF NOT EXISTS job_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -7940,6 +7960,32 @@ export class Store {
 
   listSettings(prefix: string): Array<{ key: string; value: string }> {
     return this.all<{ key: string; value: string }>('SELECT key, value FROM settings WHERE key LIKE ? ORDER BY key', `${prefix}%`)
+  }
+
+  // #378: the flaky ledger. A run is written once per `(job, test name)`, and
+  // every write trims the older rows for that repository and name so a busy
+  // repository cannot grow an unbounded history. The cap is the window the
+  // quarantine rule reads: twelve runs is enough to see an alternation pattern
+  // and small enough to keep the read cheap on every verification.
+  recordTestRuns(repoId: string, jobId: string, runs: Array<{ name: string; passed: boolean }>, keep = TEST_RUN_HISTORY): void {
+    const at = nowIso()
+    for (const run of runs) {
+      this.run('INSERT OR IGNORE INTO test_runs (repo_id, job_id, name, passed, recorded_at) VALUES (?, ?, ?, ?, ?)', repoId, jobId, run.name, run.passed ? 1 : 0, at)
+      this.run(
+        'DELETE FROM test_runs WHERE repo_id = ? AND name = ? AND id NOT IN (SELECT id FROM test_runs WHERE repo_id = ? AND name = ? ORDER BY id DESC LIMIT ?)',
+        repoId, run.name, repoId, run.name, keep,
+      )
+    }
+  }
+
+  // Oldest first, so the caller can count flips in run order. Per test name the
+  // newest `TEST_RUN_HISTORY` rows are returned, which is the same window the
+  // writer keeps.
+  testRunHistory(repoId: string): Array<{ name: string; passed: boolean }> {
+    return this.all<{ name: string; passed: number }>(
+      'SELECT name, passed FROM test_runs AS t WHERE repo_id = ? AND (SELECT COUNT(*) FROM test_runs AS x WHERE x.repo_id = t.repo_id AND x.name = t.name AND x.id > t.id) < ? ORDER BY id ASC',
+      repoId, TEST_RUN_HISTORY,
+    ).map((row) => ({ name: row.name, passed: row.passed === 1 }))
   }
 }
 

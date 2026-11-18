@@ -1,5 +1,6 @@
 import type { JobRow } from '../db.js'
 import type { PathGuardResult } from './pathGuard.js'
+import type { TestImpact } from './testImpact.js'
 
 export interface TestEvidence {
   state: 'verified' | 'unverified' | 'contradicted'
@@ -32,6 +33,10 @@ export interface VerificationResult {
   combinedStatus: string
   reviews: { changesRequested: boolean; approvals: number }
   testEvidence: TestEvidence
+  // #378: which tests the change was expected to run, and why. Absent on a
+  // snapshot written before the map existed, so the page omits the row instead
+  // of printing an empty selection.
+  testImpact?: TestImpact
   reasons: string[]
   ruleChange?: { paths: string[]; acknowledged: boolean }
 }
@@ -61,6 +66,12 @@ const IGNORED = new Set(['neutral', 'skipped'])
 // it cannot be the only reason to call a pull request verified. The threshold is
 // two flips inside at least three runs, so a single failure — or a first
 // failure that has not alternated yet — is never a quarantine.
+// The one place that decides what a "test job" is, so the ledger and the
+// evidence gate accept the same names.
+export function isTestCheckName(name: string): boolean {
+  return TEST_CHECK.test(name)
+}
+
 export function quarantineTests(runs: TestRun[], threshold = 2): TestStability[] {
   const order: string[] = []
   const ledger = new Map<string, { runs: number; alternations: number; last: boolean | null }>()
@@ -106,7 +117,13 @@ export function parseVerification(value: string | null): VerificationResult | nu
   if (value === null || value === '') return null
   try {
     const parsed = JSON.parse(value) as VerificationResult
-    return typeof parsed === 'object' && parsed !== null && typeof parsed.ok === 'boolean' ? parsed : null
+    if (typeof parsed !== 'object' || parsed === null || typeof parsed.ok !== 'boolean') return null
+    // #378: a snapshot written before the quarantine field existed has no
+    // `quarantinedChecks`. Reading one must not throw on `undefined.length`, and
+    // "no field" means "nothing was quarantined when this was written", not an
+    // empty list invented by the reader.
+    if (parsed.testEvidence !== null && typeof parsed.testEvidence === 'object') parsed.testEvidence.quarantinedChecks ??= []
+    return parsed
   } catch {
     return null
   }

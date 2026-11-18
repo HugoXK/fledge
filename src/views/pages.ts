@@ -3430,6 +3430,25 @@ export function jobPage(input: {
         ? t('证据已核实，合并被路径守卫阻止', 'Evidence verified; the merge is blocked by the path guard')
         : t('证据通过', 'Evidence passed')
       : t('证据未通过', 'Evidence failed')
+  // #378: what the change was expected to run, and what was quarantined. Both
+  // are claims with a reason attached, so the page prints the reason beside the
+  // path instead of a bare list a reader cannot check.
+  const testImpact = verification?.testImpact
+  const impactLine = testImpact === undefined
+    ? ''
+    : testImpact.state === 'no impact map'
+      ? t('未映射影响：没有测试命中，回退到完整套件', 'No impact map: nothing matched, so the full suite is the fallback')
+      : t(
+        `选中 ${testImpact.selected.length} 个测试：${testImpact.selected.slice(0, 6).map((entry) => `${entry.path} (${entry.reason})`).join(', ')}${testImpact.selected.length > 6 ? ' …' : ''}${testImpact.truncated ? `（已截断，上限 ${testImpact.limit}）` : ''}`,
+        `Selected ${testImpact.selected.length} test(s): ${testImpact.selected.slice(0, 6).map((entry) => `${entry.path} (${entry.reason})`).join(', ')}${testImpact.selected.length > 6 ? ' …' : ''}${testImpact.truncated ? ` (truncated at ${testImpact.limit})` : ''}`,
+      )
+  const quarantinedLine = verification === null || verification.testEvidence.quarantinedChecks.length === 0
+    ? ''
+    : t(
+      ` · 隔离 ${verification.testEvidence.quarantinedChecks.length} 个：${verification.testEvidence.quarantinedChecks.join(', ')}`,
+      ` · quarantined ${verification.testEvidence.quarantinedChecks.length}: ${verification.testEvidence.quarantinedChecks.join(', ')}`,
+    )
+
   // #251: a follow-up stores the reviewer's words in the goal (one field, no
   // column), so the console reads that same line back. Without this row the
   // maintainer cannot tell what the agent was told, which was the second half of
@@ -3857,7 +3876,8 @@ export function jobPage(input: {
       : `<div class="list">
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(evidenceVerdict)}</strong><small>${escapeHtml(t('核实时间', 'Checked'))} ${escapeHtml(humanTimeShort(verification.checkedAt))} · ${escapeHtml(t('基于', 'At'))} <code>${escapeHtml(verification.sha.slice(0, 12))}</code></small></div></div>
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('检查', 'Checks'))}</strong><small>${verification.checks.green}/${verification.checks.total} ${escapeHtml(t('通过', 'green'))}${verification.checks.failing.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.checks.failing.join(', '))}`}${verification.checks.pending.length === 0 ? '' : ` · ${escapeHtml(t('等待', 'pending'))}: ${escapeHtml(verification.checks.pending.join(', '))}`}</small></div></div>
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试证据', 'Test evidence'))}</strong><small>${escapeHtml(verification.testEvidence.state === 'verified' ? t('已核实', 'Verified') : verification.testEvidence.state === 'contradicted' ? t('与 checks 不一致', 'Contradicted by checks') : t('未核实', 'Unverified'))}${verification.testEvidence.greenChecks.length === 0 ? '' : ` · ${escapeHtml(t('通过', 'green'))}: ${escapeHtml(verification.testEvidence.greenChecks.join(', '))}`}${verification.testEvidence.failingChecks.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.testEvidence.failingChecks.join(', '))}`}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试证据', 'Test evidence'))}</strong><small>${escapeHtml(verification.testEvidence.state === 'verified' ? t('已核实', 'Verified') : verification.testEvidence.state === 'contradicted' ? t('与 checks 不一致', 'Contradicted by checks') : t('未核实', 'Unverified'))}${verification.testEvidence.greenChecks.length === 0 ? '' : ` · ${escapeHtml(t('通过', 'green'))}: ${escapeHtml(verification.testEvidence.greenChecks.join(', '))}`}${verification.testEvidence.failingChecks.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.testEvidence.failingChecks.join(', '))}`}${escapeHtml(quarantinedLine)}</small></div></div>
+          ${impactLine === '' ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试选择', 'Test selection'))}</strong><small>${escapeHtml(impactLine)}</small></div></div>`}
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('审核', 'Reviews'))}</strong><small>${escapeHtml(t(`批准 ${verification.reviews.approvals} 个`, `${verification.reviews.approvals} approval(s)`))}${verification.reviews.changesRequested ? ` · ${escapeHtml(t('有 changes requested', 'changes requested'))}` : ''}</small></div></div>
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('PR 状态', 'PR state'))}</strong><small>${escapeHtml(verification.prState)} · ${escapeHtml(verification.mergeableState)} · ${escapeHtml(verification.combinedStatus)}</small></div></div>
         </div>`}
