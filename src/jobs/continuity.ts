@@ -106,6 +106,10 @@ export interface CarryOverReport {
   used: number
   dropped: number
   unverified: number
+  /** #790: carried lines that name no artifact at all, so no read could observe
+   * them. A subset of `used`: the line stays (it is context) but it is not
+   * evidence of open work, and the instruction no longer offers it. */
+  unlinked: number
   reads: number
   droppedLinks: string[]
   unverifiedLinks: string[]
@@ -170,7 +174,8 @@ export function carryOverHeaderFromBlock(goal: string): string {
 //: describe the same block two ways.
 export function carryOverHeaderText(report: CarryOverReport): string {
   const unverified = report.unverified > 0 ? `, ${report.unverified} unverified` : ''
-  return `carry-over: ${report.used} used, ${report.dropped} dropped (closed/merged)${unverified}`
+  const unlinked = report.unlinked > 0 ? `, ${report.unlinked} unlinked (no link)` : ''
+  return `carry-over: ${report.used} used, ${report.dropped} dropped (closed/merged)${unverified}${unlinked}`
 }
 
 //: What a page reads back from `jobs.carry_over_json`: the counts and the
@@ -214,6 +219,9 @@ export function parseCarryOverReport(value: string | null): CarryOverReport | nu
       used: parsed.used,
       dropped: parsed.dropped,
       unverified: typeof parsed.unverified === 'number' ? parsed.unverified : 0,
+      // #790: a value written before this field counted its unlinked line in
+      // `used` only, so it reads back as zero rather than as absent.
+      unlinked: typeof parsed.unlinked === 'number' ? parsed.unlinked : 0,
       reads: parsed.reads,
       droppedLinks,
       unverifiedLinks,
@@ -264,7 +272,7 @@ export async function buildCarryOver(input: {
   //: #791: a failed read and a spent read ceiling are different answers, so the
   //: item keeps which one it was instead of the page guessing.
   const unverifiedReasons = new Map<string, 'failed read' | 'budget spent'>()
-  const report: CarryOverReport = { used: 0, dropped: 0, unverified: 0, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [], items: [] }
+  const report: CarryOverReport = { used: 0, dropped: 0, unverified: 0, unlinked: 0, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [], items: [] }
 
   const observationOf = (link: string | null): CarryOverObservation | undefined =>
     link === null ? undefined : report.observations.find((entry) => entry.link === link)
@@ -320,13 +328,15 @@ export async function buildCarryOver(input: {
         report.items.push({ link, kind: 'unverified', reason: unverifiedReasons.get(link) ?? null })
       }
     }
+    if (link === null) report.unlinked += 1
     report.used += 1
     const summary = redact(digest?.summary ?? job.summary ?? job.error ?? '').replace(/\s+/g, ' ').slice(0, 220)
     const links = [issue, pr].filter(Boolean).map((value) => value as string)
     recentLines.push(
       `- ${job.created_at.slice(0, 16)} ${job.kind} ${job.status}: ${summary || '(no summary)'}` +
       (links.length > 0 ? ` [${[...new Set(links)].join(' ')}]` : '') +
-      observationText(observationOf(link)),
+      observationText(observationOf(link)) +
+      unlinkedText(link),
     )
   }
 
@@ -349,27 +359,36 @@ export async function buildCarryOver(input: {
         report.items.push({ link, kind: 'unverified', reason: unverifiedReasons.get(link) ?? null })
       }
     }
+    if (link === null) report.unlinked += 1
     report.used += 1
     workLines.push(
       `- ${item.id}${observationText(observationOf(link))}` +
       ` priority=${item.priority}` +
       `${item.issue_url ? ` issue=${item.issue_url}` : ''}` +
-      `${item.pr_url ? ` pr=${item.pr_url}` : ''} title=${item.title.slice(0, 120)}`,
+      `${item.pr_url ? ` pr=${item.pr_url}` : ''} title=${item.title.slice(0, 120)}` +
+      unlinkedText(link),
     )
   }
 
   const lines: string[] = [CARRY_OVER_MARKER]
   if (reader !== undefined) lines.push(carryOverHeaderText(report))
   lines.push(
-    'Continue the open work item when one exists; do not create a duplicate issue/PR.',
+    'Continue only a line whose artifact was observed live; do not create a duplicate issue/PR. '
+    + 'A line marked "unverified (no link)" is context, not a continuation instruction.',
     'Do not create inventory, backlog, or "存量/盘点/清账/reconcile" issues.',
   )
   if (recentLines.length > 0) lines.push('Recent runs:', ...recentLines)
   if (workLines.length > 0) lines.push('Open work:', ...workLines)
   const text = lines.join('\n')
   const limit = input.maxChars ?? CARRY_OVER_MAX_CHARS
+  // #790: the marker is part of the cap, not added on top of it. A fixed
+  // `limit - 20` overshot by the marker's own two characters as soon as a block
+  // grew past the cap, which is exactly what a stated bound must not do.
+  const truncated = '\n[carry-over truncated]'
   return {
-    text: text.length <= limit ? text : `${text.slice(0, limit - 20)}\n[carry-over truncated]`,
+    text: text.length <= limit
+      ? text
+      : `${text.slice(0, Math.max(0, limit - truncated.length))}${limit > truncated.length ? truncated : ''}`.slice(0, limit),
     report,
   }
 }
@@ -380,6 +399,13 @@ function observationText(observation: CarryOverObservation | undefined): string 
   if (observation === undefined) return ''
   if (observation.state === 'unverified' || observation.observedAt === null) return ' observed unverified'
   return ` observed ${observation.observedAt.slice(11, 16)}Z ${observation.state}`
+}
+
+//: #790: a line that names no artifact has nothing to observe, so it states the
+//: other fact: it was carried without a link. Without this the line read exactly
+//: like one whose artifact was seen open.
+function unlinkedText(link: string | null): string {
+  return link === null ? ' unverified (no link)' : ''
 }
 
 function parseDigest(value: string | null): RunDigest | null {

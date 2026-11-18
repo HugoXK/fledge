@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { JobRow, WorkItemRow } from '../src/db.js'
 import { Store } from '../src/db.js'
-import { buildCarryOver, carryOverHeaderFromBlock, CARRY_OVER_MAX_READS, parseCarryOverLink, type CarryOverLinkState } from '../src/jobs/continuity.js'
+import { buildCarryOver, carryOverHeaderFromBlock, carryOverHeaderText, CARRY_OVER_MAX_READS, parseCarryOverLink, parseCarryOverReport, type CarryOverLinkState } from '../src/jobs/continuity.js'
 import { Jobs } from '../src/jobs/service.js'
 import type { RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret } from '../src/lib/secrets.js'
@@ -128,7 +128,56 @@ test('a work item with no link is kept and never counted as dropped', async () =
   // the row's own state is no evidence about the artifact.
   assert.match(block.text, /- work_bare priority=0/)
   assert.doesNotMatch(block.text, /work_bare state=/)
-  assert.match(block.text, /^carry-over: 1 used, 0 dropped \(closed\/merged\)$/m)
+  assert.match(block.text, /^carry-over: 1 used, 0 dropped \(closed\/merged\), 1 unlinked \(no link\)$/m)
+})
+
+// #790: slice 4 of #365. `used` counted an unlinked line exactly like a line
+// whose artifact was observed live, and the one continuation instruction offered
+// it to the agent. The line is still carried - it is context - but it now says
+// so: in its own label, its own count and the instruction.
+test('an unlinked carry-over line is labelled unverified (no link) and is not a continuation instruction', async () => {
+  const read = reader({})
+  const block = await buildCarryOver({
+    recent: [job({ id: 'job_digest', continuity_json: digest({}) })],
+    openWork: [workItem({ id: 'work_bare', title: 'no link anywhere' })],
+    read,
+  })
+  // Still carried, never dropped, and an unlinked line still costs no read.
+  assert.equal(block.report.used, 2)
+  assert.equal(block.report.dropped, 0)
+  assert.equal(block.report.unlinked, 2)
+  assert.equal(block.report.reads, 0)
+  assert.deepEqual(read.reads, [])
+  // Both lines carry the label, so neither reads like an observed artifact.
+  // Two line labels; the instruction line also names the marker, so anchor.
+  assert.equal((block.text.match(/ unverified \(no link\)$/gm) ?? []).length, 2)
+  assert.match(block.text, /- work_bare .*unverified \(no link\)/)
+  // The count reaches the header the page reads, without a second spelling.
+  assert.match(block.text, /^carry-over: 2 used, 0 dropped \(closed\/merged\), 2 unlinked \(no link\)$/m)
+  // The instruction no longer offers an unlinked line as continuable.
+  assert.doesNotMatch(block.text, /^Continue the open work item when one exists; do not create a duplicate issue\/PR\.$/m)
+  assert.match(block.text, /context, not a continuation instruction/)
+})
+
+test('a stored report written before the unlinked count reads back as zero, never as absent', () => {
+  const before = JSON.stringify({ used: 1, dropped: 0, unverified: 0, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [], items: [] })
+  assert.equal(parseCarryOverReport(before)?.unlinked, 0)
+  const after = parseCarryOverReport(JSON.stringify({ used: 2, dropped: 0, unverified: 0, unlinked: 2, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [], items: [] }))
+  assert.equal(after?.unlinked, 2)
+  assert.equal(carryOverHeaderText(after!), 'carry-over: 2 used, 0 dropped (closed/merged), 2 unlinked (no link)')
+  // A report with no unlinked line keeps the pre-#790 spelling exactly.
+  assert.equal(carryOverHeaderText({ used: 1, dropped: 0, unverified: 0, unlinked: 0, reads: 0, droppedLinks: [], unverifiedLinks: [], observations: [], items: [] }), 'carry-over: 1 used, 0 dropped (closed/merged)')
+})
+
+test('the truncation marker is counted inside the cap, not added on top of it', async () => {
+  const block = await buildCarryOver({
+    recent: [job({ id: 'job_long', summary: 'a summary long enough that the block has to be cut', continuity_json: digest({}) })],
+    openWork: [workItem({ id: 'work_long', title: 'a title long enough that the block has to be cut' })],
+    maxChars: 260,
+  })
+  // The stated bound is the bound: marker included, never two characters over.
+  assert.ok(block.text.length <= 260, `block is ${String(block.text.length)} characters`)
+  assert.match(block.text, /\[carry-over truncated\]$/)
 })
 
 test('the block spends at most seven reads and never reads one link twice', async () => {
