@@ -606,6 +606,15 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   hourly instants stays one row rather than 9k. The row carries the job it
   dispatched, the lag and the reason it skipped; the audit line stays for
   operators and names the row.
+  The row also freezes what the decision was taken under (`snapshot_json`,
+  written by `src/schedules/snapshot.ts`): the schedule's configuration (kind,
+  expression or interval, zone, window, misfire, grace, daily budget, status and
+  timing revision) and the repository's authorization (owner, installation,
+  permission and role). A later edit to the schedule, or a re-check that changes
+  the repository's permission, cannot rewrite what a past instant ran as. A row
+  written before the column existed, or one whose snapshot cannot be read,
+  answers null and is reported as unknown rather than back-filled from the live
+  schedule.
   The lease (slice 3B-B2) answers the second worker: a dispatch claims the row
   before it creates the job, and `lease_token` is compared at settle, so only the
   holder's result lands. A live lease is refused (`leased`), a lapsed one is

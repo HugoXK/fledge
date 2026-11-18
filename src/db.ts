@@ -450,6 +450,14 @@ export interface ScheduleOccurrenceRow {
    * button idempotent.
    */
   command_key: string | null
+  /**
+   * #544: the schedule configuration and the repository authorization this
+   * instant was decided under, as versioned JSON written by
+   * `src/schedules/snapshot.ts`. Null on a row written before the column
+   * existed; `parseOccurrenceSnapshot` answers null for it and readers must say
+   * unknown rather than read the live schedule.
+   */
+  snapshot_json: string | null
 }
 
 /** #544 slice 7: one durable notification send. */
@@ -2310,6 +2318,11 @@ CREATE TABLE IF NOT EXISTS schedule_occurrences (
   -- #544 slice 8: a run-now occurrence is named by the command key the button
   -- carried, not by a planned instant, so the same key cannot start twice.
   command_key TEXT,
+  -- #544: the schedule configuration and the repository authorization this
+  -- instant was decided under, frozen at write time (src/schedules/snapshot.ts).
+  -- Null on a row written before the column existed; a reader must say unknown,
+  -- never substitute today's values.
+  snapshot_json TEXT,
   UNIQUE(schedule_id, logical_time, timing_revision)
 );
 CREATE INDEX IF NOT EXISTS schedule_occurrences_lease_idx ON schedule_occurrences(state, lease_expires_at);
@@ -2745,6 +2758,7 @@ export class Store {
       ['lease_token', 'TEXT'],
       ['lease_expires_at', 'INTEGER'],
       ['command_key', 'TEXT'],
+      ['snapshot_json', 'TEXT'],
     ]
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE schedule_occurrences ADD COLUMN ${name} ${type}`)
@@ -5830,16 +5844,18 @@ export class Store {
     jobId?: string | null
     dispatchedAt?: number | null
     lagMs?: number | null
+    /** #544: the config/authorization this row was written under; null is unknown. */
+    snapshotJson?: string | null
   }): { row: ScheduleOccurrenceRow; created: boolean } {
     const result = this.db.prepare(
       `INSERT INTO schedule_occurrences
-         (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, snapshot_json)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(schedule_id, logical_time, timing_revision) DO NOTHING`,
     ).run(...clean([
       input.id, input.scheduleId, input.repoId, input.logicalTime, input.timingRevision,
       input.state, input.reason ?? null, input.missed ?? 0, input.jobId ?? null,
-      nowIso(), input.dispatchedAt ?? null, input.lagMs ?? null,
+      nowIso(), input.dispatchedAt ?? null, input.lagMs ?? null, input.snapshotJson ?? null,
     ]))
     const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
     if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after insert`)
@@ -5865,6 +5881,8 @@ export class Store {
     logicalTime: number
     timingRevision: number
     commandKey: string
+    /** #544: the config/authorization the press was accepted under. */
+    snapshotJson?: string | null
   }): { row: ScheduleOccurrenceRow; created: boolean } {
     // Two explicit commands in the same millisecond are two instances, so the
     // logical time steps forward until the triple is free. The command key is
@@ -5872,10 +5890,10 @@ export class Store {
     for (let offset = 0; offset < 1_000; offset += 1) {
       const result = this.db.prepare(
         `INSERT INTO schedule_occurrences
-           (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, command_key)
-         VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, ?)
+           (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, command_key, snapshot_json)
+         VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, ?, ?)
          ON CONFLICT DO NOTHING`,
-      ).run(input.id, input.scheduleId, input.repoId, input.logicalTime + offset, input.timingRevision, nowIso(), input.commandKey)
+      ).run(input.id, input.scheduleId, input.repoId, input.logicalTime + offset, input.timingRevision, nowIso(), input.commandKey, input.snapshotJson ?? null)
       if (Number(result.changes) > 0) {
         const row = this.scheduleOccurrenceByCommandKey(input.scheduleId, input.commandKey)
         if (row === undefined) throw new Error(`run-now occurrence ${input.commandKey} disappeared after insert`)
@@ -5916,6 +5934,8 @@ export class Store {
     skipped: Array<{ id: string; at: number; reason: string; missed?: number }>
     decision?: { id: string; at: number; state: 'dispatched' | 'skipped'; reason: string | null; missed: number }
     cursorAt: number | null
+    /** #544: the snapshot this whole decision was taken under, for every row it writes. */
+    snapshotJson?: string | null
   }): { skipped: ScheduleOccurrenceRow[]; decision: ScheduleOccurrenceRow | undefined } {
     const skipped: ScheduleOccurrenceRow[] = []
     let decision: ScheduleOccurrenceRow | undefined
@@ -5930,6 +5950,7 @@ export class Store {
           state: 'skipped',
           reason: entry.reason,
           missed: entry.missed ?? 0,
+          snapshotJson: input.snapshotJson ?? null,
         }).row)
       }
       if (input.decision !== undefined) {
@@ -5942,6 +5963,7 @@ export class Store {
           state: input.decision.state,
           reason: input.decision.reason,
           missed: input.decision.missed,
+          snapshotJson: input.snapshotJson ?? null,
         }).row
       }
       if (input.cursorAt !== null) this.advanceScheduleOccurrence(input.repoId, input.cursorAt)
@@ -5994,6 +6016,8 @@ export class Store {
     leaseToken: string
     leaseMs: number
     now?: number
+    /** #544: the config/authorization the claim was decided under; written once. */
+    snapshotJson?: string | null
   }): { row: ScheduleOccurrenceRow; claimed: boolean; reason: 'leased' | 'settled' | null } {
     const now = input.now ?? Date.now()
     return this.transaction(() => {
@@ -6001,10 +6025,10 @@ export class Store {
       if (existing === undefined) {
         this.run(
           `INSERT INTO schedule_occurrences
-             (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, attempts, lease_token, lease_expires_at)
-           VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, 1, ?, ?)`,
+             (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, attempts, lease_token, lease_expires_at, snapshot_json)
+           VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, 1, ?, ?, ?)`,
           input.id, input.scheduleId, input.repoId, input.logicalTime, input.timingRevision,
-          nowIso(), input.leaseToken, now + input.leaseMs,
+          nowIso(), input.leaseToken, now + input.leaseMs, input.snapshotJson ?? null,
         )
         const row = this.findScheduleOccurrence(input.scheduleId, input.logicalTime, input.timingRevision)
         if (row === undefined) throw new Error(`occurrence ${input.scheduleId}@${input.logicalTime}/${input.timingRevision} disappeared after claim`)
