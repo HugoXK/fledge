@@ -7,8 +7,11 @@ import test from 'node:test'
 import { fileURLToPath } from 'node:url'
 import { loadConfig } from '../src/config.js'
 import { Store } from '../src/db.js'
+import { Jobs } from '../src/jobs/service.js'
+import type { Runner } from '../src/jobs/runner.js'
 import { adminPage } from '../src/views/pages.js'
-import { makeUser, testConfig } from './helpers.js'
+import type { RetentionWindows } from '../scripts/lib/retention.mjs'
+import { MemoryMailer, makeUser, testConfig } from './helpers.js'
 
 // #281: `pruneOldData` enforced ten age windows as literals inside one function,
 // so nothing outside the code could read or preview one. This suite pins the
@@ -242,6 +245,73 @@ test('the admin page shows the effective window, marks a default and names the c
     assert.match(card[0], /60/, 'the configured window is not shown')
     assert.match(card[0], />2</, 'the jobs count is not shown')
     assert.match(card[0], />4</, 'the quota ledger count is not shown')
+  } finally {
+    store.close()
+  }
+})
+
+// #281 rework: two mutations survived this suite, so nothing proved the env var
+// reached the scheduler. `retentionWindow(process.env[cls.env], …)` replaced by
+// `retentionWindow(undefined, …)` and `pruneOldData(this.config.retention.windows)`
+// replaced by `pruneOldData()` both left every case green. These two pin the
+// wiring itself: one reads a real env var through `loadConfig`, the other
+// watches what the tick hands the store.
+test('a RETENTION_*_DAYS env var becomes the window and is marked configured', () => {
+  const previous = process.env.RETENTION_JOBS_DAYS
+  process.env.RETENTION_JOBS_DAYS = '30'
+  try {
+    const config = loadConfig({})
+    assert.equal(config.retention.windows.jobs, 30, 'the env var did not reach the jobs window')
+    assert.equal(config.retention.configured.jobs, true, 'a window read from the env var is not marked configured')
+    // The other classes stay on their literal: one env var cannot move another.
+    assert.equal(config.retention.windows.events, DEFAULT_WINDOWS.events)
+    assert.equal(config.retention.configured.events, false)
+  } finally {
+    if (previous === undefined) delete process.env.RETENTION_JOBS_DAYS
+    else process.env.RETENTION_JOBS_DAYS = previous
+  }
+})
+
+test('the scheduler tick prunes by config.retention.windows, not by the built-in literals', async () => {
+  const windows: RetentionWindows = { ...DEFAULT_WINDOWS, jobs: 30, events: 45 }
+  const config = testConfig()
+  config.retention = { windows, configured: config.retention.configured }
+  const store = new Store(':memory:')
+  const calls: RetentionWindows[] = []
+  const original = store.pruneOldData.bind(store)
+  // The tick must hand over the configured windows. A call with no argument
+  // would take the store's built-in defaults, so that is a failure here rather
+  // than a call to record.
+  store.pruneOldData = (passed?: RetentionWindows) => {
+    if (passed === undefined) throw new Error('the tick pruned without passing the configured windows')
+    calls.push(passed)
+    original(passed)
+  }
+  const silentRunner: Runner = { name: 'silent', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, silentRunner, new MemoryMailer())
+  try {
+    await jobs.tick()
+    assert.equal(calls.length, 1, 'the first tick did not prune')
+    const passed = calls[0]
+    assert.ok(passed !== undefined, 'the tick recorded no prune call')
+    assert.equal(passed.jobs, 30, 'the tick pruned jobs with a window config did not carry')
+    assert.equal(passed.events, 45, 'the tick pruned events with a window config did not carry')
+    assert.deepEqual(passed, config.retention.windows)
+  } finally {
+    store.close()
+  }
+})
+
+test('pruneOldData refuses a zero-day window instead of deleting every row in it', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'retention-zero-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_retention_zero', userId: user.id, owner: 'o', name: 'zero', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.createJob({ id: 'job_zero_old', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb_zero', platformTokenHash: '' })
+    store.updateJob('job_zero_old', { status: 'succeeded', finished_at: new Date(Date.now() - 400 * DAY).toISOString() })
+    assert.throws(() => store.pruneOldData({ ...DEFAULT_WINDOWS, jobs: 0 }), /retention window jobs must be a whole number of days >= 1, got 0/)
+    assert.notEqual(store.getJob('job_zero_old'), undefined, 'a refused window still deleted the job')
+    assert.throws(() => store.pruneOldData({ ...DEFAULT_WINDOWS, jobs: 1.5 }), /retention window jobs/)
   } finally {
     store.close()
   }

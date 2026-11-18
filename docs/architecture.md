@@ -2218,7 +2218,10 @@ silently stop deleting rows the service deletes today. `sessions` are removed by
 rather than given a number. `Store.retentionCounts` counts at the configured
 windows for the `/admin` card, which is read-only and has no window control; the
 operator tool `scripts/retention.mjs --dry-run --days N` counts any window on a
-host copy.
+host copy. The delete path refuses a window that is not a whole number of days of
+at least 1, before the first delete: `loadConfig` already refuses such an env
+value, and `pruneOldData({ jobs: 0 })` is a direct caller the config cannot see,
+so the store checks the same invariant rather than trusting its input.
 
 ### Operational alerts
 

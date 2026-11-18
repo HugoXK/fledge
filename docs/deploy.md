@@ -1469,6 +1469,12 @@ integer or is below 1 falls back to the default rather than being read as zero
 (zero here would mean "delete every row"). `sessions` are removed by
 `expires_at` and `api_tokens` have no age window; neither is configurable here.
 
+The store refuses as well as the config. `Store.pruneOldData` throws on a window
+that is not a whole number of days of at least 1 — including a caller that passes
+`{ jobs: 0 }` directly, which without the guard would delete every finished job —
+and it refuses before the first delete, so a call that cannot be honoured removes
+nothing.
+
 Preview any change before making it. The tool opens the database read-only, holds
 no write lock, prints one `count=` line per class and two states instead of a
 number:

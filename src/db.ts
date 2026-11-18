@@ -7002,6 +7002,16 @@ export class Store {
   // the delete removes. `deleteExpiredSessions` stays: sessions age out by
   // `expires_at`, not by a day count. No new delete path and no default changed.
   pruneOldData(windows: RetentionWindows = retentionDefaultWindows()): void {
+    // #281: `loadConfig` refuses a zero-day env window, but the store is a
+    // public surface too, and `pruneOldData({ jobs: 0 })` would delete every
+    // finished job. The refusal is here, before the first delete, so a call
+    // that cannot be honoured removes nothing rather than half-pruning.
+    for (const cls of RETENTION_CLASSES) {
+      const configured = windows[cls.id] ?? cls.defaultDays
+      if (!Number.isInteger(configured) || configured < 1) {
+        throw new Error(`retention window ${cls.id} must be a whole number of days >= 1, got ${String(configured)}`)
+      }
+    }
     const now = Date.now()
     const cutoff = (days: number): string => new Date(now - days * 86_400_000).toISOString()
     const at = (days: number): RetentionAt => ({ now: nowIso(), cutoff: cutoff(days) })
