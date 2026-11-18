@@ -1491,6 +1491,14 @@ and counted instead of being carried into the next run. The block states what it
 did in its header, `carry-over: 1 used, 1 dropped (closed/merged)`, with an
 `, N unverified` segment when a read failed; a failed read keeps its line rather
 than dropping it silently, and the job page shows the same header line. Since
+#790 a carried line that names no issue and no pull request is the fourth case:
+it stays in the block as context, costs no read, and is labelled
+`unverified (no link)` on its own line and counted in an `, N unlinked (no link)`
+header segment (the `unlinked` field of `jobs.carry_over_json`, a subset of
+`used`). The continuation instruction names only a line whose artifact was
+observed live and says an unlinked line is context, not a continuation
+instruction, so a prose digest from an earlier run is not offered as open work.
+Since
 #788 each carried line also states the observation it rests on, `observed
 07:12Z open`, from the read that line already spent — a failed read says
 `observed unverified` and claims no time — and the per-link `{state,
