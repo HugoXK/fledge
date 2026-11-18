@@ -29,7 +29,7 @@ export interface UsageDetail {
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
-import { RETENTION_CLASSES, retentionCountSql, retentionDefaultWindows, retentionDeleteSql, type RetentionAt, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
+import { RETENTION_CLASSES, countSettingsMarkers, retentionCountSql, retentionDefaultWindows, retentionDeleteSql, settingsMarkerExpired, SETTINGS_RETENTION, type RetentionAt, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -7293,14 +7293,23 @@ export class Store {
    * the same predicate `pruneOldData` runs. The admin page renders these; the
    * dry-run tool prints them from the same table. Read-only by construction.
    */
-  retentionCounts(windows: RetentionWindows = retentionDefaultWindows()): Array<{ id: RetentionId; days: number; count: number }> {
+  retentionCounts(windows: RetentionWindows = retentionDefaultWindows()): Array<{ id: RetentionId | 'settingsMarkers'; days: number | null; count: number }> {
     const now = Date.now()
-    return RETENTION_CLASSES.map((cls) => {
+    const counts: Array<{ id: RetentionId | 'settingsMarkers'; days: number | null; count: number }> = RETENTION_CLASSES.map((cls) => {
       const days = windows[cls.id] ?? cls.defaultDays
       const at: RetentionAt = { now: nowIso(), cutoff: new Date(now - days * 86_400_000).toISOString() }
       const { sql, params } = retentionCountSql(cls, at)
       return { id: cls.id, days, count: Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0) }
     })
+    // #1008: `settings` is the second table the pass empties and it has one
+    // window per family, not one number — so its `days` is null and the card
+    // prints the per-prefix rule rather than a window it does not have.
+    counts.push({
+      id: 'settingsMarkers',
+      days: null,
+      count: countSettingsMarkers(this.all<{ key: string; value: string }>('SELECT key, value FROM settings'), now),
+    })
+    return counts
   }
 
   // #281: every window comes from config, with the shipped literal as the
@@ -7339,32 +7348,15 @@ export class Store {
     // on purpose: they are reclaimed when the job they name is gone
     // (`reconcileOrphans`), not by age. `merge_reconcile:` also throttles the
     // merge pass, so its age is not a retention signal.
-    const SETTINGS_RETENTION: ReadonlyArray<readonly [string, number]> = [
-      ['followup:', 30],
-      ['question_notified:', 30],
-      ['digest_sent:', 14],
-      ['email_test:', 1],
-      ['webhook_delivery:', 30],
-      ['email_reply:', 7],
-      ['github_app_state:', 1],
-      ['installation_sender:', 30],
-      // A plan marker is read only while its job is unapproved, which ends at
-      // the plan deadline; the job row itself is kept for 365 days, so the
-      // marker gets the same window from the moment it was written.
-      ['plan_reminded:', 365],
-      ['plan_expired:', 365],
-    ]
+    // #1008: the table lives in `scripts/lib/retention.mjs` beside the windows,
+    // so the preview counts the same rows this loop deletes. A copy here is what
+    // let the admin card report zero while ten families disappeared.
     const settings = this.all<{ key: string; value: string }>(
-      `SELECT key, value FROM settings WHERE ${SETTINGS_RETENTION.map(([prefix]) => `key LIKE '${prefix}%'`).join(' OR ')}`,
+      `SELECT key, value FROM settings WHERE ${SETTINGS_RETENTION.map((family) => `key LIKE '${family.prefix}%'`).join(' OR ')}`,
     )
     for (const row of settings) {
-      const days = SETTINGS_RETENTION.find(([prefix]) => row.key.startsWith(prefix))?.[1]
-      if (days === undefined) continue
-      const raw = row.value.slice(row.value.lastIndexOf(':') + 1)
-      const at = /^\d{4}-\d{2}-\d{2}T/.test(row.value) ? Date.parse(row.value) : Number(raw)
-      if (!Number.isFinite(at) || at === 0) continue
-      const iso = at > 10_000_000_000 ? new Date(at).toISOString() : row.value
-      if (iso < cutoff(days)) this.run('DELETE FROM settings WHERE key = ?', row.key)
+      if (!settingsMarkerExpired(row.key, row.value, now)) continue
+      this.run('DELETE FROM settings WHERE key = ?', row.key)
     }
   }
 

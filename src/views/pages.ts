@@ -44,7 +44,7 @@ import { readReleaseNotesSources } from '../releases/notes.js'
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
-import { RETENTION_CLASSES, RETENTION_IDLE_TABLES, type RetentionId } from '../../scripts/lib/retention.mjs'
+import { RETENTION_CLASSES, RETENTION_IDLE_TABLES, RETENTION_SETTINGS_CLASS, type RetentionId } from '../../scripts/lib/retention.mjs'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
@@ -2640,7 +2640,7 @@ function pager(path: string, pageParam: string, page: number, total: number, per
 
 /** One row of the admin retention card: an age window and what it would delete now. */
 export interface RetentionRow {
-  id: RetentionId | 'sessions' | 'api_tokens'
+  id: RetentionId | 'settingsMarkers' | 'sessions' | 'api_tokens'
   /** Null for a table with no age window; `state` says why. */
   days: number | null
   configured: boolean
@@ -2935,6 +2935,7 @@ export function adminPage(input: {
   const retentionLabel = (id: string): string => {
     const timed = RETENTION_CLASSES.find((entry) => entry.id === id)
     if (timed !== undefined) return locale === 'zh' ? timed.label[0] : timed.label[1]
+    if (id === RETENTION_SETTINGS_CLASS.id) return locale === 'zh' ? RETENTION_SETTINGS_CLASS.label[0] : RETENTION_SETTINGS_CLASS.label[1]
     const idle = RETENTION_IDLE_TABLES.find((entry) => entry.id === id)
     return idle === undefined ? id : locale === 'zh' ? idle.label[0] : idle.label[1]
   }
@@ -2946,7 +2947,7 @@ export function adminPage(input: {
     <div class="list">
       ${retentionRows.map((row) => {
         const window = row.days === null
-          ? escapeHtml(row.state ?? '—')
+          ? escapeHtml(row.state ?? t('每个前缀各自窗口', 'one window per prefix'))
           : `${escapeHtml(t(`${row.days} 天`, `${row.days} days`))}${row.configured ? '' : ` <span class="badge">${escapeHtml(t('默认', 'default'))}</span>`}`
         const count = row.count === null ? `<span class="muted">${escapeHtml(t('不适用', 'not applicable'))}</span>` : `<strong>${escapeHtml(String(row.count))}</strong>`
         return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(retentionLabel(row.id))}</strong><small>${window}</small></div><div class="row">${count}</div></div>`

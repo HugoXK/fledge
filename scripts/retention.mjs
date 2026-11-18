@@ -15,7 +15,7 @@
 //   DB_PATH=/data/fledge.db node scripts/retention.mjs --dry-run --days 90
 import { DatabaseSync } from 'node:sqlite'
 import { join } from 'node:path'
-import { RETENTION_IDLE_TABLES, retentionCountsAt } from './lib/retention.mjs'
+import { RETENTION_IDLE_TABLES, RETENTION_SETTINGS_CLASS, countSettingsMarkers, retentionCountsAt } from './lib/retention.mjs'
 
 const USAGE = 'usage: node scripts/retention.mjs --dry-run --days <n> [--db <path>]'
 
@@ -73,6 +73,11 @@ try {
   for (const row of retentionCountsAt(count, days)) {
     console.log(`${row.key} count=${row.count} window=${days}d`)
   }
+  // #1008: the markers kept in `settings` have one window per family, so the
+  // tool prints their own line and names that rather than printing a single
+  // `--days` window that no family actually uses.
+  const markers = db.prepare('SELECT key, value FROM settings').all()
+  console.log(`${RETENTION_SETTINGS_CLASS.key} count=${countSettingsMarkers(markers, Date.now())} window=per-prefix`)
   // Two tables have no age window. Naming the reason is better than printing a
   // fabricated zero that reads as "nothing to delete".
   for (const table of RETENTION_IDLE_TABLES) {

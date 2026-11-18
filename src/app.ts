@@ -5594,7 +5594,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         retention: [
           ...store.retentionCounts(config.retention.windows).map((row) => ({
             ...row,
-            configured: config.retention.configured[row.id],
+            // #1008: the settings markers have no env window to configure, so
+            // the row is never marked `default` — it is not a default, it is a
+            // table with one window per family.
+            configured: row.id === 'settingsMarkers' ? false : config.retention.configured[row.id],
           })),
           ...RETENTION_IDLE_TABLES.map((table) => ({ id: table.id, days: null, configured: false, count: null, state: table.state })),
         ],
