@@ -173,6 +173,31 @@ test('a qualified Ran: line keeps its bullets in Ran, not in the fact above it',
   assert.doesNotMatch(risks?.text ?? '', /npm run check/, 'the commands below the qualified line belong to Ran, not to the fact above')
 })
 
+// #997: the widened matcher kept the optional qualifier but dropped the word
+// boundary, so any word that merely starts with `ran` and ends in a colon opened
+// a run section. A bare `Range:` line inside `Risks` cut the fact at that line
+// and moved the bullets under it into `ran`, which the job page then shows as
+// verified work. Only the word `Ran` may start the section.
+test('Range:, Randomized: and Rants: do not start a run section', () => {
+  const stories = ['Range:', 'Randomized:', 'Rants:'].map((keyword) => {
+    const body = ['## Risks', 'None.', keyword, '- `npm run check` — pass'].join('\n')
+    const story = storyOf(body)
+    return {
+      keyword,
+      ran: story.sections.find((section) => section.key === 'ran'),
+      risks: story.sections.find((section) => section.key === 'risks'),
+    }
+  })
+  assert.deepEqual(
+    stories.filter((story) => (story.ran?.text ?? null) !== null).map((story) => story.keyword),
+    [],
+    'only the word Ran starts a run section',
+  )
+  for (const story of stories) {
+    assert.match(story.risks?.text ?? '', /npm run check/, `the bullet under ${story.keyword} belongs to Risks`)
+  }
+})
+
 test('a value from the body is escaped by the page, never rendered as markup', async () => {
   const github = await startFakeServer((request, response) => {
     if ((request.url ?? '').startsWith('/repos/acme/demo/pulls/9/files')) {
