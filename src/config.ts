@@ -162,6 +162,16 @@ export interface Config {
     /** #807: how long ready work may wait for a dispatch before the alert fires. */
     automationIdleAlertMinutes: number
   }
+  /**
+   * #282: the shared model router, a dependency outside this repository. Empty
+   * `url` means the deployment has no router and `/readyz` answers exactly as it
+   * did before the probe existed.
+   */
+  router: {
+    url: string
+    /** Bound on one health read; `/readyz` never waits longer than this. */
+    timeoutMs: number
+  }
   tokens: {
     /** Default lifetime of a new personal `flg_` token, in days. */
     patExpiryDays: number
@@ -555,6 +565,12 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     ops: {
       alertCooldownMinutes: Math.max(0, number('OPS_ALERT_COOLDOWN_MINUTES', 360)),
       automationIdleAlertMinutes: Math.max(1, number('AUTOMATION_IDLE_ALERT_MINUTES', 30)),
+    },
+    router: {
+      url: text('MODEL_ROUTER_URL').replace(/\/$/, ''),
+      // A readiness probe must answer inside a monitor's patience; 10s is the
+      // ceiling so a misconfiguration cannot make /readyz hang for a minute.
+      timeoutMs: Math.min(10_000, Math.max(50, number('MODEL_ROUTER_TIMEOUT_MS', 1_000))),
     },
     tokens: {
       patExpiryDays: Math.max(1, number('PAT_EXPIRY_DAYS', DEFAULT_PAT_EXPIRY_DAYS)),

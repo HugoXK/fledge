@@ -77,6 +77,21 @@ groups:
           summary: Fledge p95 dispatch latency is above 15 minutes
           runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
 
+      - alert: FledgeRouterUnavailable
+        # #282: the shared model router is a dependency with its own health
+        # endpoint. `fledge_router_up` is absent — not 0 — when
+        # `MODEL_ROUTER_URL` is unset, so a deployment without a router never
+        # pages. An all-keys-capped router still answers and is not this rule:
+        # it reaches the operator through the ops alert, which is deduplicated
+        # by OPS_ALERT_COOLDOWN_MINUTES.
+        expr: fledge_router_up == 0
+        for: 10m
+        labels:
+          severity: critical
+        annotations:
+          summary: Fledge cannot read the model router health endpoint
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
+
       - alert: FledgeClockSkewHigh
         expr: abs(fledge_clock_skew_seconds) > 120
         for: 10m

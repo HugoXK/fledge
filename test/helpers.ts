@@ -54,6 +54,7 @@ export function testConfig(overrides: Partial<Config> = {}): Config {
     shutdown: { graceSeconds: 0 },
     autoMerge: { reconcileMinutes: 5, minReviewScore: 80 },
     ops: { alertCooldownMinutes: 360, automationIdleAlertMinutes: 30 },
+    router: { url: '', timeoutMs: 500 },
   })
   return {
     ...base,
