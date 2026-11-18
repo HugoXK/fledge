@@ -526,8 +526,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   into the goal as bounded data. Work sessions use a short global cooldown
   (`WORK_SESSION_COOLDOWN_MINUTES`, default 15 minutes); the per-repository
   interval is only an upper bound on the idle check, with a 60-minute floor for
-  discovery, not a reason to produce.
-  A run backs off after two unproductive (failed, zero-output or meta) runs and
+  discovery, not a reason to produce. A **successful** work job is not a
+  throttle: the next open item is due on the next tick, because a role that
+  finished is the user's cue that the next item starts (#801). The cooldown
+  still applies after a run that did not succeed, and
+  a run backs off after two unproductive (failed, zero-output or meta) runs and
   is skipped while another job for that repository is active. The global
   concurrency cap is 2. Review cadence is from every 6 hours to every 30 days.
   Jobs that exceed the timeout are failed.

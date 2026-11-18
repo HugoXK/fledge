@@ -2910,6 +2910,137 @@ test('an open work item starts after the short work cooldown, not the legacy int
   assert.equal(ready.kind, 'followup')
 })
 
+// #801: the success cooldown is a throttle, not a capacity signal. A work job
+// that succeeded leaves the next open item due at once; a failure keeps the
+// backoff it already had, and an empty queue still idles instead of running.
+test('a successful work job leaves the next open item due at once', async () => {
+  const open = [workItem(), workItem({ id: 'work_2', created_at: iso(-60_000) })]
+  const success = await decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-1_000), intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, lastWorkSucceeded: true,
+    openWork: open, reviewerEnabled: false, reviewDue: false,
+  })
+  assert.equal(success.kind, 'followup')
+
+  // One failure is the plain cooldown: success is what skips the wait, not a
+  // failed job that happens not to have reached the backoff yet.
+  const oneFailure = await decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-1_000), intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 1, lastWorkSucceeded: false,
+    openWork: open, reviewerEnabled: false, reviewDue: false,
+  })
+  assert.equal(oneFailure.kind, 'none')
+
+  // The backoff still holds a repeating failure down.
+  const backingOff = await decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-5 * 60_000), intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 2, lastWorkSucceeded: false,
+    openWork: open, reviewerEnabled: false, reviewDue: false,
+  })
+  assert.equal(backingOff.kind, 'none')
+  if (backingOff.kind !== 'none' || backingOff.reason !== 'not due') throw new Error('expected a blocked decision')
+  assert.equal(backingOff.blockedBy, 'failure_backoff')
+
+  // No open item is idle even when the last job succeeded, as long as discovery
+  // is not due: a success never invents work.
+  const empty = await decideNextJob({
+    repo: repo(), now, lastRunAt: iso(-1_000), intervalMinutes: 15,
+    lastDurationMs: 0, failureStreak: 0, lastWorkSucceeded: true,
+    openWork: [], reviewerEnabled: false, reviewDue: false, lastDiscoverAt: iso(-60_000),
+  })
+  assert.equal(empty.kind, 'none')
+  assert.equal(empty.kind === 'none' ? empty.reason : null, 'idle')
+})
+
+test('a successful job dispatches the second open item in the same tick', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const contexts: RunnerContext[] = []
+  const runner: Runner = {
+    name: 'capture',
+    async run(context) {
+      contexts.push(context)
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'scheduler-continuity', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_scheduler_continuity', userId: user.id, owner: 'o', name: 'continuity',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    store.setSetting(`discover:${repo.id}`, new Date().toISOString())
+    // The first item is already delivered, so the scheduler sees exactly one
+    // open item and the question is only whether it waits out the cooldown.
+    const finished = store.createWorkItem({
+      id: 'work_continuity_1', repoId: repo.id, userId: user.id,
+      title: 'first item', issueUrl: 'https://github.com/o/continuity/issues/1',
+      state: 'closed', closedReason: 'delivered',
+    })
+    const nextUp = store.createWorkItem({
+      id: 'work_continuity_2', repoId: repo.id, userId: user.id,
+      title: 'second item', issueUrl: 'https://github.com/o/continuity/issues/2', state: 'triaged',
+    })
+    assert.ok(finished.id !== nextUp.id)
+    // The first item's job just succeeded, and the repository's last run is that
+    // success — one second ago, far inside the 15-minute success cooldown.
+    const at = new Date().toISOString()
+    store.createJob({ id: 'job_continuity_1', repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: 'h1', platformTokenHash: '' })
+    store.updateJob('job_continuity_1', { status: 'succeeded', started_at: at, finished_at: at, work_item_id: 'work_continuity_1' })
+    store.updateRepo(repo.id, { last_run_at: at, last_status: 'succeeded' })
+
+    await jobs.tick()
+    const created = store.listJobsForRepo(repo.id)
+    assert.equal(created.length, 2, 'the second item starts without waiting out the success cooldown')
+    assert.equal(created[0]?.work_item_id, 'work_continuity_2')
+    assert.equal(contexts.length, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('a failing job still waits out the backoff instead of looping', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = {
+    name: 'capture',
+    async run() {
+      return { status: 'running' }
+    },
+  }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'scheduler-backoff', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_scheduler_backoff', userId: user.id, owner: 'o', name: 'backoff',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 60,
+    })
+    store.setSetting(`discover:${repo.id}`, new Date().toISOString())
+    store.createWorkItem({
+      id: 'work_backoff_1', repoId: repo.id, userId: user.id,
+      title: 'first item', issueUrl: 'https://github.com/o/backoff/issues/1', state: 'triaged',
+    })
+    store.createWorkItem({
+      id: 'work_backoff_2', repoId: repo.id, userId: user.id,
+      title: 'second item', issueUrl: 'https://github.com/o/backoff/issues/2', state: 'triaged',
+    })
+    const at = new Date().toISOString()
+    for (const id of ['job_backoff_1', 'job_backoff_2']) {
+      store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'schedule', goal: 'g', callbackHash: id, platformTokenHash: '' })
+      store.updateJob(id, { status: 'failed', started_at: at, finished_at: at })
+    }
+    store.updateRepo(repo.id, { last_run_at: at, last_status: 'failed' })
+
+    await jobs.tick()
+    assert.equal(store.listJobsForRepo(repo.id).length, 2, 'two failures back off instead of dispatching again')
+  } finally {
+    store.close()
+  }
+})
+
 test('a due maintainer continues the open PR when the review interval is not due', async () => {
   const pr = workItem({ pr_url: 'https://x/pr/3', state: 'pr_ready' })
   const next = await decideNextJob({

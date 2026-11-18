@@ -30,13 +30,16 @@ Core series:
   is silent".
 - `fledge_automation_dispatch_latency_seconds{kind}` — seconds from ready work
   to a dispatched job, so a near-zero reading means "the next item started at
-  once" and a 15-minute one means the cooldown held it. It keeps the default
+  once" — the reading a successful work job should now give (#801) — and a
+  15-minute one means a run that did not succeed held it. It keeps the default
   bucket list like every other histogram, and `FledgeDispatchLatencyHigh` pages
   on its p95 above 900s. The console prints the mean in milliseconds.
 - `fledge_automation_blocked_total{reason}` — ready work that did not start, by
   reason (`cooldown`, `failure_backoff`, `active_job`, `instance_not_ready`,
   `user_not_ready`, `quota`). A failure shows `failure_backoff` instead of a
-  dispatch, and a repository that is merely throttled shows `cooldown`.
+  dispatch, and a repository that is merely throttled shows `cooldown` — so a
+  `cooldown` on a repository whose last work job succeeded means something other
+  than the success wait held it.
 - `fledge_queue_depth`, `fledge_lease_expired_total`,
   `fledge_admission_rejected_total{reason}`, `fledge_meta_issue_total`,
   `fledge_auto_merge_candidates`, `fledge_ops_alerts_open`
