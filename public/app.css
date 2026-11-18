@@ -1369,6 +1369,12 @@ html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus:
 @media (min-width: 961px) {
   .settings-shell { display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: var(--space-5); align-items: start; }
   .settings-shell > .section-nav {
+    /* The shell is a grid, so the rail has to name its cell: without this,
+       auto-placement put the second and fourth card inside the 208px rail column
+       and left the content column empty beside them (#998). Spanning the four
+       group cards is also what keeps the rail sticky for the whole page rather
+       than only alongside the first card. */
+    grid-column: 1; grid-row: 1 / span 4;
     align-self: start; position: sticky; top: var(--header-h); z-index: 15;
     flex-direction: column; align-items: stretch; gap: 2px;
     margin: 0; padding: 0; overflow: visible;

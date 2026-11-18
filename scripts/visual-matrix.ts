@@ -142,9 +142,18 @@ async function checkPage(page: import('playwright').Page, locale: string, width:
     const positions = await page.evaluate(() => {
       const target = document.getElementById('tokens')
       const header = document.querySelector('.top')
+      const nav = document.querySelector('.settings-shell > .section-nav')
+      const cards: { id: string; left: number; width: number }[] = []
+      for (const card of document.querySelectorAll('.settings-shell > section.card')) {
+        const rect = card.getBoundingClientRect()
+        cards.push({ id: card.id, left: rect.left, width: rect.width })
+      }
       return {
         target: target === null ? null : target.getBoundingClientRect().top,
         header: header === null ? 0 : header.getBoundingClientRect().height,
+        wide: window.matchMedia('(min-width: 961px)').matches,
+        navRight: nav === null ? null : nav.getBoundingClientRect().right,
+        cards,
       }
     })
     // A missing target used to skip this assertion, so the guard passed on a page
@@ -154,6 +163,20 @@ async function checkPage(page: import('playwright').Page, locale: string, width:
       failures.push(`${locale} ${width}px /settings#tokens: the page has no #tokens anchor to scroll to`)
     } else if (positions.target < positions.header - 1) {
       failures.push(`${locale} ${width}px /settings#tokens: section starts under the sticky header`)
+    }
+    // #998: from 961px the shell is a two-column grid and the rail takes column 1.
+    // Auto-placement put the second and fourth card inside that 208px column, so
+    // each card has to start to the right of the rail. The overflow rule above
+    // cannot see it: every card still fits the viewport, it just sits in the
+    // wrong column. Measured after the `#tokens` scroll, so the horizontal
+    // numbers are the landing layout, not a transient.
+    const railRight = positions.navRight
+    if (positions.wide && railRight !== null) {
+      const inside = positions.cards.filter((card) => card.left < railRight - 1)
+      if (inside.length > 0) {
+        const named = inside.map((card) => `#${card.id} (x=${String(Math.round(card.left))} w=${String(Math.round(card.width))})`).join(', ')
+        failures.push(`${locale} ${width}px /settings: card inside the rail column instead of beside it: ${named}`)
+      }
     }
   }
 }
