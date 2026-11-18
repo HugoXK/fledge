@@ -327,6 +327,54 @@ test('quotaBlocked fails that user\'s active jobs and revokes their tokens', asy
   }
 })
 
+test('one exhausted user does not end the scheduled review pass for the repositories behind it', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    // #960: the refusal is per user, the pass is per instance. A repository whose
+    // own user cannot pay must not decide what happens to everybody after it.
+    const exhausted = makeUser(store, { login: 'pass-quota-empty', status: 'approved', quota: 0 })
+    const healthy = makeUser(store, { login: 'pass-quota-healthy', status: 'approved' })
+    const repoA = store.createRepo({ id: 'repo_pass_a', userId: exhausted.id, owner: 'o', name: 'pass-a', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, canReview: true, reviewerEnabled: true })
+    const repoB = store.createRepo({ id: 'repo_pass_b', userId: healthy.id, owner: 'o', name: 'pass-b', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440, canReview: true, reviewerEnabled: true })
+
+    await jobs.tick()
+
+    // The refusal stays on the repository that earned it.
+    assert.equal(store.listJobsForRepo(repoA.id, 6)[0]?.status, 'quota_exhausted')
+    // ...and it does not end the pass for a repository whose own user can pay.
+    const behind = store.listJobsForRepo(repoB.id, 6)[0]
+    assert.equal(behind?.kind, 'review', 'a per-user quota refusal must not stop the review scan for everyone behind it')
+  } finally {
+    store.close()
+  }
+})
+
+test('one exhausted user does not end the auto pass for the repositories behind it', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const runner: Runner = { name: 'capture', async run() { return { status: 'running' } } }
+  const jobs = new Jobs(store, config, runner, new MemoryMailer())
+  try {
+    // #960, the auto pass: same rule, a `discover` refusal instead of a review one.
+    const exhausted = makeUser(store, { login: 'auto-pass-empty', status: 'approved', quota: 0 })
+    const healthy = makeUser(store, { login: 'auto-pass-healthy', status: 'approved' })
+    const repoA = store.createRepo({ id: 'repo_auto_pass_a', userId: exhausted.id, owner: 'o', name: 'auto-a', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+    const repoB = store.createRepo({ id: 'repo_auto_pass_b', userId: healthy.id, owner: 'o', name: 'auto-b', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
+
+    await jobs.tick()
+
+    assert.equal(store.listJobsForRepo(repoA.id, 6)[0]?.status, 'quota_exhausted')
+    const behind = store.listJobsForRepo(repoB.id, 6)[0]
+    assert.notEqual(behind, undefined, 'an automatic pass must reach the repository behind a refused one')
+    assert.notEqual(behind?.status, 'quota_exhausted', 'the repository behind pays for nobody else')
+  } finally {
+    store.close()
+  }
+})
+
 test('a new team question sends one attention email', async () => {
   const bridge = await startFakeServer((request, response) => {
     let body = ''
