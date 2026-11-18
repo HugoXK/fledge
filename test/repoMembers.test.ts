@@ -274,3 +274,96 @@ test('a developer member starts work through the same rule as plan and triage', 
     await h.built.close()
   }
 })
+
+// #903: Run now is work, and work is a member role, not the repository's
+// upstream declaration. `repo_role` is NULL on a repository connected today, so
+// a guard that reads it locks out the person who connected the repository; the
+// same guard lets a developer in only when the field happens to say
+// `maintainer`. The role `ownedRepo` already resolves is the one that decides,
+// and a viewer never sees the control at all.
+function seedRunnable(h: Awaited<ReturnType<typeof harness>>, id: string, repoRole?: 'maintainer' | 'developer'): string {
+  const repo = h.store.createRepo({
+    id,
+    userId: h.owner.id,
+    owner: 'HugoXK',
+    name: id,
+    defaultBranch: 'main',
+    tokenEnc: '',
+    permission: 'admin',
+    ...(repoRole === undefined ? {} : { repoRole }),
+    goal: 'fix it',
+    autoIterate: false,
+    intervalMinutes: 1440,
+  })
+  h.store.saveSchedule({ id: `sch_${id}`, repoId: repo.id, kind: 'interval', everyMs: 3_600_000 })
+  h.store.createWorkItem({
+    id: `work_${id}`,
+    repoId: repo.id,
+    userId: h.owner.id,
+    title: 'fix it',
+    issueUrl: `https://github.com/HugoXK/${id}/issues/1`,
+    state: 'triaged',
+  })
+  return repo.id
+}
+
+test('the owner runs the schedule now on a repository whose role was never chosen', async () => {
+  const h = await harness()
+  try {
+    // `POST /repos` stores `repoRole ?? null`, so this is the row the product
+    // creates, not a hand-made edge case.
+    const repoId = seedRunnable(h, 'repo903null')
+    const res = await postForm(h.built, sessionFor(h.built, h.owner), `/repos/${repoId}/schedule/run-now`, { command_key: 'cmd-owner-1' })
+    assert.equal(res.statusCode, 302)
+    assert.match(String(res.headers.location), /[?&]ran=/, `the owner must start a run, not be refused: ${String(res.headers.location)}`)
+    assert.equal(h.store.listJobsForRepo(repoId).length, 1)
+  } finally {
+    await h.built.close()
+  }
+})
+
+test('a developer member runs the schedule now whatever the repository role says', async () => {
+  const h = await harness()
+  try {
+    const repoId = seedRunnable(h, 'repo903dev', 'developer')
+    h.store.addRepoMember({ repoId, userId: h.member.id, role: 'developer', grantedBy: h.owner.id })
+    const res = await postForm(h.built, sessionFor(h.built, h.member), `/repos/${repoId}/schedule/run-now`, { command_key: 'cmd-dev-1' })
+    assert.equal(res.statusCode, 302)
+    assert.match(String(res.headers.location), /[?&]ran=/, `a developer member runs work: ${String(res.headers.location)}`)
+    assert.equal(h.store.listJobsForRepo(repoId).length, 1)
+  } finally {
+    await h.built.close()
+  }
+})
+
+test('a maintainer member runs the schedule now on a repository whose upstream role is developer', async () => {
+  const h = await harness()
+  try {
+    const repoId = seedRunnable(h, 'repo903maint', 'developer')
+    h.store.addRepoMember({ repoId, userId: h.member.id, role: 'maintainer', grantedBy: h.owner.id })
+    const res = await postForm(h.built, sessionFor(h.built, h.member), `/repos/${repoId}/schedule/run-now`, { command_key: 'cmd-maint-1' })
+    assert.equal(res.statusCode, 302)
+    assert.match(String(res.headers.location), /[?&]ran=/, `a maintainer member is never refused: ${String(res.headers.location)}`)
+    assert.equal(h.store.listJobsForRepo(repoId).length, 1)
+  } finally {
+    await h.built.close()
+  }
+})
+
+test('a viewer member sees no Run now control and a hand-made post starts nothing', async () => {
+  const h = await harness()
+  try {
+    const repoId = seedRunnable(h, 'repo903viewer', 'developer')
+    h.store.addRepoMember({ repoId, userId: h.viewer.id, role: 'viewer', grantedBy: h.owner.id })
+    const session = sessionFor(h.built, h.viewer)
+    const page = await h.built.app.inject({ method: 'GET', url: `/repos/${repoId}/schedule`, headers: { cookie: session.cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.doesNotMatch(page.body, new RegExp(`action="/repos/${repoId}/schedule/run-now"`), 'a viewer is never shown a control that refuses them')
+    assert.match(page.body, /Run now|立即运行/, 'the page still names the control the role unlocks')
+    const refused = await postForm(h.built, session, `/repos/${repoId}/schedule/run-now`, { command_key: 'cmd-viewer-1' })
+    assert.equal(refused.statusCode, 403)
+    assert.equal(h.store.listJobsForRepo(repoId).length, 0)
+  } finally {
+    await h.built.close()
+  }
+})
