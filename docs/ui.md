@@ -357,6 +357,10 @@ How it is selected:
   the signed-in navigation panel. On a phone the popover is pinned to the viewport under the header,
   so it cannot open past either edge whichever side the summary sits on; the
   quota pill is the one item that may leave the 420px row, never a 44px target.
+  Below 360 the same row has to fit 320, the reflow width WCAG 1.4.10 names, so
+  the 359px band takes the slack out of the spacing — the side padding, the row
+  gap, the language switch's frame and the sign-out button's own padding — and
+  every destination and 44px target stays (#950).
 
 ### Provider metadata (提供方元数据)
 
@@ -407,6 +411,11 @@ pill buttons. An empty release chain is an expected state, and its operator
 command stays under a disclosure with a `<DATA_DIR>` placeholder instead of the
 real host path.
 
+`/settings` is the one documented exception: below 961px it uses the same chip
+strip, and from 961px up the same four links become a sticky left rail beside the
+cards (`.settings-shell`), with a 2px left rule on the current group. One
+`<nav class="section-nav">`, one set of links, both layouts by media query.
+
 ## Console states (控制台状态)
 
 Every list, panel and stream in the console renders through `renderState` in
@@ -429,6 +438,18 @@ and the accessibility contract are fixed:
   icon package, remote asset or CSP entry is involved.
 - `stateCell(colspan, …)` is the table form; a table that still renders a bare
   `<td colspan class="muted">` is a leftover, not a style choice.
+- A **control** mark is not a state icon and does not live in `states.ts`. The
+  banner dismiss and the feedback close (`src/views/layout.ts`), the info tip and
+  the finished setup step (`src/views/pages.ts`) draw from `icon(name, size)` in
+  `src/views/icons.ts`, on the same `viewBox="0 0 24 24"` grid, with
+  `stroke="currentColor"`, `aria-hidden="true"` and `focusable="false"`, and no
+  colour literal in the stylesheet. Before it, those four sites typed `×`, `!`
+  and `✓`: a typed glyph is drawn by whatever face the platform picks, so the
+  same button was a different weight and baseline per OS and read as Latin
+  punctuation inside a Chinese sentence. `test/layout.test.ts` now renders
+  `/settings`, `/dashboard` and the shell and fails on any control whose whole
+  visible content is one of those characters, so the next component does not
+  type one again.
 - The empty state's action comes from the page that renders it: a repository
   page offers that repository's own `Run now`, the dashboard offers
   `Add repository`, Settings offers `Add provider`. No page inherits another
@@ -499,7 +520,11 @@ the landing page first, in a signed-out context, because `/` answers 302 to
 `/dashboard` for a visitor with a session: capturing it after the development
 login photographed the dashboard twice. It then signs in and renders the
 dashboard, settings, admin, add-repository and workspace surfaces at
-360/390/430/640/768/1024/1280/1440/1920 in both languages. It fails when the
+360/390/430/640/768/1024/1280/1440/1920 in both languages. The workspace surface
+is also rendered at 320×844, below the sweep: `VISUAL_NARROW_CASES` in
+`src/lib/visualMatrix.ts` holds a page whose narrowest layout needs a width the
+cross-product does not carry, so that width is measured for that page instead of
+being swept over pages nobody has measured (#950). It fails when the
 document leaves the viewport, or when an element does and nothing can scroll it
 into view. An element is waived only on evidence: a `.table-scroll` ancestor, or
 any ancestor whose computed `overflow-x` is `auto`/`scroll`, counts only while it

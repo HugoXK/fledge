@@ -45,6 +45,20 @@ per-bot model assignment. `<details>` still submits its inputs, so
 the per-bot model restart stays its own form and therefore outside the settings
 form.
 
+The job page leads with one primary action (#865). The header picks it by what a
+reader must do first: *Acknowledge rule change* when a verification records an
+unacknowledged rule change, then *Execute this plan* for an approved plan, then
+*Resume* for a paused job, then *Retry / Resume from checkpoint* for a failed
+one; a queued or running job has nothing to advance and so shows no primary.
+Every other action keeps its form and its `action=` URL and becomes a
+`.btn-ghost` inside one `<details class="job-more">` labelled *More actions*.
+Pause and Cancel stay outside that disclosure — a stop control behind "more" is
+how a runaway job runs another hour. The four read-back cards (work type,
+why-this-change, postmortem, team participation) keep their sections and
+attributes unchanged inside a collapsed `<details class="job-detail">` named
+after the card; the operating state — result, evidence, PR verification,
+timeline, priority, relations, decision, plan approval, triage — stays visible.
+
 Page messages are not per-page markup. `notificationStack` in
 `src/views/layout.ts` renders every `notice`/`error` a route hands the layout as
 one `section.banner-stack` with a single `aria-live="polite"` region inside it,
@@ -111,7 +125,11 @@ a geometry instead of five font glyphs. The state contract and its evidence are
 in [docs/ui.md](ui.md). No page composes a state by hand: `/search` used to, and
 its own empty state carried a text `0` where the icon belongs, so
 `test/uiStates.test.ts` renders that page's two empty branches and asserts the
-shared `<svg>` in the slot with no bare glyph beside it.
+shared `<svg>` in the slot with no bare glyph beside it. Control marks — the two
+close buttons, an info tip and the finished setup step — draw from `icon()` in
+`src/views/icons.ts` instead of typing `×`, `!` or `✓`, so a button no longer
+changes weight with the platform's font; `test/layout.test.ts` asserts that no
+control renders one of those characters as its whole visible content.
 
 The console renders UTC and says so: every timestamp goes through
 `humanTimeShort` in `src/lib/time.ts`, which prints the UTC wall clock with an
@@ -130,10 +148,19 @@ header, not a section — so at the top of that page nothing has passed and
 `#release`, the first chip, is marked. That fallback is the accepted state, not a
 defect.
 
-`/settings` also carries a Feedback card and an About card. The feedback form
-posts to `/feedback`, stores a `feedback` row and mails the address in
-`FEEDBACK_EMAIL` (falling back to `ADMIN_EMAIL`); the About card and the footer
-link to the public GitHub repository with a Star call-to-action. An unexpected
+`/settings` also carries a Feedback card. The feedback form posts to `/feedback`,
+stores a `feedback` row and mails the address in `FEEDBACK_EMAIL` (falling back to
+`ADMIN_EMAIL`); the footer, not a settings card, links to the public GitHub
+repository with a Star call-to-action.
+
+`/settings` draws its content as four group cards rather than six: `#account-access`
+(with `#account`, `#sessions` and `#tokens` as sub-blocks), `#model-providers`,
+`#notifications` and `#feedback`. The nav therefore has four links, one per
+`.card[id]` in draw order. Below 961px the nav is the same chip strip `/admin` uses;
+from 961px up those same four links become a sticky left rail inside
+`.settings-shell`, so there is one nav and one set of links at every width. The
+old inner ids stay in place, and the shell's inner anchors carry the sticky offset
+too, because a sub-block can be a deep-link target. An unexpected
 HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
 is rendered; the page shows the data scope, requires the consent checkbox, then
 offers one POST to `/errors/:ref/report`, which claims the row atomically and
@@ -241,6 +268,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
   disagree with the sections below it.
+- **Work-loop rail** (`src/views/pages.ts`, `loopStage`): the same header draws the
+  five steps Connect → Goal → Work → Review → Merge and marks one of them current.
+  Only a real position can be marked: an open question or a failed job is Work, an
+  alert is Review, an unfinished first run or an exhausted quota is Connect. The
+  all-clear is a state, not a step, so it never marks Merge: an account whose goal
+  is written stands at Goal, and an account without one gets a rail with no step
+  current rather than progress it did not make.
 - **One next-run rule** (`src/lib/nextRun.ts`, `nextRun`): the all-clear card and
   the repository page's next-run line print one answer per repository, and which
   rule answers is decided by the repository, never by the surface. A repository
@@ -265,7 +299,14 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   row's answer and `nextRunFor` answers `disabled` before the row — no surface
   names a run for a paused repository. The page keeps the `disabled` sentence with
   or without a schedule row, and the dashboard never names a paused repository
-  while an enabled one has a next run. The dashboard route passes open work, the
+  while an enabled one has a next run. A paused *schedule* is the second pause and
+  is answered the same way (#940): the row keeps its expression and its repository
+  stays enabled, but the worker turns the due instant into a skipped occurrence and
+  never makes it up, so a row whose `status` is `paused` is handed to both surfaces
+  as `kind: 'paused'` with no instant (`scheduledNextFor`, `src/app.ts`), `nextRunFor`
+  answers `paused`, and the page, the card and the digest print the paused sentence
+  in place of the time — resuming is the only thing that brings an instant back.
+  The dashboard route passes open work, the
   active job and instance readiness per repository because those live outside
   `RepoRow`; the surfaces therefore print one string, and
   the wording says "next run", never an estimate. The newest job is read on its own, not
@@ -578,9 +619,9 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
   is optional and lives under an advanced disclosure, so a reader who only wants
   "weekdays at 09:30" never types cron or an ISO offset.
-  Layered budgets beyond a schedule's own daily run limit and event
-  subscriptions are not built yet (the misfire policy and the notification
-  outbox are, see the slices below).
+  Event subscriptions and the report/development and model/cost split are not
+  built yet (the misfire policy and the notification outbox are, see the slices
+  below); the project and tenant layers of the run budget are added there.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
   most one per repository — makes `nextTime` the only rule for when a work run is
   due, and `repos.interval_minutes` stops deciding for that repository. A
@@ -615,6 +656,15 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   written before the column existed, or one whose snapshot cannot be read,
   answers null and is reported as unknown rather than back-filled from the live
   schedule.
+  The console (`/repos/:id/schedule`) reads that record back: the frozen card
+  beside the live facts prints the kind, expression or interval, zone, window and
+  the authorization (owner, installation, permission, role) the newest decided
+  instant recorded, and names the fields where it disagrees with today's schedule
+  or repository row. The frozen value wins on that card, because the facts above
+  it are today's answer to a different question; a row that recorded nothing
+  prints unknown for every field and never borrows the live schedule — that
+  substitution would make "what did this run as" unanswerable while looking
+  answered.
   The lease (slice 3B-B2) answers the second worker: a dispatch claims the row
   before it creates the job, and `lease_token` is compared at settle, so only the
   holder's result lands. A live lease is refused (`leased`), a lapsed one is
@@ -688,7 +738,20 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   not run is deleted or its window closed. This is the run-count layer only: the
   cost layer stays where it is — `repos.monthly_budget_cny` / `job_budget_cny`
   for a repository and the account quota for a user — so the two are counted
-  separately. The console prints the limit, today's used count and what is left,
+  separately.
+  Slice 10 adds the project and tenant run layers: `schedule_budgets` carries a
+  `runs` daily limit for a project (the #541 `projects` row, one per repository)
+  and a tenant (the `tenants` row, one per owner). The tick checks the layers in
+  schedule -> project -> tenant order and stops at the first layer whose logical
+  day is already spent (`runBudgetStop`); the project and tenant counts join
+  `schedule_occurrences` to `projects` on the repository, so a tenant limit
+  covers every repository the owner runs in the same UTC day and adding a
+  repository cannot bypass it. The counts are still charged to the instant's
+  logical day, so a retry keeps the original bucket. A missing row is unbounded;
+  `category` is reserved for the later report/development and model/cost split.
+  The console still reads the schedule layer; the project and tenant values are
+  set through the store until a form exists. The console prints the limit,
+  today's used count and what is left,
   and a value nobody read prints `unknown` rather than zero. One process ticks, so
   the count and the claim are sequential in one pass and the claim's own
   transaction still makes the instant single-dispatch; a distributed worker
@@ -716,7 +779,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   webhook or a destination the safety rule refuses is `blocked`, so a human
   fixes the cause first. Email is resolved again at delivery (`notifyEmail` of
   the current account), which is why a queued message cannot follow an address
-  the user has since changed or a revoked account. The one human action is an
+  the user has since changed or a revoked account. A row that reports on a job
+  also re-reads the installation that authorized that job's repository: an
+  installation removed after the row was queued blocks the send with
+  `installation-revoked` instead of delivering into it (#544). The one human action is an
   explicit resend from `/admin/notifications`, which reuses the row's
   idempotency key, keeps the attempt count readable, and is audited as
   `notification.resend`; a delivered row is not reopened. The console names
@@ -793,7 +859,8 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   it is on, Fledge (not the agent) verifies the PR is open and mergeable, every
   check run is green, the combined commit status is not failing, and no current
   review requests changes, and the branch protection rule confirms the required
-  checks and approvals before it performs a squash merge. It also refuses when
+  checks and approvals before it performs a squash merge; a protection rule that
+  cannot be read is a refusal, not a pass. It also refuses when
   the linked work item is `changes_requested` or the newest succeeded review job
   for that PR has a score below `AUTO_MERGE_MIN_REVIEW_SCORE` (default 80). A
   manual maintainer merge may override the review-score gate, and the override
@@ -1109,7 +1176,11 @@ shutdown check) have no job in scope and deliberately carry no `trace`.
 
 The repository page adds a compact delivery board grouped by work-item state; each state tile links to a filtered work-item list (`?workState=`) and shows its share of the total, or `—` while the board has no items and there is nothing to divide by. The work-item rows keep their actions behind one disclosure, and the create form is a header button and dialog. The dashboard has two scopes. `/dashboard?window=7|30` shows the signed-in
 user's own delivery metrics: jobs, success rate, PRs, merged PRs, cost, open
-work items and the last job. `/admin/metrics` shows the global window with the
+work items and the last job. The cost tile is USD-billed spend converted at
+`USD_CNY_RATE`; a window that also holds priced rows in another currency names
+each of those buckets beside it in its own currency, because
+`Store.personalMetrics` keeps them out of `costUsd` rather than inventing a rate
+between buckets (#957). `/admin/metrics` shows the global window with the
 product funnel, delivery efficiency (success and merge rate, median job and
 merge duration, review duration and score), cost by repository and by model,
 daily trend buckets, and current alerts. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
@@ -1353,7 +1424,18 @@ runner names, matched on word boundaries) whose conclusion is `success`:
 `skipped` and `neutral` are completions without a verdict, so they leave the
 evidence unverified rather than contradicted, and a claim that no test check
 supports blocks the merge with "Test evidence is claimed but no test check
-passed." A claimed green test with a failing test check is contradicted and
+passed." That check proves a test job ran and passed; it does not prove the test
+was red at the base for the reason the fix addresses. `src/lib/redTest.ts` reads
+a base run's output and classifies it: an assertion failure, or an error thrown
+from a test file, is `red`; a compile or type error, a missing module, an
+environment or network error, a timeout, a skipped test and any unrecognised
+shape are `unverified`, and a run that exits 0 at the base is `passed`. The
+record keeps the command, the base SHA, the exit code, the signature and the
+sha256 of the output, and a second run of the same command at the same base that
+disagrees makes it `unverified` and flaky. Nothing enforces it yet: the base run
+has no producer, so requiring the record would block every pull request rather
+than prove one.
+A claimed green test with a failing test check is contradicted and
 blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
 `POST /repos/:id/jobs/:jobId/recheck` refreshes it on demand. `ready` requires
@@ -2138,14 +2220,29 @@ the existing changed-file walk. When that walk hits its own cap the totals are
 reported as unavailable rather than summed: a number taken from part of a change
 would understate it.
 
-`src/lib/changeStory.ts` is pure. It recognises `## What changed`, `## Risks`
-and `## Ran` at any heading level, and the bare `Ran:` line this repository's PR
-template uses; a repeated heading keeps the last occurrence and the block says
-so, so an edited body cannot silently show the abandoned draft. A heading the
-body does not carry renders `not stated` and is never filled from another
-section. A read that fails — 404, no token, a capped list — leaves the page at
-200 and names the unavailable fact instead, because a page that 500s on a read
-it did not need is worse than no block.
+`src/lib/changeStory.ts` is pure. It recognises `## What changed`, `## Risks`,
+`## Ran`, `## Alternatives considered`, `## Uncertainty` (or residual risk) and a
+`### Not run` heading at any level, plus the `Ran:` and `Not run:` shapes this
+repository's PR template and body rule use. `Ran:` is read in two shapes: the
+bare line that starts a list, and the qualified line that names the tree the
+numbers belong to (`Ran (author, at tree <sha>):`) — both keep their bullets in
+`Ran`, even when the line follows another fact heading. The keyword is matched as
+a whole word, so a `Range:`, `Randomized:` or `Rants:` line inside another fact
+stays in that fact instead of opening `Ran`. `Not run:` is read in two
+shapes: the bare line that starts a list, and the single line that carries the
+text inline (`Not run: Docker image, real SMTP`); both produce the Not-verified
+row, and neither leaks into `Ran`. A repeated
+heading keeps the last occurrence and
+the block says so, so an edited body cannot silently show the abandoned draft. A
+heading the body does not carry renders `not stated` and is never filled from
+another section, and an empty `Not run:` list is a row that says `not stated`
+rather than a row that disappears. The eighth row names the model and the role
+that did the work: both come from the job row (`model_json` and `writtenBy`, else
+`implementedBy`), never from the body, so the row survives a pull request that
+cannot be read and a body that claims a model cannot forge it. A read that fails
+— 404, no token, a capped list — leaves the page at 200 and names the unavailable
+fact instead, because a page that 500s on a read it did not need is worse than no
+block.
 
 ### Review and merge as one action
 
@@ -2353,6 +2450,16 @@ host copy. The delete path refuses a window that is not a whole number of days o
 at least 1, before the first delete: `loadConfig` already refuses such an env
 value, and `pruneOldData({ jobs: 0 })` is a direct caller the config cannot see,
 so the store checks the same invariant rather than trusting its input.
+
+The `settings` markers are the second table the pass empties (#1008): ten prefix
+families (`followup:`, `question_notified:`, `digest_sent:`, `email_test:`,
+`webhook_delivery:`, `email_reply:`, `github_app_state:`,
+`installation_sender:`, `plan_reminded:`, `plan_expired:`), each with its own
+window. Their table lives in the same module beside the classes, and one
+function decides expiration for both the delete and the count, because a
+family's instant sits inside its value rather than in a column. The card and
+the dry-run tool print them as one `settings_markers` row with the count and
+`per-prefix` instead of a single window number, which the families do not have.
 
 ### Operational alerts
 

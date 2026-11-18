@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>排期控制台 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=eed2b384789d" />
+  <link rel="stylesheet" href="assets/app.css?v=f1ada170f538" />
   <link rel="stylesheet" href="assets/fledge-deepwiki.css?v=6cbf359bf8d0" />
 </head>
 <body data-fledge-auth="in" data-fledge-locale="zh" data-fledge-path="/repos/repo_fledge/schedule">
@@ -68,6 +68,23 @@
       <form method="post" action="#" class="run-now" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="command_key" value="cmd_mock" /><button type="submit">立即运行</button><span class="fine">从当前时刻开始一次，不改动下次运行。</span></form>
       <form method="post" action="#" class="schedule-state" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">暂停排期</button><span class="fine">暂停期间走过的时刻记为 skipped，原因为 paused。</span></form>
     </section>
+    <section class="card" data-snapshot="unknown"><h2>认领时冻结的记录</h2>
+      <p class="muted">这次时刻（2026-11-15T01:00:00.000Z）被认领时记录的配置与授权。它们不随后来的排期修改或仓库变更而变化。</p>
+      
+      
+      <dl class="schedule-facts">
+        <dt>类型</dt><dd data-snapshot-kind="unknown">unknown</dd>
+        <dt>表达式</dt><dd data-snapshot-expression="unknown">unknown</dd>
+        <dt>间隔</dt><dd data-snapshot-interval="unknown">unknown</dd>
+        <dt>时区</dt><dd data-snapshot-timezone="unknown">unknown</dd>
+        <dt>有效期</dt><dd data-snapshot-window="unknown">unknown</dd>
+        <dt>所有者</dt><dd data-snapshot-owner="unknown">unknown</dd>
+        <dt>安装</dt><dd data-snapshot-installation="unknown">unknown</dd>
+        <dt>权限</dt><dd data-snapshot-permission="unknown">unknown</dd>
+        <dt>角色</dt><dd data-snapshot-role="unknown">unknown</dd>
+        <dt>时序版本</dt><dd data-snapshot-revision="unknown">unknown</dd>
+      </dl>
+    </section>
     <section class="card"><h2>编辑排期</h2>
       <p class="muted">排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。</p>
       <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><div class="row">
@@ -115,7 +132,7 @@
   <dialog id="feedback-dialog" class="add-repo-dialog feedback-dialog" aria-labelledby="feedback-dialog-title">
     <div class="row between dialog-head">
       <h2 id="feedback-dialog-title">反馈给开发者</h2>
-      <button class="link" type="button" data-close-dialog aria-label="关闭">×</button>
+      <button class="link" type="button" data-close-dialog aria-label="关闭"><svg class="icon icon-close" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M6 6l12 12" /><path d="M18 6 6 18" /></svg></button>
     </div>
     <p class="muted">遇到问题、想要一个功能，或者发现异常？这里会保存一条记录并邮件通知开发者。</p>
     <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">

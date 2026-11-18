@@ -141,6 +141,74 @@ export const RETENTION_CLASSES = [
   },
 ]
 
+// #1008: the second retention table. `pruneOldData` also removes markers kept in
+// `settings` — ten prefix families, each with its own window — and the preview
+// counted none of them, so an operator read "nothing to delete" while a pass
+// removed user-visible markers. The table lives here, beside the classes above,
+// because the same honesty rule applies: the rows a preview counts are the rows
+// a deploy deletes.
+//
+// A marker's instant is inside its value, not in a column: either an ISO stamp
+// at the end of the value (or the value itself) or the epoch milliseconds after
+// the last colon. That is why this class is counted in JS rather than SQL — and
+// why one function, `settingsMarkerInstant`, serves both the delete and the
+// preview.
+export const SETTINGS_RETENTION = [
+  { prefix: 'followup:', days: 30, label: ['跟进标记', 'Follow-up markers'] },
+  { prefix: 'question_notified:', days: 30, label: ['问题通知标记', 'Question-notified markers'] },
+  { prefix: 'digest_sent:', days: 14, label: ['摘要发送标记', 'Digest-sent markers'] },
+  { prefix: 'email_test:', days: 1, label: ['测试邮件标记', 'Test-mail markers'] },
+  { prefix: 'webhook_delivery:', days: 30, label: ['Webhook 投递标记', 'Webhook-delivery markers'] },
+  { prefix: 'email_reply:', days: 7, label: ['邮件回复标记', 'Email-reply markers'] },
+  { prefix: 'github_app_state:', days: 1, label: ['GitHub App 状态标记', 'GitHub App state markers'] },
+  { prefix: 'installation_sender:', days: 30, label: ['安装发送人标记', 'Installation-sender markers'] },
+  // A plan marker is read only while its job is unapproved, which ends at the
+  // plan deadline; the job row itself is kept for 365 days, so the marker gets
+  // the same window from the moment it was written.
+  { prefix: 'plan_reminded:', days: 365, label: ['计划提醒标记', 'Plan-reminded markers'] },
+  { prefix: 'plan_expired:', days: 365, label: ['计划过期标记', 'Plan-expired markers'] },
+]
+
+/** The one class the admin card and the dry-run tool print for `settings`. */
+export const RETENTION_SETTINGS_CLASS = {
+  id: 'settingsMarkers',
+  key: 'settings_markers',
+  label: ['设置标记', 'Settings markers'],
+}
+
+/** The family a key belongs to, or null when this table does not own the key. */
+export function settingsRetentionFamily(key) {
+  const name = String(key ?? '')
+  return SETTINGS_RETENTION.find((family) => name.startsWith(family.prefix)) ?? null
+}
+
+/**
+ * True when this marker is past its family's window at `now`.
+ *
+ * The parse is the prune's original one, kept bit for bit because a second
+ * parser would be a second answer: an ISO stamp at the start of the value wins,
+ * otherwise the epoch milliseconds after the last colon. A value that carries
+ * neither is not a marker the pass can read, so it is neither counted nor
+ * deleted — a counted row that survives is the drift this table exists to stop.
+ */
+export function settingsMarkerExpired(key, value, now = Date.now()) {
+  const family = settingsRetentionFamily(key)
+  if (family === null) return false
+  const text = String(value ?? '')
+  const raw = text.slice(text.lastIndexOf(':') + 1)
+  const at = /^\d{4}-\d{2}-\d{2}T/.test(text) ? Date.parse(text) : Number(raw)
+  if (!Number.isFinite(at) || at === 0) return false
+  const stamp = at > 10_000_000_000 ? new Date(at).toISOString() : text
+  return stamp < new Date(now - family.days * 86_400_000).toISOString()
+}
+
+/** How many `{key, value}` rows the prune would delete at `now`. */
+export function countSettingsMarkers(rows, now = Date.now()) {
+  let total = 0
+  for (const row of rows) if (settingsMarkerExpired(row.key, row.value, now)) total += 1
+  return total
+}
+
 // These two have no age window at all, and reporting a fabricated number for
 // them would be worse than saying so: sessions are reclaimed by `expires_at`
 // and `api_tokens` are revoked, or removed by the account cascade. Adding a

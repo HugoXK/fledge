@@ -71,6 +71,12 @@ function nextActionBlock(html: string): string {
   return html.match(/<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
 }
 
+// The loop rail is a sibling of that block, so a quiet dashboard has to be read
+// from the page itself; `nextActionBlock` cannot see it (#953).
+function loopRailBlock(html: string): string {
+  return html.match(/<nav class="loop-rail"[\s\S]*?<\/nav>/)?.[0] ?? ''
+}
+
 function targets(section: string): string[] {
   return [...section.matchAll(/href="([^"]*)"/g)].map((match) => match[1] ?? '')
 }
@@ -194,6 +200,30 @@ test('the all-clear names the repository that runs next, not one with no known r
   assert.match(section, /data-next-action="clear"/)
   assert.match(section, /Next automatic run: o\/running/, 'the repository with a known next run is the one named')
   assert.doesNotMatch(section, /o\/waiting/, 'a repository with no known run does not shadow the one that runs next')
+})
+
+// #953: `clear` says nothing needs the owner; it is not a position in the five
+// steps. The rail nevertheless marked Merge as current for every quiet
+// dashboard, including an account that never connected a repository.
+test('the all-clear dashboard marks no loop stage as current', () => {
+  const rail = loopRailBlock(render('en', { setup: completeSetup }))
+  assert.match(rail, /data-stage="merge"/, 'the rail still renders every stage')
+  assert.doesNotMatch(rail, /aria-current="step"/, 'a state that is not a stage does not name a current step')
+  assert.doesNotMatch(rail, /data-state="current"/, 'and no step claims to be where the loop is')
+  assert.equal((rail.match(/data-state="next"/g) ?? []).length, 5, 'every stage is still ahead')
+})
+
+// The Goal stage was unreachable: `loopStage` never returned it, so a quiet
+// account whose goal is written was told the loop stood at Merge.
+test('a quiet account with a written goal marks Goal as the current stage', () => {
+  const html = render('en', { setup: completeSetup }, (store, user) => {
+    store.createRepo({ id: 'repo_goal', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: 'keep the suite green', autoIterate: false, intervalMinutes: 1440 })
+  })
+  assert.match(html, /data-next-action="clear"/, 'this is still the quiet state')
+  const rail = loopRailBlock(html)
+  assert.match(rail, /data-stage="connect" data-state="done"/, 'the account has connected a repository')
+  assert.match(rail, /data-stage="goal" data-state="current" aria-current="step"/, 'the written goal is where the loop stands')
+  assert.doesNotMatch(rail, /data-stage="merge"[^>]*data-state="current"/, 'Merge is not claimed')
 })
 
 test('an unfinished first run keeps exactly one primary action, in the next-action block', () => {

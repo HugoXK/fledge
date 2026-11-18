@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
+import type { PostmortemRow } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
+import type { ChangeStory } from '../src/lib/changeStory.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { flashOf, formBody, json, makeTerminalJob, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 import { adminSearchPage, appReposPage, dashboardPage, jobPage, landingPage, metricsPage, repoPage, settingsPage, workspacePage } from '../src/views/pages.js'
@@ -880,6 +882,53 @@ test('the dashboard shows a personal delivery card with a selectable window', ()
     assert.match(page, /Needs attention/)
     assert.match(page, /45 minutes/)
     assert.match(page, new RegExp(quotaMoney(0.5 * config.quota.usdCny).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+  } finally {
+    store.close()
+  }
+})
+
+test('the dashboard names a non-USD bucket instead of converting it', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'currency-bucket-dashboard', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const page = dashboardPage({
+      config,
+      locale: 'en',
+      viewer,
+      repos: [],
+      jobs: [],
+      notifications: [],
+      personal: {
+        repos: 1,
+        jobs: 1,
+        succeeded: 1,
+        failed: 0,
+        prs: 0,
+        merged: 0,
+        costUsd: 0.3,
+        otherCurrencies: [{ currency: 'CNY', amount: 10, requests: 1 }],
+        openWorkItems: 0,
+        lastJobAt: null,
+      },
+    })
+    // The USD figure is the USD-billed spend, converted at the configured rate.
+    assert.match(page, new RegExp(quotaMoney(0.3 * config.quota.usdCny).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')))
+    // The CNY row is named in its own currency and never converted.
+    assert.match(page, /10\.0000 CNY/)
+    assert.doesNotMatch(page, /¥74\.16/)
+    // A window with only USD rows says nothing about other currencies.
+    const usdOnly = dashboardPage({
+      config,
+      locale: 'en',
+      viewer,
+      repos: [],
+      jobs: [],
+      notifications: [],
+      personal: { repos: 1, jobs: 1, succeeded: 1, failed: 0, prs: 0, merged: 0, costUsd: 0.3, otherCurrencies: [], openWorkItems: 0, lastJobAt: null },
+    })
+    assert.doesNotMatch(usdOnly, /Other currencies/)
   } finally {
     store.close()
   }
@@ -1976,6 +2025,28 @@ test('every in-page anchor on the settings page has a matching target', () => {
   }
 })
 
+// #860: six chips for four jobs. The nav and the page's cards must stay one list
+// in the same order, so grouping the chips means the page grows four group cards
+// and the old six become sub-blocks inside them.
+test('the settings page groups its six old cards into four sections with four chips', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'settings-groups', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const html = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const nav = /<nav class="section-nav"[^>]*>([\s\S]*?)<\/nav>/.exec(html)?.[1] ?? ''
+    const links = [...nav.matchAll(/href="#([A-Za-z][\w:-]*)"/g)].map((match) => match[1])
+    assert.deepEqual(links, ['account-access', 'model-providers', 'notifications', 'feedback'], 'the nav is one link per group, in the order the page draws them')
+    assert.match(html, /<section class="card" id="account-access">/, 'the three access cards share one group card')
+    const inner = /<section class="card" id="account-access">([\s\S]*?)<\/section>/.exec(html)?.[1] ?? ''
+    const ids = [...inner.matchAll(/id="(account|sessions|tokens)"/g)].map((match) => match[1])
+    assert.deepEqual(ids, ['account', 'sessions', 'tokens'], 'the old anchors survive as sub-blocks, in their reading order')
+  } finally {
+    store.close()
+  }
+})
+
 test('the job page shows the adversarial verdict and says when the answer was rejected', () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -2178,6 +2249,303 @@ test('every workspace state names itself, its own action and never calls a non-r
         assert.ok(!en.slice(0, en.indexOf('data-instance-health')).includes(state.lastError), `${name}: the raw error is not the page-level message`)
       }
     }
+  } finally {
+    store.close()
+  }
+})
+
+// #871: a tooltip answers "what is this field", not "what is the policy". These
+// assertions read the rendered `data-tip` attribute rather than the source, so a
+// tip that is only long because one language was edited is caught as well.
+const TIP_ABBREVIATIONS = ['e.g.', 'i.e.', 'v1.', 'v2.', 'etc.', 'vs.', 'approx.']
+const TIP_LIMIT = 120
+
+function decodedTip(attribute: string): string {
+  return attribute
+    .replace(/&quot;/g, '"')
+    .replace(/&#39;/g, "'")
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&')
+}
+
+function tipsOf(html: string): string[] {
+  return [...html.matchAll(/data-tip="([^"]*)"/g)].map((match) => decodedTip(match[1] ?? ''))
+}
+
+// `e.g.`, `v1.` and friends are not sentence ends, so they are neutralised
+// before the terminators are counted; without that list punctuation could be
+// used to dodge the rule, which is the point of the list living here.
+function sentenceEnds(text: string): number {
+  let rest = text
+  for (const abbreviation of TIP_ABBREVIATIONS) rest = rest.split(abbreviation).join(' ')
+  const cjk = (rest.match(/[。！？]/g) ?? []).length
+  const latin = (rest.match(/[.!?](?=\s|$)/g) ?? []).length
+  return cjk + latin
+}
+
+function densityApp(): { config: ReturnType<typeof testConfig>; store: Store; viewer: ReturnType<typeof densityViewer>; repo: ReturnType<Store['createRepo']> } {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const user = makeUser(store, { login: 'density-user', status: 'approved' })
+  const repo = store.createRepo({ id: 'repo_density', userId: user.id, owner: 'o', name: 'density', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+  return { config, store, viewer: densityViewer(store, user.id), repo }
+}
+
+function densityViewer(store: Store, userId: string): { user: NonNullable<ReturnType<Store['userById']>>; csrfToken: string } {
+  return { user: store.userById(userId)!, csrfToken: 'csrf' }
+}
+
+function densityPages(): Array<{ page: string; locale: 'zh' | 'en'; html: string }> {
+  const { config, store, viewer, repo } = densityApp()
+  try {
+    const out: Array<{ page: string; locale: 'zh' | 'en'; html: string }> = []
+    for (const locale of ['zh', 'en'] as const) {
+      out.push({ page: 'dashboard', locale, html: dashboardPage({ config, locale, viewer, repos: [repo], jobs: [], notifications: [] }) })
+      out.push({ page: 'repo', locale, html: repoPage({ config, locale, viewer, repo, jobs: [] }) })
+      out.push({ page: 'settings', locale, html: settingsPage({ config, locale, viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] }) })
+      out.push({
+        page: 'appRepos',
+        locale,
+        html: appReposPage({
+          config,
+          locale,
+          viewer,
+          installations: [{ installation_id: 1, account_login: 'acme', account_type: 'User' }],
+          installationId: 1,
+          repos: [{ fullName: 'acme/repo', owner: 'acme', name: 'repo', private: false, defaultBranch: 'main' }],
+        }),
+      })
+    }
+    return out
+  } finally {
+    store.close()
+  }
+}
+
+test('no tooltip is a paragraph', () => {
+  const offenders: string[] = []
+  for (const { page, locale, html } of densityPages()) {
+    for (const tip of tipsOf(html)) {
+      const ends = sentenceEnds(tip)
+      if (tip.length > TIP_LIMIT) offenders.push(`${page} ${locale}: ${tip.length} characters — ${tip}`)
+      if (ends > 1) offenders.push(`${page} ${locale}: ${ends} sentence ends — ${tip}`)
+      if (/[；;]/.test(tip)) offenders.push(`${page} ${locale}: chained clauses with a semicolon — ${tip}`)
+    }
+  }
+  assert.deepEqual(offenders, [], `every tooltip is one sentence of at most ${TIP_LIMIT} characters`)
+})
+
+test('both languages of every tooltip stay in step', () => {
+  const pages = densityPages()
+  for (const page of ['dashboard', 'repo', 'settings', 'appRepos']) {
+    const zh = tipsOf(pages.find((entry) => entry.page === page && entry.locale === 'zh')!.html)
+    const en = tipsOf(pages.find((entry) => entry.page === page && entry.locale === 'en')!.html)
+    assert.equal(zh.length, en.length, `${page} renders the same number of tooltips in both languages`)
+    for (const [index, tip] of zh.entries()) {
+      const english = en[index] ?? ''
+      assert.ok(tip.trim() !== '', `${page} tooltip ${index} has Chinese text`)
+      assert.ok(english.trim() !== '', `${page} tooltip ${index} has English text`)
+      assert.ok(tip.length <= TIP_LIMIT, `${page} tooltip ${index} is within the cap in Chinese`)
+      assert.ok(english.length <= TIP_LIMIT, `${page} tooltip ${index} is within the cap in English`)
+    }
+  }
+})
+
+test('the token expiry rule is read, not hovered', () => {
+  const { config, store, viewer } = densityApp()
+  try {
+    const zh = settingsPage({ config, locale: 'zh', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const en = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const zhAfter = zh.slice(zh.indexOf('name="expiryDays"'))
+    const enAfter = en.slice(en.indexOf('name="expiryDays"'))
+    assert.match(zhAfter, /<p class="fine">[^<]*个人 token 必须有期限/, 'the expiry rule is printed under the select in Chinese')
+    assert.match(enAfter, /<p class="fine">[^<]*A personal token must expire/, 'the expiry rule is printed under the select in English')
+    assert.deepEqual(tipsOf(zh).filter((tip) => tip.includes('必须有期限')), [], 'the expiry rule is not left inside a tooltip')
+    assert.deepEqual(tipsOf(en).filter((tip) => tip.includes('must expire')), [], 'the expiry rule is not left inside a tooltip')
+  } finally {
+    store.close()
+  }
+})
+
+test('the auto-merge protection rule is read, not hovered', () => {
+  const { config, store, viewer, repo } = densityApp()
+  try {
+    const zh = repoPage({ config, locale: 'zh', viewer, repo, jobs: [] })
+    const en = repoPage({ config, locale: 'en', viewer, repo, jobs: [] })
+    const zhAfter = zh.slice(zh.indexOf('name="requireProtection"'))
+    const enAfter = en.slice(en.indexOf('name="requireProtection"'))
+    assert.match(zhAfter, /<p class="fine">[^<]*自动合并要求 branch protection/, 'the protection rule is printed under the checkbox in Chinese')
+    assert.match(enAfter, /<p class="fine">[^<]*Auto-merge requires branch protection/, 'the protection rule is printed under the checkbox in English')
+    assert.deepEqual(tipsOf(zh).filter((tip) => tip.includes('自动合并要求')), [], 'the protection rule is not left inside a tooltip')
+    assert.deepEqual(tipsOf(en).filter((tip) => tip.includes('Auto-merge requires')), [], 'the protection rule is not left inside a tooltip')
+  } finally {
+    store.close()
+  }
+})
+
+test('no page prints the tooltip helper or an unrendered template', () => {
+  for (const { page, locale, html } of densityPages()) {
+    assert.doesNotMatch(html, /\{infoTip\(/, `${page} ${locale} interpolates the helper instead of printing it`)
+    assert.doesNotMatch(html, /\$\{/, `${page} ${locale} has no unrendered template expression`)
+  }
+})
+
+// #865: one primary action in the job header, the rest behind one disclosure,
+// and the four read-back cards open on demand. The order is the card's: a rule
+// change first (nothing later can be trusted until it is acknowledged), then
+// execute, then resume, then retry; a queued or running job has nothing to
+// advance. The sets below were read at the base sha, so "folded, not deleted"
+// is checked against what the page rendered before this change.
+test('the job page leads with one primary action and folds the rest (#865)', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'one-primary-user', status: 'approved', superadmin: true })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    let seq = 0
+
+    function verification(ruleChange: boolean): string {
+      return JSON.stringify({
+        ok: true,
+        checkedAt: '2026-11-16T09:00:00.000Z',
+        sha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345678',
+        prState: 'open',
+        draft: false,
+        mergeableState: 'clean',
+        checks: { total: 3, green: 3, failing: [], pending: [] },
+        combinedStatus: 'success',
+        reviews: { changesRequested: false, approvals: 1 },
+        testEvidence: { state: 'verified', claimed: true, greenChecks: ['tests'], failingChecks: [] },
+        reasons: [],
+        ...(ruleChange ? { ruleChange: { paths: ['docs/api.md', 'src/views/pages.ts'], acknowledged: false } } : {}),
+      })
+    }
+
+    function render(input: {
+      status: 'failed' | 'paused' | 'running' | 'succeeded'
+      ruleChange?: boolean
+      checkpoint?: string | null
+      pr?: boolean
+      kind?: 'iterate' | 'plan'
+      planApproved?: boolean
+      postmortem?: boolean
+      changeStory?: boolean
+    }): string {
+      seq += 1
+      const repo = store.createRepo({ id: `repo_one_primary_${seq}`, userId: user.id, owner: 'o', name: `op${seq}`, defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', roleCheckedAt: new Date().toISOString(), goal: '', autoIterate: false, intervalMinutes: 1440 })
+      const created = store.createJob({ id: `job_one_primary_${seq}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '', kind: input.kind ?? 'iterate' })
+      store.updateJob(created.id, {
+        status: input.status,
+        finished_at: input.status === 'running' || input.status === 'paused' ? null : new Date().toISOString(),
+        verification_json: verification(input.ruleChange === true),
+        pr_url: input.pr === false ? null : 'https://github.com/o/op/pull/9',
+        checkpoint: input.checkpoint ?? null,
+        ...(input.planApproved === true ? { plan_approved_at: new Date().toISOString(), plan_approved_by: user.login } : {}),
+      })
+      const postmortem: PostmortemRow | null = input.postmortem === true
+        ? {
+            id: 'pm_one_primary', job_id: created.id, repo_id: repo.id, user_id: user.id,
+            status: 'open', category: 'timeout', outcome: 'failed', recurrence_key: 'k',
+            evidence_state: 'verified', evidence_json: null, timeline_json: null,
+            suspected_cause: 'the job stopped reporting', owner: 'operator', preventive_action: 'watch the heartbeat',
+            preventive_kind: 'monitor', preventive_verified: 0, preventive_verified_at: null,
+            first_seen_at: '2026-11-16T09:00:00.000Z', last_seen_at: '2026-11-16T09:00:00.000Z',
+            closed_at: null, created_at: '2026-11-16T09:00:00.000Z', updated_at: '2026-11-16T09:00:00.000Z',
+          }
+        : null
+      const changeStory: ChangeStory | undefined = input.changeStory === true
+        ? { bodyState: 'ok', sections: [], totals: null, diffState: 'ok', attribution: null }
+        : undefined
+      return jobPage({
+        config,
+        locale: 'en',
+        viewer,
+        repo,
+        job: store.getJob(created.id)!,
+        events: [],
+        ...(postmortem === null ? {} : { postmortem }),
+        ...(changeStory === undefined ? {} : { changeStory }),
+      })
+    }
+
+    function headerOf(page: string): string {
+      const start = page.indexOf('<h1><code>')
+      assert.ok(start > 0, 'the page renders the job header')
+      return page.slice(start, page.indexOf('</section>', start))
+    }
+    function primaries(html: string): number {
+      return (html.match(/class="btn"/g) ?? []).length
+    }
+    function formOf(html: string, suffix: string): string {
+      const marker = `/${suffix}"`
+      const at = html.indexOf(marker)
+      assert.ok(at > 0, `the page still renders the ${suffix} action`)
+      return html.slice(html.lastIndexOf('<form', at), html.indexOf('</form>', at) + '</form>'.length)
+    }
+    function jobActions(html: string): string[] {
+      const found = new Set<string>()
+      for (const match of html.matchAll(/action="(\/repos\/[^"]*\/jobs\/[^/"]*\/([a-z-]+))"/g)) {
+        const suffix = match[2]
+        if (suffix !== undefined) found.add(suffix)
+      }
+      return [...found].sort()
+    }
+
+    // 1. Failed job with an unacknowledged rule change: acknowledge is the one
+    // primary; retry is reachable inside More actions as a ghost.
+    const failedRule = render({ status: 'failed', ruleChange: true })
+    const failedRuleHeader = headerOf(failedRule)
+    assert.equal(primaries(failedRuleHeader), 1, 'a failed job with a rule change has one primary, not two')
+    assert.match(formOf(failedRuleHeader, 'ack-rule-change'), /<button class="btn" type="submit">/, 'acknowledge is the primary')
+    assert.match(formOf(failedRuleHeader, 'retry'), /<button class="btn btn-ghost" type="submit">/, 'retry is subordinate')
+    assert.ok(failedRuleHeader.indexOf('<details class="job-more">') < failedRuleHeader.indexOf('/retry"'), 'retry sits inside More actions')
+
+    // 2. Paused job with the same verification: acknowledge first, resume under it.
+    const pausedRule = headerOf(render({ status: 'paused', ruleChange: true }))
+    assert.equal(primaries(pausedRule), 1, 'a paused job with a rule change has one primary')
+    assert.match(formOf(pausedRule, 'ack-rule-change'), /<button class="btn" type="submit">/, 'acknowledge leads a paused job too')
+    assert.match(formOf(pausedRule, 'resume'), /<button class="btn btn-ghost" type="submit">/, 'resume is subordinate')
+    assert.ok(pausedRule.indexOf('<details class="job-more">') < pausedRule.indexOf('/resume"'), 'resume sits inside More actions')
+
+    // 3. Failed job without a rule change: retry is the only primary, and the
+    // checkpoint wording still depends on the checkpoint.
+    const failed = headerOf(render({ status: 'failed' }))
+    assert.equal(primaries(failed), 1, 'a plain failed job has one primary')
+    assert.match(formOf(failed, 'retry'), /<button class="btn" type="submit">[^<]*Retry this job/, 'retry is the primary and keeps its label')
+    const checkpoint = headerOf(render({ status: 'failed', checkpoint: 'step-4' }))
+    assert.match(formOf(checkpoint, 'retry'), /Resume from checkpoint/, 'a checkpointed failed job still says Resume from checkpoint')
+
+    // 4. Running job: nothing claims to advance it; pause and cancel stay out of
+    // the disclosure, and nothing renders a More actions box when it would be empty.
+    const running = render({ status: 'running', pr: false })
+    const runningHeader = headerOf(running)
+    assert.equal(primaries(runningHeader), 0, 'a running job has no primary action')
+    assert.match(formOf(runningHeader, 'pause'), /<button class="btn btn-ghost" type="submit">Pause/, 'pause stays visible as a ghost')
+    assert.match(formOf(runningHeader, 'cancel'), /<button class="btn btn-danger" type="submit">Cancel/, 'cancel stays visible as a danger button')
+    assert.doesNotMatch(runningHeader, /class="job-more"/, 'an empty disclosure is not rendered')
+
+    // 5. Nothing is lost: every job action the page rendered before this change
+    // is still rendered in the same state.
+    assert.deepEqual(jobActions(failedRule), ['ack-rule-change', 'priority', 'recheck', 'relations', 'retry'], 'the failed + rule-change state keeps every action')
+    assert.deepEqual(jobActions(render({ status: 'paused', ruleChange: true })), ['ack-rule-change', 'priority', 'recheck', 'relations', 'resume'], 'the paused + rule-change state keeps every action')
+    assert.deepEqual(jobActions(render({ status: 'running' })), ['cancel', 'pause', 'priority', 'recheck', 'relations'], 'the running state keeps every action')
+
+    // An approved plan still gets its one forward step as the primary.
+    const executing = headerOf(render({ status: 'succeeded', kind: 'plan', planApproved: true }))
+    assert.equal(primaries(executing), 1, 'an approved plan has one primary')
+    assert.match(formOf(executing, 'execute'), /<button class="btn" type="submit">[^<]*Execute this plan/, 'execute is the primary for an approved plan')
+
+    // 6. The four read-back cards still exist exactly once, unchanged inside a
+    // collapsed wrapper named after the card.
+    const detailPage = render({ status: 'succeeded', kind: 'plan', planApproved: true, postmortem: true, changeStory: true })
+    assert.equal((detailPage.match(/class="job-detail"/g) ?? []).length, 4, 'the four read-back cards are wrapped')
+    assert.match(detailPage, /<details class="job-detail"><summary>Work type<\/summary><section class="card" data-work-type="iterate">/, 'work type keeps its markup inside the wrapper')
+    assert.match(detailPage, /<details class="job-detail"><summary>Why this change<\/summary><section class="card" data-change-story>/, 'the change story keeps its markup inside the wrapper')
+    assert.match(detailPage, /<details class="job-detail"><summary>Postmortem<\/summary><section class="card" id="postmortem">/, 'the postmortem keeps its markup inside the wrapper')
+    assert.match(detailPage, /<details class="job-detail"><summary>Team participation<\/summary><section class="card">/, 'team participation is wrapped too')
+    assert.equal((detailPage.match(/id="postmortem"/g) ?? []).length, 1, 'the postmortem is still rendered exactly once')
+    assert.match(detailPage, /<section class="card" data-work-type="iterate">[\s\S]*?<\/section>/, 'the work-type section still closes as one card')
   } finally {
     store.close()
   }

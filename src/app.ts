@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import type { Config } from './config.js'
 import { assertProductionConfig } from './config.js'
-import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
+import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionRow, type RepoRow, type ScheduleRow, type Store, type UserRow, type WorkflowFailureStatus } from './db.js'
 import { RETENTION_IDLE_TABLES } from '../scripts/lib/retention.mjs'
 import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
@@ -40,7 +40,7 @@ import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { parseVerification } from './lib/verification.js'
 import { cachedRouterProbe } from './lib/routerHealth.js'
-import { readChangeStory, type ChangeStory } from './lib/changeStory.js'
+import { changeStoryAttribution, readChangeStory, type ChangeStory } from './lib/changeStory.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl, parsePrUrl } from './jobs/prUrl.js'
 import { createRunner, type Runner } from './jobs/runner.js'
@@ -122,6 +122,7 @@ import {
   inboxSection,
   errorPage,
   type InboxQuestion,
+  type ScheduledNext,
 } from './views/pages.js'
 import { withDensity } from './views/layout.js'
 import type { PullTip } from './views/reviewMerge.js'
@@ -167,6 +168,17 @@ export interface BuiltApp {
   // Exposed so a test can force one measurement instead of faking the route.
   githubApp: GithubApp
   close: () => Promise<void>
+}
+
+// #940: one conversion from a saved schedule row to what the repository page and
+// the dashboard card render (#688 keeps them on one string). A paused row (#932)
+// keeps its expression and its repository stays enabled, so the row alone would
+// hand both surfaces an instant the worker skips and never makes up.
+function scheduledNextFor(row: ScheduleRow): ScheduledNext {
+  const schedule = scheduleFromRow(row)
+  if (schedule === null) return { kind: 'unreadable', at: null }
+  if (row.status === 'paused') return { kind: 'paused', at: null }
+  return { kind: schedule.kind, at: nextTime(schedule, Date.now()) }
 }
 
 function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED'): Error {
@@ -984,24 +996,28 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (job.pr_url === null || job.pr_url === '') return { story: undefined, tip: null }
     const cached = changeStoryCache.get(job.id)
     if (cached !== undefined && Date.now() - cached.at < changeStoryTtlMs) return { story: cached.story, tip: cached.tip }
+    // #793: which model and role did the work is on the job row, so it is read
+    // here rather than from the pull request body. The row can be read even when
+    // GitHub cannot, which is why every branch below carries it.
+    const attribution = changeStoryAttribution({ modelJson: job.model_json, attributionJson: job.attribution_json })
     const parsed = parsePrUrl(repo, job.pr_url, config.github.apiBase)
     let story: ChangeStory
     let tip: PullTip | null = null
     if (!parsed.ok) {
-      story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+      story = readChangeStory({ body: null, totals: null, diffState: 'unreadable', attribution })
     } else {
       try {
         const token = await repoGithubToken(repo, config, githubApp, store)
         const client = new GithubClient(token, config.github.apiBase)
         const pr = await client.getPullRequest(parsed.ref.owner, parsed.ref.name, parsed.ref.number)
         const diff = await client.pullRequestDiffTotals(parsed.ref.owner, parsed.ref.name, parsed.ref.number, pr.changedFiles)
-        story = readChangeStory({ body: pr.body, totals: diff.totals, diffState: diff.complete ? 'ok' : 'capped' })
+        story = readChangeStory({ body: pr.body, totals: diff.totals, diffState: diff.complete ? 'ok' : 'capped', attribution })
         tip = { headSha: pr.headSha, state: pr.state, draft: pr.draft, mergeableState: pr.mergeableState }
       } catch (error) {
         // A read that failed is a fact the block reports, not a reason to fail
         // the page: the evidence below it is what the maintainer came for.
         log.warn('change story read failed', { repo: repo.id, job: job.id, error: error instanceof Error ? error.message : String(error) })
-        story = readChangeStory({ body: null, totals: null, diffState: 'unreadable' })
+        story = readChangeStory({ body: null, totals: null, diffState: 'unreadable', attribution })
       }
     }
     if (changeStoryCache.size >= 200) {
@@ -1566,7 +1582,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // interval rule the card used to apply to every repository.
     const nextRunFacts = allRepos.map((repo) => {
       const scheduleRow = store.scheduleForRepo(repo.id)
-      const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
       return {
         repoId: repo.id,
         openWork: store.listOpenWorkItems(repo.id).length > 0,
@@ -1575,11 +1590,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #723: the worker only considers an enabled repository (`listAutoRepos`
         // is `WHERE enabled = 1 AND auto_iterate = 1`), so a paused repository
         // must not travel with a planner answer the card would treat as runnable.
-        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
-          scheduledNext: schedule === null
-            ? { kind: 'unreadable' as const, at: null }
-            : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
-        }),
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : { scheduledNext: scheduledNextFor(scheduleRow) }),
       }
     })
     return reply.type('text/html').send(
@@ -1778,7 +1789,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // that makes `saveSchedule` reachable in the product at all. Once the row
   // exists it owns the repository's cadence, so this route is the only door to it.
   app.get('/repos/:id/schedule', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const locale = request.locale ?? 'zh'
     const t = translator(locale)
     const row = store.scheduleForRepo(repo.id)
@@ -1786,6 +1797,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const state = scheduleConsole({
       repoId: repo.id,
       row,
+      // #544: today's repository row, so the frozen authorization the occurrence
+      // recorded can be shown against what the repository says now.
+      repo,
       occurrences: store.listScheduleOccurrences(repo.id, 20),
       now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
@@ -1807,6 +1821,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       state,
+      // #903: the role the viewer holds decides which controls the page offers.
+      role,
       // #544 slice 8: the run-now form carries a key rendered once, so a double
       // click is one command and a fresh page is a new one.
       runNowKey: randomId('cmd'),
@@ -1896,13 +1912,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // makes a double click the same command; the recurrence cursor is untouched,
   // so "run this now" never moves when the schedule next fires.
   app.post('/repos/:id/schedule/run-now', async (request, reply) => {
-    const { repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    // #903: `ownedRepo` has already answered the role question — it refuses a
+    // viewer and resolves the connection owner as the maintainer of last resort.
+    // Running now is work, so the actor's role is the rule; `repo.repo_role` is a
+    // declaration about Fledge's access to the upstream and is NULL on a
+    // repository connected today, which is why reading it locked the owner out.
+    const { repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const back = `/repos/${repo.id}/schedule`
     const t = translator(request.locale ?? 'zh')
-    if (repo.repo_role !== 'maintainer') {
-      return reply.redirect(`${back}?refused=${encodeURIComponent(t('只有 maintainer 可以立即运行排期。', 'Only a maintainer can run the schedule now.'))}`)
-    }
-    const result = await jobs.runScheduleNow(repo, form(request).command_key)
+    const result = await jobs.runScheduleNow(repo, form(request).command_key, role)
     if (!result.ok) {
       const message = result.code === 'schedule_missing'
         ? t('这个仓库还没有排期。', 'This repository has no schedule yet.')
@@ -2342,7 +2360,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     ]
     const repoModels = store.listRepoModelSelection(repo.id)
     const scheduleRow = store.scheduleForRepo(repo.id)
-    const schedule = scheduleRow === undefined ? null : scheduleFromRow(scheduleRow)
     let chiefMessages
     if ((viewer.user.role !== 'superadmin' || viewer.preview === true) && instance?.status === 'ready') {
       chiefMessages = await instances.chiefTranscript(repo.id).catch((error) => {
@@ -2419,9 +2436,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #723: `enabled` answers before the row does, so a paused repository
         // keeps the `disabled` sentence the page already has instead of a
         // planner instant the worker will never run.
-        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : {
-          scheduledNext: schedule === null ? { kind: 'unreadable' as const, at: null } : { kind: schedule.kind, at: nextTime(schedule, Date.now()) },
-        }),
+        ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : { scheduledNext: scheduledNextFor(scheduleRow) }),
         workflowFailures: store.listWorkflowFailuresForRepo(repo.id, 10),
         postmortems: store.listPostmortemsForRepo(repo.id, { openOnly: true }),
         recurrences: store.listPostmortemRecurrences(repo.id),
@@ -5579,7 +5594,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         retention: [
           ...store.retentionCounts(config.retention.windows).map((row) => ({
             ...row,
-            configured: config.retention.configured[row.id],
+            // #1008: the settings markers have no env window to configure, so
+            // the row is never marked `default` — it is not a default, it is a
+            // table with one window per family.
+            configured: row.id === 'settingsMarkers' ? false : config.retention.configured[row.id],
           })),
           ...RETENTION_IDLE_TABLES.map((table) => ({ id: table.id, days: null, configured: false, count: null, state: table.state })),
         ],

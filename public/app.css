@@ -644,6 +644,7 @@ a.repo-status:hover { border-color: var(--accent); }
 .banner-stack .banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .banner[hidden] { display: none; }
 .banner-dismiss { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-pill); background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.banner-dismiss svg { display: block; }
 .banner-dismiss:hover { color: var(--text); border-color: var(--line-strong); }
 .banner-dismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .memory-form select { min-height: var(--touch); }
@@ -721,6 +722,7 @@ label.check { min-height: var(--touch); }
   display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
   border: 1px solid var(--line-strong); border-radius: 50%; font-size: 12px; font-weight: 700; color: var(--muted);
 }
+.setup-mark svg { display: block; }
 .setup-step.is-done .setup-mark { color: var(--good); border-color: var(--good); }
 .setup-step.is-current .setup-mark { color: var(--mark-ink); background: var(--accent); border-color: var(--accent); }
 .setup-main { display: grid; gap: 2px; min-width: 0; }
@@ -894,6 +896,30 @@ textarea { resize: vertical; min-height: 70px; }
   border-top: 1px solid var(--line); padding: var(--space-4) 0; margin-bottom: 0;
 }
 .secondary-body > .quota-card { flex-wrap: wrap; gap: var(--space-3); }
+/* issue 865: the job header leads with one primary action, so the rest sit behind one
+   More actions disclosure, and the four read-back cards open on demand. Each
+   summary is its own 44px target (WCAG 2.5.5) and reuses the .secondary caret. */
+.job-more { max-width: 100%; margin: 0; }
+.job-more > summary,
+.job-detail > summary {
+  display: flex; align-items: center; gap: var(--space-2);
+  min-height: var(--touch); padding: 0 var(--space-3);
+  color: var(--muted); font-size: var(--text-sm); font-weight: 600;
+  cursor: pointer; list-style: none;
+}
+.job-more > summary { border: 1px solid var(--line-strong); border-radius: var(--radius-sm); }
+.job-detail { margin: 0 0 var(--section-gap); }
+.job-detail > summary { border-top: 1px solid var(--line); }
+.job-more > summary::-webkit-details-marker,
+.job-detail > summary::-webkit-details-marker { display: none; }
+.job-more > summary::before,
+.job-detail > summary::before { content: '▸'; color: var(--accent); }
+.job-more[open] > summary::before,
+.job-detail[open] > summary::before { content: '▾'; }
+.job-more > summary:hover,
+.job-detail > summary:hover { color: var(--text); }
+.job-more > .row { margin-top: var(--space-2); }
+.job-detail > .card { margin-top: var(--space-2); }
 .workspace-hero { display: flex; align-items: center; justify-content: space-between; gap: 28px; flex-wrap: wrap; padding: 28px 0 24px; }
 /* The dashboard masthead: one large statement, a compact data line, and the loop. */
 .masthead {
@@ -1230,6 +1256,24 @@ a.list-row:hover strong { color: var(--accent); }
   .brand > span:not(.mark) { display: none; }
 }
 
+/* issue 950: the 420px band above is clean from 360px up, but at 320 — the reflow
+   baseline WCAG 1.4.10 names — the row needed 355px, so the account pill ended
+   21px (zh) and 25px (en) past the viewport and the page scrolled sideways.
+   Nothing in the row can leave the phone header and every control keeps its
+   44px target, so the slack comes out of the spacing instead: the side padding
+   and the row gap halve, the language switch drops its own frame padding (its
+   two links keep the floor), and the sign-out button loses the 6px it carried
+   on each side, which its `min-width` already covers. */
+@media (max-width: 359px) {
+  .top-inner { padding: 0 6px; gap: 4px; }
+  @supports (padding: env(safe-area-inset-top)) {
+    .top-inner { padding: 0 calc(6px + env(safe-area-inset-right)) 0 calc(6px + env(safe-area-inset-left)); }
+  }
+  .lang { padding: 0; }
+  .account { padding: 2px; gap: 4px; }
+  .account-exit { padding: 0; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
   * { transition: none !important; animation: none !important; }
@@ -1267,6 +1311,7 @@ body:has(.add-repo-dialog[open]) { overflow: hidden; }
 @media (max-width: 640px) { .add-repo-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 16px; } }
 
 .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: var(--muted-2); font: inherit; font-size: 12px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
+.info-tip svg { display: block; }
 .info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--tip-ink); font-size: 12px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; display: none; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 /* Hover and focus are the no-JavaScript fallback only: with no script there is no
    state to toggle, so CSS must still reveal the hint. Once app.js runs it sets
@@ -1357,6 +1402,40 @@ html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus:
 .section-nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
 .section-nav a[aria-current="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
 .section-nav ~ .card[id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
+
+/* Issue 860: the settings page answers four questions, not six, so its nav is four
+   group links. Below 961px the strip above is unchanged. From there the same
+   four links become a sticky rail inside a two-column shell — one nav, one set
+   of links, both layouts by media query — and the shell's inner anchors take
+   the same sticky offset the card rule above promises, because `#tokens` and
+   `#sessions` are now sub-blocks rather than cards. */
+.settings-shell [id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
+.settings-shell .sub + .sub { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--line); }
+@media (min-width: 961px) {
+  .settings-shell { display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: var(--space-5); align-items: start; }
+  .settings-shell > .section-nav {
+    /* The shell is a grid, so the rail has to name its cell: without this,
+       auto-placement put the second and fourth card inside the 208px rail column
+       and left the content column empty beside them (#998). Spanning the four
+       group cards is also what keeps the rail sticky for the whole page rather
+       than only alongside the first card. */
+    grid-column: 1; grid-row: 1 / span 4;
+    align-self: start; position: sticky; top: var(--header-h); z-index: 15;
+    flex-direction: column; align-items: stretch; gap: 2px;
+    margin: 0; padding: 0; overflow: visible;
+    border-bottom: 0; background: transparent;
+  }
+  .settings-shell > .section-nav a {
+    justify-content: flex-start; white-space: normal;
+    border-bottom: 0; border-left: 2px solid transparent; border-radius: 0;
+    padding: 0 var(--space-3);
+  }
+  .settings-shell > .section-nav a:hover,
+  .settings-shell > .section-nav a[aria-current="true"] {
+    border-bottom-color: transparent; border-left-color: var(--accent);
+  }
+  .settings-shell [id] { scroll-margin-top: var(--header-h); }
+}
 .confirm-dialog { width: min(440px, calc(100vw - 32px)); border: 1px solid var(--line-strong); border-radius: var(--radius-md); padding: 22px; background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
 .confirm-dialog::backdrop { background: rgba(0, 0, 0, 0.62); }
 .confirm-dialog h2 { margin-bottom: 10px; }

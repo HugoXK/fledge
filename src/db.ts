@@ -29,7 +29,7 @@ export interface UsageDetail {
 import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evolution/artifacts.js'
 import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
-import { RETENTION_CLASSES, retentionCountSql, retentionDefaultWindows, retentionDeleteSql, type RetentionAt, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
+import { RETENTION_CLASSES, countSettingsMarkers, retentionCountSql, retentionDefaultWindows, retentionDeleteSql, settingsMarkerExpired, SETTINGS_RETENTION, type RetentionAt, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -2281,6 +2281,22 @@ CREATE TABLE IF NOT EXISTS schedules (
   updated_at TEXT NOT NULL
 );
 
+-- #544 slice 10: the project and tenant layers of the run budget. The schedule
+-- layer stays schedules.daily_runs; this table carries the same per-logical-
+-- UTC-day run limit for the #541 project (one per repository) and tenant (one
+-- per owner). A missing row is unbounded, and the tick stops at the first layer
+-- whose day is already spent, in schedule -> project -> tenant order, so adding
+-- a repository cannot bypass a tenant limit. category is reserved for the later
+-- report/development and model/cost split; this slice writes runs.
+CREATE TABLE IF NOT EXISTS schedule_budgets (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'runs',
+  daily_limit INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (scope, scope_id, category)
+);
+
 -- #544 slice 3B: one row per decided logical instant. Slice A recorded a
 -- decision only as an audit line, so a skip had no row and a second tick could
 -- not be told that the instant had already been decided. The unique key is that
@@ -3725,6 +3741,26 @@ export class Store {
     return this.get('SELECT installation_id, user_id, account_login, account_type FROM github_installations WHERE installation_id = ?', installationId)
   }
 
+  /**
+   * #544: the installation re-check for a queued notification. A row that
+   * reports on a job must not reach a destination when the installation that
+   * authorized the job's repository no longer resolves, so the delivery pass
+   * asks this before it calls a transport and blocks the row with the reason.
+   * A job whose repository names no installation is not refused here: there is
+   * nothing to re-read, and the transports keep their own destination checks.
+   */
+  jobInstallationRefusal(jobId: string): string | null {
+    const row = this.get<{ installation_id: number | null }>(
+      `SELECT r.installation_id AS installation_id
+         FROM jobs j JOIN repos r ON r.id = j.repo_id
+        WHERE j.id = ?`,
+      jobId,
+    )
+    if (row === undefined) return null
+    if (row.installation_id === null) return null
+    return this.getInstallation(row.installation_id) === undefined ? 'installation-revoked' : null
+  }
+
   deleteInstallation(installationId: number): void {
     this.run('DELETE FROM github_installations WHERE installation_id = ?', installationId)
   }
@@ -5039,6 +5075,10 @@ export class Store {
     prs: number
     merged: number
     costUsd: number
+    // #957: the buckets `costUsd` deliberately leaves out. The page names them in
+    // their own currency; folding them in would multiply a CNY amount by
+    // USD_CNY_RATE and invent a rate between buckets.
+    otherCurrencies: Array<{ currency: string; amount: number; requests: number }>
     openWorkItems: number
     lastJobAt: string | null
   } {
@@ -5051,7 +5091,14 @@ export class Store {
       failed: count("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND status = 'failed' AND created_at >= ?"),
       prs: count('SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND pr_url IS NOT NULL AND created_at >= ?'),
       merged: count("SELECT COUNT(*) AS n FROM jobs WHERE user_id = ? AND pr_state = 'merged' AND created_at >= ?"),
-      costUsd: Number(this.get<{ n: number | null }>('SELECT SUM(cost_usd) AS n FROM quota_ledger WHERE user_id = ? AND at >= ?', userId, sinceIso)?.n ?? 0),
+      costUsd: Number(this.get<{ n: number | null }>(`SELECT SUM(cost_usd) AS n FROM quota_ledger WHERE user_id = ? AND at >= ? AND cost_known = 1 AND ${usdBilled()}`, userId, sinceIso)?.n ?? 0),
+      otherCurrencies: this.all<{ currency: string; amount: number; requests: number }>(
+        `SELECT currency, SUM(cost_usd) AS amount, COUNT(*) AS requests FROM quota_ledger
+          WHERE user_id = ? AND at >= ? AND cost_known = 1 AND NOT ${usdBilled()}
+          GROUP BY currency
+          ORDER BY currency`,
+        userId, sinceIso,
+      ).map((row) => ({ currency: row.currency, amount: Number(row.amount), requests: Number(row.requests) })),
       openWorkItems: Number(this.get<{ n: number }>("SELECT COUNT(*) AS n FROM work_items WHERE user_id = ? AND state NOT IN ('merged', 'closed')", userId)?.n ?? 0),
       lastJobAt: last?.at ?? null,
     }
@@ -5998,6 +6045,67 @@ export class Store {
       `SELECT COUNT(*) AS count FROM schedule_occurrences
         WHERE schedule_id = ? AND state = 'dispatched' AND logical_time >= ? AND logical_time < ?`,
       scheduleId, from, to,
+    )
+    return Number(row?.count ?? 0)
+  }
+
+  // #544 slice 10: the project and tenant layers of the run budget. The #541
+  // identity rows map one project to each repository and one tenant to each
+  // owner, so a tenant limit covers every repository the owner runs in the same
+  // logical UTC day. Null means the layer is unbounded.
+  projectForRepo(repoId: string): { id: string; tenant_id: string } | undefined {
+    return this.get<{ id: string; tenant_id: string }>('SELECT id, tenant_id FROM projects WHERE repo_id = ?', repoId)
+  }
+
+  saveScheduleBudget(input: {
+    scope: 'project' | 'tenant'
+    scopeId: string
+    category?: string
+    dailyLimit: number | null
+  }): void {
+    const category = input.category ?? 'runs'
+    if (input.dailyLimit === null) {
+      this.run(
+        'DELETE FROM schedule_budgets WHERE scope = ? AND scope_id = ? AND category = ?',
+        input.scope, input.scopeId, category,
+      )
+      return
+    }
+    if (!Number.isSafeInteger(input.dailyLimit) || input.dailyLimit < 1) {
+      throw new Error('a schedule budget must be a positive integer or null')
+    }
+    this.run(
+      `INSERT INTO schedule_budgets (scope, scope_id, category, daily_limit, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(scope, scope_id, category) DO UPDATE SET daily_limit = excluded.daily_limit, updated_at = excluded.updated_at`,
+      input.scope, input.scopeId, category, input.dailyLimit, nowIso(),
+    )
+  }
+
+  scheduleBudget(scope: 'project' | 'tenant', scopeId: string, category = 'runs'): number | null {
+    const row = this.get<{ daily_limit: number }>(
+      'SELECT daily_limit FROM schedule_budgets WHERE scope = ? AND scope_id = ? AND category = ?',
+      scope, scopeId, category,
+    )
+    return row?.daily_limit ?? null
+  }
+
+  countProjectScheduleDispatchesBetween(projectId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences o
+         JOIN projects p ON p.repo_id = o.repo_id
+        WHERE p.id = ? AND o.state = 'dispatched' AND o.logical_time >= ? AND o.logical_time < ?`,
+      projectId, from, to,
+    )
+    return Number(row?.count ?? 0)
+  }
+
+  countTenantScheduleDispatchesBetween(tenantId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences o
+         JOIN projects p ON p.repo_id = o.repo_id
+        WHERE p.tenant_id = ? AND o.state = 'dispatched' AND o.logical_time >= ? AND o.logical_time < ?`,
+      tenantId, from, to,
     )
     return Number(row?.count ?? 0)
   }
@@ -7282,14 +7390,23 @@ export class Store {
    * the same predicate `pruneOldData` runs. The admin page renders these; the
    * dry-run tool prints them from the same table. Read-only by construction.
    */
-  retentionCounts(windows: RetentionWindows = retentionDefaultWindows()): Array<{ id: RetentionId; days: number; count: number }> {
+  retentionCounts(windows: RetentionWindows = retentionDefaultWindows()): Array<{ id: RetentionId | 'settingsMarkers'; days: number | null; count: number }> {
     const now = Date.now()
-    return RETENTION_CLASSES.map((cls) => {
+    const counts: Array<{ id: RetentionId | 'settingsMarkers'; days: number | null; count: number }> = RETENTION_CLASSES.map((cls) => {
       const days = windows[cls.id] ?? cls.defaultDays
       const at: RetentionAt = { now: nowIso(), cutoff: new Date(now - days * 86_400_000).toISOString() }
       const { sql, params } = retentionCountSql(cls, at)
       return { id: cls.id, days, count: Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0) }
     })
+    // #1008: `settings` is the second table the pass empties and it has one
+    // window per family, not one number — so its `days` is null and the card
+    // prints the per-prefix rule rather than a window it does not have.
+    counts.push({
+      id: 'settingsMarkers',
+      days: null,
+      count: countSettingsMarkers(this.all<{ key: string; value: string }>('SELECT key, value FROM settings'), now),
+    })
+    return counts
   }
 
   // #281: every window comes from config, with the shipped literal as the
@@ -7328,32 +7445,15 @@ export class Store {
     // on purpose: they are reclaimed when the job they name is gone
     // (`reconcileOrphans`), not by age. `merge_reconcile:` also throttles the
     // merge pass, so its age is not a retention signal.
-    const SETTINGS_RETENTION: ReadonlyArray<readonly [string, number]> = [
-      ['followup:', 30],
-      ['question_notified:', 30],
-      ['digest_sent:', 14],
-      ['email_test:', 1],
-      ['webhook_delivery:', 30],
-      ['email_reply:', 7],
-      ['github_app_state:', 1],
-      ['installation_sender:', 30],
-      // A plan marker is read only while its job is unapproved, which ends at
-      // the plan deadline; the job row itself is kept for 365 days, so the
-      // marker gets the same window from the moment it was written.
-      ['plan_reminded:', 365],
-      ['plan_expired:', 365],
-    ]
+    // #1008: the table lives in `scripts/lib/retention.mjs` beside the windows,
+    // so the preview counts the same rows this loop deletes. A copy here is what
+    // let the admin card report zero while ten families disappeared.
     const settings = this.all<{ key: string; value: string }>(
-      `SELECT key, value FROM settings WHERE ${SETTINGS_RETENTION.map(([prefix]) => `key LIKE '${prefix}%'`).join(' OR ')}`,
+      `SELECT key, value FROM settings WHERE ${SETTINGS_RETENTION.map((family) => `key LIKE '${family.prefix}%'`).join(' OR ')}`,
     )
     for (const row of settings) {
-      const days = SETTINGS_RETENTION.find(([prefix]) => row.key.startsWith(prefix))?.[1]
-      if (days === undefined) continue
-      const raw = row.value.slice(row.value.lastIndexOf(':') + 1)
-      const at = /^\d{4}-\d{2}-\d{2}T/.test(row.value) ? Date.parse(row.value) : Number(raw)
-      if (!Number.isFinite(at) || at === 0) continue
-      const iso = at > 10_000_000_000 ? new Date(at).toISOString() : row.value
-      if (iso < cutoff(days)) this.run('DELETE FROM settings WHERE key = ?', row.key)
+      if (!settingsMarkerExpired(row.key, row.value, now)) continue
+      this.run('DELETE FROM settings WHERE key = ?', row.key)
     }
   }
 

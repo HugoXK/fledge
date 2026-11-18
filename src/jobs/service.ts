@@ -62,7 +62,7 @@ import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStat
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
 import { encodeOccurrenceSnapshot, occurrenceSnapshot } from '../schedules/snapshot.js'
-import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
+import { runBudgetStop, utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
@@ -100,6 +100,12 @@ export interface EnqueueResult {
   // The value a refusal names, such as the missing target branch, so the banner
   // can say which one instead of a bare sentence.
   detail?: string
+  // #915: a `fail` verdict is a stored reading, not a fresh fact. These carry
+  // when it was taken and how old it is, so a refusal minutes after the last
+  // measurement can say so instead of presenting 28 minutes as the current
+  // offset. Optional because every other refusal has no reading behind it.
+  measuredAt?: string
+  measuredAgeSeconds?: number
 }
 
 // #544 slice 3A: where a schedule's search starts when it has never fired. The
@@ -1179,7 +1185,7 @@ export class Jobs {
     return (this.carryOverReaderOverride ?? ((target: RepoRow) => this.carryOverReader(target)))(repo)
   }
 
-  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string } = {}): Promise<EnqueueResult> {
+  async enqueue(repo: RepoRow, trigger: 'manual' | 'schedule' | 'followup', goalOverride?: string, kind: JobKind = 'iterate', options: { branch?: string; prUrl?: string; baseBranch?: string; workItemId?: string; priority?: number; retryAttempt?: number; retryOf?: string; ownerStarted?: boolean; workType?: string; actorRole?: string } = {}): Promise<EnqueueResult> {
     // #283: the platform stop outranks every other refusal. It is checked first,
     // above the work-type resolution and the per-repository and per-role gates, so
     // the answer says the platform is stopped rather than naming a work type or
@@ -1196,11 +1202,14 @@ export class Jobs {
     const clock = this.githubApp.clockState()
     if (clock.state === 'fail') {
       incCounter('fledge_admission_rejected_total', { reason: 'clock_skew' }, 1, 'Queue admission rejections')
+      const ageSeconds = clock.measuredAt === null ? undefined : Math.max(0, Math.round((Date.now() - Date.parse(clock.measuredAt)) / 1000))
       return {
         ok: false,
         error: `平台时钟与 GitHub 相差 ${String(clock.skewSeconds)} 秒，超过 ${String(clock.thresholdSeconds)} 秒上限，任务没有开始。`,
         code: 'CLOCK_SKEW',
         detail: String(clock.skewSeconds),
+        ...(clock.measuredAt === null ? {} : { measuredAt: clock.measuredAt }),
+        ...(ageSeconds === undefined ? {} : { measuredAgeSeconds: ageSeconds }),
       }
     }
     // #390: the work type is resolved before the gates, and an unknown one is
@@ -1223,7 +1232,16 @@ export class Jobs {
       return { ok: false, error: `${workType.type} 工作类型不能创建分支或 PR。`, code: 'WORK_TYPE_MISMATCH', detail: `${kind}/${workType.type}` }
     }
     if (repo.enabled !== 1) return { ok: false, error: '这个仓库已停用', code: 'REPO_DISABLED' }
-    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
+    // #903: a route that already resolved the actor's member role through
+    // `ownedRepo` states it here, so work a person is visibly allowed to start
+    // is not refused because the repository's own `repo_role` was never chosen
+    // (it is NULL on every repository connected since the backfill migration).
+    // An unknown or viewer role still refuses: this is an authorization fact the
+    // route hands over, not an escape hatch.
+    const actorRole = options.actorRole
+    const roleAllowsWork = repo.repo_role === 'maintainer' || repo.repo_role === 'developer'
+      || actorRole === 'maintainer' || actorRole === 'developer'
+    if (!roleAllowsWork) {
       return { ok: false, error: '请先选择你在这个仓库的角色。', code: 'ROLE_REQUIRED' }
     }
     if (kind === 'review' && repo.repo_role !== 'maintainer') {
@@ -3488,6 +3506,9 @@ export class Jobs {
       case 'waiting-first-run': return '等待首次运行'
       case 'due': return '等待调度'
       case 'scheduled': return this.digestTime(new Date(next.at ?? Date.now()))
+      // #940: a paused schedule skips every window it would have run, so the
+      // email says so instead of naming an instant that will not happen.
+      case 'paused': return '排期已暂停：恢复后从下一个时刻开始'
       case 'unknown-unreadable': return 'unknown（排期无法解析）'
       case 'unknown-closed': return 'unknown（排期窗口已结束）'
     }
@@ -4057,7 +4078,7 @@ export class Jobs {
   // the job, `skipped` with the refusal), so the console and the ledger read one
   // vocabulary. A refusal still settles the row: the same key must keep
   // answering the same thing.
-  async runScheduleNow(repo: RepoRow, rawKey: unknown): Promise<{
+  async runScheduleNow(repo: RepoRow, rawKey: unknown, actorRole?: string): Promise<{
     ok: boolean
     code?: string
     message?: string
@@ -4081,7 +4102,7 @@ export class Jobs {
       snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!created.created) return this.runNowAnswer(created.row, true)
-    const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true })
+    const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true, ...(actorRole === undefined ? {} : { actorRole }) })
     const dispatchedAt = Date.now()
     if (!result.ok || result.job === undefined) {
       const reason = result.code ?? 'dispatch-refused'
@@ -4374,6 +4395,11 @@ export class Jobs {
   }
 
   private async tickOnce(): Promise<void> {
+    // #915: the clock gate refuses every trigger and nothing that runs after it
+    // can re-measure, so a quiet instance could never leave `fail`. The tick is
+    // the one loop that runs without a job, a webhook or a page view; while the
+    // state is healthy this is a state read and spends no GitHub call.
+    await this.githubApp.refreshSkewWhileFailed()
     const handled = new Set<string>()
     setGauge('fledge_jobs_active', this.store.countActiveJobs(), {}, 'Active jobs')
     setGauge('fledge_jobs_queued', this.store.listQueuedJobs().length, {}, 'Queued jobs')
@@ -4473,7 +4499,12 @@ export class Jobs {
       if (this.store.activeJobForRepo(repo.id) !== undefined) continue
       if (!this.dueReview(repo)) continue
       const result = await this.enqueue(repo, 'schedule', undefined, 'review')
-      if (!result.ok && result.code === 'QUOTA_EXHAUSTED') break
+      // #960: the quota answer is per user, this scan is per instance. Ending the
+      // pass here starved every repository behind this one, and because a review
+      // refusal never moves `last_review_at`, the refused repository kept the head
+      // of the scan and broke the pass again on every tick. Skip this repository
+      // and let each further one be decided on its own user's quota.
+      if (!result.ok && result.code === 'QUOTA_EXHAUSTED') continue
       log.info('scheduled review', {
         repo: `${repo.owner}/${repo.name}`,
         ok: result.ok,
@@ -4536,14 +4567,27 @@ export class Jobs {
         if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
         continue
       }
-      // #544 slice 6: the schedule layer of the run budget. The instant is
-      // charged to its own logical UTC day, so a late or recovered run spends the
-      // day it was scheduled for and crossing midnight grants no fresh allowance.
-      // At the limit the instant is decided — a skipped row naming the reason —
-      // rather than left due, or every tick would re-decide it.
-      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined && scheduleRow.daily_runs !== null) {
-        const used = this.store.countScheduleDispatchesBetween(scheduleRow.id, utcDayStart(plan.dueAt), utcDayEnd(plan.dueAt))
-        if (used >= scheduleRow.daily_runs) {
+      // #544 slice 6/10: the layered run budget. The schedule layer lives on
+      // the row; the project and tenant layers live in `schedule_budgets` and
+      // cover every repository the owner runs in the same logical UTC day. The
+      // first spent layer decides the instant, in schedule -> project -> tenant
+      // order, so adding a repository cannot bypass a tenant limit. The count is
+      // charged to the instant's own logical day, so a late or recovered run
+      // spends the day it was scheduled for and crossing midnight grants no
+      // fresh allowance.
+      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined) {
+        const from = utcDayStart(plan.dueAt)
+        const to = utcDayEnd(plan.dueAt)
+        const identity = this.store.projectForRepo(repo.id)
+        const scheduleLimit = scheduleRow.daily_runs
+        const projectLimit = identity === undefined ? null : this.store.scheduleBudget('project', identity.id)
+        const tenantLimit = identity === undefined ? null : this.store.scheduleBudget('tenant', identity.tenant_id)
+        const stop = runBudgetStop([
+          { scope: 'schedule', limit: scheduleLimit, used: scheduleLimit === null ? 0 : this.store.countScheduleDispatchesBetween(scheduleRow.id, from, to) },
+          { scope: 'project', limit: projectLimit, used: projectLimit === null || identity === undefined ? 0 : this.store.countProjectScheduleDispatchesBetween(identity.id, from, to) },
+          { scope: 'tenant', limit: tenantLimit, used: tenantLimit === null || identity === undefined ? 0 : this.store.countTenantScheduleDispatchesBetween(identity.tenant_id, from, to) },
+        ])
+        if (stop !== null) {
           this.skipScheduledOccurrence(repo, plan, 'budget-exceeded')
           continue
         }
@@ -4633,7 +4677,10 @@ export class Jobs {
         // Nothing was decided: release the lease so the next pass can take this
         // instant immediately instead of waiting for it to lapse.
         if (plan !== null && lease !== null) this.releaseScheduledOccurrence(repo, plan, lease, 'quota-exhausted')
-        break
+        // #960: same rule as the review scan above — one user's exhausted quota
+        // records a refusal on this repository and moves on, instead of ending a
+        // pass that other users' repositories are still waiting behind.
+        continue
       }
       if (plan !== null && lease !== null) {
         const dueAt = plan.dueAt

@@ -14,7 +14,7 @@ import { nextRun, type NextRunState } from './nextRun.js'
 import { nextTime } from '../schedules/next.js'
 import { scheduleFromRow } from '../schedules/tick.js'
 
-export type NextRunForState = NextRunState | 'unknown-unreadable' | 'unknown-closed'
+export type NextRunForState = NextRunState | 'unknown-unreadable' | 'unknown-closed' | 'paused'
 
 export interface NextRunForInput {
   repo: RepoRow
@@ -58,6 +58,12 @@ export function nextRunFor(input: NextRunForInput): NextRunFor {
   // dashboard and digest keep one wording.
   if (input.repo.enabled !== 1) return intervalAnswer()
   if (input.row !== undefined) {
+    // #940: a paused schedule (#932) keeps its row and its repository stays
+    // enabled, but the worker turns a due instant into a skipped occurrence with
+    // `reason: 'paused'` and moves the cursor, so the window is never made up.
+    // The console already says `已暂停 / paused · since <iso>`; a surface that
+    // named the skipped instant promised a run that could not happen.
+    if (input.row.status === 'paused') return { at: null, state: 'paused' }
     const schedule = scheduleFromRow(input.row)
     if (schedule === null) return { at: null, state: 'unknown-unreadable' }
     const at = nextTime(schedule, now)

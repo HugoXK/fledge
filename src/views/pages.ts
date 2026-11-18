@@ -19,6 +19,7 @@ import { renderState, stateCell, type StateAction } from './states.js'
 import { maskEmail, maskIp, redact } from '../lib/secrets.js'
 import { REVIEW_INSTRUCTION_LABEL, reviewInstructionFromGoal } from '../lib/followUpInstruction.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta } from '../lib/temporal.js'
+import { icon } from './icons.js'
 import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
@@ -28,7 +29,7 @@ import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '..
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { changeStoryFacts, type ChangeStory, type ChangeStoryFact } from '../lib/changeStory.js'
 import type { PreviewResult } from '../schedules/preview.js'
-import { intervalFieldText, type ScheduleConsoleState } from '../schedules/console.js'
+import { intervalFieldText, type FrozenSnapshotField, type ScheduleConsoleState } from '../schedules/console.js'
 import { contractOf, resolveWorkType, workTypeLabel, workTypePurpose } from '../lib/workTypes.js'
 import { parseTriageJson, triageSummaryLine } from '../lib/triage.js'
 import { MIN_DISCOVERY_INTERVAL_MINUTES, carryOverHeaderFromBlock, carryOverHeaderText, parseCarryOverReport } from '../jobs/continuity.js'
@@ -44,7 +45,7 @@ import { readReleaseNotesSources } from '../releases/notes.js'
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
-import { RETENTION_CLASSES, RETENTION_IDLE_TABLES, type RetentionId } from '../../scripts/lib/retention.mjs'
+import { RETENTION_CLASSES, RETENTION_IDLE_TABLES, RETENTION_SETTINGS_CLASS, type RetentionId } from '../../scripts/lib/retention.mjs'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
 import { STAGE_MODES } from '../lib/stages.js'
@@ -165,7 +166,7 @@ function retiredMark(model: { retired_at?: string | null }, t: Translate): strin
 }
 
 function infoTip(text: string): string {
-  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">!</button>`
+  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">${icon('info', 12)}</button>`
 }
 
 function recurrenceRepositories(json: string): string[] {
@@ -777,7 +778,7 @@ function setupSection(setup: SetupState | undefined, t: Translate, primaryElsewh
   const rows = checklist.steps
     .map((step, index) => {
       const current = checklist.next?.key === step.key
-      const mark = step.done ? '✓' : String(index + 1)
+      const mark = step.done ? icon('check', 14) : String(index + 1)
       const status = step.done
         ? `<span class="setup-done">${escapeHtml(step.note ?? t('已完成', 'Done'))}</span>`
         : step.blocked === null
@@ -839,7 +840,7 @@ export interface NextActionView {
 // The route computes it once per repository, and both surfaces render it through
 // `plannedNextLine`, so one repository cannot be given two next-run times (#688).
 export interface ScheduledNext {
-  kind: 'cron' | 'interval' | 'unreadable'
+  kind: 'cron' | 'interval' | 'unreadable' | 'paused'
   at: number | null
 }
 
@@ -873,6 +874,10 @@ function nextRunLine(next: NextRun, t: Translate): string {
 // a closed window have no instant to name, and the two surfaces say that in the
 // same words instead of formatting the same state twice (#688).
 function plannedNextLine(scheduled: ScheduledNext, t: Translate): string {
+  // #940: a paused schedule has no next run to name. The instant it would carry
+  // is skipped by the worker (`reason: 'paused'`) and is never made up, so the
+  // sentence replaces the time instead of sitting beside it.
+  if (scheduled.kind === 'paused') return t('排期已暂停：恢复后从下一个时刻开始', 'Schedule paused: it runs from the next instant after you resume')
   if (scheduled.kind === 'unreadable') return t('unknown（排期无法解析）', 'unknown (the schedule cannot be read)')
   if (scheduled.at === null) return t('unknown（排期窗口已结束）', 'unknown (the schedule window has closed)')
   return nextRunLine({ at: scheduled.at, state: scheduled.at <= Date.now() ? 'due' : 'scheduled' }, t)
@@ -901,7 +906,9 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
         // #723: a paused repository keeps its row but is never a candidate; the
         // route already withholds the row's answer for it, so this is the same
         // condition stated where the choice is made.
-        runnable: repo.enabled === 1 && scheduled.kind !== 'unreadable' && scheduled.at !== null,
+        // #940: a paused schedule row is the other pause that keeps the
+        // repository enabled, and it is no more a candidate than a disabled one.
+        runnable: repo.enabled === 1 && scheduled.kind !== 'unreadable' && scheduled.kind !== 'paused' && scheduled.at !== null,
       }
     }
     const state = nextRun({
@@ -1039,15 +1046,24 @@ function nextActionFor(input: {
 
 type LoopStage = 'connect' | 'goal' | 'work' | 'review' | 'merge'
 
-function loopStage(kind: NextActionKind): LoopStage {
-  if (kind === 'setup' || kind === 'quota') return 'connect'
-  if (kind === 'questions' || kind === 'job') return 'work'
-  if (kind === 'alert') return 'review'
-  return 'merge'
+// #953: `clear` is the quiet state, not a position in the five steps. It used to
+// fall through to `merge`, so every quiet dashboard announced Merge as where the
+// loop stood — even one whose account never connected a repository. A quiet
+// account whose goal is written stands at Goal; a quiet account without one has
+// no stage to name, and the rail marks none.
+function loopStage(action: NextActionView, hasGoal: boolean): LoopStage | null {
+  switch (action.kind) {
+    case 'setup':
+    case 'quota': return 'connect'
+    case 'questions':
+    case 'job': return 'work'
+    case 'alert': return 'review'
+    case 'clear': return hasGoal ? 'goal' : null
+  }
 }
 
-function loopRail(action: NextActionView, t: Translate): string {
-  const current = loopStage(action.kind)
+function loopRail(action: NextActionView, t: Translate, hasGoal: boolean): string {
+  const current = loopStage(action, hasGoal)
   const stages: Array<[LoopStage, string, string]> = [
     ['connect', t('接入', 'Connect'), t('添加一个仓库', 'Add a repository')],
     ['goal', t('目标', 'Goal'), t('写下一个目标', 'State one goal')],
@@ -1055,8 +1071,12 @@ function loopRail(action: NextActionView, t: Translate): string {
     ['review', t('审核', 'Review'), t('看 diff、检查和成本', 'Read the diff, checks and cost')],
     ['merge', t('合并', 'Merge'), t('合并后继续', 'Merge and repeat')],
   ]
-  const index = stages.findIndex(([stage]) => stage === current)
-  const currentNote = action.label === '' ? (stages[index]?.[2] ?? '') : action.label
+  const index = current === null ? -1 : stages.findIndex(([stage]) => stage === current)
+  // A quiet account that has already written its goal is not being asked for
+  // one, so the rail says what it stands on instead of the stage's own prompt.
+  const currentNote = action.label !== ''
+    ? action.label
+    : action.kind === 'clear' ? t('目标已写下，眼下没有待办', 'The goal is written; nothing is pending') : (stages[index]?.[2] ?? '')
   return `<nav class="loop-rail" aria-label="${escapeHtml(t('工作循环', 'The work loop'))}">
     ${stages.map(([stage, label, note], position) => {
       const state = position < index ? 'done' : position === index ? 'current' : 'next'
@@ -1096,6 +1116,9 @@ export function dashboardPage(input: {
     prs: number
     merged: number
     costUsd: number
+    // #957: priced rows billed in another currency. They are shown beside the
+    // USD figure in their own currency, never converted into it.
+    otherCurrencies?: Array<{ currency: string; amount: number; requests: number }>
     openWorkItems: number
     lastJobAt: string | null
   }
@@ -1146,6 +1169,7 @@ export function dashboardPage(input: {
       text: t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'),
     })
   }
+  const loopRepos = input.allRepos ?? repos
   const nextAction = nextActionFor({
     t,
     locale,
@@ -1154,7 +1178,7 @@ export function dashboardPage(input: {
     latestJob: input.latestJob ?? jobs[0],
     quota,
     setup: input.setup,
-    repos: input.allRepos ?? repos,
+    repos: loopRepos,
     nextRunFacts: input.nextRunFacts ?? [],
     config,
   })
@@ -1181,16 +1205,16 @@ export function dashboardPage(input: {
         .join('')
   const manualForm = `      <form method="post" action="/repos" class="form">
         ${csrf(viewer)}
-        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))}${infoTip(t('Fledge 会检查并在需要时创建你的 fork；开发分支推到 fork，issue 和 PR 提到上游。若上游 owner 就是你，则直接在原仓库开分支。', 'Fledge checks and creates your fork when needed; branches go to the fork while issues and PRs target the upstream. If you own the upstream, work directly in it.'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
-        <label>${escapeHtml(t('GitHub token', 'GitHub token'))}${infoTip(t('token 需要能读取上游、创建 fork、写入 fork，并在上游创建 issue/PR；建议只授权实际需要的仓库。token 会加密保存，页面不会回显。', 'The token must read the upstream, create and write the fork, and open issues/PRs on the upstream. Grant only the repositories you need. It is encrypted and never shown again.'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
+        <label>${escapeHtml(t('上游仓库', 'Upstream repository'))}${infoTip(t('Fledge 会在需要时创建 fork（上游就是你自己的仓库则直接用），开发分支推到 fork，issue 和 PR 提到上游。', 'Fledge forks when needed, branches go to the fork and issues/PRs stay upstream (own upstream: work directly).'))} <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
+        <label>${escapeHtml(t('GitHub token', 'GitHub token'))}${infoTip(t('token 需要能读上游、写 fork，加密保存且不回显。', 'The token must read the upstream and write the fork, and it is stored encrypted and never shown again.'))} <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
         ${goalTemplateSelect(t, 'goal-new')}
-        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+        <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定，模板会填入一个可执行的目标。', 'The more concrete the goal, the steadier the output, and a template fills in a ready prompt.'))} <textarea id="goal-new" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。', 'With no open work one discovery runs per interval (60 min minimum, one issue at most), otherwise the global cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
         </div>
         <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用；审核任务独立于迭代任务。', 'Available only with the maintainer role and GitHub admin/maintain permission; review jobs run separately from iterate jobs.'))}</label>
+          <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时可启用，审核任务独立于迭代。', 'Only with the maintainer role and admin/maintain permission, and review jobs run apart from iterate jobs.'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval">${reviewIntervalOptions(t)}</select></label>
         </div>
         <p class="fine">${escapeHtml(t('添加后请选择你的角色；未选择前不会启动任务。', 'Choose your role after adding; jobs stay paused until you do.'))}</p>
@@ -1225,7 +1249,7 @@ export function dashboardPage(input: {
       <p class="lede">${escapeHtml(t('接入仓库、写下一个目标；团队每次只交回一个 PR，由你审核并合并。', 'Connect a repository and state one goal; the team returns one pull request for you to review and merge.'))}</p>
       <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', 'repositories'))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', 'jobs'))}</span><span><b>${personal?.openWorkItems ?? 0}</b> ${escapeHtml(t('个未完成工作项', 'open work items'))}</span></div>
     </div>
-    ${loopRail(nextAction, t)}
+    ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
   </section>
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}
@@ -1274,6 +1298,7 @@ export function dashboardPage(input: {
         <div class="list-row"><div class="list-main"><strong>${personal === undefined ? '—' : personal.repos}</strong><small>${escapeHtml(t('仓库', 'Repositories'))}</small></div></div>
       </div>
     </div>
+    ${personal === undefined || (personal.otherCurrencies ?? []).length === 0 ? '' : `<p class="fine" data-other-currencies>${escapeHtml(t(`另有按原币计费的调用，不按汇率折算：${otherCurrencyText(personal.otherCurrencies ?? [])}`, `Other currencies, not converted: ${otherCurrencyText(personal.otherCurrencies ?? [])}`))}</p>`}
   </section>
 
   <section class="card" id="repositories">
@@ -1884,25 +1909,25 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         ${commandHidden(commands.settings)}
         ${goalTemplateSelect(t, 'goal-settings')}
         <textarea id="goal-settings" name="goal" rows="5" placeholder="${escapeHtml(t('这个仓库每次迭代应该关注什么？', 'What should each iteration focus on for this repository?'))}">${escapeHtml(repo.goal)}</textarea>
-        <label>${escapeHtml(t('目标分支', 'Target branch'))}${infoTip(t('PR 会合入这个分支；Fledge 仍会新建工作分支，不会直接 push 目标分支。留空使用仓库默认分支。', 'Pull requests target this branch; Fledge still creates a working branch and never pushes to the target branch. Leave blank for the repository default.'))} <input name="targetBranch" value="${escapeHtml(targetBranch)}" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
-        <label>${escapeHtml(t('你的角色', 'Your role'))}${infoTip(t('角色来自你在这个 GitHub 仓库的权限。admin/maintain 可选 maintainer 或 developer；其他权限只能选 developer。平台管理员不能替你改。', 'The role comes from your permission on this GitHub repository. admin/maintain can choose maintainer or developer; every other permission can only be developer. Platform admins cannot change it for you.'))} <select name="repoRole" required>${repoRole === null ? `<option value="" selected disabled>${escapeHtml(t('请选择…', 'Choose…'))}</option>` : ''}${allowedRoles.map((role) => `<option value="${role}"${repoRole === role ? ' selected' : ''}>${escapeHtml(repoRoleLabel(t, role))}</option>`).join('')}</select></label>
+        <label>${escapeHtml(t('目标分支', 'Target branch'))}${infoTip(t('PR 合入这个分支，Fledge 仍新建工作分支而不直接 push，留空用默认分支。', 'Pull requests target this branch, Fledge still works on its own branch, and blank means the default.'))} <input name="targetBranch" value="${escapeHtml(targetBranch)}" placeholder="main / develop / release/2.x" autocomplete="off" /></label>
+        <label>${escapeHtml(t('你的角色', 'Your role'))}${infoTip(t('角色来自你在这个仓库的 GitHub 权限：admin/maintain 可选 maintainer 或 developer，其他只能是 developer。', 'Your role follows your GitHub permission here: admin/maintain pick maintainer or developer, everyone else developer.'))} <select name="repoRole" required>${repoRole === null ? `<option value="" selected disabled>${escapeHtml(t('请选择…', 'Choose…'))}</option>` : ''}${allowedRoles.map((role) => `<option value="${role}"${repoRole === role ? ' selected' : ''}>${escapeHtml(repoRoleLabel(t, role))}</option>`).join('')}</select></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" ${repo.auto_iterate === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
           <label class="check"><input type="checkbox" name="enabled" value="1" ${repo.enabled === 1 ? 'checked' : ''} /> ${escapeHtml(t('启用', 'Enabled'))}</label>
-          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval" id="repo-settings-interval"${fieldErrorAttrs(intervalFieldError, intervalFocus)}>${intervalOptions(t, Math.max(60, repo.interval_minutes), DISCOVERY_INTERVALS)}</select></label>${fieldErrorHtml(intervalFieldError)}
+          <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。', 'With no open work one discovery runs per interval (60 min minimum, one issue at most), otherwise the global cooldown.'))} <select name="interval" id="repo-settings-interval"${fieldErrorAttrs(intervalFieldError, intervalFocus)}>${intervalOptions(t, Math.max(60, repo.interval_minutes), DISCOVERY_INTERVALS)}</select></label>${fieldErrorHtml(intervalFieldError)}
         </div>
         <div class="row" data-review-group>
           <label class="check"><input type="checkbox" name="review" value="1" ${reviewerEnabled ? 'checked' : ''} ${canReview ? '' : 'disabled'} data-role-can-review="${githubCanReview ? '1' : '0'}" /> ${escapeHtml(t('启用 PR 审核', 'Enable PR reviewer'))}</label>
           <label>${escapeHtml(t('审核间隔', 'Review interval'))} <select name="reviewInterval" id="repo-settings-review-interval" ${canReview ? '' : 'disabled'}${fieldErrorAttrs(reviewFieldError, reviewFocus)}>${reviewIntervalOptions(t, repo.review_interval_minutes)}</select></label>${fieldErrorHtml(reviewFieldError)}
         </div>
         <div class="row" data-merge-group>
-          <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('默认关闭。只有 maintainer 能开启；开启后 Fledge 会在 PR 检查通过且没有 changes requested 时执行 squash merge。developer 不能开启。', 'Off by default. Only a maintainer can enable it. When on, Fledge squash-merges a PR only after checks are green and no changes are requested. Developers cannot enable it.'))}</label>
+          <label class="check"><input type="checkbox" name="autoMerge" value="1" ${canMaintain && repo.auto_merge === 1 ? 'checked' : ''} ${canMaintain ? '' : 'disabled'} /> ${escapeHtml(t('允许 maintainer 自动合并 PR', 'Allow maintainer auto-merge'))}${infoTip(t('只有 maintainer 能开启，开启后 Fledge 在检查通过且无 changes requested 时 squash merge。', 'Only a maintainer can enable it, and Fledge then squash-merges once checks pass with no changes requested.'))}</label>
         </div>
-        <label class="check"><input type="checkbox" name="planRequired" value="1" ${repo.plan_required === 1 ? 'checked' : ''} /> ${escapeHtml(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}${infoTip(t('开启后“立即运行”先生成计划；maintainer 批准计划后才写代码。', 'When on, Run now creates a plan; code is written only after a maintainer approves it.'))}</label>
+        <label class="check"><input type="checkbox" name="planRequired" value="1" ${repo.plan_required === 1 ? 'checked' : ''} /> ${escapeHtml(t('先出计划，批准后执行', 'Plan first; execute only after approval'))}${infoTip(t('开启后“立即运行”先生成计划，maintainer 批准后才写代码。', 'When on, Run now writes a plan and code follows only after a maintainer approves it.'))}</label>
         <details class="advanced-help" data-advanced="repo-settings">
           <summary>${escapeHtml(t('高级：运维设置（路径、阶段门禁、预算、模型）', 'Advanced: operator settings (paths, stage gate, budgets, models)'))}</summary>
         <div class="row">
-          <label class="grow">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔。批准计划时会填入执行 prompt；不是硬性沙箱。', 'Comma or newline separated. Included in the execution prompt at plan approval; not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
+          <label class="grow">${escapeHtml(t('允许修改路径（可选）', 'Allowed paths (optional)'))}${infoTip(t('逗号或换行分隔，批准计划时填入执行 prompt，不是硬性沙箱。', 'Comma or newline separated, filled into the execution prompt at plan approval, and not a hard sandbox.'))} <input name="allowPaths" value="${escapeHtml(repo.allow_paths)}" placeholder="src/, docs/" /></label>
           <label class="grow">${escapeHtml(t('禁止修改路径（可选）', 'Forbidden paths (optional)'))} <input name="denyPaths" value="${escapeHtml(repo.deny_paths)}" placeholder=".github/, deploy/" /></label>
         </div>
         <div class="row">
@@ -1911,8 +1936,9 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('强制模式下，实现任务必须带范围、验收标准、失败/通过测试证据和 Dev/Test 分工，审核任务必须带 Reviewer 和评分；否则任务失败且不会自动合并。观察模式只记录不阻断。', 'In enforced mode an implement job needs scope, acceptance criteria, red/green test evidence and Dev/Test roles; a review job needs a Reviewer and a score. Shadow mode records without blocking.'))}</p>
         <div class="row">
-          <label class="check"><input type="checkbox" name="requireProtection" value="1" ${repo.require_protection === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}${infoTip(t('开启后 Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。', 'When on, Fledge checks the protection rule, required checks and required approvals; if the rule cannot be read, it will not auto-merge.'))}</label>
+          <label class="check"><input type="checkbox" name="requireProtection" value="1" ${repo.require_protection === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}${infoTip(t('开启后，自动合并前必须先读到 branch protection。', 'When on, auto-merge needs a readable branch protection rule.'))}</label>
         </div>
+        <p class="fine">${escapeHtml(t('自动合并要求 branch protection：Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。', 'Auto-merge requires branch protection: Fledge checks the protection rule, required checks and required approvals; if the rule cannot be read, it will not auto-merge.'))}</p>
         <p class="fine">${escapeHtml(t('Branch protection', 'Branch protection'))}: <code>${escapeHtml(repo.protection_state ?? 'unknown')}</code>${repo.protection_checked_at === null ? '' : ` · ${escapeHtml(humanTimeShort(repo.protection_checked_at))}`}</p>
         <div class="row">
           <label>${escapeHtml(t('仓库月度预算（元）', 'Monthly repository budget (CNY)'))} <input name="monthlyBudget" type="number" min="0" max="10000" step="0.01" value="${repo.monthly_budget_cny.toFixed(2)}" /></label>
@@ -1927,13 +1953,13 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </div>
         <p class="fine">${escapeHtml(t('本月已用', 'Spent this month'))} ${escapeHtml(quotaMoney(repoSpendCny))}${repo.monthly_budget_cny > 0 ? ` / ${escapeHtml(quotaMoney(repo.monthly_budget_cny))}` : ''}</p>
         <div class="row">
-          <label>${escapeHtml(t('仓库预算（元）', 'Repository budget (CNY)'))}${infoTip(t('这个仓库最近 30 天所有任务的成本上限；为空或 0 表示不设上限。', 'A cap on this repository\'s spend over the last 30 days; empty or 0 means no cap.'))} <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="${repositoryScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('仓库预算（元）', 'Repository budget (CNY)'))}${infoTip(t('这个仓库最近 30 天所有任务的成本上限，为空或 0 表示不设上限。', 'A cap on this repository\'s spend over the last 30 days, and empty or 0 means no cap.'))} <input name="repoBudget" type="number" min="0" max="10000" step="0.01" value="${repositoryScope.capCny.toFixed(2)}" /></label>
           <label>${escapeHtml(t('超出仓库预算时', 'When the repository budget is exceeded'))}
             <select name="repoBudgetAction">${budgetActionOptions(repositoryScope.action)}</select>
           </label>
         </div>
         <div class="row">
-          <label>${escapeHtml(t('用户预算（元）', 'User budget (CNY)'))}${infoTip(t('这个仓库的发起人最近 30 天在所有仓库的成本上限；为空或 0 表示不设上限。', 'A cap on what the person who starts work spends across all repositories in the last 30 days; empty or 0 means no cap.'))} <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="${principalScope.capCny.toFixed(2)}" /></label>
+          <label>${escapeHtml(t('用户预算（元）', 'User budget (CNY)'))}${infoTip(t('这个仓库的发起人最近 30 天在所有仓库的成本上限，为空或 0 表示不设上限。', 'A cap on what this repository\'s starter spends across all repositories in 30 days, where empty or 0 means no cap.'))} <input name="principalBudget" type="number" min="0" max="10000" step="0.01" value="${principalScope.capCny.toFixed(2)}" /></label>
           <label>${escapeHtml(t('超出用户预算时', 'When the user budget is exceeded'))}
             <select name="principalBudgetAction">${budgetActionOptions(principalScope.action)}</select>
           </label>
@@ -1945,14 +1971,14 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
         </table></div>`}
         ${budgetScopeRows.filter((row) => row.unknownCount > 0).map((row) => `<p class="fine">${escapeHtml(`${row.label}: ${t(`有 ${row.unknownCount} 次调用无法计价，因此这里的已用金额是下界。`, `${row.unknownCount} calls could not be priced, so this spend is a lower bound.`)}`)}</p>`).join('')}
         <div class="row">
-          <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理；这里只选择这个仓库允许使用的模型。', 'Providers and models are managed in Settings; select only the models this repository may use.'))}
+          <label class="grow">${escapeHtml(t('可用模型', 'Available models'))}${infoTip(t('提供方和模型在 Settings 里管理，这里只选这个仓库允许使用的模型。', 'Providers and models live in Settings, and here you only choose the ones this repository may use.'))}
             ${models.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有模型。先到 Settings 添加提供方和模型。', 'No models yet. Add a provider and models in Settings.'))}</span>`
               : `<span class="list">${[...new Set(models.map((model) => model.provider_label))].map((provider) => `<div class="mb-6"><strong>${escapeHtml(provider)}</strong><br />${models.filter((model) => model.provider_label === provider).map((model) => `<label class="check"${retiredOn(model) === '' ? '' : ` data-retired-model="${escapeHtml(model.id)}"`}><input type="checkbox" name="modelIds" value="${escapeHtml(model.id)}" ${repoModelIds.has(model.id) ? 'checked' : ''} /> ${escapeHtml(model.label)}${retiredMark(model, t)} <small class="muted">${escapeHtml(model.model)}</small></label>`).join('')}</div>`).join('')}</span>`}
           </label>
         </div>
         <div class="row">
-          <label class="grow">${escapeHtml(t('允许的提供方（可选）', 'Allowed providers (optional)'))}${infoTip(t('只允许这个仓库使用勾选的提供方；一个都不勾表示不限制。提供方本身由你在 Settings 里添加。', 'Restrict this repository to the checked providers; none checked means no allowlist. Providers are added in Settings.'))}
+          <label class="grow">${escapeHtml(t('允许的提供方（可选）', 'Allowed providers (optional)'))}${infoTip(t('只允许这个仓库使用勾选的提供方，不勾表示不限制，提供方在 Settings 里添加。', 'Restrict this repository to the checked providers, none checked means no allowlist, and providers are added in Settings.'))}
             ${providers.length === 0
               ? `<span class="muted">${escapeHtml(t('还没有提供方。先到 Settings 添加。', 'No providers yet. Add one in Settings.'))}</span>`
               : `<span class="list">${providers.map((provider) => `<label class="check"><input type="checkbox" name="allowedProviderIds" value="${escapeHtml(provider.id)}" ${provider.allowed === 1 ? (providerPolicy.has(provider.id) ? 'checked' : '') : 'disabled'} /> ${escapeHtml(provider.label)} <small class="muted">${escapeHtml(provider.region === '' ? t('未标注区域', 'no region') : provider.region)}${provider.allowed === 1 ? '' : ` · ${escapeHtml(t('已停用', 'disabled'))}`}</small>${provider.data_policy_url === '' ? '' : ` · <a class="link" href="${escapeHtml(provider.data_policy_url)}" rel="noreferrer noopener" target="_blank">${escapeHtml(t('数据政策', 'Data policy'))}</a>`}</label>`).join('')}</span>`}
@@ -2289,19 +2315,55 @@ export function settingsPage(input: {
   // itself still never scrolls sideways (the matrix's document rule), and the
   // strip is the scroller the reader swipes. `data-allow-overflow` says so to the
   // matrix, which otherwise reads a deliberate scroller as clipped content.
-  const body = `<nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
-    <a href="#account" data-allow-overflow>${escapeHtml(t('账户', 'Account'))}</a>
+  const body = `<div class="settings-shell">
+  <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
+    <a href="#account-access" data-allow-overflow>${escapeHtml(t('账户与访问', 'Account & access'))}</a>
     <a href="#model-providers" data-allow-overflow>${escapeHtml(t('模型', 'Models'))}</a>
     <a href="#notifications" data-allow-overflow>${escapeHtml(t('通知', 'Notifications'))}</a>
-    <a href="#tokens" data-allow-overflow>${escapeHtml(t('API token', 'API tokens'))}</a>
-    <a href="#sessions" data-allow-overflow>${escapeHtml(t('登录设备', 'Sessions'))}</a>
     <a href="#feedback" data-allow-overflow>${escapeHtml(t('反馈', 'Feedback'))}</a>
   </nav>
-  <section class="card" id="account">
+  <section class="card" id="account-access">
+    <h2>${escapeHtml(t('账户与访问', 'Account & access'))}</h2>
+    <div class="sub" id="account">
     <div class="eyebrow">${escapeHtml(t('账户', 'Account'))}</div>
     <h1>@${escapeHtml(user.login)}</h1>
     <p class="muted">${escapeHtml(user.email === null || user.email === '' ? t('未公开邮箱', 'No public email') : maskEmail(user.email))} · ${escapeHtml(t('加入于', 'Joined'))} ${escapeHtml(humanTimeShort(user.created_at))} · ${escapeHtml(t('平台额度', 'Platform quota'))} ${quota.unlimited ? escapeHtml(t('不限额', 'Unlimited')) : `${quotaMoney(quota.remainingCny)} / ${money(quota.initialCny)}`}</p>
     ${user.github_token_enc !== null ? `<p class="fine">${escapeHtml(t('登录时保存了一个默认 GitHub token；添加仓库时仍以仓库表单里的 token 为准。', 'A default GitHub token was saved at sign-in; the token in the repository form still takes precedence.'))}</p>` : ''}
+    </div>
+
+    <div class="sub" id="sessions">
+    <h2>${escapeHtml(t('登录设备', 'Sessions'))}</h2>
+    <p class="muted">${escapeHtml(t('这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。', 'These are the live sign-ins. Revoking one ends that cookie immediately; signing out the others keeps this one.'))}</p>
+    <div class="table-scroll"><table><thead><tr><th>IP</th><th>${escapeHtml(t('客户端', 'Client'))}</th><th>${escapeHtml(t('登录时间', 'Signed in'))}</th><th></th></tr></thead><tbody>${sessionRows}</tbody></table></div>
+    <div class="row">
+      <form method="post" action="/settings/sessions/revoke-others">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出其他会话', 'Sign out other sessions'))}</button></form>
+      <form method="post" action="/settings/sessions/rotate">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('轮换当前会话', 'Rotate this session'))}</button></form>
+    </div>
+    </div>
+
+    <div class="sub" id="tokens">
+    <h2>${escapeHtml(t('API token', 'API tokens'))}</h2>
+    <p class="muted">${escapeHtml(t('给脚本或工作区调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。', 'Gateway tokens (flg_…) for scripts or the workspace. They are neither your GitHub token nor a model key.'))}</p>
+    ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('前缀', 'Prefix'))}</th><th>${escapeHtml(t('名称', 'Name'))}</th><th>${escapeHtml(t('范围', 'Scope'))}</th><th>${escapeHtml(t('有效期', 'Expires'))}</th><th>${escapeHtml(t('最近使用', 'Last used'))}</th><th></th></tr></thead><tbody>${tokenRows}</tbody></table></div>
+    <form method="post" action="/settings/tokens" class="row">${csrf(viewer)}<input name="name" placeholder="${escapeHtml(t('用途，例如 laptop-cli', 'Purpose, e.g. laptop-cli'))}" required />
+      <label>${escapeHtml(t('范围', 'Scope'))}
+        <select name="scope">
+          <option value="gateway">${escapeHtml(t('网关：调用模型接口', 'Gateway: call the model endpoints'))}</option>
+          <option value="jobs:read">${escapeHtml(t('任务读取：只读 /api/v1/jobs', 'Jobs: read /api/v1/jobs only'))}</option>
+        </select>
+      </label>
+      <label>${escapeHtml(t('有效期', 'Expires'))}${infoTip(t('个人 token 到期后网关直接拒绝。', 'The gateway refuses an expired personal token.'))}
+        <select name="expiryDays">
+          ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
+          ${viewer.user.role === 'admin' || viewer.user.role === 'superadmin' ? `<option value="never">${escapeHtml(t('永不过期（运维）', 'Never (operator)'))}</option>` : ''}
+        </select>
+      </label>
+      <p class="fine">${escapeHtml(t('个人 token 必须有期限，到期后网关直接拒绝；永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire and the gateway refuses it afterwards; a token without an expiry is only for an operator token created by an admin.'))}</p>
+      <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
+    <p class="fine">${escapeHtml(t('范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。', 'The scope is the capability boundary: gateway may call /v1 only, jobs:read may read /api/v1/jobs only, and neither substitutes for the other.'))}</p>
+    </div>
+
   </section>
 
   <section class="card" id="model-providers">
@@ -2395,38 +2457,6 @@ export function settingsPage(input: {
     <p class="fine">${escapeHtml(t(`审批和额度邮件不受这个开关影响。每日摘要默认在 ${config.digest.hour}:00（${config.digest.timeZone}）发送。`, `Approval and quota mail are not affected by these switches. The daily summary is sent at ${config.digest.hour}:00 (${config.digest.timeZone}).`))}</p>
   </section>
 
-  <section class="card" id="tokens">
-    <h2>${escapeHtml(t('API token', 'API tokens'))}</h2>
-    <p class="muted">${escapeHtml(t('给脚本或工作区调用的网关 token（flg_…）。它不是你的 GitHub token，也不是模型 key。', 'Gateway tokens (flg_…) for scripts or the workspace. They are neither your GitHub token nor a model key.'))}</p>
-    ${newToken === undefined ? '' : `<div class="banner ok">${escapeHtml(t('新 token（只显示一次）：', 'New token (shown once):'))}<code class="token" id="new-token">${escapeHtml(newToken)}</code> <button class="link" type="button" data-copy="#new-token">${escapeHtml(t('复制', 'Copy'))}</button></div>`}
-    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('前缀', 'Prefix'))}</th><th>${escapeHtml(t('名称', 'Name'))}</th><th>${escapeHtml(t('范围', 'Scope'))}</th><th>${escapeHtml(t('有效期', 'Expires'))}</th><th>${escapeHtml(t('最近使用', 'Last used'))}</th><th></th></tr></thead><tbody>${tokenRows}</tbody></table></div>
-    <form method="post" action="/settings/tokens" class="row">${csrf(viewer)}<input name="name" placeholder="${escapeHtml(t('用途，例如 laptop-cli', 'Purpose, e.g. laptop-cli'))}" required />
-      <label>${escapeHtml(t('范围', 'Scope'))}
-        <select name="scope">
-          <option value="gateway">${escapeHtml(t('网关：调用模型接口', 'Gateway: call the model endpoints'))}</option>
-          <option value="jobs:read">${escapeHtml(t('任务读取：只读 /api/v1/jobs', 'Jobs: read /api/v1/jobs only'))}</option>
-        </select>
-      </label>
-      <label>${escapeHtml(t('有效期', 'Expires'))}${infoTip(t('个人 token 必须有期限；到期后网关直接拒绝。永不过期只对管理员创建的运维 token 开放。', 'A personal token must expire; the gateway refuses it afterwards. A token without an expiry is only for an operator token created by an admin.'))}
-        <select name="expiryDays">
-          ${PAT_EXPIRY_CHOICES.map((days) => `<option value="${days}"${days === config.tokens.patExpiryDays ? ' selected' : ''}>${escapeHtml(t(`${days} 天`, `${days} days`))}</option>`).join('')}
-          ${viewer.user.role === 'admin' || viewer.user.role === 'superadmin' ? `<option value="never">${escapeHtml(t('永不过期（运维）', 'Never (operator)'))}</option>` : ''}
-        </select>
-      </label>
-      <button class="btn" type="submit">${escapeHtml(t('创建 token', 'Create token'))}</button></form>
-    <p class="fine">${escapeHtml(t('范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。', 'The scope is the capability boundary: gateway may call /v1 only, jobs:read may read /api/v1/jobs only, and neither substitutes for the other.'))}</p>
-  </section>
-
-  <section class="card" id="sessions">
-    <h2>${escapeHtml(t('登录设备', 'Sessions'))}</h2>
-    <p class="muted">${escapeHtml(t('这些是当前有效的登录会话。撤销后那个 cookie 立即失效；退出其他会话不会退出当前这个。', 'These are the live sign-ins. Revoking one ends that cookie immediately; signing out the others keeps this one.'))}</p>
-    <div class="table-scroll"><table><thead><tr><th>IP</th><th>${escapeHtml(t('客户端', 'Client'))}</th><th>${escapeHtml(t('登录时间', 'Signed in'))}</th><th></th></tr></thead><tbody>${sessionRows}</tbody></table></div>
-    <div class="row">
-      <form method="post" action="/settings/sessions/revoke-others">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('退出其他会话', 'Sign out other sessions'))}</button></form>
-      <form method="post" action="/settings/sessions/rotate">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('轮换当前会话', 'Rotate this session'))}</button></form>
-    </div>
-  </section>
-
   <section class="card" id="feedback">
     <div class="eyebrow">${escapeHtml(t('反馈', 'Feedback'))}</div>
     <h2>${escapeHtml(t('反馈给开发者', 'Send feedback'))}</h2>
@@ -2460,6 +2490,7 @@ export function settingsPage(input: {
       }).join('')}
     </div>`}
   </section>
+  </div>
 `
   return layout({ title: t('设置', 'Settings'), viewer, body, config, locale, path: '/settings', active: 'settings', notice, error })
 }
@@ -2610,7 +2641,7 @@ function pager(path: string, pageParam: string, page: number, total: number, per
 
 /** One row of the admin retention card: an age window and what it would delete now. */
 export interface RetentionRow {
-  id: RetentionId | 'sessions' | 'api_tokens'
+  id: RetentionId | 'settingsMarkers' | 'sessions' | 'api_tokens'
   /** Null for a table with no age window; `state` says why. */
   days: number | null
   configured: boolean
@@ -2905,6 +2936,7 @@ export function adminPage(input: {
   const retentionLabel = (id: string): string => {
     const timed = RETENTION_CLASSES.find((entry) => entry.id === id)
     if (timed !== undefined) return locale === 'zh' ? timed.label[0] : timed.label[1]
+    if (id === RETENTION_SETTINGS_CLASS.id) return locale === 'zh' ? RETENTION_SETTINGS_CLASS.label[0] : RETENTION_SETTINGS_CLASS.label[1]
     const idle = RETENTION_IDLE_TABLES.find((entry) => entry.id === id)
     return idle === undefined ? id : locale === 'zh' ? idle.label[0] : idle.label[1]
   }
@@ -2916,7 +2948,7 @@ export function adminPage(input: {
     <div class="list">
       ${retentionRows.map((row) => {
         const window = row.days === null
-          ? escapeHtml(row.state ?? '—')
+          ? escapeHtml(row.state ?? t('每个前缀各自窗口', 'one window per prefix'))
           : `${escapeHtml(t(`${row.days} 天`, `${row.days} days`))}${row.configured ? '' : ` <span class="badge">${escapeHtml(t('默认', 'default'))}</span>`}`
         const count = row.count === null ? `<span class="muted">${escapeHtml(t('不适用', 'not applicable'))}</span>` : `<strong>${escapeHtml(String(row.count))}</strong>`
         return `<div class="list-row"><div class="list-main"><strong>${escapeHtml(retentionLabel(row.id))}</strong><small>${window}</small></div><div class="row">${count}</div></div>`
@@ -3258,12 +3290,17 @@ function priorityLevelLabel(t: Translate, level: string): string {
   return t('非核心打磨', 'non-core polish')
 }
 
-// #373: the four facts the block names, in the reader's language. The values
-// themselves come from the pull request and are never translated.
+// #373: the facts the block names, in the reader's language. The values
+// themselves come from the pull request and are never translated. #793 adds the
+// three body sections the decision needs and the model/role row from the job.
 function changeStoryLabel(t: Translate, key: ChangeStoryFact['key']): string {
   if (key === 'whatChanged') return t('改动了什么', 'What changed')
   if (key === 'risks') return t('风险', 'Risks')
   if (key === 'ran') return t('运行了什么', 'Ran')
+  if (key === 'alternatives') return t('考虑过的其他方案', 'Alternatives considered')
+  if (key === 'uncertainty') return t('不确定性与残余风险', 'Uncertainty and residual risk')
+  if (key === 'notVerified') return t('未验证', 'Not verified')
+  if (key === 'attribution') return t('模型与角色', 'Model and role')
   return t('改动规模', 'Diff')
 }
 
@@ -3514,7 +3551,7 @@ export function jobPage(input: {
   // is data from the pull request: escaped, never markup.
   const changeStoryCard = input.changeStory === undefined
     ? ''
-    : `<section class="card" data-change-story>
+    : `<details class="job-detail"><summary>${escapeHtml(t('为什么有这个改动', 'Why this change'))}</summary><section class="card" data-change-story>
       <h2>${escapeHtml(t('为什么有这个改动', 'Why this change'))}</h2>
       <div class="list">
         ${changeStoryFacts(input.changeStory, {
@@ -3525,22 +3562,58 @@ export function jobPage(input: {
           files: (count) => t(`${count} 个文件`, `${count} files`),
         }).map((fact) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(changeStoryLabel(t, fact.key))}</strong><small class="job-report">${escapeHtml(fact.value)}</small>${fact.note === '' ? '' : `<small class="muted">${escapeHtml(fact.note)}</small>`}</div></div>`).join('')}
       </div>
-    </section>`
-  const retry = job.status === 'failed'
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/retry">${csrf(viewer)}${retryHidden}<button class="btn" type="submit">${escapeHtml(job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'))}</button></form>`
+    </section></details>`
+  // #865: the header used to render four independent primaries, so a failed job
+  // whose verification recorded a rule change showed Retry and Acknowledge side by
+  // side and nothing said which came first. One action is primary now, chosen by
+  // what a reader must do first; every other action keeps its form and action URL
+  // and becomes a ghost inside one More actions disclosure.
+  const ruleChange = verification?.ruleChange ?? null
+  const rulePaths = ruleChange === null ? [] : ruleChange.paths
+  const retryAvailable = job.status === 'failed'
+  const resumeAvailable = job.status === 'paused'
+  const executeAvailable = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
+  const ackAvailable = ruleChange !== null && !ruleChange.acknowledged && repo.repo_role === 'maintainer'
+  const primaryAction = ackAvailable
+    ? 'ack-rule-change'
+    : executeAvailable
+      ? 'execute'
+      : resumeAvailable
+        ? 'resume'
+        : retryAvailable
+          ? 'retry'
+          : ''
+  const commandForm = (action: string, label: string, hidden: string, primary: boolean): string =>
+    `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/${action}">${csrf(viewer)}${hidden}<button class="${primary ? 'btn' : 'btn btn-ghost'}" type="submit">${escapeHtml(label)}</button></form>`
+  const retry = retryAvailable
+    ? commandForm('retry', job.checkpoint === null || job.checkpoint === '' ? t('重试这个任务', 'Retry this job') : t('从断点继续', 'Resume from checkpoint'), retryHidden, primaryAction === 'retry')
     : ''
   const recheck = job.pr_url === null || supportMode ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/recheck">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('重新核实 PR', 'Re-check PR'))}</button></form>`
-  const ackRuleChange = verification?.ruleChange === undefined || verification.ruleChange.acknowledged || repo.repo_role !== 'maintainer'
-    ? ''
-    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/ack-rule-change">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t(`确认规则变更（${verification.ruleChange.paths.length} 个文件）`, `Acknowledge rule change (${verification.ruleChange.paths.length} files)`))}</button></form>`
-  const execute = job.kind === 'plan' && job.status === 'succeeded' && job.plan_approved_at !== null
-    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/execute">${csrf(viewer)}${executeHidden}<button class="btn" type="submit">${escapeHtml(t('执行这个计划', 'Execute this plan'))}</button></form>`
+  const ackRuleChange = ackAvailable
+    ? commandForm('ack-rule-change', t(`确认规则变更（${rulePaths.length} 个文件）`, `Acknowledge rule change (${rulePaths.length} files)`), '', primaryAction === 'ack-rule-change')
+    : ''
+  const ackRuleChangeGhost = ackRuleChange === '' ? '' : commandForm('ack-rule-change', t(`确认规则变更（${rulePaths.length} 个文件）`, `Acknowledge rule change (${rulePaths.length} files)`), '', false)
+  const execute = executeAvailable
+    ? commandForm('execute', t('执行这个计划', 'Execute this plan'), executeHidden, primaryAction === 'execute')
+    : ''
+  const resume = resumeAvailable
+    ? commandForm('resume', t('恢复', 'Resume'), resumeHidden, primaryAction === 'resume')
     : ''
   const control = job.status === 'queued' || job.status === 'running'
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/pause">${csrf(viewer)}${pauseHidden}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停', 'Pause'))}</button></form><form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/cancel" data-confirm="${escapeHtml(t('取消这个任务？', 'Cancel this job?'))}">${csrf(viewer)}${cancelHidden}<button class="btn btn-danger" type="submit">${escapeHtml(t('取消', 'Cancel'))}</button></form>`
-    : job.status === 'paused'
-      ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/resume">${csrf(viewer)}${resumeHidden}<button class="btn" type="submit">${escapeHtml(t('恢复', 'Resume'))}</button></form>`
-      : ''
+    : ''
+  const primaryHtml = primaryAction === 'ack-rule-change'
+    ? ackRuleChange
+    : primaryAction === 'execute'
+      ? execute
+      : primaryAction === 'resume'
+        ? resume
+        : primaryAction === 'retry'
+          ? retry
+          : ''
+  // Retry, execute, resume and re-check keep their order in the disclosure; the
+  // primary is removed from it, and acknowledge is primary whenever it exists.
+  const secondaryHtml = [retry, execute, resume, recheck].filter((html) => html !== '' && html !== primaryHtml).join('')
   const planCard = job.kind === 'plan' && job.status === 'succeeded'
     ? `<section class="card">
         <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
@@ -3554,7 +3627,10 @@ export function jobPage(input: {
   // instead of restating it. An unknown or missing type renders as iterate, which
   // is what every row written before the column means.
   const workType = resolveWorkType(job.work_type) ?? contractOf('iterate')
-  const workTypeCard = `<section class="card" data-work-type="${escapeHtml(workType.type)}">
+  // #865: the four read-back cards are reference material, not operating state,
+  // so each keeps its own section untouched inside a collapsed disclosure named
+  // after the card.
+  const workTypeCard = `<details class="job-detail"><summary>${escapeHtml(t('工作类型', 'Work type'))}</summary><section class="card" data-work-type="${escapeHtml(workType.type)}">
     <h2>${escapeHtml(t('工作类型', 'Work type'))}</h2>
     <p><strong>${escapeHtml(workTypeLabel(t, workType.type))}</strong> — ${escapeHtml(workTypePurpose(t, workType.type))}</p>
     <div class="list">
@@ -3564,7 +3640,7 @@ export function jobPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可创建分支/PR', 'May open a branch/PR'))}</strong><small>${escapeHtml(workType.branch ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('可自动合并', 'May auto-merge'))}</strong><small>${escapeHtml(workType.autoMerge ? t('是', 'yes') : t('否', 'no'))}</small></div></div>
     </div>
-  </section>`
+  </section></details>`
   const triageReport = parseTriageJson(job.triage_json)
   const triageRows = triageReport === null
     ? ''
@@ -3582,7 +3658,7 @@ export function jobPage(input: {
   const jobLoading = job.status === 'queued' || job.status === 'running'
     ? renderState({ kind: 'loading', title: job.status === 'queued' ? t('任务已排队。', 'This job is queued.') : t('任务正在运行。', 'This job is running.'), body: job.status === 'queued' ? t('前面的任务结束后自动开始；这个页面会自己更新。', 'It starts as soon as the jobs ahead finish; this page updates by itself.') : t('团队进度会写进下面的时间线，不需要手动刷新。', 'Team progress lands in the timeline below; no manual refresh needed.'), skeletonLines: 2 })
     : ''
-  const postmortemCard = postmortem === null ? '' : `<section class="card" id="postmortem">
+  const postmortemCard = postmortem === null ? '' : `<details class="job-detail"><summary>${escapeHtml(t('复盘', 'Postmortem'))}</summary><section class="card" id="postmortem">
     <div class="row between">
       <div><div class="eyebrow">${escapeHtml(t('故障复盘', 'Incident'))}</div><h2>${escapeHtml(t('复盘', 'Postmortem'))}</h2><p class="muted">${escapeHtml(postmortem.evidence_state === 'verified' ? t('证据来自这个任务的错误、心跳、阶段和实例状态。', 'Evidence comes from this job’s error, heartbeat, stage and instance state.') : t('没有可用的证据：原因保持未核实，不做猜测。', 'No usable evidence: the cause stays unverified and is not guessed.'))}</p></div>
       <span class="badge ${postmortem.status === 'closed' ? 'good' : 'busy'}">${escapeHtml(postmortem.status === 'closed' ? t('已关闭', 'Closed') : t('未关闭', 'Open'))}</span>
@@ -3596,7 +3672,7 @@ export function jobPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('首次 / 最近', 'First / last'))}</strong><small>${escapeHtml(humanTimeShort(postmortem.first_seen_at))} / ${escapeHtml(humanTimeShort(postmortem.last_seen_at))}</small></div></div>
     </div>
     <p class="fine"><a class="link" href="/repos/${escapeHtml(repo.id)}#postmortems">${escapeHtml(postmortem.status === 'closed' ? t('查看已关闭的复盘', 'View the closed postmortem') : t('打开复盘记录', 'Open postmortem'))}</a></p>
-  </section>`
+  </section></details>`
   // #565: a queued job shows its place in the real (instance-wide) line as a
   // count, the priority it competes on, the viewer's own jobs ahead of it, and —
   // when other accounts are ahead — only how many. No identifier of another
@@ -3726,11 +3802,9 @@ export function jobPage(input: {
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
         ${supportMode ? '' : `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/workspace">${escapeHtml(t('工作区', 'Workspace'))}</a>`}
         ${advanced && !supportMode ? `<a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}/team">${escapeHtml(t('团队工作台', 'Team console'))}</a>` : ''}
+        ${supportMode ? '' : primaryHtml}
         ${supportMode ? '' : control}
-        ${supportMode ? '' : execute}
-        ${supportMode ? '' : recheck}
-        ${supportMode ? '' : ackRuleChange}
-        ${supportMode ? '' : retry}
+        ${supportMode || secondaryHtml === '' ? '' : `<details class="job-more"><summary>${escapeHtml(t('更多操作', 'More actions'))}</summary><div class="row">${secondaryHtml}</div></details>`}
       </div>
     </div>
     ${queueBlock}
@@ -3776,7 +3850,7 @@ export function jobPage(input: {
     <div class="row between">
       <div>${readinessBadge(t, readiness.state)}${readiness.reasons.length === 0 ? '' : `<p class="fine">${escapeHtml(readiness.reasons.slice(0, 6).join(' · '))}</p>`}</div>
       ${recheck}
-      ${ackRuleChange}
+      ${ackRuleChangeGhost}
     </div>
     ${verification === null
       ? `<p class="muted">${escapeHtml(t('还没有核实记录。任务回调后会自动核实；也可以现在重新检查。', 'No verification yet. It runs after a job callback; you can also re-check now.'))}</p>`
@@ -3808,10 +3882,10 @@ export function jobPage(input: {
       ? renderState({ kind: 'empty', title: t('还没有任务事件。', 'No job events yet.'), body: t('任务开始后，每一次状态变化都会记录在这里。', 'Every state change is recorded here once the job starts.'), action: job.status === 'failed' ? { formAction: `/repos/${repo.id}/jobs/${job.id}/retry`, label: t('重试这个任务', 'Retry this job'), csrf: csrf(viewer), fields: input.retry === undefined ? undefined : [{ name: 'expected_revision', value: String(input.retry.revision) }, { name: 'idempotency_key', value: input.retry.idempotencyKey }] } : { href: `/repos/${repo.id}`, label: t('返回仓库', 'Back to repository') } })
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('角色/步骤', 'Role/step'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${events.map((entry) => `<tr><td>${escapeHtml(humanTimeShort(entry.at))}</td><td><code>${escapeHtml(entry.kind)}</code></td><td>${escapeHtml([entry.role, entry.step].filter((value) => value !== null && value !== '').join(' · ') || '—')}</td><td>${escapeHtml(jobEventDetail(t, entry))}</td></tr>`).join('')}</tbody></table></div>`}
   </section>
-  ${advanced ? `<section class="card">
+  ${advanced ? `<details class="job-detail"><summary>${escapeHtml(t('团队参与', 'Team participation'))}</summary><section class="card">
     <h2>${escapeHtml(t('团队参与', 'Team participation'))}</h2>
     ${teamRows}
-  </section>` : ''}`
+  </section></details>` : ''}`
   return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
 }
 
@@ -3819,6 +3893,12 @@ export function jobPage(input: {
 function currencyAmount(amount: number, currency: string): string {
   const digits = amount !== 0 && Math.abs(amount) < 0.01 ? 6 : 4
   return `${amount.toFixed(digits)} ${currency}`
+}
+
+// #957: the dashboard tile multiplies its USD figure by `USD_CNY_RATE`, so the
+// buckets in another currency are named beside it in their own currency.
+function otherCurrencyText(buckets: Array<{ currency: string; amount: number }>): string {
+  return buckets.map((row) => currencyAmount(row.amount, row.currency)).join(' · ')
 }
 
 // #807: one compact row on the metrics page, not a second metrics page. The
@@ -4061,10 +4141,10 @@ export function appReposPage(input: {
   const commonFields = `
     <div class="card"><h3>${escapeHtml(t('仓库设置', 'Repository settings'))}</h3>
       ${goalTemplateSelect(t, 'goal-app')}
-      <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定。模板会填入一个可执行的目标。', 'The more concrete the goal, the more stable the output. A template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
+      <label>${escapeHtml(t('迭代目标（可选）', 'Iteration goal (optional)'))}${infoTip(t('目标越具体，产出越稳定，模板会填入一个可执行的目标。', 'The more concrete the goal, the steadier the output, and a template fills in a ready prompt.'))} <textarea id="goal-app" name="goal" rows="3" placeholder="${escapeHtml(t('例如：持续修复 issue 里的可复现 bug，只改最小范围。', 'For example: fix reproducible bugs from issues with the smallest safe change.'))}"></textarea></label>
       <div class="row">
         <label class="check"><input type="checkbox" name="auto" value="1" /> ${escapeHtml(t('自动迭代', 'Auto-iterate'))}</label>
-        <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按这个间隔做一次发现（最少 60 分钟）；最多提出一个具体 issue，不会直接开 PR。有工作项时按全局最短工作间隔推进。', 'With no work this interval runs one discovery session (minimum 60 minutes) that may open at most one concrete issue, never a PR. Open work uses the global short work cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
+        <label>${escapeHtml(t('发现间隔', 'Discovery interval'))}${infoTip(t('没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。', 'With no open work one discovery runs per interval (60 min minimum, one issue at most), otherwise the global cooldown.'))} <select name="interval">${intervalOptions(t, 1440, DISCOVERY_INTERVALS)}</select></label>
       </div>
       <div class="row">
         <label class="check"><input type="checkbox" name="review" value="1" /> ${escapeHtml(t('启用 PR 审核角色', 'Enable PR reviewer role'))}${infoTip(t('只有 maintainer 角色且 GitHub admin/maintain 权限时才可启用。', 'Available only with the maintainer role and GitHub admin/maintain permission.'))}</label>
@@ -4938,12 +5018,16 @@ export function scheduleConsolePage(input: {
   viewer: Viewer
   repo: RepoRow
   state: ScheduleConsoleState
+  // #903: the role `ownedRepo` resolved for the viewer. The console renders the
+  // controls that role can actually use, so a viewer is never shown a button
+  // whose only answer is a refusal.
+  role: string
   form: { cron: string; every: string; timezone: string; startAt: string; endAt: string; misfire: string; grace: string; dailyRuns: string }
   runNowKey: string
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, repo, state, form, runNowKey, notice, error } = input
+  const { config, locale, viewer, repo, state, role, form, runNowKey, notice, error } = input
   const t = translator(locale)
   const iso = (at: number | null): string => (at === null ? 'unknown' : new Date(at).toISOString())
   const shown = (at: number | null): string => (at === null ? t('unknown', 'unknown') : humanTimeShort(new Date(at).toISOString()))
@@ -4996,8 +5080,12 @@ export function scheduleConsolePage(input: {
     `<label>${escapeHtml(label)} <input name="${escapeHtml(name)}" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" /></label>`
   // #544 slice 8: run-now is only offered when a schedule exists and can be read;
   // a repository without one has no cadence to run out of turn.
+  // #903: and only to a role that may run it. A viewer reads the console but is
+  // told which role starts work instead of being handed a control that refuses.
   const runNow = state.kind === 'none' || state.kind === 'unreadable'
     ? ''
+    : role === 'viewer'
+    ? `<p class="fine" data-run-now-role="viewer">${escapeHtml(t('只读成员可以查看排期；立即运行需要 developer 或 maintainer 角色。', 'A viewer reads the schedule; Run now needs a developer or maintainer role.'))}</p>`
     : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/run-now" class="run-now">${csrf(viewer)}<input type="hidden" name="command_key" value="${escapeHtml(runNowKey)}" /><button type="submit">${escapeHtml(t('立即运行', 'Run now'))}</button><span class="fine">${escapeHtml(t('从当前时刻开始一次，不改动下次运行。', 'One run from now; the next scheduled run does not move.'))}</span></form>`
   // #544 slice 9: the only new control. Pause and Resume are separate forms with
   // their own action, so a browser retry of one cannot become the other, and the
@@ -5018,6 +5106,76 @@ export function scheduleConsolePage(input: {
     : state.kind === 'unreadable'
       ? `<p class="banner bad">${escapeHtml(t('这个排期读不出来（cron 行缺少表达式或时区），worker 会跳过它。请重新保存。', 'This schedule cannot be read (a cron row is missing its expression or zone), so the worker skips it. Save it again.'))}</p>`
       : ''
+  // #544: what the newest decided instant was frozen under. The frozen value
+  // wins over today's rows, and a row that recorded nothing prints unknown
+  // rather than borrowing the live schedule — that substitution is the defect
+  // this card closes, so it must never be the fallback for a missing snapshot.
+  const frozenLabels: Record<FrozenSnapshotField, [string, string]> = {
+    kind: ['类型', 'Kind'],
+    expression: ['表达式', 'Expression'],
+    everyMs: ['间隔', 'Interval'],
+    timezone: ['时区', 'Timezone'],
+    startAt: ['开始', 'Start'],
+    endAt: ['结束', 'End'],
+    owner: ['所有者', 'Owner'],
+    installation: ['安装', 'Installation'],
+    permission: ['权限', 'Permission'],
+    role: ['角色', 'Role'],
+    revision: ['时序版本', 'Revision'],
+  }
+  const frozenCard = state.last === null ? '' : (() => {
+    const snapshot = state.frozen.snapshot
+    const unknownText = t('unknown', 'unknown')
+    const cell = (attr: string, label: string, value: string | null): string => {
+      const machine = snapshot === null ? 'unknown' : (value ?? '—')
+      const display = snapshot === null ? unknownText : (value ?? '—')
+      return `<dt>${escapeHtml(label)}</dt><dd data-snapshot-${attr}="${escapeHtml(machine)}">${escapeHtml(display)}</dd>`
+    }
+    const instant = (at: number | null): string => (at === null ? t('不限', 'open') : new Date(at).toISOString())
+    const interval = snapshot === null || snapshot.config.everyMs === null ? null : intervalFieldText(snapshot.config.everyMs)
+    const window = snapshot === null ? null : `${instant(snapshot.config.startAt)} → ${instant(snapshot.config.endAt)}`
+    const installation = snapshot === null
+      ? null
+      : snapshot.authorization.installationId === null ? t('无', 'none') : String(snapshot.authorization.installationId)
+    const role = snapshot === null ? null : snapshot.authorization.repoRole ?? t('无', 'none')
+    const differs = state.frozen.differs
+    const names = differs.map((field) => t(frozenLabels[field][0], frozenLabels[field][1])).join(t('、', ', '))
+    // A snapshot whose own revision is not this row's cannot be proven to belong
+    // to the instant it is printed beside, so it gets its own sentence rather
+    // than the ordinary drift note.
+    const revisionNote = state.frozen.revisionMismatch
+      ? `<p class="banner bad" data-snapshot-revision-mismatch="${escapeHtml(t('不匹配', 'mismatch'))}">${escapeHtml(t(
+        `记录里的时序版本是 ${String(snapshot!.config.timingRevision)}，而这一行属于版本 ${String(state.last!.timingRevision)}。这些值仍是当时写下的，但无法证明属于这个时刻。`,
+        `The record carries timing revision ${String(snapshot!.config.timingRevision)}, while this row belongs to revision ${String(state.last!.timingRevision)}. The values are what was written, but they cannot be proven to belong to this instant.`,
+      ))}</p>`
+      : ''
+    const diffNote = differs.length === 0
+      ? ''
+      : `<p class="banner warn" data-snapshot-differs="${escapeHtml(differs.join(','))}">${escapeHtml(t(
+        `冻结的记录与现在的值不同：${names}。上面的信息是现在的值，本卡片是这次运行当时使用的值，以它为准。`,
+        `The frozen record differs from today's values: ${names}. The facts above are today's; this card is what the run used, and it wins.`,
+      ))}</p>`
+    return `<section class="card" data-snapshot="${snapshot === null ? 'unknown' : 'frozen'}"><h2>${escapeHtml(t('认领时冻结的记录', 'Frozen at claim'))}${snapshot === null ? '' : ` · ${escapeHtml(t('时序版本', 'revision'))} ${escapeHtml(String(snapshot.config.timingRevision))}`}</h2>
+      <p class="muted">${escapeHtml(t(
+        `这次时刻（${new Date(state.last!.logicalTime).toISOString()}）被认领时记录的配置与授权。它们不随后来的排期修改或仓库变更而变化。`,
+        `The configuration and authorization recorded when this instant (${new Date(state.last!.logicalTime).toISOString()}) was claimed. They do not follow later edits to the schedule or the repository.`,
+      ))}</p>
+      ${revisionNote}
+      ${diffNote}
+      <dl class="schedule-facts">
+        ${cell('kind', t('类型', 'Kind'), snapshot === null ? null : snapshot.config.kind)}
+        ${cell('expression', t('表达式', 'Expression'), snapshot === null ? null : snapshot.config.expression)}
+        ${cell('interval', t('间隔', 'Interval'), interval)}
+        ${cell('timezone', t('时区', 'Timezone'), snapshot === null ? null : snapshot.config.timezone)}
+        ${cell('window', t('有效期', 'Window'), window)}
+        ${cell('owner', t('所有者', 'Owner'), snapshot === null ? null : snapshot.authorization.userId)}
+        ${cell('installation', t('安装', 'Installation'), installation)}
+        ${cell('permission', t('权限', 'Permission'), snapshot === null ? null : snapshot.authorization.permission)}
+        ${cell('role', t('角色', 'Role'), role)}
+        ${cell('revision', t('时序版本', 'Revision'), snapshot === null ? null : String(snapshot.config.timingRevision))}
+      </dl>
+    </section>`
+  })()
   const body = `<a class="back" href="/repos/${escapeHtml(repo.id)}">← ${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
     <section class="card"><div class="eyebrow">${escapeHtml(t('排期控制台', 'Schedule console'))}</div><h1>${escapeHtml(`${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`)}</h1>
       ${kindNote}
@@ -5037,6 +5195,7 @@ export function scheduleConsolePage(input: {
       ${runNow}
       ${pauseControls}
     </section>
+    ${frozenCard}
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
       <p class="muted">${escapeHtml(t('排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。', 'A schedule is a five-field cron or a fixed interval, one of the two; cron needs an IANA zone. The start/end instants need an offset.'))}</p>
       <form method="post" action="/repos/${escapeHtml(repo.id)}/schedule" class="form">${csrf(viewer)}<div class="row">
