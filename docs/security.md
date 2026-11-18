@@ -546,6 +546,15 @@ whose duplicate risk a person still has to judge; a human resend is audited as
   widens project access. `GET /api/auth/me` requires an approved session and
   returns capabilities, not a token, key or password column. Enforcement on the
   existing routes is a later slice, so the old owner check still decides access.
+- A service principal (#749) is the execution identity for unattended work: a
+  `principals` row with `kind='service'` and its own `scoped_grants`, never a
+  user's session or token. `resolveServiceActor` builds the actor from the grant
+  only — no derived repository role, no platform role — and refuses an unknown,
+  disabled, ungranted, wrong-project or stale-revision principal with a coded
+  `ServiceActorRefused` rather than resolving something wider. A job records
+  `principal_id` and `principal_revision`; a principal that moves past that
+  revision at rotation or revocation refuses the run. Creating, rotating and
+  disabling a principal, and revoking a live job token, are follow-up work.
 - Repository roles are per user-repository connection: `maintainer` or
   `developer`. The allowed roles come from the user's GitHub permission
   (`admin`/`maintain` may choose either; all other permissions may only choose

@@ -2317,7 +2317,7 @@ listing, and every row links to the page that already owns it.
 | `oauth_states` | short-lived OAuth `state` values |
 | `approval_tokens` | single-use approve/reject links |
 | `repos` | upstream/fork identity, encrypted token, permission, reviewer config, goal, cadence, state |
-| `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash |
+| `jobs` | lifecycle, kind (iterate/review), branch, issue/PR URL, review score, summary, cost, job-scoped token hash, and the service principal a run executes under with the revision it resolved at (#749) |
 | `api_tokens` | `flg_` tokens (PAT, job or instance), hashed, with `scope` (`gateway` or `jobs:read`) and `expires_at`; a PAT always carries an expiry |
 | `quota_ledger` | per-request cost records: model, currency, price snapshot, `cost_known` (0 = could not be priced) |
 | `notifications` | in-app messages (quota, job failure), stored as written and localized at render |
@@ -2328,7 +2328,7 @@ listing, and every row links to the page that already owns it.
 | `resource_revisions` | the fence a command compares against, one row per resource; a resource with no row is at revision 1 (#540) |
 | `tenants` | GitHub owner scope; the first slice stores the legacy login id `github.com:legacy:<owner-lowercase>` (#541) |
 | `projects` | one row per repository, keyed by the repository id and linked to its tenant (#541) |
-| `principals` | one human principal per user (`principal:user:<user_id>`); service principals are a later #541 slice |
+| `principals` | one human principal per user (`principal:user:<user_id>`), plus service principals (`kind='service'`, no user, `disabled_at` when disabled) that unattended runs execute as (#541, #749) |
 | `repo_members` | per-repository `maintainer`/`developer`/`viewer` rows with a revocation time (#541) |
 | `scoped_grants` | explicit capability grants with source, evidence, expiry, revocation and revision (#541) |
 | `identity_migrations` | one report row per identity backfill version (#541) |
@@ -2568,6 +2568,37 @@ grants and the legacy `repos.user_id` owner. `maintainer`, `developer` and
 membership or grant. `GET /api/auth/me` is the first read surface: it requires an
 approved session and returns the user summary, tenant/project roles,
 capabilities and platform capabilities without a token or key column.
+
+## The service principal execution identity (#749, slice 1)
+
+A service principal is a `principals` row with `kind='service'`, a tenant, no
+`user_id` and one or more `scoped_grants` rows. `resolveServiceActor(store,
+principalId, { projectId, capability?, expectedRevision? })` in
+`src/identity/serviceActor.ts` turns it into the same `ActorContext` a human actor
+gets, from the grant alone: the capability set is the union of the active grants
+that cover the project, no repository role is derived, and `platformRole` stays
+undefined, so `superadmin` is unreachable from a service principal.
+
+The resolver refuses instead of widening. An unknown id (`unknown_principal`), a
+row that is not `kind='service'` (`not_a_service_principal`), a `disabled_at` row
+(`principal_disabled`), no active grant at all (`no_active_grant`), active grants
+that name another project (`project_not_granted`), a capability outside the
+covering grants (`capability_not_granted`) and a revision the caller has moved past
+(`stale_revision`) each raise `ServiceActorRefused` with that code. A revoked or
+expired grant is inactive, so it excludes both its project and its capability. A
+grant with no `project_id` covers a project only when both name the same tenant.
+
+`jobs.principal_id` and `jobs.principal_revision` record the principal a run
+executes under and the revision it was created at; a human-owned job keeps both
+NULL. `resolveServiceActorForJob(store, job, { capability? })` resolves through
+that pair and refuses when the principal has moved past the recorded revision, so
+a rotation or revocation stops the run rather than silently re-authorising it.
+`Store.createJob` reads the revision inside the same write as the row.
+
+Not in this slice: creating, rotating and disabling a principal with its audit
+row, revoking a running job's token on revocation, binding a schedule or release
+to a principal, and the console surface. The `disabled_at` column exists so the
+resolver can refuse; the audited flow that sets it is follow-up work.
 
 ## Shared repository read path (#105, slice 1)
 
