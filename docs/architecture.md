@@ -1825,7 +1825,9 @@ server-side and injects it, strips `Set-Cookie`/CSP headers and CSP meta tags/`X
 the document title/base, injects `workspace-brand.js`/`.css`, and proxies
 WebSocket upgrades with the same cookie. The browser sees only Fledge URLs and
 the Fledge brand ("powered by FlyBot"); the raw DSH token never leaves the
-server. A wildcard subdomain remains a future option if a certificate covers it.
+server. The script hides the vendor wordmark in the top-left region — a plain
+text node, or one inside a brand/logo container — and never a link or button, so
+a repository or workspace called `FlyBot` keeps its own label. A wildcard subdomain remains a future option if a certificate covers it.
 
 ### PR follow-up
 
