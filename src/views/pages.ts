@@ -1356,6 +1356,13 @@ export function dashboardPage(input: {
   // caller that omits the queue renders the list exactly as before.
   queued?: JobRow[]
   setup?: SetupState
+  // #1104 review: whether any repository of this account still runs on the
+  // platform model, so the quota banner warns about a paused repository rather
+  // than about the account. A mixed account is `false` for `setup.modelConfigured`
+  // — it does own a model — but `true` here, because its other repository is
+  // still paused. Absent means the caller did not read the fact; the banner
+  // keeps its pre-#1104 answer.
+  platformFunded?: boolean
   notice?: string
   error?: string
 }): string {
@@ -1377,11 +1384,13 @@ export function dashboardPage(input: {
   // #472 slice 3: page-level messages are entries, not hand-written banners.
   // The stack owns their order, region and dismiss control.
   const pageMessages: PageNotification[] = []
-  // #1104: the same condition the page's next action uses. An account whose
-  // repositories all run on its own model has nothing paused, so it gets no red
-  // error; only an account with a platform-funded repository is told the quota
-  // stops it.
-  if (quota.exhausted && (input.setup === undefined || !input.setup.modelConfigured)) {
+  // #1104 review: the quota pauses a repository, not an account, so the banner
+  // is shown while this account still has a repository the platform pays for.
+  // `setup.modelConfigured` cannot answer that — it is the checklist's account
+  // fact and is true for a mixed account whose other repository is still paused.
+  // Absent means the caller did not read the fact, and the banner keeps the
+  // answer it had before the fact existed.
+  if (quota.exhausted && input.platformFunded !== false) {
     pageMessages.push(quotaExhaustedNotice(t))
   }
   const loopRepos = input.allRepos ?? repos
@@ -3457,10 +3466,11 @@ export function workspacePage(input: {
   jobsTotal?: number
   activeJobs?: number
   questions?: InboxQuestion[]
-  // #1104: the console reads the same fact the dashboard checklist does, so the
-  // quota banner does not tell an own-model account that its jobs stopped. Absent
-  // means "not configured" — the message that was there before this fact existed.
-  modelConfigured?: boolean
+  // #1104 review: the console reads the same per-repository fact the dashboard
+  // does, so the quota banner does not tell an own-model account that its jobs
+  // stopped and does not hide the pause from a mixed account. Absent means the
+  // caller did not read the fact — the message that was there before it existed.
+  platformFunded?: boolean
   notice?: string
   error?: string
 }): string {
@@ -3472,7 +3482,7 @@ export function workspacePage(input: {
   // #472 slice 3: page-level messages are entries, not hand-written banners.
   // The stack owns their order, region and dismiss control.
   const pageMessages: PageNotification[] = []
-  if (quota.exhausted && input.modelConfigured !== true) {
+  if (quota.exhausted && input.platformFunded !== false) {
     pageMessages.push(quotaExhaustedNotice(t))
   }
   const active = input.activeJobs ?? jobs.filter((job) => job.status === 'queued' || job.status === 'running').length

@@ -189,15 +189,25 @@ function scheduledNextFor(row: ScheduleRow): ScheduledNext {
 }
 
 // #1104: "this account can run on a model of its own" is read once and shared,
-// because the dashboard checklist and the console's quota banner must answer it
-// the same way job dispatch does (`platformFundedFor`). A provider row alone is
-// not an own model — a repository has to select one.
+// because the dashboard checklist and the job dispatcher must answer it the same
+// way (`platformFundedFor`). A provider row alone is not an own model — a
+// repository has to select one. This is the account-level facts for the
+// checklist; the quota banner asks the per-repository question below, because one
+// own-model repository does not unpause another repository the platform pays for.
 function ownModelConfigured(store: Store, user: UserRow, repos: RepoRow[]): boolean {
   const legacyOwnModel =
     user.own_llm_base_url !== null &&
     user.own_llm_base_url !== '' &&
     user.own_llm_key_enc !== null
   return legacyOwnModel || repos.some((repo) => store.listRepoModelSelection(repo.id).length > 0)
+}
+
+// #1104 review: the quota pauses a repository, not an account. The banner is the
+// only notice a paused repository gets, so it asks whether any repository of this
+// account still runs on the platform model — a mixed account keeps it even though
+// `ownModelConfigured` is true for its own-model repository.
+function hasPlatformFundedRepo(store: Store, user: UserRow, repos: RepoRow[]): boolean {
+  return repos.some((repo) => store.platformFundedFor(user, repo.id))
 }
 
 function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED'): Error {
@@ -1643,6 +1653,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobs,
         latestJob,
         setup,
+        platformFunded: hasPlatformFundedRepo(store, viewer.user, allRepos),
         reposPage,
         reposTotal,
         jobsPage,
@@ -1728,9 +1739,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal: store.countJobsForUser(viewer.user.id),
         activeJobs: store.listActiveJobsForUser(viewer.user.id).length,
         questions,
-        // #1104: the console needs the fact the dashboard checklist has, so its
-        // quota banner states the same per-repository rule.
-        modelConfigured: ownModelConfigured(store, viewer.user, repos),
+        // #1104 review: the console reads the same per-repository fact the
+        // dashboard does, so its quota banner does not tell an own-model account
+        // that its jobs stopped and does not hide the pause from a mixed account.
+        platformFunded: hasPlatformFundedRepo(store, viewer.user, repos),
         notice: request.flash?.notice?.text,
         error: request.flash?.error?.text,
       }),

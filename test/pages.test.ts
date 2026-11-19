@@ -2783,11 +2783,11 @@ test('the exhausted-quota banner never claims an own-model account is blocked', 
     const user = makeUser(store, { login: 'quota-banner-own-model', status: 'approved', quota: 0 })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
 
-    const dashboard = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(true) })
+    const dashboard = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(true), platformFunded: false })
     assert.doesNotMatch(dashboard, /keep jobs running|任务才能继续/, 'the dashboard must not say the jobs stopped for an account that runs on its own model')
     assert.doesNotMatch(dashboard, /Platform quota is used up|平台额度已用完/, 'no quota banner remains for an account whose repositories are not platform-funded')
 
-    const consoleHtml = workspacePage({ config, locale: 'en', viewer, repos: [], jobs: [], modelConfigured: true })
+    const consoleHtml = workspacePage({ config, locale: 'en', viewer, repos: [], jobs: [], platformFunded: false })
     assert.doesNotMatch(consoleHtml, /keep jobs running|任务才能继续/, 'the console must not say the jobs stopped for an account that runs on its own model')
     assert.doesNotMatch(consoleHtml, /Platform quota is used up|平台额度已用完/, 'the console carries no quota banner for that account')
   } finally {
@@ -2803,7 +2803,7 @@ test('the exhausted-quota banner states the per-repository rule and links the fi
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
     const link = 'href="/settings#model-providers"'
 
-    const dashboard = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(false) })
+    const dashboard = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(false), platformFunded: true })
     const banner = bannerStack(dashboard)
     assert.match(banner, /Platform quota is used up/, 'a platform-funded account is still told that the quota is spent')
     assert.match(banner, /repositories on the platform model pause/, 'the banner names the repositories that actually stop')
@@ -2811,16 +2811,64 @@ test('the exhausted-quota banner states the per-repository rule and links the fi
     assert.doesNotMatch(banner, /keep jobs running|任务才能继续/, 'the banner does not claim every job stopped')
     assert.ok(banner.includes(link), 'the banner links the section that fixes it')
 
-    const chinese = bannerStack(dashboardPage({ config, locale: 'zh', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(false) }))
+    const chinese = bannerStack(dashboardPage({ config, locale: 'zh', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(false), platformFunded: true }))
     assert.match(chinese, /使用平台模型的仓库会暂停/, 'the Chinese banner states the same split')
     assert.ok(chinese.includes(link), 'the Chinese banner carries the same link')
 
-    const consoleBanner = bannerStack(workspacePage({ config, locale: 'en', viewer, repos: [], jobs: [], modelConfigured: false }))
+    const consoleBanner = bannerStack(workspacePage({ config, locale: 'en', viewer, repos: [], jobs: [], platformFunded: true }))
     assert.match(consoleBanner, /Platform quota is used up/, 'the console keeps the message for the account that really is stopped')
     assert.match(consoleBanner, /repositories on the platform model pause/, 'the console states the same split')
     assert.ok(consoleBanner.includes(link), 'the console banner links the same section')
   } finally {
     store.close()
+  }
+})
+
+test('the exhausted-quota banner stays for a mixed account until no repository is platform-funded', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'quota-banner-mixed', status: 'approved', quota: 0 })
+    const ownRepo = store.createRepo({ id: 'repo_mixed_own', userId: user.id, owner: 'o', name: 'own', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const platformRepo = store.createRepo({ id: 'repo_mixed_platform', userId: user.id, owner: 'o', name: 'platform', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const provider = store.createModelProvider({ id: 'prv_mixed', userId: user.id, label: 'Own', baseUrl: 'https://own.example/v1', keyEnc: 'enc', allowPrivate: false })
+    const model = store.createProviderModel({ id: 'pvm_mixed', providerId: provider.id, model: 'own-model', label: 'Own model' })
+    store.setRepoModelSelection(ownRepo.id, [model.id], model.id)
+    const { cookie } = sessionFor(built, user)
+    const headers = { cookie, 'accept-language': 'en' }
+    const link = 'href="/settings#model-providers"'
+
+    // One own-model repository does not unpause the platform-funded one, so the
+    // banner that repository depends on must stay — on both pages that carry it.
+    // A page with no page messages renders no stack at all, and a stack is where
+    // every banner lives, so an absent region is an absent banner.
+    const bannerRegion = (html: string): string => {
+      const start = html.indexOf('data-notification-stack')
+      if (start === -1) return ''
+      const end = html.indexOf('</section>', start)
+      assert.notEqual(end, -1, 'the banner stack closes')
+      return html.slice(start, end)
+    }
+
+    const dashboardBanner = bannerRegion((await built.app.inject({ method: 'GET', url: '/dashboard', headers })).body)
+    assert.match(dashboardBanner, /Platform quota is used up/, 'the platform-funded repository is still paused, so the banner remains')
+    assert.match(dashboardBanner, /repositories on the platform model pause/, 'the banner names what the quota pauses')
+    assert.ok(dashboardBanner.includes(link), 'the banner links the section that fixes it')
+
+    const consoleBanner = bannerRegion((await built.app.inject({ method: 'GET', url: '/console', headers })).body)
+    assert.match(consoleBanner, /Platform quota is used up/, 'the console states the same fact for the same account')
+    assert.ok(consoleBanner.includes(link), 'the console banner carries the same link')
+
+    // Only when the last platform-funded repository gets its own model is
+    // nothing paused, and then both pages drop the banner.
+    store.setRepoModelSelection(platformRepo.id, [model.id], model.id)
+    const ownOnlyDashboard = bannerRegion((await built.app.inject({ method: 'GET', url: '/dashboard', headers })).body)
+    assert.doesNotMatch(ownOnlyDashboard, /Platform quota is used up|平台额度已用完/, 'no repository is platform-funded any more, so the dashboard keeps no quota banner')
+    const ownOnlyConsole = bannerRegion((await built.app.inject({ method: 'GET', url: '/console', headers })).body)
+    assert.doesNotMatch(ownOnlyConsole, /Platform quota is used up|平台额度已用完/, 'and the console keeps none either')
+  } finally {
+    await built.close()
   }
 })
 

@@ -71,10 +71,16 @@ outside the region; an entry may carry already-escaped `html` when it needs a
 list or a button the plain-text builder cannot express. The exhausted-quota
 banner is the one page message whose severity depends on a fact the page has to
 be handed: `quotaExhaustedNotice` is built for both the dashboard and the
-console, and it prints only for an account with a repository the platform pays
-for (`platformFundedFor`), so an account running on its own model is not told
-that its jobs stopped; the sentence states that split and links
-`/settings#model-providers`, the same target the next action uses. A message that belongs
+console, and each route hands it `platformFunded`, whether any repository of the
+account still runs on the platform model (`platformFundedFor` per repository),
+and the banner prints only when that is true. The question is per repository on
+purpose: one own-model repository does not unpause another repository the
+platform pays for, so a mixed account keeps the banner for the paused one, while
+an account running entirely on its own model gets none and is not told that its
+jobs stopped. `setup.modelConfigured` stays the checklist's account-level fact
+(a model is configured somewhere) and no longer decides the banner. The sentence
+states the split and links `/settings#model-providers`, the same target the next
+action uses. A message that belongs
 to a form or a control — the release card, the settings provider/email/token
 forms, the schedule cron error, the danger card's stale-confirmation step —
 keeps its place next to that form. Each message carries
