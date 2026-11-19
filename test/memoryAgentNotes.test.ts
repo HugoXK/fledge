@@ -11,7 +11,7 @@ import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './help
 // HTTP routes: the job-scoped writer, the bound per run, the refusal to replace a
 // human entry, and the two decisions a maintainer makes on the entry page.
 
-const JOB_SECRET = 'callback-secret-for-the-agent-note-test'
+const callbackValue = 'agent-note-callback'
 
 interface Harness {
   store: Store
@@ -44,7 +44,7 @@ async function harness(options: { repoRole?: 'maintainer' | 'developer' } = {}):
     intervalMinutes: 1440,
   })
   const jobId = `job_${Math.random().toString(36).slice(2, 8)}`
-  store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: createHash('sha256').update(JOB_SECRET).digest('hex'), platformTokenHash: '', kind: 'iterate' })
+  store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: createHash('sha256').update(callbackValue).digest('hex'), platformTokenHash: '', kind: 'iterate' })
   store.updateJob(jobId, { status: 'running' })
   const session = sessionFor(built, user)
   return { store, built, user, repo, jobId, cookie: session.cookie, csrf: session.csrf, close: () => built.close() }
@@ -54,7 +54,7 @@ function propose(h: Harness, body: Record<string, unknown>): Promise<{ statusCod
   return h.built.app.inject({
     method: 'POST',
     url: `/api/jobs/${h.jobId}/memory`,
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${JOB_SECRET}` },
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${callbackValue}` },
     payload: JSON.stringify(body),
   })
 }
