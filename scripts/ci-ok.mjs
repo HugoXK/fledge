@@ -43,6 +43,12 @@ export const REQUIRED_JOBS = [
   // nginx/systemd samples, so a deploy-only diff gets its own syntax gate
   // instead of being waved through on review alone.
   'deploy-check',
+  // #973: `mock/` is generated from the views and `public/app.css`, and until
+  // now only the nightly release drive ran `npm run mock:check`. A stale
+  // snapshot merged green and failed the release hours later. This is the same
+  // check on every pull request's own tree; it has no path filter because any
+  // diff that moves a rendered surface can stale the snapshot.
+  'mock-check',
   // #304: the CodeQL analysis conclusion, read by `scripts/codeql-required.mjs`.
   // It is deliberately absent from SKIPPABLE_ON: a gate skipped on the event that
   // merges would be vacuous. The change-aware exception is narrower: a docs-only
