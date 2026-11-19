@@ -16,6 +16,21 @@ import { matchesPath } from './pathGuard.js'
 
 export const INSTRUCTION_CONTRACT_VERSION = 1
 
+/**
+ * Order by UTF-16 code unit. `localeCompare` would sort by the machine's
+ * collation instead — the same file list comes out differently under en-US and
+ * zh-CN — and a content-addressed contract cannot depend on the locale it was
+ * compiled in.
+ */
+function byCodeUnit(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0
+}
+
+/** A set in canonical order: repeats dropped, sorted by code unit. */
+function canonicalSet(values: string[]): string[] {
+  return [...new Set(values)].sort(byCodeUnit)
+}
+
 export interface InstructionFile {
   path: string
   sha: string
@@ -75,14 +90,18 @@ export function compileInstructionContract(input: InstructionContractInput): { c
     goal: input.goal,
     playbook: { ...input.playbook },
     // Sorted by path so two compilations of the same file set hash the same even
-    // when the caller read them in a different order.
+    // when the caller read them in a different order; the sha breaks a tie, so
+    // the order is total and no compiler-dependent sort can change the result.
     contextFiles: [...input.contextFiles]
       .map((file) => ({ path: file.path, sha: file.sha }))
-      .sort((left, right) => left.path.localeCompare(right.path)),
-    paths: { allow: [...input.paths.allow], deny: [...input.paths.deny] },
+      .sort((left, right) => byCodeUnit(left.path, right.path) || byCodeUnit(left.sha, right.sha)),
+    // The lists the contract treats as sets are canonicalised before hashing:
+    // order and repeats are the caller's, not the contract's. `carryOver` is a
+    // sequence of earlier turns and keeps the order it was recorded in.
+    paths: { allow: canonicalSet(input.paths.allow), deny: canonicalSet(input.paths.deny) },
     branch: { ...input.branch },
-    required: { evidence: [...input.required.evidence], sections: [...input.required.sections] },
-    forbidden: [...input.forbidden],
+    required: { evidence: canonicalSet(input.required.evidence), sections: canonicalSet(input.required.sections) },
+    forbidden: canonicalSet(input.forbidden),
     carryOver: [...input.carryOver],
     model: { ...input.model },
     role: input.role,

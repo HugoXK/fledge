@@ -1,5 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { spawnSync } from 'node:child_process'
 import {
   INSTRUCTION_CONTRACT_VERSION,
   compileInstructionContract,
@@ -52,6 +53,67 @@ test('the contract is content-addressed over every instruction it carries', () =
   assert.notEqual(changed.hash, first.hash, 'a changed goal is a different contract')
   const denied = compileInstructionContract({ ...compiled(), paths: { allow: ['src/**', 'test/**'], deny: ['scripts/**'] } })
   assert.notEqual(denied.hash, first.hash, 'a changed path rule is a different contract')
+})
+
+test('the same instruction set hashes the same under another locale and another input order', () => {
+  // `localeCompare` sorts by the machine's collation, and the contract is
+  // content-addressed: a review run under zh-CN would have hashed the same
+  // instruction set differently from the job that ran under en-US. These inputs
+  // are chosen so the two collations disagree — zh-CN puts 北京 before 上海 and
+  // sorts the Chinese paths among the Latin ones.
+  const input = (): InstructionContractInput => ({
+    ...compiled(),
+    contextFiles: [
+      { path: 'src/北京.ts', sha: 'c'.repeat(40) },
+      { path: 'README.md', sha: 'd'.repeat(40) },
+      { path: 'src/上海.ts', sha: 'e'.repeat(40) },
+      { path: 'src/z.ts', sha: 'f'.repeat(40) },
+    ],
+    paths: { allow: ['test/**', 'src/阿/**', 'src/**'], deny: ['scripts/**', 'deploy/**'] },
+    required: { evidence: ['changelog-fragment', 'test-run'], sections: ['Ran', 'What changed'] },
+    forbidden: ['edit-changelog-in-pr', 'force-push'],
+  })
+
+  const first = compileInstructionContract(input())
+  const reordered = compileInstructionContract({
+    ...input(),
+    contextFiles: [...input().contextFiles].reverse(),
+    paths: { allow: [...input().paths.allow].reverse(), deny: [...input().paths.deny].reverse() },
+    required: { evidence: [...input().required.evidence].reverse(), sections: [...input().required.sections].reverse() },
+    forbidden: [...input().forbidden].reverse(),
+    // The carry-over keeps its order: it is a sequence of earlier turns, not a set.
+  })
+  assert.equal(reordered.hash, first.hash, 'the order a caller reads a set in is not part of the contract')
+
+  // The canonical order is by UTF-16 code unit, so a list prints the same on
+  // every machine and two compilations can be compared entry by entry.
+  assert.deepEqual(
+    first.contract.contextFiles.map((file) => file.path),
+    ['README.md', 'src/z.ts', 'src/上海.ts', 'src/北京.ts'],
+    'context files are ordered by code unit, not by a locale',
+  )
+  assert.deepEqual(first.contract.paths.allow, ['src/**', 'src/阿/**', 'test/**'])
+  assert.deepEqual(first.contract.paths.deny, ['deploy/**', 'scripts/**'])
+
+  // The comparison is locale-dependent even inside one process only up to the
+  // locale Node started with, so the evidence is two child processes started
+  // under different ones. `en_US.UTF-8` is the default this suite runs under;
+  // `zh_CN.UTF-8` is the one that caught the defect.
+  const script = `const { compileInstructionContract } = await import('./src/lib/instructions.ts'); console.log(compileInstructionContract(${JSON.stringify(input())}).hash)`
+  const hashUnder = (locale: string): string => {
+    const run = spawnSync(process.execPath, ['--import', 'tsx', '-e', script], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      env: { ...process.env, LANG: locale, LC_ALL: locale },
+    })
+    assert.equal(run.status, 0, `compiling under ${locale} failed: ${run.stderr}`)
+    return run.stdout.trim()
+  }
+  const english = hashUnder('en_US.UTF-8')
+  const chinese = hashUnder('zh_CN.UTF-8')
+  assert.match(english, /^[0-9a-f]{64}$/)
+  assert.equal(chinese, english, 'the same instructions hash the same under zh_CN as under en_US')
+  assert.equal(english, first.hash, 'and a separate process agrees with this one')
 })
 
 test('a job that satisfies every checkable clause is a pass', () => {

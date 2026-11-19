@@ -3529,7 +3529,12 @@ as — today as prose in one prompt. `compileInstructionContract` in
 `src/lib/instructions.ts` compiles that set into one `InstructionContract`, and
 `instructionContractHash` takes its SHA-256 over the canonical JSON of the
 compiled object, so the same instructions always hash the same and any changed
-input is a different contract. `strategy_hash` (#433) records the strategy a job
+input is a different contract. The lists the contract treats as sets — the path
+rules, the required evidence and sections, the forbidden actions and the context
+files — are de-duplicated and ordered by UTF-16 code unit before hashing, so
+neither the order a caller read them in nor the machine's collation can move the
+hash; the carry-over keeps the order it was recorded in, because it is a sequence
+of earlier turns and not a set. `strategy_hash` (#433) records the strategy a job
 ran under; this is the same shape for the instruction set beside it.
 
 `evaluateAdherence` then answers one clause at a time from what a callback
