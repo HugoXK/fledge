@@ -155,6 +155,13 @@ const ORDINARY_ROUTE_LIST = [
   'POST /auth/logout',
   'POST /apply',
   'POST /repos/:id/memory',
+  // #638 slice 1: a decision on an agent proposal appends a memory revision; it
+  // starts no job and destroys nothing, so it is ordinary like the write above.
+  'POST /repos/:id/memory/:key/accept',
+  'POST /repos/:id/memory/:key/reject',
+  // The agent's own proposal writer, authenticated by the job callback secret and
+  // bounded to three notes per run; it starts no work either.
+  'POST /api/jobs/:id/memory',
   // #433: freezing a strategy candidate appends a version and moves only the
   // candidate pointer — stable and canary need the promotion decision of a later
   // slice — so nothing irreversible happens and no work starts. It is ordinary by
