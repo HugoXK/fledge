@@ -95,10 +95,12 @@ sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#"
 # that nginx keeps inside a token (`location ~ ^/v}v[0-9]+`) does not close the
 # block, and an `if` inside a location is a header-owning level of its own: when
 # it declares any `add_header`, the responses it applies to drop the enclosing
-# set. The reader therefore breaks tokens at token boundaries only, refuses a `}`
-# that closes nothing, and judges every block that declares a header — not just
-# the innermost `location`. `include` stays unread here; the real `nginx -t`
-# below is what covers a header set that arrives through one.
+# set. The reader therefore closes a block only on a `}` at a token boundary,
+# opens one on every `{` outside a quoted string and outside the `${var}` form
+# (`nginx -t` rejects an unquoted regex quantifier), refuses a brace that closes
+# or opens nothing, and judges every block that declares a header — not just the
+# innermost `location`. `include` stays unread here; the real `nginx -t` below is
+# what covers a header set that arrives through one.
 if ! header_errors="$(awk \
   -v names="Strict-Transport-Security X-Content-Type-Options Referrer-Policy X-Frame-Options" \
   -v label="$label" '
@@ -172,15 +174,29 @@ if ! header_errors="$(awk \
       # #1097 review: a directive is read as a token stream, so `{`, `}` and `;`
       # may share a line with the header and the body.
       #
-      # #1097 audit: nginx keeps a brace inside a token, so `^/v}v[0-9]+` and
-      # `^/x{1,3}$` are one token and not a block boundary. A brace opens or
-      # closes a block only at a token boundary; anywhere else it stays in the
-      # token, and the block is still classified from its header text. A `}`
-      # arriving at a boundary with no block open is refused rather than dropped,
-      # because this half must fail closed.
+      # #1097 audit: nginx keeps a `}` inside a token, so `^/v}v[0-9]+` is one
+      # token and the block still opens at the `{`. A `}` closes a block only at
+      # a token boundary; anywhere else it stays in the token, and the block is
+      # still classified from its header text. A `}` arriving at a boundary with
+      # no block open is refused rather than dropped, because this half must fail
+      # closed.
+      #
+      # #1097 audit, real nginx 1.18: a `{` is a block opener wherever it appears
+      # outside a quoted string, even mid-token — nginx reports
+      # `unknown directive "1,3}$"` for an unquoted `^/v[0-9]{1,3}$`, so a regex
+      # quantifier has to be quoted. The one exception is the `${var}` form,
+      # where the `{` directly after `$` belongs to the token. A `{` with nothing
+      # before it opens nothing, so it is refused too.
       at_boundary = (buf == "" || buf ~ /[ \t]$/)
       if (ch == "{") {
-        if (at_boundary) { push_block(trim(buf), NR); buf = "" } else { buf = buf ch }
+        if (buf ~ /\$$/) { buf = buf ch }
+        else if (trim(buf) == "") {
+          bad++
+          printf "nginx: %s: unexpected open brace at line %d\n", label, NR
+        } else {
+          push_block(trim(buf), NR)
+          buf = ""
+        }
         continue
       }
       if (ch == "}") {

@@ -298,19 +298,38 @@ test('a `}` inside a regex token does not close the block, and the location is r
   }
 })
 
-test('a regex-quantifier brace in a location header is read as part of the token', () => {
+test('a `}` inside a location token is read as part of the token', () => {
   const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
   try {
-    // Control: the same brace shape is legal nginx (`^/v[0-9]{1,3}$`) and the
+    // Control: `}` inside a token is legal nginx (`^/v}v[0-9]+$`) and the
     // location repeats the whole set, so the rule must not refuse a valid regex
     // for carrying a brace.
     const path = editedSample(dir, (text) =>
       text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
-        `  location ~ ^/v[0-9]{1,3}$ { ${repeatSet('')} }\n${_match}`,
+        `  location ~ ^/v}v[0-9]+$ { ${repeatSet('')} }\n${_match}`,
       ),
     )
     const run = runCheck(path)
-    assert.equal(run.status, 0, `a brace inside a header token must not close the block; stdout: ${run.stdout}`)
+    assert.equal(run.status, 0, `a \`}\` inside a header token must not close the block; stdout: ${run.stdout}`)
+    assert.match(run.stdout, /nginx: .* parsed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a quoted regex quantifier in a location header is accepted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // Control for the other rule, from real nginx: a `{` opens a block even
+    // mid-token, so the quantifier has to be quoted; inside quotes it is not a
+    // block opener and the location that repeats the set must pass.
+    const path = editedSample(dir, (text) =>
+      text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
+        `  location ~ "^/v[0-9]{1,3}$" { ${repeatSet('')} }\n${_match}`,
+      ),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 0, `a quoted quantifier with the whole set must pass; stdout: ${run.stdout}`)
     assert.match(run.stdout, /nginx: .* parsed/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
@@ -326,7 +345,7 @@ test('an `if` inside a location that declares its own header is refused and name
     // only that one header.
     const path = editedSample(dir, (text) =>
       text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
-        '  location /ifx { if ($always) { add_header Cache-Control "no-store" always; } }\n' + _match,
+        '  location /ifx { if ($request_method = POST) { add_header Cache-Control "no-store" always; } }\n' + _match,
       ),
     )
     const run = runCheck(path)
@@ -347,7 +366,7 @@ test('an `if` that repeats the whole set with always is accepted', () => {
     // inherit the server set, so this shape is what the rule should allow.
     const path = editedSample(dir, (text) =>
       text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
-        `  location /ifx { if ($always) { ${repeatSet('')} } }\n${_match}`,
+        `  location /ifx { if ($request_method = POST) { ${repeatSet('')} } }\n${_match}`,
       ),
     )
     const run = runCheck(path)
@@ -438,7 +457,10 @@ test('the deploy-check contract proves the header check can fail', () => {
     // are part of the same table, so neither can silently come back.
     assert.match(stdout, /security headers: negative proof — a location whose regex carries a `\}` and serves one header was rejected/)
     assert.match(stdout, /security headers: negative proof — an if inside a location that declares one header was rejected/)
-    assert.match(stdout, /security headers: control — a brace inside a location token with the whole set was accepted/)
+    assert.match(stdout, /security headers: control — a `\}` inside a location token with the whole set was accepted/)
+    // #1097 audit, real nginx: a `{` opens a block even mid-token, so a regex
+    // quantifier must be quoted; the quoted control pins the accepted shape.
+    assert.match(stdout, /security headers: control — a quoted regex quantifier with the whole set was accepted/)
     assert.match(stdout, /security headers: control — an if that repeats the whole set with always was accepted/)
     // #1097 test: an empty sample used to pass with nothing asserted.
     assert.match(stdout, /security headers: negative proof — an empty and a comment-only sample were refused/)

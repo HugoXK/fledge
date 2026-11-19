@@ -3,7 +3,7 @@
 #
 #   bash scripts/check-deploy-samples.sh
 #
-# Sixteen checks, and the summary says which kind each one is:
+# Seventeen checks, and the summary says which kind each one is:
 #
 # 1. real: a real `nginx -t` parses deploy/nginx.conf.example;
 # 2. real negative proof: the same invocation rejects a copy of the sample with a
@@ -33,11 +33,18 @@
 # 13. static negative proof for an inner level: an `if` inside a location that
 #    declares one header is rejected and the inner block is named, because that
 #    is the level which stops inheriting for the responses it applies to;
-# 14. control for 12: a valid regex-quantifier location (`^/v[0-9]{1,3}$`) that
-#    repeats the whole set is accepted, so a brace in a token is not refused;
-# 15. control for 13: an `if` that repeats the whole set with `always` is
+# 14. control for 12: a location whose regex carries a `}` at the end of a token
+#    (`^/v}v[0-9]+$`) and that repeats the whole set is accepted, so a `}` in a
+#    token is not refused. An unquoted regex quantifier is not this shape: nginx
+#    treats `{` as a block opener even mid-token, so `^/v[0-9]{1,3}$` must be
+#    quoted; the real `nginx -t` half is what rejects the unquoted form;
+# 15. control for 12, second shape: a location whose regex quantifier is quoted
+#    (`"^/v[0-9]{1,3}$"`) and that repeats the whole set is accepted, because a
+#    `{` inside a quoted string is not a block opener. This is the shape a
+#    self-hoster who writes a regex quantifier has to use;
+# 16. control for 13: an `if` that repeats the whole set with `always` is
 #    accepted, so the rule judges the level and not the block kind;
-# 16. static negative proof for an empty input: an empty and a comment-only copy
+# 17. static negative proof for an empty input: an empty and a comment-only copy
 #    are refused with "no server block to check", because a sample with no server
 #    block used to pass with nothing asserted (#1097 test).
 #
@@ -242,7 +249,7 @@ fi
 echo 'security headers: negative proof — a location whose regex carries a `}` and serves one header was rejected'
 
 awk '
-  /^  location \/ \{/ && !inserted { print "  location /ifx { if ($always) { add_header Cache-Control \"no-store\" always; } }"; inserted = 1 }
+  /^  location \/ \{/ && !inserted { print "  location /ifx { if ($request_method = POST) { add_header Cache-Control \"no-store\" always; } }"; inserted = 1 }
   { print }
 ' deploy/nginx.conf.example > "$work/location-if-header.conf"
 if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-if-header.conf" 2>&1)"; then
@@ -258,18 +265,33 @@ fi
 echo 'security headers: negative proof — an if inside a location that declares one header was rejected'
 
 awk '
-  /^  location \/ \{/ && !inserted { print "  location ~ ^/v[0-9]{1,3}$ { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; }"; inserted = 1 }
+  /^  location \/ \{/ && !inserted { print "  location ~ ^/v}v[0-9]+$ { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; }"; inserted = 1 }
   { print }
 ' deploy/nginx.conf.example > "$work/location-brace-in-token-repeat.conf"
 if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-brace-in-token-repeat.conf" 2>&1)"; then
   printf '%s\n' "$output"
-  echo 'security headers: REJECTED a valid regex location that repeats the whole set — a brace inside a token is not a block boundary (#1097)'
+  echo 'security headers: REJECTED a valid regex location that repeats the whole set — a `}` inside a token is not a block boundary (#1097)'
   exit 1
 fi
-echo 'security headers: control — a brace inside a location token with the whole set was accepted'
+echo 'security headers: control — a `}` inside a location token with the whole set was accepted'
+
+# The other tokenizer rule, from real nginx: a `{` is a block opener even
+# mid-token, so a regex quantifier has to be quoted. The quoted form is legal and
+# must stay accepted; the unquoted form is not this script's job to reject, the
+# real `nginx -t` below the static half does that.
+awk '
+  /^  location \/ \{/ && !inserted { print "  location ~ \"^/v[0-9]{1,3}$\" { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; }"; inserted = 1 }
+  { print }
+' deploy/nginx.conf.example > "$work/location-quoted-quantifier.conf"
+if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-quoted-quantifier.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: REJECTED a quoted regex quantifier that repeats the whole set — a `{` inside quotes is not a block opener (#1097)'
+  exit 1
+fi
+echo 'security headers: control — a quoted regex quantifier with the whole set was accepted'
 
 awk '
-  /^  location \/ \{/ && !inserted { print "  location /ifx { if ($always) { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; } }"; inserted = 1 }
+  /^  location \/ \{/ && !inserted { print "  location /ifx { if ($request_method = POST) { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; } }"; inserted = 1 }
   { print }
 ' deploy/nginx.conf.example > "$work/location-if-repeat.conf"
 if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-if-repeat.conf" 2>&1)"; then
@@ -279,7 +301,7 @@ if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-if-re
 fi
 echo 'security headers: control — an if that repeats the whole set with always was accepted'
 
-# 16. The vacuous pass (#1097 test): with no `server` block the static half had
+# 17. The vacuous pass (#1097 test): with no `server` block the static half had
 # nothing to assert, so an empty copy exited 0 "parsed". The gate has to refuse an
 # input it cannot judge instead of passing it.
 : > "$work/empty-nginx.conf"
