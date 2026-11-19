@@ -9,6 +9,16 @@ import { resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { assertExportable, buildDataset, verifyDataset } from '../src/lib/evolution/dataset.js'
 import { loadEvolutionRows } from '../src/lib/evolution/export.js'
+import {
+  loadFixtureSet,
+  renderShadowReport,
+  runShadow,
+  shadowSummaryLines,
+  type ShadowAttempt,
+  type ShadowFixtureSet,
+  type ShadowHost,
+  type ShadowVersion,
+} from '../src/lib/evaluation.js'
 
 function arg(name: string, fallback = ''): string {
   const index = process.argv.indexOf(name)
@@ -40,6 +50,85 @@ if (verifyPath !== '') {
     process.exit(1)
   }
   console.log(`verify: ok ${verdict.manifest.id} ${verdict.manifest.contentHash}`)
+  process.exit(0)
+}
+
+// #372: the held-out shadow mode. It runs no repository and holds no token: a
+// signed operator host records what the loop did per fixture and version, and
+// this mode scores those attempts into a report artifact. Recording and scoring
+// stay apart so the numbers can be checked without trusting the machine that
+// produced them, and this mode stays offline like the rest of the exporter.
+const shadowFixtures = arg('--shadow', '')
+if (shadowFixtures !== '') {
+  const attemptsPath = arg('--attempts', '')
+  const reportPath = arg('--out', '')
+  if (attemptsPath === '' || reportPath === '') {
+    console.error('shadow: --shadow needs --attempts <file> and --out <report.json>')
+    process.exit(2)
+  }
+  let fixtureSet: ShadowFixtureSet
+  try {
+    fixtureSet = loadFixtureSet(readFileSync(resolve(shadowFixtures), 'utf8'))
+  } catch (error) {
+    console.error(`shadow: ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+  let recorded: { host?: { name?: unknown; signature?: unknown }; attempts?: unknown }
+  try {
+    recorded = JSON.parse(readFileSync(resolve(attemptsPath), 'utf8')) as typeof recorded
+  } catch (error) {
+    console.error(`shadow: MALFORMED_ATTEMPTS ${error instanceof Error ? error.message : String(error)}`)
+    process.exit(1)
+  }
+  const hostName = typeof recorded.host?.name === 'string' ? recorded.host.name : ''
+  const hostSignature = typeof recorded.host?.signature === 'string' ? recorded.host.signature : ''
+  if (!Array.isArray(recorded.attempts)) {
+    console.error('shadow: MALFORMED_ATTEMPTS attempts must be an array')
+    process.exit(1)
+  }
+  const byKey = new Map<string, ShadowAttempt>()
+  const versions: ShadowVersion[] = []
+  for (const entry of recorded.attempts) {
+    if (typeof entry !== 'object' || entry === null) continue
+    const record = entry as Record<string, unknown>
+    const fixtureId = typeof record.fixtureId === 'string' ? record.fixtureId : ''
+    const versionId = typeof record.version === 'string' ? record.version : ''
+    if (fixtureId === '' || versionId === '') {
+      console.error('shadow: MALFORMED_ATTEMPTS every attempt needs fixtureId and version')
+      process.exit(1)
+    }
+    if (!versions.some((version) => version.id === versionId)) versions.push({ id: versionId })
+    byKey.set(`${versionId}/${fixtureId}`, {
+      pullRequest: typeof record.pullRequest === 'string' ? record.pullRequest : null,
+      merged: record.merged === true,
+      reviewScore: typeof record.reviewScore === 'number' ? record.reviewScore : null,
+      verificationJson: typeof record.verificationJson === 'string' ? record.verificationJson : null,
+      costUsd: typeof record.costUsd === 'number' ? record.costUsd : 0,
+      durationMs: typeof record.durationMs === 'number' ? record.durationMs : 0,
+      ...(typeof record.error === 'string' ? { error: record.error } : {}),
+    })
+  }
+  const missing = fixtureSet.fixtures.flatMap((fixture) =>
+    versions.filter((version) => !byKey.has(`${version.id}/${fixture.id}`)).map((version) => `${version.id}/${fixture.id}`),
+  )
+  if (missing.length > 0) {
+    console.error(`shadow: MISSING_ATTEMPTS no recorded attempt for ${missing.join(', ')}; a missing run is not a failure`)
+    process.exit(1)
+  }
+  const recordedHost: ShadowHost = {
+    name: hostName,
+    signature: hostSignature,
+    capabilities: { push: false, merge: false, liveAccess: false, tokens: false },
+    run: ({ fixture, version }) => byKey.get(`${version.id}/${fixture.id}`) as ShadowAttempt,
+  }
+  const result = await runShadow(fixtureSet, versions, recordedHost)
+  if (!result.ok) {
+    console.error(`shadow: ${result.code} ${result.detail}`)
+    process.exit(1)
+  }
+  writeFileSync(resolve(reportPath), renderShadowReport(result.report))
+  for (const line of shadowSummaryLines(result.report)) console.log(line)
+  console.error(`shadow: report ${resolve(reportPath)}`)
   process.exit(0)
 }
 

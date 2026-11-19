@@ -1,0 +1,55 @@
+{
+  "id": "shadow-2026-11-19",
+  "redacted": true,
+  "note": "Held-out tasks captured from this repository's own history and redacted by hand: no token, no private URL, no user identity. Every body is shortened to the defect, so a loop can be scored on the shape of the work rather than on the full thread.",
+  "fixtures": [
+    {
+      "id": "1097-nginx-location-header",
+      "split": "holdout",
+      "repository": { "owner": "HugoXK", "name": "fledge", "defaultBranch": "main", "origin": "fixture" },
+      "issue": {
+        "number": 1097,
+        "title": "the nginx header gate only inspects server-level add_header",
+        "body": "A location that declares any add_header stops inheriting the server set, so a sample with one header under location / passes the gate while serving none of the four. Expected: the check refuses that location and names it.",
+        "labels": ["bug", "area:security", "area:deploy"]
+      },
+      "expected": "pull-request"
+    },
+    {
+      "id": "1003-schedule-paused-sentence",
+      "split": "holdout",
+      "repository": { "owner": "HugoXK", "name": "fledge", "defaultBranch": "main", "origin": "fixture" },
+      "issue": {
+        "number": 1003,
+        "title": "the schedule console never says the scheduled half is paused",
+        "body": "A repository connected without a role still gets Run now, while every scheduled dispatch is refused with ROLE_REQUIRED and the page says nothing. Expected: one bilingual sentence on /repos/:id/schedule when repo_role is NULL.",
+        "labels": ["bug", "area:jobs", "area:ui"]
+      },
+      "expected": "pull-request"
+    },
+    {
+      "id": "882-nginx-absent-must-fail",
+      "split": "holdout",
+      "repository": { "owner": "HugoXK", "name": "fledge", "defaultBranch": "main", "origin": "fixture" },
+      "issue": {
+        "number": 882,
+        "title": "a runner without nginx records a gap and exits green",
+        "body": "The deploy check printed a gap instead of failing when the binary was missing, so a broken sample merged behind a green gate. Expected: a missing binary is a failure.",
+        "labels": ["bug", "area:deploy"]
+      },
+      "expected": "pull-request"
+    },
+    {
+      "id": "1080-memory-key-under-editing",
+      "split": "holdout",
+      "repository": { "owner": "HugoXK", "name": "fledge", "defaultBranch": "main", "origin": "fixture" },
+      "issue": {
+        "number": 1080,
+        "title": "the memory key field is editable while the entry is being edited",
+        "body": "Renaming a memory entry's key through the same form silently changes its identity instead of creating a second entry. Expected: the key is read-only while editing and named as such in both locales.",
+        "labels": ["bug", "area:ui"]
+      },
+      "expected": "pull-request"
+    }
+  ]
+}
