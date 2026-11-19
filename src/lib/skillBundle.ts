@@ -84,7 +84,7 @@ function isRole(value: unknown): value is TeamRole {
 }
 
 function isUnsigned(value: unknown): value is UnsignedSkillBundle {
-  if (typeof value !== 'object' || value === null) return false
+  if (typeof value !== 'object' || !value) return false
   const row = value as Record<string, unknown>
   return typeof row.name === 'string'
     && row.name !== ''

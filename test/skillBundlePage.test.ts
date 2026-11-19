@@ -70,3 +70,24 @@ test('the repository page says no bundle was loaded when the latest job recorded
     store.close()
   }
 })
+
+test('a maintainer gets the revoke control for each recorded source', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'bundle-source-owner', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_bundle_source', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    store.ensureSkillBundleSource({ repoId: repo.id, source: SOURCE, updatedBy: 'system:first-load' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const html = repoPage({ config, locale: 'en', viewer, repo, jobs: [], skillSources: store.listSkillBundleSources(repo.id) })
+    assert.ok(html.includes('/repos/repo_bundle_source/skill-source'), 'the owner path is a form on the page')
+    assert.match(html, /name="source" value="repo:o\/r"/)
+    assert.match(html, /Revoke this source/)
+    // A developer does not get the write control; the card stays read-only.
+    store.updateRepo(repo.id, { repo_role: 'developer' })
+    const developer = repoPage({ config, locale: 'en', viewer, repo: store.getRepo(repo.id)!, jobs: [], skillSources: store.listSkillBundleSources(repo.id) })
+    assert.equal(developer.includes('/repos/repo_bundle_source/skill-source'), false)
+  } finally {
+    store.close()
+  }
+})

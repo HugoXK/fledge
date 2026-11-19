@@ -1031,7 +1031,7 @@ export class Jobs {
   // every repository skill is another; each is signed with the instance key and
   // then checked against the source allowlist. `held` and `refused` are dispatch
   // refusals: a job that cannot name the bundles it loaded does not start.
-  private attestSkillBundles(repo: RepoRow, rules: RepoRules, role: TeamRole): { ok: true; hash: string; json: string } | { ok: false; code: 'SKILL_BUNDLE_HELD' | 'SKILL_BUNDLE_REFUSED'; error: string; detail: string } {
+  private attestSkillBundles(repo: RepoRow, rules: RepoRules, role: TeamRole): { ok: true; hash: string; json: string } | { ok: false; code: 'SKILL_BUNDLE_HELD' | 'SKILL_BUNDLE_REFUSED'; error: string; detail: string; hash: string } {
     const instanceKey = this.config.tokenEncryptionKey
     this.store.ensureSkillBundleSource({ repoId: repo.id, source: PLAYBOOK_BUNDLE_SOURCE, updatedBy: 'system:builtin' })
     if (rules.skills.length > 0) {
@@ -1050,6 +1050,9 @@ export class Jobs {
         ok: false,
         code: set.state === 'held' ? 'SKILL_BUNDLE_HELD' : 'SKILL_BUNDLE_REFUSED',
         detail: set.reason,
+        // The audit records the set hash even when the set is refused, so the
+        // decision and the hash are one line a later reader can compare.
+        hash: set.hash,
         error: set.state === 'held'
           ? `技能包来源不在允许列表中，任务已暂缓：${set.reason}`
           : `技能包未通过校验，任务未派发：${set.reason}`,
@@ -1485,10 +1488,11 @@ export class Jobs {
     if (rules !== undefined) {
       const attested = this.attestSkillBundles(repo, rules, flybot?.role ?? 'lead')
       if (!attested.ok) {
-        this.store.audit(user.id, 'job.skill_bundle_refused', `${repo.id}: ${attested.code} ${attested.detail}`.slice(0, 300))
+        this.store.audit(user.id, 'job.skill_bundle_refused', `${repo.id}: ${attested.code} hash=${attested.hash} ${attested.detail}`.slice(0, 300))
         return { ok: false, error: attested.error, code: attested.code, detail: attested.detail }
       }
       skillBundle = { hash: attested.hash, json: attested.json, state: 'accepted' }
+      this.store.audit(user.id, 'job.skill_bundle_attested', `${jobId}: ${attested.hash}`.slice(0, 300))
     }
 
     const platformToken = `flg_${randomToken(32)}`
@@ -2650,14 +2654,14 @@ export class Jobs {
     if (bundleBlock !== null) {
       if (job.skill_state !== 'skill-revoked') {
         this.store.updateJob(job.id, { skill_state: 'skill-revoked' })
-        this.store.audit(job.user_id, 'job.skill_bundle_revoked', `${job.id}: ${bundleBlock.source} (${bundleBlock.state})`.slice(0, 300))
+        this.store.audit(job.user_id, 'job.skill_bundle_revoked', `${job.id}: ${bundleBlock.source} (${bundleBlock.state}) hash=${job.skill_bundle_hash ?? 'none'}`.slice(0, 300))
         this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: job.user_id, kind: 'job.skill_revoked', step: 'merge', meta: bundleBlock.source.slice(0, 200) })
         this.store.notify(job.user_id, 'job', `任务 ${job.id} 加载过的技能包来源 ${bundleBlock.source} 已被撤销，自动合并已阻止。`)
       }
       if (!manual) {
         return { ok: false, message: '任务加载过的技能包来源已被撤销，自动合并已阻止。' }
       }
-      this.store.audit(job.user_id, 'job.skill_bundle_override', `${job.id}: manual merge over revoked ${bundleBlock.source}`.slice(0, 300))
+      this.store.audit(job.user_id, 'job.skill_bundle_override', `${job.id}: manual merge over revoked ${bundleBlock.source} hash=${job.skill_bundle_hash ?? 'none'}`.slice(0, 300))
     }
     // #507: the reviewer's signal has to reach the merge path. A low score or a
     // changes_requested work item blocks the automatic merge; a maintainer can
@@ -4513,10 +4517,11 @@ export class Jobs {
     if (rules !== undefined) {
       const attested = this.attestSkillBundles(repo, rules, flybot?.role ?? 'lead')
       if (!attested.ok) {
-        this.store.audit(job.user_id, 'job.skill_bundle_refused', `${job.id}: ${attested.code} ${attested.detail}`.slice(0, 300))
+        this.store.audit(job.user_id, 'job.skill_bundle_refused', `${job.id}: ${attested.code} hash=${attested.hash} ${attested.detail}`.slice(0, 300))
         return fail(attested.error)
       }
       this.store.updateJob(job.id, { skill_bundle_hash: attested.hash, skill_bundle_json: attested.json, skill_state: 'accepted' })
+      this.store.audit(job.user_id, 'job.skill_bundle_attested', `${job.id}: ${attested.hash}`.slice(0, 300))
       dispatchJob = this.store.getJob(job.id) ?? job
     }
     // #247: the attempt row and the running transition are one commit.

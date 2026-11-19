@@ -18,6 +18,10 @@ export type RouteClass = 'destructive' | 'expensive' | 'ordinary'
 // Irreversible or privilege-changing: a role, a token, a credential, a policy or
 // a repository goes, or an account's standing changes.
 const DESTRUCTIVE_ROUTE_LIST = [
+  // #380: revoking a skill-bundle source changes what a later job may load and
+  // what an already-loaded job may auto-merge, so it takes the destructive
+  // class rather than the ordinary one.
+  'POST /repos/:id/skill-source',
   'POST /admin/users/:id/role',
   'POST /admin/users/:id/private-models',
   'POST /admin/users/:id/resend-approval',

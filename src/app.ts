@@ -2458,6 +2458,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #379: the repository page lists every state the ledger can hold. These
         // are the ids jobs reported, not GitHub's alert store.
         securityFindings: store.listSecurityFindings(repo.id),
+        // #380: the owner path for revoking a recorded source; the page renders
+        // it only for a maintainer.
+        skillSources: store.listSkillBundleSources(repo.id),
         commands,
         // #359: the page names the deadline and the way out, so an ignored plan
         // is a visible decision with a date rather than a silent wait.
@@ -3287,6 +3290,24 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(viewer.user.id, 'repo.rules_override_saved', `${path}: revision ${result.row.revision}, ${Buffer.byteLength(content)} bytes`)
     return reply.redirect(`/repos/${repo.id}/rules?saved=${encodeURIComponent(path)}`)
+  })
+
+  // #380: the allowlist had no owner path, so a revocation could never happen in
+  // production. This route only flips a source the instance already recorded —
+  // it cannot invent one — and the next automatic merge reads it.
+  app.post('/repos/:id/skill-source', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    if (!limits.take('destructive', `skill-source:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以修改技能包来源。', 'MAINTAINER_ONLY')
+    const body = form(request)
+    const source = (body.source ?? '').slice(0, 200)
+    const state = body.state === 'revoked' ? 'revoked' : body.state === 'allowed' ? 'allowed' : null
+    if (source === '' || state === null || store.skillBundleSource(repo.id, source) === undefined) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('未知的技能包来源。')}#repo-skill-bundles`)
+    }
+    store.setSkillBundleSource({ repoId: repo.id, source, state, updatedBy: viewer.user.id })
+    store.audit(viewer.user.id, 'repo.skill_source', `${repo.id}: ${state} ${source}`.slice(0, 300))
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(state === 'revoked' ? '来源已撤销，已加载它的任务不能自动合并。' : '来源已允许，对之后的任务生效。')}#repo-skill-bundles`)
   })
 
   app.post('/repos/:id/rules/delete', async (request, reply) => {

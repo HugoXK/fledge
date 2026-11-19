@@ -1300,7 +1300,10 @@ already the owner's decision to trust its own skill files, so the first load is
 the trust decision (trust on first use). A source this instance has never seen is
 `held`, which delays the job instead of running an unknown source. A source an
 operator marks `revoked` stays in the table so the record of the revocation
-survives, and every later job from it is refused.
+survives, and every later job from it is refused. The repository page exposes
+that decision to a maintainer: one form per recorded source posts to
+`/repos/:id/skill-source`, and the route only flips a source this instance
+already recorded, so the page cannot invent an allowlist entry.
 
 The dispatch computes one set hash over the attested bundles (sorted by source
 and name, so loader order cannot change it) and writes the record to the job row.
