@@ -144,6 +144,26 @@ test('rejecting a proposal keeps the record and marks it revoked', async () => {
   }
 })
 
+test('a rejected proposal is not offered as a proposal again', async () => {
+  const h = await harness()
+  try {
+    await propose(h, { key: 'noisy-log', kind: 'experience', body: 'The flaky test was the clock.' })
+    const rejected = await decide(h, 'noisy-log', 'reject')
+    assert.equal(rejected.statusCode, 302)
+    // Rejecting keeps the row as the record of what the agent offered, but the
+    // decision is made: it is neither badged as waiting for a human nor decidable.
+    const listed = await page(h)
+    assert.doesNotMatch(listed.body, /data-memory-proposal="agent"/, 'a revoked proposal is not badged as awaiting a human')
+    const detail = await page(h, '?key=noisy-log')
+    assert.doesNotMatch(detail.body, /data-memory-accept="noisy-log"/, 'a revoked proposal offers no decision form')
+    const again = await decide(h, 'noisy-log', 'accept')
+    assert.match(String(again.headers.location ?? ''), /not_a_proposal/, 'a revoked proposal cannot be decided again')
+    assert.equal(h.store.getMemory(h.repo.id, 'noisy-log')?.status, 'revoked', 'the refused second decision wrote nothing')
+  } finally {
+    await h.close()
+  }
+})
+
 test('a fourth proposal in one run is refused', async () => {
   const h = await harness()
   try {

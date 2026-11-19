@@ -3106,8 +3106,11 @@ Accepting is a new revision with `verification: human_asserted` and
 `status: active`, written by the person who accepted it — the entry keeps the
 agent as its author, and the revision records the decision. Rejecting is a
 revision with `status: revoked` that keeps the body: the record of what the agent
-offered is not destroyed. A decided proposal offers no second decision, and only
-a reader inside the entry's audience can decide.
+offered is not destroyed. The proposal predicate is all three of agent-owned,
+`unverified` and still `needs_review`, so a decision moves the row out of it in
+both directions — accepting changes the verification, rejecting changes the
+status — and a decided proposal is neither badged nor offered a second decision.
+Only a reader inside the entry's audience can decide.
 
 ## Gate plans and sessions (`#543` first slice)
 

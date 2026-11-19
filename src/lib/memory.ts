@@ -290,13 +290,21 @@ export function parseAgentNoteInput(body: Record<string, unknown>): { ok: true; 
   return { ok: true, value: { key, kind, body: note, sourcesJson: JSON.stringify(sources) } }
 }
 
+// A proposal is an agent-owned entry no human has confirmed yet, and a decision
+// moves the row out of that state: accepting makes it human-asserted, rejecting
+// leaves it revoked. The status is part of the predicate because a rejection
+// keeps `verification: 'unverified'` on purpose — the row is the record of what
+// the agent offered, not a claim a human made — so verification alone would keep
+// offering a decided proposal a second decision and badge it as still waiting.
+const PROPOSAL_STATUS: MemoryStatus = 'needs_review'
+
 /** A proposal is an agent-owned entry no human has confirmed yet. */
-export function isAgentProposal(entry: { owner_type: string; verification: string }): boolean {
-  return entry.owner_type === 'agent' && entry.verification === 'unverified'
+export function isAgentProposal(entry: { owner_type: string; verification: string; status: string }): boolean {
+  return entry.owner_type === 'agent' && entry.verification === 'unverified' && entry.status === PROPOSAL_STATUS
 }
 
 /** A reader may decide only on a proposal it can see: audience first, then type. */
-export function canDecideProposal(entry: { owner_type: string; verification: string; audience: string }, role: RepoRole | null): boolean {
+export function canDecideProposal(entry: { owner_type: string; verification: string; status: string; audience: string }, role: RepoRole | null): boolean {
   return audienceVisible(entry.audience, role) && isAgentProposal(entry)
 }
 
