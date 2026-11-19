@@ -1,6 +1,6 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationOutboxRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SecurityFindingRow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import type { ActionRow, AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationOutboxRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SecurityFindingRow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
 import { isVerifiedFixed } from '../lib/securityFindings.js'
 import { assetUrl } from '../lib/assetVersion.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
@@ -28,6 +28,7 @@ import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { followUpLinks, summariseDeliveries, type DeliveryOutcomeRow } from '../lib/deliveryOutcome.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { planPacketHash } from '../lib/planDecision.js'
 import { changeStoryFacts, type ChangeStory, type ChangeStoryFact } from '../lib/changeStory.js'
 import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type FrozenSnapshotField, type ScheduleConsoleState } from '../schedules/console.js'
@@ -42,7 +43,7 @@ import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import type { ReleaseDispatchPreview } from '../lib/releaseDispatch.js'
-import { readReleaseNotesSources } from '../releases/notes.js'
+import { readReleaseNotesProvenance, readReleaseNotesSources } from '../releases/notes.js'
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
@@ -167,7 +168,7 @@ function retiredMark(model: { retired_at?: string | null }, t: Translate): strin
 }
 
 function infoTip(text: string): string {
-  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">${icon('info', 12)}</button>`
+  return `<button type="button" class="info-tip" data-inline-target aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">${icon('info', 12)}</button>`
 }
 
 function recurrenceRepositories(json: string): string[] {
@@ -191,12 +192,20 @@ function formatCount(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString('en-US') : '—'
 }
 
-function durationText(ms: number | null | undefined): string {
+export function durationText(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
   if (ms < 1000) return '<1s'
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
-  if (ms < 86_400_000) return `${(ms / 3_600_000).toFixed(1)}h`
+  // #1057: each band rounds to its own precision, so its top end can round up
+  // to the unit it has just completed ("60s", "60m", "24.0h"). Report the next
+  // unit at that point instead; a value never prints a unit it has finished.
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  if (ms < 60_000) return '1m'
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) return `${minutes}m`
+  if (ms < 3_600_000) return '1h'
+  const hours = (ms / 3_600_000).toFixed(1)
+  if (Number(hours) < 24) return `${hours}h`
   return `${(ms / 86_400_000).toFixed(1)}d`
 }
 
@@ -1098,6 +1107,186 @@ function nextActionSection(action: NextActionView, t: Translate): string {
   </section>`
 }
 
+// #655: the home answers "what needs me now?" once per repository. The single
+// card above names one action for the whole account, so a second repository with
+// a pending question waited behind whichever repository happened to sort first.
+// Each row here carries exactly one action — the signals below are ranked, never
+// stacked into a second button — and a repository that needs nothing shows the
+// calm state instead of an empty widget.
+export type RepoDecisionKind = 'question' | 'alert' | 'job' | 'growing'
+
+export interface RepoDecisionView {
+  repoId: string
+  // The repository's own name, so two repositories of the same upstream are told
+  // apart by the row a reader is looking at.
+  repoLabel: string
+  kind: RepoDecisionKind
+  title: string
+  body: string
+  href: string
+  // Empty for the calm state: a row with nothing to do has no button to press.
+  actionLabel: string
+  // Higher is more urgent. The page orders rows by it and never by the order the
+  // repositories were created, which is what made the old card miss a question.
+  rank: number
+}
+
+// One repository's newest runs, newest first, as the route reads them (#655).
+// The paged table slice cannot answer for every repository, so the route passes
+// a small per-repository read instead.
+function repoDecisionFor(input: {
+  t: Translate
+  locale: Locale
+  repo: RepoRow
+  questions: InboxQuestion[]
+  alerts: AlertView[]
+  jobs: JobRow[]
+  nextRunFact: NextRunFact | undefined
+  config: Config
+}): RepoDecisionView {
+  const { t, locale, repo, questions, alerts, jobs, nextRunFact, config } = input
+  const repoLabel = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
+  const waiting = questions.filter((question) => question.repoId === repo.id)
+  if (waiting.length > 0) {
+    const first = waiting[0]!
+    return {
+      repoId: repo.id,
+      repoLabel,
+      kind: 'question',
+      rank: 40,
+      title: waiting.length === 1
+        ? t('这个仓库在等你回答 1 个问题。', 'This repository is waiting on 1 answer.')
+        : t(`这个仓库在等你回答 ${waiting.length} 个问题。`, `This repository is waiting on ${waiting.length} answers.`),
+      body: first.question.trim().slice(0, 160),
+      href: '#inbox',
+      actionLabel: t('去回答', 'Answer'),
+    }
+  }
+  // A critical alert outranks a warning and an informational one, so one row can
+  // carry the repository's worst open signal without a second button beside it.
+  const own = alerts.filter((alert) => alert.repoId === repo.id)
+  const alert = own.find((entry) => entry.level === 'critical') ?? own.find((entry) => entry.level === 'warning') ?? own[0]
+  if (alert !== undefined) {
+    const href = alert.prUrl ?? alertHref(alert)
+    return {
+      repoId: repo.id,
+      repoLabel,
+      kind: 'alert',
+      rank: alert.level === 'critical' ? 30 : alert.level === 'warning' ? 29 : 28,
+      title: alertText(t, alert),
+      body: alert.prUrl === undefined
+        ? t('这条提醒属于这个仓库。', 'This alert belongs to this repository.')
+        : t('这个 PR 在等你处理。', 'This pull request is waiting for you.'),
+      href: href === '' ? `/repos/${repo.id}` : href,
+      actionLabel: alert.prUrl === undefined ? t('打开', 'Open') : t('打开 PR', 'Open pull request'),
+    }
+  }
+  // #655 rework: the row says "the latest job ... failed", so it must only
+  // exist when the newest run is the failure. `jobs` is newest first (the route
+  // reads listJobsForRepo, created_at DESC); an older failure behind a success
+  // stays on the attention table and does not headline this queue. This is the
+  // same rule the account card applies above.
+  const newest = jobs[0]
+  const failed = newest?.status === 'failed' ? newest : undefined
+  if (failed !== undefined) {
+    const reason = (failed.error ?? '').trim()
+    const localized = (localizeMessage(locale, reason) ?? '').trim()
+    const failure = classifyFailure(failed)
+    // The same rule the headline card applies: a Chinese-only sentence never
+    // becomes an English headline, and the failure class exists in both languages.
+    const body = reason === ''
+      ? t('打开任务看失败原因，修好后重跑。', 'Open the job for the reason, fix it and run again.')
+      : localized !== '' && (locale !== 'en' || !CJK_TEXT.test(localized))
+        ? localized.slice(0, 160)
+        : t(`${failure?.label[0] ?? '任务失败'}，打开任务查看原因。`, `${failure?.label[1] ?? 'Job failed'}; open the job for the detail.`)
+    return {
+      repoId: repo.id,
+      repoLabel,
+      kind: 'job',
+      rank: 20,
+      title: t(`这个仓库最近一次任务失败：${failed.id}`, `The latest job in this repository failed: ${failed.id}`),
+      body,
+      href: `/repos/${repo.id}/jobs/${failed.id}`,
+      actionLabel: t('查看任务', 'Open job'),
+    }
+  }
+  // Nothing is waiting on a person. The calm state names when the platform runs
+  // here on its own and what it last produced, because an empty widget tells a
+  // reader nothing about whether the repository is alive.
+  const scheduled = nextRunFact?.scheduledNext
+  const nextLine = scheduled === undefined
+    ? nextRunLine(nextRun({
+        lastRunAt: repo.last_run_at,
+        intervalMinutes: repo.interval_minutes,
+        workCooldownMinutes: config.runner.workCooldownMinutes,
+        autoIterate: repo.auto_iterate === 1,
+        hasOpenWork: nextRunFact === undefined ? true : nextRunFact.openWork,
+        hasActiveJob: nextRunFact?.activeJob ?? false,
+        repoEnabled: repo.enabled === 1,
+        instanceReady: config.flybot.instanceImage !== '' && nextRunFact !== undefined ? nextRunFact.instanceReady : true,
+      }), t)
+    : plannedNextLine(scheduled, t)
+  const lastGood = jobs.find((job) => job.pr_url !== null && job.pr_state === 'merged')
+  const produced = lastGood !== undefined
+    ? t(`最近合并的 PR：${lastGood.pr_url ?? ''}。`, `Last merged pull request: ${lastGood.pr_url ?? ''}.`)
+    : repo.last_run_at === null
+      ? t('还没有运行过。', 'Nothing has run yet.')
+      : t(`最近一次运行：${humanTimeShort(repo.last_run_at)}。`, `Last run: ${humanTimeShort(repo.last_run_at)}.`)
+  return {
+    repoId: repo.id,
+    repoLabel,
+    kind: 'growing',
+    rank: 0,
+    title: t('这个仓库现在不需要你。', 'Nothing needs you in this repository.'),
+    body: t(`下次自动运行：${nextLine} ${produced}`, `Next automatic run: ${nextLine} ${produced}`),
+    href: `/repos/${repo.id}`,
+    actionLabel: '',
+  }
+}
+
+function repoDecisionsFor(input: {
+  t: Translate
+  locale: Locale
+  repos: RepoRow[]
+  questions: InboxQuestion[]
+  alerts: AlertView[]
+  decisionJobs: JobRow[]
+  nextRunFacts: NextRunFact[]
+  config: Config
+}): RepoDecisionView[] {
+  const decisions = input.repos.map((repo) => repoDecisionFor({
+    t: input.t,
+    locale: input.locale,
+    repo,
+    questions: input.questions,
+    alerts: input.alerts,
+    // `decisionJobs` is every repository's own runs; the table slice would make a
+    // failure in the eleventh repository invisible.
+    jobs: input.decisionJobs.filter((job) => job.repo_id === repo.id),
+    nextRunFact: input.nextRunFacts.find((fact) => fact.repoId === repo.id),
+    config: input.config,
+  }))
+  return decisions.sort((a, b) => (b.rank === a.rank ? a.repoLabel.localeCompare(b.repoLabel) : b.rank - a.rank))
+}
+
+function repoDecisionsSection(decisions: RepoDecisionView[], t: Translate): string {
+  if (decisions.length === 0) return ''
+  const rows = decisions.map((decision) => `<li class="decision-row" data-decision="${decision.kind}" data-decision-repo="${escapeHtml(decision.repoId)}">
+        <div class="decision-main">
+          <a class="decision-repo" href="/repos/${escapeHtml(decision.repoId)}">${escapeHtml(decision.repoLabel)}</a>
+          <p class="decision-title">${escapeHtml(decision.title)}</p>
+          <p class="muted">${escapeHtml(decision.body)}</p>
+        </div>
+        ${decision.actionLabel === '' ? '' : `<a class="link" data-decision-action href="${escapeHtml(decision.href)}">${escapeHtml(decision.actionLabel)}</a>`}
+      </li>`).join('')
+  return `<section class="card" id="decisions" aria-labelledby="decisions-title">
+    <div class="eyebrow">${escapeHtml(t('下一步', 'Next action'))}</div>
+    <h2 id="decisions-title">${escapeHtml(t('每个仓库，一件事', 'One thing per repository'))}</h2>
+    <p class="muted">${escapeHtml(t('按影响排序：先回答问题，再看失败的任务，最后是现在不需要你的仓库。', 'Ordered by impact: an answer first, then a failed job, and last the repositories that need nothing.'))}</p>
+    <ol class="decision-list">${rows}</ol>
+  </section>`
+}
+
 export function dashboardPage(input: {
   config: Config
   locale: Locale
@@ -1108,6 +1297,8 @@ export function dashboardPage(input: {
   // reads separately from the paged and filtered table slice.
   latestJob?: JobRow
   notifications: NotificationRow[]
+  // #633: the open decisions for this account, one row per action id.
+  actions?: ActionRow[]
   questions?: InboxQuestion[]
   personal?: {
     repos: number
@@ -1138,6 +1329,10 @@ export function dashboardPage(input: {
   // they live outside RepoRow, so the route reads them for every repository. A
   // caller that omits them still gets the shared formula, not a second one.
   nextRunFacts?: NextRunFact[]
+  // #655: every repository's own newest runs, read per repository by the route.
+  // The paged table slice would make a failure in the eleventh repository
+  // invisible to the queue that is supposed to answer for all of them.
+  decisionJobs?: JobRow[]
   // #565: the instance queue is wider than the visible table slice, so a queued
   // row's position and total come from the route's queue read, not the page. A
   // caller that omits the queue renders the list exactly as before.
@@ -1183,6 +1378,16 @@ export function dashboardPage(input: {
     nextRunFacts: input.nextRunFacts ?? [],
     config,
   })
+  const decisions = repoDecisionsFor({
+    t,
+    locale,
+    repos: loopRepos,
+    questions,
+    alerts,
+    decisionJobs: input.decisionJobs ?? jobs,
+    nextRunFacts: input.nextRunFacts ?? [],
+    config,
+  })
   // The add-repository form, the inbox, the attention table and the job table
   // all live inside the disclosure. A browser does not open <details> for an
   // in-page anchor, so the disclosure must already be open or a link that points
@@ -1190,7 +1395,7 @@ export function dashboardPage(input: {
   // other two ways in: both target `#jobs`, so a page loaded on page two or with
   // an active filter is a page whose table must be visible.
   const jobTableDeepLinked = jobsPage > 1 || jobFilterIsActive(jobFilter)
-  const secondaryOpen = jobTableDeepLinked || reposPage > 1 || ['#repositories', '#add-repo', '#inbox', '#attention'].includes(nextAction.href)
+  const secondaryOpen = jobTableDeepLinked || reposPage > 1 || ['#repositories', '#add-repo', '#inbox', '#attention'].includes(nextAction.href) || decisions.some((decision) => decision.href === '#inbox' || decision.href === '#attention')
   const repoRows = repos.length === 0
     ? stateCell(5, { kind: 'empty', title: t('还没有仓库。', 'No repositories yet.'), body: t('添加第一个仓库并选择你的角色，任务才会开始。', 'Add your first repository and choose your role before any job can start.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })
     : repos
@@ -1254,6 +1459,7 @@ export function dashboardPage(input: {
   </section>
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}
+  ${repoDecisionsSection(decisions, t)}
   <details class="secondary" data-secondary${secondaryOpen ? ' open' : ''}>
     <summary>${escapeHtml(t('更多：仓库、交付与任务', 'More: repositories, delivery and jobs'))}</summary>
     <div class="secondary-body">
@@ -1267,6 +1473,10 @@ export function dashboardPage(input: {
     <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
   ${inboxSection(locale, viewer, questions, '/dashboard')}
+  ${(input.actions ?? []).length === 0 ? '' : `<section class="card" id="actions-needed">
+    <div class="row between"><h2>${escapeHtml(t('需要你决定', 'Needs your decision'))}</h2><span class="fine">${escapeHtml(t('每条只有一个处理动作；处理完会自动消失。', 'One action per item; it clears when you handle it.'))}</span></div>
+    <ul class="list">${(input.actions ?? []).map((action) => `<li class="list-row"><div class="list-main"><span class="badge">${escapeHtml(action.kind)}</span> <strong>${escapeHtml(localizeMessage(locale, action.reason) ?? action.reason)}</strong><small>${escapeHtml(action.id)}</small></div><div class="row"><a class="btn" href="/actions/${escapeHtml(action.id)}">${escapeHtml(localizeMessage(locale, action.label) ?? action.label)}</a><form method="post" action="/actions/${escapeHtml(action.id)}/resolve" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('已处理', 'Done'))}</button></form></div></li>`).join('')}</ul>
+  </section>`}
   ${alerts.length === 0 ? '' : `<section class="card" id="attention">
     <div class="row between"><h2>${escapeHtml(t('需要处理', 'Needs attention'))}</h2><span class="fine">${escapeHtml(t('只显示你自己的仓库和任务。', 'Only your repositories and jobs.'))}</span></div>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('级别', 'Level'))}</th><th>${escapeHtml(t('类型', 'Kind'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th><th></th></tr></thead><tbody>${alertRows(t, alerts)}</tbody></table></div>
@@ -2074,6 +2284,15 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       // keeps them so a maintainer can check the release against what merged,
       // with the same links the body carries, without opening GitHub.
       const sources = readReleaseNotesSources(release.notes_source_json)
+      // #546 slice 5: which path produced the body, and the pinned commit the
+      // skill was read at. The row's own target_sha is the pin, so the line can
+      // always name it instead of pointing at a branch that has moved since.
+      const provenance = readReleaseNotesProvenance(release.notes_source_json)
+      const organised = provenance === null
+        ? ''
+        : provenance.kind === 'skill'
+          ? ` <span class="fine" data-release-notes-skill>${escapeHtml(t(`发布说明由 ${provenance.skillPath ?? '.agents/skills/release-notes/SKILL.md'} 在 ${(provenance.commit ?? release.target_sha).slice(0, 12)} 组织`, `notes organised by ${provenance.skillPath ?? '.agents/skills/release-notes/SKILL.md'} at ${(provenance.commit ?? release.target_sha).slice(0, 12)}`))}</span>`
+          : ` <span class="fine" data-release-notes-builtin>${escapeHtml(t('发布说明使用内置来源列表', 'notes built from the built-in source list'))}${provenance.reason === undefined || provenance.reason === 'no_skill' ? '' : ` (${escapeHtml(provenance.reason)})`}${provenance.detail === undefined ? '' : ` · ${escapeHtml(provenance.detail)}`}</span>`
       const sourceList = sources.length === 0
         ? ''
         : ` <details class="advanced-help"><summary>${escapeHtml(t(`发布说明来源 ${sources.length} 项`, `${sources.length} note source${sources.length === 1 ? '' : 's'}`))}</summary><ul class="list">${sources.map((source) => `<li><code>${escapeHtml(source.ref)}</code> <a class="link" href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.title)}</a></li>`).join('')}</ul></details>`
@@ -2087,7 +2306,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       const analyze = release.status !== 'run_failed' || release.run_id === null
         ? ''
         : ` <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/analyze" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('分析失败运行（只读）', 'Analyse failed run (read-only)'))}</button></form>`
-      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
+      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}${organised}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
     }).join('')}</ul>`}
   </section>`
   const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryOutcomesCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
@@ -3396,6 +3615,11 @@ export function jobPage(input: {
   resume?: { revision: number; idempotencyKey: string }
   retry?: { revision: number; idempotencyKey: string }
   supportMode?: boolean
+  // #1040: the actor's role on this repository (`ownedRepo`'s own answer), not
+  // `repo.repo_role`: that column declares Fledge's upstream access and stays
+  // NULL on a connected repository. Absent on a surface that cannot write, which
+  // draws no control.
+  viewerRole?: 'maintainer' | 'developer' | 'viewer'
   notice?: string
   error?: string
 }): string {
@@ -3461,6 +3685,25 @@ export function jobPage(input: {
         ? t('证据已核实，合并被路径守卫阻止', 'Evidence verified; the merge is blocked by the path guard')
         : t('证据通过', 'Evidence passed')
       : t('证据未通过', 'Evidence failed')
+  // #378: what the change was expected to run, and what was quarantined. Both
+  // are claims with a reason attached, so the page prints the reason beside the
+  // path instead of a bare list a reader cannot check.
+  const testImpact = verification?.testImpact
+  const impactLine = testImpact === undefined
+    ? ''
+    : testImpact.state === 'no impact map'
+      ? t('未映射影响：没有测试命中，回退到完整套件', 'No impact map: nothing matched, so the full suite is the fallback')
+      : t(
+        `选中 ${testImpact.selected.length} 个测试：${testImpact.selected.slice(0, 6).map((entry) => `${entry.path} (${entry.reason})`).join(', ')}${testImpact.selected.length > 6 ? ' …' : ''}${testImpact.truncated ? `（已截断，上限 ${testImpact.limit}）` : ''}`,
+        `Selected ${testImpact.selected.length} test(s): ${testImpact.selected.slice(0, 6).map((entry) => `${entry.path} (${entry.reason})`).join(', ')}${testImpact.selected.length > 6 ? ' …' : ''}${testImpact.truncated ? ` (truncated at ${testImpact.limit})` : ''}`,
+      )
+  const quarantinedLine = verification === null || verification.testEvidence.quarantinedChecks.length === 0
+    ? ''
+    : t(
+      ` · 隔离 ${verification.testEvidence.quarantinedChecks.length} 个：${verification.testEvidence.quarantinedChecks.join(', ')}`,
+      ` · quarantined ${verification.testEvidence.quarantinedChecks.length}: ${verification.testEvidence.quarantinedChecks.join(', ')}`,
+    )
+
   // #251: a follow-up stores the reviewer's words in the goal (one field, no
   // column), so the console reads that same line back. Without this row the
   // maintainer cannot tell what the agent was told, which was the second half of
@@ -3556,6 +3799,32 @@ export function jobPage(input: {
           const state = entry.state === 'unverified' ? t('未验证', 'unverified') : entry.state
           return `<p class="fine" data-observation data-state="${escapeHtml(entry.state)}">${escapeHtml(t('观测于', 'Observed'))} ${escapeHtml(`${when} ${state}`)} — ${escapeHtml(entry.link)}</p>`
         }).join('')}</div>`
+  // #1040: the red-test record is a claim with two readers. The badge says what
+  // the base run was; the control lets a maintainer answer it; the answer is
+  // read back from the row, so the page states who decided and when instead of
+  // letting a badge look self-certified.
+  const redTest = evidence?.redTest ?? null
+  const redTestDecision = evidence?.redTestDecision ?? null
+  const redTestVerdictLabel = redTest === null
+    ? ''
+    : redTest.verdict === 'red'
+      ? t('红', 'red')
+      : redTest.verdict === 'passed'
+        ? t('已通过', 'passed')
+        : t('未验证', 'unverified')
+  const redTestBadge = redTest === null
+    ? ''
+    : `<small class="fine" data-red-test-verdict="${escapeHtml(redTest.verdict)}" data-red-test-signature="${escapeHtml(redTest.signature)}" data-red-test-flaky="${redTest.flaky ? 'true' : 'false'}">${escapeHtml(`${redTestVerdictLabel} (${redTest.signature}) · ${redTest.reason} · ${t('基线', 'base')} ${redTest.baseSha.slice(0, 12)} · ${t('摘要', 'digest')} ${redTest.outputSha256.slice(0, 12)}`)}</small>`
+  const redTestDecisionLine = redTestDecision === null
+    ? ''
+    : `<small class="fine" data-red-test-decision="${escapeHtml(redTestDecision.decision)}">${escapeHtml(`${redTestDecision.decision === 'confirmed' ? t('维护者已确认这次红测。', 'A maintainer confirmed this red run.') : t('维护者已质疑这次红测。', 'A maintainer challenged this red run.')}${redTestDecision.note === '' ? '' : ` ${redTestDecision.note}`} · ${redTestDecision.by} · ${redTestDecision.at.slice(0, 16).replace('T', ' ')}Z`)}</small>`
+  // The control exists only where the operation can succeed: a maintainer, a
+  // stored record to answer, and a writable surface. A press is refused by the
+  // route as well, so a bypassed form decides nothing.
+  const redTestForm = redTest === null || supportMode || input.viewerRole !== 'maintainer'
+    ? ''
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/red-test" class="row" data-red-test-form>${csrf(viewer)}<input type="text" name="note" maxlength="300" placeholder="${escapeHtml(t('质疑时写理由（至少 8 字）', 'Reason when you challenge (8+ characters)'))}" aria-label="${escapeHtml(t('红测决定理由', 'Red-run decision reason'))}" /><button class="btn btn-ghost btn-small" type="submit" name="decision" value="confirm">${escapeHtml(t('确认这是预期的红', 'Confirm the intended red'))}</button><button class="btn btn-ghost btn-small" type="submit" name="decision" value="challenge">${escapeHtml(t('质疑这次红测', 'Challenge this red run'))}</button></form>`
+
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
@@ -3568,7 +3837,7 @@ export function jobPage(input: {
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('范围', 'Scope'))}</strong><small>${escapeHtml(evidence.scope ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('验收标准', 'Acceptance'))}</strong><small>${escapeHtml(evidence.acceptance ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试计划', 'Test plan'))}</strong><small>${escapeHtml(evidence.testPlan ?? '—')}</small></div></div>
-        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('失败测试', 'Red test'))}</strong><small>${escapeHtml(evidence.testRed ?? '—')}</small></div></div>
+        <div class="list-row" data-red-test-row><div class="list-main"><strong>${escapeHtml(t('失败测试', 'Red test'))}</strong><small>${escapeHtml(evidence.testRed ?? '—')}</small>${redTestBadge}${redTestDecisionLine}${redTestForm}</div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('通过测试', 'Green test'))}</strong><small>${escapeHtml(evidence.testGreen ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试', 'Tests'))}</strong><small>${escapeHtml(evidence.tests ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('CI / checks', 'CI / checks'))}</strong><small>${escapeHtml(evidence.checks ?? '—')}</small></div></div>
@@ -3645,15 +3914,77 @@ export function jobPage(input: {
   // Retry, execute, resume and re-check keep their order in the disclosure; the
   // primary is removed from it, and acknowledge is primary whenever it exists.
   const secondaryHtml = [retry, execute, resume, recheck].filter((html) => html !== '' && html !== primaryHtml).join('')
-  const planCard = job.kind === 'plan' && job.status === 'succeeded'
-    ? `<section class="card">
-        <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
-        ${repo.repo_role === 'maintainer' && job.plan_approved_at === null && job.plan_rejected_at === null ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}
-          <div class="row"><label class="grow">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label class="grow">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
-          <div class="row"><button class="btn" type="submit">${escapeHtml(t('批准计划', 'Approve plan'))}</button><button class="btn btn-danger" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan" data-confirm="${escapeHtml(t('拒绝这个计划？', 'Reject this plan?'))}">${escapeHtml(t('拒绝', 'Reject'))}</button></div>
-        </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
-      </section>`
+  // #634: the decision is the page's subject, so it says which plan is being
+  // decided (the same packet hash the form posts back), offers exactly one primary
+  // action, and turns into the record once somebody decided. Missing evidence is
+  // an incomplete state with the primary disabled and the reason beside it: a
+  // plan nobody can evaluate must not be approvable by pressing the button anyway.
+  const planState = job.kind !== 'plan' || job.status !== 'succeeded'
+    ? 'none'
+    : job.plan_approved_at !== null
+      ? 'approved'
+      : job.plan_rejected_at !== null
+        ? 'rejected'
+        : evidence === null
+          ? 'incomplete'
+          : 'pending'
+  const planHash = planState === 'none'
+    ? ''
+    : planPacketHash({ summary: job.summary, evidenceJson: job.evidence_json, baseSha: job.base_sha })
+  const planWhen = (value: string | null): string => value === null ? '—' : humanTimeShort(value)
+  // #634: a revision is a rejection plus a new plan queued on the same work item
+  // (see the revise-plan route), so a plan row with no work item — every row
+  // written before the link existed — cannot carry that control: the press only
+  // redirects with an error and decides nothing. Rejecting still applies to the
+  // row itself, so that button stays.
+  const reviseButton = job.work_item_id === null
+    ? ''
+    : `<button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/revise-plan">${escapeHtml(t('要求修改计划', 'Ask for a revised plan'))}</button>`
+  const reviseMissingNote = job.work_item_id === null
+    ? `<p class="fine" id="plan-revise-unavailable">${escapeHtml(t('这个计划没有关联工作项，无法要求修改；请用 /fledge plan 生成一份新计划。', 'This plan is not linked to a work item, so it cannot be revised; generate a new plan with /fledge plan.'))}</p>`
     : ''
+  const planRecord = planState === 'approved'
+    ? `<p class="fine" data-plan-record>${escapeHtml(t('决策人', 'Decided by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(planWhen(job.plan_approved_at))} · ${escapeHtml(t('计划指纹', 'Plan hash'))} <code>${escapeHtml(planHash.slice(0, 12))}</code> · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>`
+    : planState === 'rejected'
+      ? `<p class="fine" data-plan-record>${escapeHtml(t('决策人', 'Decided by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(planWhen(job.plan_rejected_at))} · ${escapeHtml(t('拒绝理由', 'Reason'))} ${escapeHtml(job.plan_reject_reason ?? '—')}</p>`
+      : ''
+  const planDecisionBody = planState === 'pending' && repo.repo_role === 'maintainer'
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}<input type="hidden" name="planHash" value="${escapeHtml(planHash)}" />
+        <div class="row"><label class="grow">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label class="grow">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
+        <label class="grow">${escapeHtml(t('理由（拒绝或要求修改计划时必填）', 'Reason (required to reject or ask for a revision)'))} <textarea name="reason" rows="2" maxlength="500"></textarea></label>
+        <div class="row"><button class="btn" type="submit" data-plan-primary>${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button>${reviseButton}</div>${reviseMissingNote}
+      </form>`
+    : planState === 'pending'
+      ? `<p class="fine">${escapeHtml(t('等待 maintainer 决定这个计划。', 'Waiting for a maintainer to decide this plan.'))}</p>`
+      : planState === 'incomplete'
+        // Missing evidence disables the approval only. Rejecting the plan and
+        // asking for a revised one are the two decisions that still make sense on
+        // a packet nobody can evaluate, and the legacy pending card offered both,
+        // so they stay: "cannot approve" is not a reason to strand a maintainer
+        // with one greyed-out button. Both still post the hash they read; a row
+        // with no work item keeps reject and says why it cannot revise.
+        ? repo.repo_role === 'maintainer'
+          ? `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准；仍然可以拒绝，或要求一份完整的计划。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved; you can still reject it or ask for a complete plan.'))}</p>
+        <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}<input type="hidden" name="planHash" value="${escapeHtml(planHash)}" />
+        <label class="grow">${escapeHtml(t('理由（拒绝或要求修改计划时必填）', 'Reason (required to reject or ask for a revision)'))} <textarea name="reason" rows="2" maxlength="500"></textarea></label>
+        <div class="row"><button class="btn" type="button" data-plan-primary disabled aria-describedby="plan-incomplete-reason">${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button>${reviseButton}</div>${reviseMissingNote}
+      </form>`
+          : `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved.'))}</p>
+           <p class="fine">${escapeHtml(t('等待 maintainer 拒绝这个计划或要求一份完整的计划。', 'Waiting for a maintainer to reject this plan or ask for a complete one.'))}</p>`
+        : planRecord
+  const planBadge = planState === 'approved'
+    ? `<span class="badge good">${escapeHtml(t('已批准', 'Approved'))}</span>`
+    : planState === 'rejected'
+      ? `<span class="badge bad">${escapeHtml(t('已拒绝', 'Rejected'))}</span>`
+      : planState === 'incomplete'
+        ? `<span class="badge busy">${escapeHtml(t('证据不完整', 'Evidence missing'))}</span>`
+        : `<span class="badge busy">${escapeHtml(t('待决定', 'Awaiting a decision'))}</span>`
+  const planCard = planState === 'none'
+    ? ''
+    : `<section class="card" data-plan-decision="${planState}">
+        <div class="row between"><div><h2>${escapeHtml(t('计划决定', 'Plan decision'))}</h2><p class="muted">${planState === 'approved' ? escapeHtml(t('这个计划已批准；执行它现在写在页头的主操作里。', 'This plan is approved; running it is the header action now.')) : planState === 'rejected' ? escapeHtml(t('这个计划已被拒绝；新计划是新任务，不在原计划上改写。', 'This plan was rejected; a new plan is a new job, never an edit of this one.')) : planState === 'incomplete' ? escapeHtml(t('这个计划缺少证据，先要一份完整的计划。', 'This plan has no evidence; ask for a complete one first.')) : escapeHtml(t('读计划，然后决定：批准并运行、说明理由后拒绝，或要求一份修改后的计划。', 'Read the plan, then decide: approve and run, reject with a reason, or ask for a revised plan.'))}</p></div>${planBadge}</div>
+        ${planDecisionBody}
+      </section>`
   // #390: the work type is data, so the page reads it back from the registry
   // instead of restating it. An unknown or missing type renders as iterate, which
   // is what every row written before the column means.
@@ -3888,7 +4219,8 @@ export function jobPage(input: {
       : `<div class="list">
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(evidenceVerdict)}</strong><small>${escapeHtml(t('核实时间', 'Checked'))} ${escapeHtml(humanTimeShort(verification.checkedAt))} · ${escapeHtml(t('基于', 'At'))} <code>${escapeHtml(verification.sha.slice(0, 12))}</code></small></div></div>
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('检查', 'Checks'))}</strong><small>${verification.checks.green}/${verification.checks.total} ${escapeHtml(t('通过', 'green'))}${verification.checks.failing.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.checks.failing.join(', '))}`}${verification.checks.pending.length === 0 ? '' : ` · ${escapeHtml(t('等待', 'pending'))}: ${escapeHtml(verification.checks.pending.join(', '))}`}</small></div></div>
-          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试证据', 'Test evidence'))}</strong><small>${escapeHtml(verification.testEvidence.state === 'verified' ? t('已核实', 'Verified') : verification.testEvidence.state === 'contradicted' ? t('与 checks 不一致', 'Contradicted by checks') : t('未核实', 'Unverified'))}${verification.testEvidence.greenChecks.length === 0 ? '' : ` · ${escapeHtml(t('通过', 'green'))}: ${escapeHtml(verification.testEvidence.greenChecks.join(', '))}`}${verification.testEvidence.failingChecks.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.testEvidence.failingChecks.join(', '))}`}</small></div></div>
+          <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试证据', 'Test evidence'))}</strong><small>${escapeHtml(verification.testEvidence.state === 'verified' ? t('已核实', 'Verified') : verification.testEvidence.state === 'contradicted' ? t('与 checks 不一致', 'Contradicted by checks') : t('未核实', 'Unverified'))}${verification.testEvidence.greenChecks.length === 0 ? '' : ` · ${escapeHtml(t('通过', 'green'))}: ${escapeHtml(verification.testEvidence.greenChecks.join(', '))}`}${verification.testEvidence.failingChecks.length === 0 ? '' : ` · ${escapeHtml(t('失败', 'failing'))}: ${escapeHtml(verification.testEvidence.failingChecks.join(', '))}`}${escapeHtml(quarantinedLine)}</small></div></div>
+          ${impactLine === '' ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试选择', 'Test selection'))}</strong><small>${escapeHtml(impactLine)}</small></div></div>`}
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('审核', 'Reviews'))}</strong><small>${escapeHtml(t(`批准 ${verification.reviews.approvals} 个`, `${verification.reviews.approvals} approval(s)`))}${verification.reviews.changesRequested ? ` · ${escapeHtml(t('有 changes requested', 'changes requested'))}` : ''}</small></div></div>
           <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('PR 状态', 'PR state'))}</strong><small>${escapeHtml(verification.prState)} · ${escapeHtml(verification.mergeableState)} · ${escapeHtml(verification.combinedStatus)}</small></div></div>
         </div>`}
@@ -3999,6 +4331,10 @@ export function metricsPage(input: {
     usersWithPr: number
     costUsd: number
     events: Array<{ name: string; n: number }>
+    // #635 slice: the two durations the counts above cannot answer, with the
+    // sample count beside each so an empty window reads as `n/a`.
+    firstMerge: { repositories: number; samples: number; medianMs: number | null }
+    readyWait: { samples: number; medianMs: number | null }
   }
   team: { jobs: number; avgRoles: number; leadOnly: number; roles: Array<{ role: string; calls: number; jobs: number }> }
   workItems: { total: number; open: number; merged: number; closed: number }
@@ -4094,6 +4430,8 @@ export function metricsPage(input: {
         <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianJobMs)}</strong><small>${escapeHtml(t('任务耗时中位数', 'Median job duration'))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianMergeMs)}</strong><small>${escapeHtml(t('工作项创建到合并', 'Work item created to merged'))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianReviewMs)}</strong><small>${escapeHtml(t('审核耗时中位数', 'Median review duration'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong data-loop-metric="first-merge" data-loop-samples="${metrics.firstMerge.samples}">${metrics.firstMerge.medianMs === null ? 'n/a' : durationText(metrics.firstMerge.medianMs)}</strong><small>${escapeHtml(t(`仓库接入到首次合并（${metrics.firstMerge.repositories} 个仓库）`, `Repository connected to first merge (${metrics.firstMerge.repositories} repositories)`))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong data-loop-metric="ready-wait" data-loop-samples="${metrics.readyWait.samples}">${metrics.readyWait.medianMs === null ? 'n/a' : durationText(metrics.readyWait.medianMs)}</strong><small>${escapeHtml(t(`PR 就绪到合并（${metrics.readyWait.samples} 个 PR）`, `Ready PR to merge (${metrics.readyWait.samples} PRs)`))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${delivery.reviewAverage === null ? '—' : delivery.reviewAverage}</strong><small>${escapeHtml(t(`平均审核分（${delivery.reviewCount} 次）`, `Average review score (${delivery.reviewCount})`))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${delivery.changesRequested}</strong><small>${escapeHtml(t('被要求修改', 'Changes requested'))}</small></div></div>
       </div>
@@ -4810,7 +5148,11 @@ export function searchPage(input: {
   // is masked on the way out even when the row itself carries one.
   const text = (value: string | null | undefined): string => escapeHtml(String(value ?? '').replace(/[\w.+-]+@[\w.-]+/g, '***@***'))
   const labels = new Map(repos.map((repo) => [repo.id, `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`]))
-  const table = (title: string, heads: string[], rows: string[], note: boolean, badgeText = ''): string => rows.length === 0 ? '' : `<section class="card"><h2>${escapeHtml(title)}${badgeText === '' ? '' : ` <span class="badge">${escapeHtml(badgeText)}</span>`}</h2><div class="table-scroll"><table><thead><tr>${heads.map((head) => `<th>${escapeHtml(head)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>${note ? `<p class="fine">${escapeHtml(t('还有更多结果，缩小关键词或加筛选。', 'More results — narrow the keyword or add a filter.'))}</p>` : ''}</section>`
+  // #1010: this renderer drew the Repositories, Jobs, Work items and Audit cards
+  // on the person's search page with a bare `<th>`, so a screen reader read the
+  // value and dropped the column it belongs to. The filtered-result card on
+  // /admin/search already declared the scope; the four cards this one draws did not.
+  const table = (title: string, heads: string[], rows: string[], note: boolean, badgeText = ''): string => rows.length === 0 ? '' : `<section class="card"><h2>${escapeHtml(title)}${badgeText === '' ? '' : ` <span class="badge">${escapeHtml(badgeText)}</span>`}</h2><div class="table-scroll"><table><thead><tr>${heads.map((head) => `<th scope="col">${escapeHtml(head)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>${note ? `<p class="fine">${escapeHtml(t('还有更多结果，缩小关键词或加筛选。', 'More results — narrow the keyword or add a filter.'))}</p>` : ''}</section>`
   const open = (url: string | null): string => url === null ? '—' : `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('打开', 'Open'))}</a>`
   // The empty state goes through the shared renderer like the other four kinds:
   // a hand-built copy carried a literal '0' where the SVG set belongs, so this
@@ -4985,13 +5327,19 @@ export function schedulePage(input: {
   const scheduleLine = preview === null ? '' : preview.schedule.kind === 'cron'
     ? t('cron', 'cron') + ` <code>${escapeHtml(preview.schedule.expression)}</code> · ${escapeHtml(preview.schedule.timezone)}`
     : (() => {
-      const minutes = Math.round(preview.schedule.everyMs / 60_000)
-      const label = minutes % 1440 === 0
-        ? t(`每 ${minutes / 1440} 天`, `every ${minutes / 1440} day(s)`)
-        : minutes % 60 === 0
-          ? t(`每 ${minutes / 60} 小时`, `every ${minutes / 60} hour(s)`)
-          : t(`每 ${minutes} 分钟`, `every ${minutes} minute(s)`)
-      return `${label} <span class="fine">(${String(preview.schedule.everyMs)} ms)</span>`
+      const everyMs = preview.schedule.everyMs
+      // #1054: a whole number of minutes has an exact friendly label, and
+      // anything else is echoed verbatim. Rounding 90s to "2 minutes" printed a
+      // cadence the planner never produced, directly above rows 90 seconds apart.
+      const minutes = everyMs / 60_000
+      const label = everyMs % 60_000 !== 0
+        ? t(`每 ${intervalFieldText(everyMs)}`, `every ${intervalFieldText(everyMs)}`)
+        : minutes % 1440 === 0
+          ? t(`每 ${minutes / 1440} 天`, `every ${minutes / 1440} day(s)`)
+          : minutes % 60 === 0
+            ? t(`每 ${minutes / 60} 小时`, `every ${minutes / 60} hour(s)`)
+            : t(`每 ${minutes} 分钟`, `every ${minutes} minute(s)`)
+      return `${label} <span class="fine">(${String(everyMs)} ms)</span>`
     })()
   const rows = preview === null ? [] : preview.times.map((time, index) => {
     const when = time.local === null
@@ -5060,6 +5408,12 @@ export function scheduleConsolePage(input: {
 }): string {
   const { config, locale, viewer, repo, state, role, form, runNowKey, notice, error } = input
   const t = translator(locale)
+  // #1052: the routes are the rule and the console repeats it. `ownedRepo` refuses
+  // every mutating schedule route for a viewer, and pause/resume additionally
+  // require a maintainer; a control the viewer cannot use is a refusal rendered as
+  // a button, so each one is replaced by the sentence that names the role.
+  const canWrite = role !== 'viewer'
+  const canMaintain = role === 'maintainer'
   const iso = (at: number | null): string => (at === null ? 'unknown' : new Date(at).toISOString())
   const shown = (at: number | null): string => (at === null ? t('unknown', 'unknown') : humanTimeShort(new Date(at).toISOString()))
   const scheduleLine = state.schedule === null
@@ -5129,6 +5483,8 @@ export function scheduleConsolePage(input: {
       : t('运行中', 'active')
   const pauseControls = state.kind === 'none'
     ? ''
+    : !canMaintain
+      ? `<p class="fine" data-pause-role="${escapeHtml(role)}">${escapeHtml(t('暂停和恢复排期需要 maintainer 角色。', 'Pausing and resuming the schedule needs a maintainer role.'))}</p>`
     : state.status === 'paused'
       ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/resume" class="schedule-state">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('恢复排期', 'Resume schedule'))}</button><span class="fine">${escapeHtml(t('恢复后从下一个时刻开始，暂停期间不补跑。', 'After resuming it runs from the next instant; the paused window is not made up.'))}</span></form>`
       : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/pause" class="schedule-state">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停排期', 'Pause schedule'))}</button><span class="fine">${escapeHtml(t('暂停期间走过的时刻记为 skipped，原因为 paused。', 'Instants that pass while paused are recorded as skipped with reason paused.'))}</span></form>`
@@ -5229,7 +5585,8 @@ export function scheduleConsolePage(input: {
     ${frozenCard}
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
       <p class="muted">${escapeHtml(t('排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。', 'A schedule is a five-field cron or a fixed interval, one of the two; cron needs an IANA zone. The start/end instants need an offset.'))}</p>
-      <form method="post" action="/repos/${escapeHtml(repo.id)}/schedule" class="form">${csrf(viewer)}<div class="row">
+      ${canWrite ? '' : `<p class="fine" data-schedule-write-role="${escapeHtml(role)}">${escapeHtml(t('只读成员可以查看排期；保存和删除需要 developer 或 maintainer 角色。', 'A viewer reads the schedule; saving and deleting need a developer or maintainer role.'))}</p>`}
+      ${canWrite ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule" class="form">${csrf(viewer)}<div class="row">
         ${field('cron', t('cron 表达式', 'cron expression'), form.cron, '0 9 * * 1-5')}
         ${field('every', t('或固定间隔', 'or interval'), form.every, '15m')}
         ${field('timezone', t('时区（仅 cron）', 'timezone (cron only)'), form.timezone, 'Asia/Shanghai')}
@@ -5239,8 +5596,8 @@ export function scheduleConsolePage(input: {
         ${field('grace', t('宽限（分钟，留空=不限）', 'grace (minutes, empty = unbounded)'), form.grace, '30')}
         ${field('daily_runs', t('每日运行上限（留空=不限）', 'daily run limit (empty = unbounded)'), form.dailyRuns, '3')}
         <button class="btn" type="submit">${escapeHtml(t('保存排期', 'Save schedule'))}</button>
-      </div></form>
-      ${state.kind === 'none' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/remove" data-confirm="${escapeHtml(t('删除这个排期？仓库将回到旧的自动间隔。', 'Delete this schedule? The repository returns to the legacy interval.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('删除排期', 'Delete schedule'))}</button></form>`}
+      </div></form>` : ''}
+      ${!canWrite || state.kind === 'none' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/remove" data-confirm="${escapeHtml(t('删除这个排期？仓库将回到旧的自动间隔。', 'Delete this schedule? The repository returns to the legacy interval.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('删除排期', 'Delete schedule'))}</button></form>`}
       <p class="fine">${escapeHtml(t('改动运行时字段（表达式、间隔、时区、窗口）会让时序版本加一；已经决定过的时刻保留在原版本下可读。', 'Changing a field that decides when it fires (expression, interval, zone, window) moves the timing revision; instants already decided stay readable under the old revision.'))}</p>
     </section>
     <section class="card"><h2>${escapeHtml(t('最近的时刻', 'Recent instants'))}</h2>

@@ -11,7 +11,8 @@ import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionR
 import { RETENTION_IDLE_TABLES } from '../scripts/lib/retention.mjs'
 import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
-import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
+import { collectReleaseNotes, releaseNotesSourceJson, type ReleaseNotes } from './releases/notes.js'
+import { organiseReleaseNotes, readReleaseNotesSkill } from './releases/notesSkill.js'
 import { readReleaseReadiness } from './releases/readiness.js'
 import { AnalysisTokenUnavailable, analyzeReleaseRun, mintAnalysisToken, releaseAnalysisJson } from './releases/analysis.js'
 import { currentStrategySections } from './strategy/sources.js'
@@ -53,6 +54,7 @@ import { decryptSecret, encryptSecret, randomId, randomToken, redact, safeEqual,
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, JOBS_READ_SCOPE, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
+import { parseEvidenceJson } from './lib/evidence.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
 import { decodeFlash, encodeFlash, FLASH_COOKIE, readRedirectMessage } from './lib/flash.js'
 import { DISCOVERY_INTERVALS, REVIEW_INTERVALS, intervalSubmissionAccepted, normalizeInterval } from './lib/intervals.js'
@@ -128,6 +130,7 @@ import { withDensity } from './views/layout.js'
 import type { PullTip } from './views/reviewMerge.js'
 import { gatePage } from './views/gate.js'
 import { planHash, validateGatePlan, type GatePlan } from './gates/plan.js'
+import { decidePlan, planDecisionOutcome, type PlanDecisionJob, type PlanDecisionOutcome } from './lib/planDecision.js'
 import { applyGatePlan } from './gates/apply.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { rulesOverridesPage } from './views/rules.js'
@@ -157,6 +160,9 @@ export interface BuildOptions {
   // Injected by tests that drive the route with a fake live-session controller;
   // production always builds its own.
   instances?: InstanceManager
+  // Injected by tests that need a GithubApp with a process age or a stubbed
+  // measurement; production always builds its own.
+  githubApp?: GithubApp
 }
 
 export interface BuiltApp {
@@ -568,6 +574,26 @@ function approvalMailFailed(user: UserRow, failures: Map<string, string>): boole
   return failedAt > user.approval_sent_at
 }
 
+// #634: a form field the page did not post is absent, not an empty hash; only a
+// posted value can be compared with the stored plan.
+function planShownHash(value: string | undefined): string | null {
+  const shown = (value ?? '').trim()
+  return shown === '' ? null : shown
+}
+
+// #634: the plan decision reads the packet from the job row it is about, so both
+// doors hand the shared function the same five values and cannot drift.
+function planDecisionJob(job: JobRow): PlanDecisionJob {
+  return {
+    id: job.id,
+    summary: job.summary,
+    evidenceJson: job.evidence_json,
+    baseSha: job.base_sha,
+    approvedAt: job.plan_approved_at,
+    rejectedAt: job.plan_rejected_at,
+  }
+}
+
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
@@ -587,7 +613,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   if (options.instances === undefined && options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
     void instances.healthSweep().catch((error) => log.warn('startup instance health sweep failed', { error: String(error) }))
   }
-  const githubApp = new GithubApp(config)
+  const githubApp = options.githubApp ?? new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   // #540: one contract behind the console writes that have migrated — the job
   // cancel, pause, create, resume and retry forms. Settings, releases and member
@@ -1135,12 +1161,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const failed = instances.filter((entry) => entry.status === 'failed').length
     // #758 slice 2: readiness fails on a measured clock outside the threshold, so
     // a monitor that reads only the status code stops seeing a "healthy" instance
-    // whose every stored time is 28 minutes ahead. `unknown` and
-    // `not-configured` stay 200: a GitHub outage, or a deployment with no App, is
-    // not a clock verdict. The object keeps `source` and adds `state` and
-    // `thresholdSeconds`, so a reader can tell "no number" from "a number that is
-    // too far".
+    // whose every stored time is 28 minutes ahead. `not-configured` stays 200 (a
+    // deployment with no App is not a clock verdict), and so does `unknown` while
+    // the process is young or the last reading is merely stale: a GitHub outage
+    // is not a clock verdict either. #1028: a configured App that has been up for
+    // a whole reuse window and has never measured once is a different `unknown` —
+    // the guard never ran there, so it fails until a measurement succeeds. The
+    // object keeps `source` and adds `state` and `thresholdSeconds`, so a reader
+    // can tell "no number" from "a number that is too far".
     const clock = githubApp.clockState()
+    const clockUnverified = githubApp.clockUnverified()
     // #282: the model router is reported beside the database, instance and clock
     // fields rather than in front of them, so a router outage can never hide a
     // database or instance failure. With no `MODEL_ROUTER_URL` the field is
@@ -1154,7 +1184,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const router = config.router.url === '' ? null : await cachedRouterProbe(config)
     const routerReady = router === null || (router.state !== 'unreachable' && !router.allKeysCapped)
     const body = {
-      ok: clock.state !== 'fail' && routerReady,
+      ok: clock.state !== 'fail' && !clockUnverified && routerReady,
       db: true,
       instances: { ready, failed, total: instances.length },
       clock: { ...clock, source: 'github' },
@@ -1594,6 +1624,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : { scheduledNext: scheduledNextFor(scheduleRow) }),
       }
     })
+    // #655: the home answers "what needs me now?" once per repository, so it
+    // reads each repository's own newest runs instead of the paged table slice;
+    // a failure in the eleventh repository is still the first thing to fix.
+    const decisionJobs = allRepos.flatMap((repo) => store.listJobsForRepo(repo.id, 5))
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -1611,12 +1645,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
         allRepos,
         nextRunFacts,
+        decisionJobs,
         queued: store.listQueuedJobs(),
         questions,
         personal,
         windowDays,
         alerts,
         notifications: store.listNotifications(viewer.user.id),
+        actions: store.listActions(viewer.user.id),
         notice: request.flash?.notice?.text,
         error: request.flash?.error?.text,
       }),
@@ -1873,7 +1909,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const misfire = body.misfire === 'once' ? 'once' : 'skip'
     const graceRaw = String(body.grace ?? '').trim()
     const graceMinutes = graceRaw === '' ? null : Number(graceRaw)
-    if (graceMinutes !== null && (!Number.isFinite(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
+    // #1053: the sentence below says integer, so a fractional field is refused
+    // rather than rounded into a bound the person never typed.
+    if (graceMinutes !== null && (!Number.isInteger(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
       return reply.redirect(`${back}?refused=${encodeURIComponent(t('宽限时间必须是 0 到 10080 分钟之间的整数。', 'The grace bound must be an integer between 0 and 10080 minutes.'))}`)
     }
     // #544 slice 6: an absent field keeps the stored limit, so a form that
@@ -2570,6 +2608,81 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }))
   })
 
+  // #546 slice 5: the draft body may be organised by the repository's own
+  // release-notes skill. The skill is read through the loader #609 merged — one
+  // reader, no second `.agents/skills` walk — at the exact commit the release
+  // row pinned, so a moving default branch or a pull request head cannot change
+  // what a shipped release says. The model call goes through this process's own
+  // metered gateway with a short-lived repository token, so the spend is counted
+  // by the same quota code as job work instead of a direct provider call.
+  const completeNotesWithGateway = async (user: UserRow, repo: RepoRow, prompt: string): Promise<string> => {
+    const raw = `flg_${randomToken(32)}`
+    const tokenId = `tok_${randomToken(8)}`
+    store.createApiToken({
+      id: tokenId,
+      userId: user.id,
+      kind: 'release-notes',
+      name: `release-notes:${repo.id}`,
+      tokenHash: sha256Hex(raw),
+      prefix: raw.slice(0, 8),
+      repoId: repo.id,
+      expiresAt: addMinutes(15),
+    })
+    try {
+      const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${raw}` },
+        body: JSON.stringify({
+          model: config.llm.model,
+          messages: [
+            { role: 'system', content: 'You organise release notes for one repository release. You may reorder, group and reword only the sources you are given; you never add a source, a link or a claim about anything outside them.' },
+            { role: 'user', content: prompt },
+          ],
+        }),
+        signal: AbortSignal.timeout(120_000),
+      })
+      if (!response.ok) throw new Error(`the model gateway answered ${response.status}`)
+      const payload = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
+      const content = payload.choices?.[0]?.message?.content
+      if (typeof content !== 'string') throw new Error('the model gateway answered without a message body')
+      return content
+    } finally {
+      // One call, one token: the row is revoked whether the gateway answered or
+      // not, so a failed release never leaves a credential behind.
+      store.revokeApiToken(tokenId, user.id)
+    }
+  }
+
+  // Every fallback — no skill, a refused skill, a refused gateway call, an answer
+  // naming a source outside the range — returns #720's built-in body untouched,
+  // and names that path for the page. A range read failure still returns null so
+  // the draft keeps its placeholder sentence rather than losing the Release.
+  const releaseNotesFor = async (
+    user: UserRow,
+    repo: RepoRow,
+    client: GithubClient,
+    owner: string,
+    name: string,
+    previousTag: string | null,
+    targetSha: string,
+    tagName: string,
+  ): Promise<ReleaseNotes | null> => {
+    let notes: ReleaseNotes
+    try {
+      notes = await collectReleaseNotes(client, { owner, name, previousTag, targetSha })
+    } catch (cause) {
+      log.warn('release notes range read failed', { repo: repo.id, tag: tagName, error: String(cause) })
+      return null
+    }
+    const read = await readReleaseNotesSkill(client, owner, name, targetSha)
+    return await organiseReleaseNotes({
+      notes,
+      read,
+      commit: targetSha,
+      complete: (prompt) => completeNotesWithGateway(user, repo, prompt),
+    })
+  }
+
   // #546 slice 2: the tag action behind the readiness page. The page is a
   // prediction and this route is the authority, so the default branch head is
   // read again immediately before the write: the form carries the head it was
@@ -2723,14 +2836,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         draftReleaseId: recorded.draft_release_id === null ? null : Number(recorded.draft_release_id),
         // #546 slice 3: the draft body is the release range. A read failure keeps
         // the draft with its placeholder body instead of losing the Release.
-        notes: async () => {
-          try {
-            return await collectReleaseNotes(client, { owner, name, previousTag: plan.previousTag, targetSha: plan.targetSha })
-          } catch (cause) {
-            log.warn('release notes range read failed', { repo: repo.id, tag: plan.tagName, error: String(cause) })
-            return null
-          }
-        },
+        notes: () => releaseNotesFor(viewer.user, repo, client, owner, name, plan.previousTag, plan.targetSha, plan.tagName),
       })
       store.updateReleaseTracking(recorded.id, trackingUpdate(tracked, {
         draftReleaseId: recorded.draft_release_id,
@@ -2783,14 +2889,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         targetSha: release.target_sha,
         prerelease: (parseVersion(release.version)?.prerelease.length ?? 0) > 0,
         draftReleaseId: release.draft_release_id === null ? null : Number(release.draft_release_id),
-        notes: async () => {
-          try {
-            return await collectReleaseNotes(client, { owner, name, previousTag, targetSha: release.target_sha })
-          } catch (cause) {
-            log.warn('release notes range read failed', { repo: repo.id, tag: release.tag_name, error: String(cause) })
-            return null
-          }
-        },
+        notes: () => releaseNotesFor(viewer.user, repo, client, owner, name, previousTag, release.target_sha, release.tag_name),
       })
     } catch (error) {
       log.warn('release run check failed', { repo: repo.id, tag: release.tag_name, error: String(error) })
@@ -3161,17 +3260,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
     const body = form(request)
     const path = body.path ?? ''
-    if (!isRulePath(path)) return reply.redirect(`/repos/${repo.id}/rules?refused=path_invalid`)
     const content = body.content ?? ''
-    if (content.trim() === '') return reply.redirect(`/repos/${repo.id}/rules?refused=content_empty`)
-    if (content.includes('\0')) return reply.redirect(`/repos/${repo.id}/rules?refused=content_invalid`)
-    if (Buffer.byteLength(content) > MAX_RULE_FILE_BYTES) return reply.redirect(`/repos/${repo.id}/rules?refused=content_too_large`)
+    // #983: a refused or conflicting write re-renders the page with the
+    // submission instead of a 302, because the follow-up GET re-read the stored
+    // row and threw the maintainer's text away. The status stays 200: the
+    // refusal is the banner, not an empty box.
+    const keptPage = (extra: { refused?: string; conflictPath?: string; conflictRevision?: number }) => reply
+      .code(200)
+      .type('text/html')
+      .send(rulesOverridesPage({
+        config,
+        locale: request.locale ?? 'zh',
+        viewer: viewOf(viewer),
+        repo,
+        overrides: store.listRepoRuleOverrides(repo.id),
+        draftPath: path,
+        draftContent: content,
+        draftRevision: body.expected_revision ?? '',
+        ...extra,
+      }))
+    if (!isRulePath(path)) return keptPage({ refused: 'path_invalid' })
+    if (content.trim() === '') return keptPage({ refused: 'content_empty' })
+    if (content.includes('\0')) return keptPage({ refused: 'content_invalid' })
+    if (Buffer.byteLength(content) > MAX_RULE_FILE_BYTES) return keptPage({ refused: 'content_too_large' })
     const expectedRevision = Number.parseInt(body.expected_revision ?? '', 10)
-    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return reply.redirect(`/repos/${repo.id}/rules?refused=revision_invalid`)
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return keptPage({ refused: 'revision_invalid' })
     const result = store.upsertRepoRuleOverride({ repoId: repo.id, path, content, updatedBy: viewer.user.id, expectedRevision })
     if (!result.ok) {
       store.audit(viewer.user.id, 'repo.rules_override_refused', `${path}: expected ${expectedRevision}, current ${result.revision}`)
-      return reply.redirect(`/repos/${repo.id}/rules?conflictPath=${encodeURIComponent(path)}&conflictRevision=${result.revision}`)
+      return keptPage({ conflictPath: path, conflictRevision: result.revision })
     }
     store.audit(viewer.user.id, 'repo.rules_override_saved', `${path}: revision ${result.row.revision}, ${Buffer.byteLength(content)} bytes`)
     return reply.redirect(`/repos/${repo.id}/rules?saved=${encodeURIComponent(path)}`)
@@ -3621,7 +3738,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/repos/:id/jobs/:jobId', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const queued = store.listQueuedJobs()
@@ -3638,6 +3755,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       job,
+      // #1040: the press is gated on the actor's role, so the page that draws the
+      // control reads the same role the route decides with.
+      viewerRole: role === 'maintainer' || role === 'developer' || role === 'viewer' ? role : 'viewer',
       changeStory: pull.story,
       pullTip: pull.tip,
       // #264: the card's merge control is the same `task.merge` command the
@@ -3904,6 +4024,47 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
   })
 
+  // #1040: the red-test record is a claim, and a claim needs an answer. A
+  // maintainer presses confirm or challenge here; the decision is written on the
+  // job and the page reads it back. A press that cannot decide anything (no
+  // record, no challenge reason, a role that cannot answer) is refused before a
+  // write, and the record itself is never rewritten by the press.
+  app.post('/repos/:id/jobs/:jobId/red-test', async (request, reply) => {
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    const t = translator(request.locale ?? 'zh')
+    // #1040: the actor's role, not `repo.repo_role`. That column declares what
+    // access Fledge was granted upstream and stays NULL on a connected
+    // repository, so reading it locked the owner out while letting a member
+    // through on a repository that happened to declare itself maintainer.
+    if (role !== 'maintainer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('只有 maintainer 可以复核红测记录。', 'Only a maintainer can decide the red-test claim.'))}`)
+    }
+    const evidence = parseEvidenceJson(job.evidence_json)
+    const record = evidence?.redTest
+    if (evidence === null || record === undefined) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('这个任务没有红测记录，无法复核。', 'This job has no red-test record to decide.'))}`)
+    }
+    const body = form(request)
+    const decision = body.decision === 'confirm' ? 'confirmed' : body.decision === 'challenge' ? 'challenged' : null
+    if (decision === null) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('红测决定无效，请确认或质疑。', 'That red-test decision is not valid; confirm or challenge.'))}`)
+    }
+    const note = (body.note ?? '').trim().slice(0, 300)
+    if (decision === 'challenged' && note.length < 8) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('质疑红测需要至少 8 个字的理由。', 'Challenging a red run needs a reason of at least 8 characters.'))}`)
+    }
+    const next = { ...evidence, redTestDecision: { decision, note, by: viewer.user.login, at: nowIso() } }
+    store.updateJob(job.id, { evidence_json: JSON.stringify(next) })
+    store.audit(viewer.user.id, `job.red_test_${decision}`, `${job.id}: ${record.signature}`)
+    const message = decision === 'confirmed'
+      ? t('已确认这次红测是预期的失败。', 'This red run is confirmed as the intended failure.')
+      : t('已质疑这次红测，理由记在任务上。', 'This red run is challenged; the reason is recorded on the job.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(message)}`)
+  })
+
   app.post('/repos/:id/jobs/:jobId/recheck', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
@@ -4008,9 +4169,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const body = form(request)
     const allow = (body.allowPaths ?? repo.allow_paths).trim().slice(0, 2000)
     const deny = (body.denyPaths ?? repo.deny_paths).trim().slice(0, 2000)
-    store.updateJob(job.id, { plan_approved_at: nowIso(), plan_approved_by: viewer.user.id, plan_rejected_at: null, plan_allow_paths: allow, plan_deny_paths: deny })
-    if (job.work_item_id !== null) store.updateWorkItem(job.work_item_id, { state: 'assigned' })
-    store.audit(viewer.user.id, 'job.plan_approved', `${job.id} allow=${allow.slice(0, 200)} deny=${deny.slice(0, 200)}`)
+    // #634: the decision is one record, written by one function from both doors.
+    // The form posts the hash of the packet the person read, so an edit between
+    // the page and the POST is refused instead of approved.
+    const outcome = decidePlan(store, {
+      job: planDecisionJob(job),
+      decision: 'approve',
+      actor: viewer.user.id,
+      at: nowIso(),
+      shownHash: planShownHash(body.planHash),
+      latestBaseSha: store.latestFinishedBaseSha(repo.id),
+      door: 'web form',
+      allowPaths: allow,
+      denyPaths: deny,
+      workItemId: job.work_item_id,
+    })
+    if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已批准，可以执行。')}`)
   })
 
@@ -4019,9 +4193,66 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以拒绝计划。')}`)
-    store.updateJob(job.id, { plan_rejected_at: nowIso(), plan_approved_at: null, plan_approved_by: null })
-    store.audit(viewer.user.id, 'job.plan_rejected', job.id)
+    const body = form(request)
+    const outcome = decidePlan(store, {
+      job: planDecisionJob(job),
+      decision: 'reject',
+      actor: viewer.user.id,
+      at: nowIso(),
+      shownHash: planShownHash(body.planHash),
+      latestBaseSha: store.latestFinishedBaseSha(repo.id),
+      door: 'web form',
+      reason: body.reason ?? '',
+      workItemId: job.work_item_id,
+    })
+    if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝。')}`)
+  })
+
+  // #634: "ask for a revised plan" is a rejection plus a new plan job on the same
+  // work item, the way `/fledge plan` queues one. A decided plan is never edited
+  // in place, so the revision cannot overwrite what a person already read.
+  app.post('/repos/:id/jobs/:jobId/revise-plan', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以要求修改计划。')}`)
+    if (job.work_item_id === null) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个计划没有关联工作项，无法排队新计划；请用 /fledge plan 生成。')}`)
+    const body = form(request)
+    const reason = (body.reason ?? '').trim().slice(0, 500)
+    const decision = {
+      job: planDecisionJob(job),
+      decision: 'reject' as const,
+      actor: viewer.user.id,
+      at: nowIso(),
+      shownHash: planShownHash(body.planHash),
+      latestBaseSha: store.latestFinishedBaseSha(repo.id),
+      door: 'web form' as const,
+      reason,
+      workItemId: job.work_item_id,
+    }
+    const t = translator(request.locale ?? 'zh')
+    const refused = (outcome: Extract<PlanDecisionOutcome, { ok: false }>): ReturnType<typeof reply.redirect> => reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(t(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
+    // #634: this route is two writes — the rejection and the queued revision —
+    // and they cannot share a transaction, because queueing runs through the
+    // async management envelope. Only one of the two possible halves is
+    // recoverable: a rejected plan with nothing queued is a dead end, since every
+    // retry is refused `PLAN_ALREADY_DECIDED`, while a queued revision whose
+    // rejection then lost a race still leaves a plan the maintainer can decide.
+    // So the queue attempt goes first and the rejection is written only after it
+    // succeeded, and the refusals that cost no queue work (already decided, stale
+    // hash, stale base, missing reason) are still answered before it.
+    const preview = planDecisionOutcome(decision)
+    if (!preview.ok) return refused(preview)
+    const goal = `${job.goal}\n\nA maintainer rejected the previous plan and asked for a revision: ${reason}\nProduce one concrete revised plan only; do not write code, create a branch or open a PR.`
+    const queued = await runCreate(request, viewer, repo, { kind: 'plan', goal, workItemId: job.work_item_id, priority: job.priority })
+    // A queue refusal (quota, JOB_ACTIVE, a disabled repository) leaves the plan
+    // undecided on purpose: the press did not happen, so the maintainer must be
+    // able to try again once the queue has room.
+    if (!queued.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, queued, t('新计划没有排队。', 'The revised plan was not queued.')))}&code=${queued.code}`)
+    const outcome = decidePlan(store, decision)
+    if (!outcome.ok) return refused(outcome)
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝；修改后的计划已排队。')}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/execute', async (request, reply) => {
@@ -5169,6 +5400,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/notifications/read', async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     store.markNotificationsRead(viewer.user.id)
+    return reply.redirect('/dashboard')
+  })
+
+  // #633: the in-app row and the mail link resolve the same action id. Opening
+  // either one reads the rows that carry it; the page the action points at is
+  // where the decision itself is made.
+  app.get('/actions/:id', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const id = (request.params as { id?: string }).id ?? ''
+    const action = store.getAction(id)
+    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '找不到', '这一步不存在，或不属于你。', request.locale))
+    store.markActionRead(action.id)
+    store.audit(viewer.user.id, 'action.opened', action.id)
+    return reply.redirect(action.href)
+  })
+
+  app.post('/actions/:id/resolve', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const id = (request.params as { id?: string }).id ?? ''
+    const action = store.getAction(id)
+    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '找不到', '这一步不存在，或不属于你。', request.locale))
+    store.resolveAction(action.id)
+    store.audit(viewer.user.id, 'action.resolved', action.id)
     return reply.redirect('/dashboard')
   })
 
@@ -6482,10 +6736,25 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         await reply('No plan is waiting for approval.')
         return
       }
-      store.updateJob(plan.id, { plan_approved_at: nowIso(), plan_approved_by: repo.user_id, plan_rejected_at: null })
-      store.updateWorkItem(item.id, { state: 'assigned' })
-      store.audit(repo.user_id, 'plan.approved', `${plan.id} via issue command`)
-      await reply(`Plan ${plan.id} approved. Run /fledge fix to start implementation.`)
+      // #634: the same function as the web form, so the columns and the audit name
+      // are one record whichever door decided. The actor is the person who wrote
+      // the command when Fledge knows them, not the repository owner.
+      const decider = store.userByLogin(source.actor)?.id ?? repo.user_id
+      const outcome = decidePlan(store, {
+        job: planDecisionJob(plan),
+        decision: 'approve',
+        actor: decider,
+        at: nowIso(),
+        shownHash: null,
+        latestBaseSha: store.latestFinishedBaseSha(repo.id),
+        door: 'issue command',
+        allowPaths: plan.plan_allow_paths ?? repo.allow_paths,
+        denyPaths: plan.plan_deny_paths ?? repo.deny_paths,
+        workItemId: plan.work_item_id,
+      })
+      await reply(outcome.ok
+        ? `Plan ${plan.id} approved. Run /fledge fix to start implementation.`
+        : `Could not approve plan ${plan.id}: ${outcome.reason.en}`)
       return
     }
     if (command === 'plan') {

@@ -23,7 +23,9 @@ export interface FailureInfo {
   action: FailureAction
 }
 
-const FAILURES: Record<FailureKind, FailureInfo> = {
+// Exported so the #988 sweep can read every label and hint the dictionary can
+// put on a page, instead of restating the sentences in the test.
+export const FAILURES: Record<FailureKind, FailureInfo> = {
   quota: {
     kind: 'quota',
     label: ['平台额度不足', 'Platform quota exhausted'],
@@ -45,19 +47,19 @@ const FAILURES: Record<FailureKind, FailureInfo> = {
   stalled: {
     kind: 'stalled',
     label: ['任务停滞', 'Job stalled'],
-    hint: ['检查仓库的 FlyBot 实例和 bridge，然后重试。', 'Check the repository FlyBot instance and bridge, then retry.'],
+    hint: ['检查仓库的工作区和 bridge，然后重试。', 'Check the repository workspace and bridge, then retry.'],
     action: 'repo',
   },
   timeout: {
     kind: 'timeout',
     label: ['任务超时', 'Job timed out'],
-    hint: ['缩小任务范围，或检查实例健康后重试。', 'Narrow the task scope, or check instance health and retry.'],
+    hint: ['缩小任务范围，或检查工作区健康后重试。', 'Narrow the task scope, or check workspace health and retry.'],
     action: 'retry',
   },
   bridge: {
     kind: 'bridge',
-    label: ['FlyBot 实例不可用', 'FlyBot instance unavailable'],
-    hint: ['启动或重启这个仓库的实例，然后重试。', 'Start or restart this repository instance, then retry.'],
+    label: ['仓库工作区不可用', 'Repository workspace unavailable'],
+    hint: ['启动或重启这个仓库的工作区，然后重试。', 'Start or restart this repository workspace, then retry.'],
     action: 'repo',
   },
   review: {
@@ -152,11 +154,11 @@ const FAILURE_SENTENCES: Record<FailureCode, [string, string]> = {
   JOB_BUDGET_EXCEEDED: ['任务成本超过这个仓库的单任务预算。', "The job cost more than this repository's single-job budget."],
   DUPLICATE_WORK: ['已有 PR 覆盖这个 issue。', 'A pull request already covers this issue.'],
   STAGE_EVIDENCE_MISSING: ['任务缺少阶段证据，已停止。', 'The job is missing stage evidence, so it stopped.'],
-  BRIDGE_ERROR: ['FlyBot 实例不可用，任务无法启动。', 'The FlyBot instance for this repository is unavailable.'],
+  BRIDGE_ERROR: ['仓库工作区不可用，任务无法启动。', 'The repository workspace is unavailable, so the job could not start.'],
   REPO_DISABLED: ['这个仓库已停用。', 'This repository is disabled.'],
-  PROVIDER_BUDGET_EXCEEDED: ['模型供应商拒绝了这次调用：实例的 DSH 预算已用完。请检查供应商额度，或配置自己的模型 API 后重试。', 'The model provider refused the call: the DSH budget of the instance is used up. Check the provider quota, or add your own model API, then retry.'],
+  PROVIDER_BUDGET_EXCEEDED: ['模型供应商拒绝了这次调用：工作区的模型预算已用完。请检查供应商额度，或配置自己的模型 API 后重试。', 'The model provider refused the call: the workspace model budget is used up. Check the provider quota, or add your own model API, then retry.'],
   PROVIDER_RATE_LIMITED: ['模型供应商限流，拒绝了这次调用（剩余额度 0）。请等限流恢复，或配置自己的模型 API 后重试。', 'The model provider rate-limited the call (remaining quota 0). Wait for the limit to reset, or add your own model API, then retry.'],
-  PROVIDER_CALL_NEVER_STARTED: ['实例里的会话在派发后没有发起任何模型调用：供应商额度或限流拒绝了这次调用。请检查 DSH 的供应商额度/密钥，或配置自己的模型 API 后重试。', 'The instance session made no model call after the job was dispatched: the provider budget or rate limit refused it. Check the DSH provider quota/key, or add your own model API, then retry.'],
+  PROVIDER_CALL_NEVER_STARTED: ['工作区在派发后没有发起任何模型调用：供应商额度或限流拒绝了这次调用。请检查供应商额度/密钥，或配置自己的模型 API 后重试。', 'The workspace made no model call after the job was dispatched: the provider budget or rate limit refused it. Check the provider quota/key, or add your own model API, then retry.'],
   WORK_TYPE_UNVERIFIED: ['这个工作类型缺少它要求的证据，任务已按约定失败。', 'This work type is missing the evidence it requires, so the job failed closed.'],
   TRIAGE_UNVERIFIED: ['分诊任务没有返回可校验的结果，任务已按约定失败。', 'The triage job returned no verifiable report, so it failed closed.'],
 }
@@ -254,9 +256,9 @@ export const REFUSAL_SENTENCES: Record<EnqueueRefusalCode, [string, string]> = {
   BRANCH_MISSING: ['目标分支 {branch} 不存在或不可访问。', 'The target branch {branch} does not exist, or this account cannot read it.'],
   PREFLIGHT_FAILED: ['启动前检查失败，任务无法开始。', 'The preflight check failed, so the job could not start.'],
   QUOTA_EXHAUSTED: ['平台额度已用完，请在 Settings → Model 配置自己的模型 API 后重试。', 'The platform quota is used up; add your own model API in Settings → Model, then retry.'],
-  INSTANCE_UNAVAILABLE: ['FlyBot 实例管理器未配置', 'The FlyBot instance manager is not configured.'],
+  INSTANCE_UNAVAILABLE: ['这个部署没有启用仓库工作区。', 'This deployment does not enable workspaces.'],
   BOT_MODEL_ASSIGNMENT_FAILED: ['机器人模型未就绪：{detail}；请在仓库设置里重新应用模型。', 'The bot models are not ready: {detail}; re-apply the models in the repository settings.'],
-  INSTANCE_NOT_READY: ['FlyBot 实例未就绪，任务无法启动。', 'The FlyBot instance is not ready, so the job could not start.'],
+  INSTANCE_NOT_READY: ['工作区未就绪，任务无法启动。', 'The workspace is not ready, so the job could not start.'],
   JOB_LIMIT: ['平台同时运行的任务数已达上限（{detail} 个），请稍后再试。', 'The platform already has {detail} jobs running at once; retry in a moment.'],
   RUNNER_ERROR: ['任务启动失败。', 'The job did not start.'],
   // #538: the rule layer refuses before a job row exists, so the code travels

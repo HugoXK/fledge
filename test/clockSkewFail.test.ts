@@ -5,6 +5,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildApp } from '../src/app.js'
+import { GithubApp } from '../src/repos/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import { resetMetrics } from '../src/lib/metrics.js'
@@ -33,6 +34,8 @@ interface Options {
   unreachable?: boolean
   /** No App on this deployment, as on a self-hosted instance without one. */
   unconfigured?: boolean
+  /** How long the process has been up; the App is aged past the reuse window. */
+  bootedMsAgo?: number
 }
 
 async function harness(options: Options = {}) {
@@ -58,7 +61,8 @@ async function harness(options: Options = {}) {
     },
   })
   const store = new Store(':memory:')
-  const built = await buildApp({ config, store, mailer: undefined, runner: new MockRunner(), startScheduler: false })
+  const githubApp = new GithubApp(config, Date.now() - (options.bootedMsAgo ?? 0))
+  const built = await buildApp({ config, store, mailer: undefined, runner: new MockRunner(), startScheduler: false, githubApp })
   const user = makeUser(store, { login: 'clock-skew-user', status: 'approved' })
   const repo = store.createRepo({
     id: 'repo_clock',
@@ -291,6 +295,71 @@ test('a re-measurement that fails keeps the refusal and says how old the reading
     assert.equal((ready.json() as { clock?: { measuredAt?: string } }).clock?.measuredAt, new Date(measuredAt).toISOString(), '/readyz dropped when the reading was taken')
   } finally {
     Date.now = realNow
+    await h.close()
+  }
+})
+
+// #1028: `unknown` covers two situations that are not the same. A process that
+// has just started has not needed GitHub yet; a configured deployment that has
+// been up for a whole reuse window has never measured once, and that is the hole
+// the guard was written for. The tick re-measures anything that is not `ok`, so
+// the second situation resolves itself or is reported — it does not stay
+// `unknown` and ready forever.
+test('a configured App that has never measured stops readiness after the reuse window', async () => {
+  resetMetrics()
+  const h = await harness({ unreachable: true, bootedMsAgo: 16 * 60_000 })
+  try {
+    const clock = h.built.githubApp.clockState()
+    assert.equal(clock.state, 'unknown')
+    assert.equal(clock.measuredAt, null, 'nothing was measured, so there is no reading to report')
+
+    const ready = await h.built.app.inject({ method: 'GET', url: '/readyz' })
+    assert.equal(ready.statusCode, 503, 'a configured App with no measurement for a whole reuse window is not ready')
+    const body = JSON.parse(ready.body) as { ok: boolean; clock: { state: string; measuredAt: string | null } }
+    assert.equal(body.ok, false)
+    assert.equal(body.clock.state, 'unknown', 'the state stays honest: no number is not a number that is too far')
+    assert.equal(body.clock.measuredAt, null)
+  } finally {
+    await h.close()
+  }
+})
+
+test('a configured App that has not measured in its first minutes stays ready', async () => {
+  resetMetrics()
+  const h = await harness({ unreachable: true })
+  try {
+    const ready = await h.built.app.inject({ method: 'GET', url: '/readyz' })
+    assert.equal(ready.statusCode, 200, 'a restart is not a clock verdict')
+    assert.equal((JSON.parse(ready.body) as { clock: { state: string } }).clock.state, 'unknown')
+  } finally {
+    await h.close()
+  }
+})
+
+test('the scheduler measures a configured App that has never measured', async () => {
+  resetMetrics()
+  const h = await harness({ aheadSeconds: 3 })
+  try {
+    assert.equal(h.built.githubApp.clockState().state, 'unknown')
+    await h.built.jobs.tick()
+    const rateLimits = h.calls.filter((call) => call.endsWith('/rate_limit')).length
+    assert.equal(rateLimits, 1, 'the tick did not measure an unmeasured clock')
+    assert.equal(h.built.githubApp.clockState().state, 'ok', 'the tick left the clock unmeasured')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a deployment with no App is never re-measured and stays ready', async () => {
+  resetMetrics()
+  const h = await harness({ unconfigured: true })
+  try {
+    await h.built.jobs.tick()
+    assert.equal(h.calls.filter((call) => call.endsWith('/rate_limit')).length, 0, 'a deployment with no App has nothing to measure')
+    const ready = await h.built.app.inject({ method: 'GET', url: '/readyz' })
+    assert.equal(ready.statusCode, 200)
+    assert.equal((JSON.parse(ready.body) as { clock: { state: string } }).clock.state, 'not-configured')
+  } finally {
     await h.close()
   }
 })

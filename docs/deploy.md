@@ -215,6 +215,9 @@ with an allowlist is still open work and not something a deploy changes today.
 docker compose up -d --build
 ```
 
+The compose healthcheck probes `/readyz`, not `/healthz`: a container whose
+database cannot be read is marked unhealthy instead of healthy.
+
 To make `/healthz` name the build, stamp it at build time so the image can carry
 the commit: `GIT_SHA=$(git rev-parse HEAD) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) docker compose build`.
 Without the stamp the image answers `unknown` — honest, and useless for
@@ -357,6 +360,18 @@ once the slot is filled. Install it only on a host whose clock is trustworthy
 (see #758) or on an NTP-backed scheduler; the example is
 `deploy/release-trigger.cron.example`. Raise one alert if no plan exists by
 `02:30Z`.
+
+#### The slot watchdog (#941)
+
+The hourly `ci-watchdog` workflow also judges the `02:00Z` slot. Once the
+slot's 60-minute grace window has passed, `scripts/release-slot-watchdog.mjs`
+reads that UTC day's releases, the `daily-release` runs and the recent issues
+from the API and opens exactly one card when the day has no release. The card
+names the day, the expected slot, the grace window, the observed run ids (with
+the `event` that fired each one) and the API `Date` it used; the clock is the
+API's `Date` header, never the host's. A rerun of the same day opens nothing,
+because the card carries a marker built from the slot. The detector writes
+nothing else: it dispatches no workflow and creates no tag, release or deploy.
 
 A release that changes user-facing behaviour updates `README.md`,
 `README.zh.md` and the relevant `docs/` page in the same pull request. The
@@ -898,6 +913,12 @@ server {
 
   client_max_body_size 25m;
 
+  # #1009: inherited by both locations; `always` covers nginx's own 4xx/5xx.
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header X-Frame-Options "DENY" always;
+
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
@@ -918,7 +939,29 @@ server {
     proxy_read_timeout 30m;
   }
 }
+
+server {
+  listen 80;
+  server_name fledge.example.com;
+
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header X-Frame-Options "DENY" always;
+
+  return 301 https://$host$request_uri;
+}
 ```
+
+The sample sets those four headers at server level, each with `always`, because
+the app itself sends HSTS only when `BASE_URL` is `https` (`src/app.ts`) and the
+responses nginx generates on its own — the 80→443 redirect and a 502 while the
+app is down — never reach the app at all. Three rules keep that true: `always`
+is required or nginx skips the header on 4xx/5xx; a `location` that declares
+any `add_header` of its own stops inheriting the server set and must repeat all
+four; and the sample must not rely on `BASE_URL` alone, because its documented
+default is `http://localhost:8080`. A reverse proxy in front of this nginx keeps
+its own copy of the set.
 
 CI syntax-checks the example on every diff that touches `deploy/`: `deploy-check`
 installs nginx, then runs `scripts/check-deploy-samples.sh`, which renders the
@@ -937,6 +980,14 @@ job summary says each check was real (`nginx: real`, `nginx: real negative
 proof`). Locally, `bash scripts/check-deploy-samples.sh` runs the whole contract
 and prints one line per check; `bash scripts/check-nginx-config.sh` is the nginx
 half on its own.
+
+The same half also asserts the four security headers statically on the rendered
+sample — every top-level server block, each header with `always` (#1009) — and
+the contract drives two negative copies through it: one with the framing header
+deleted and one whose HSTS line lost `always`, both of which must be rejected
+with the header named. That half is static on purpose: a proxied 2xx probe is
+green today because the app already sends three of the four, so it could not be
+the assertion.
 
 The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
 chosen over `systemd-analyze verify` because that binary is absent on a GitHub
@@ -1360,7 +1411,7 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   |---|---|---|
   | `not-configured` | no GitHub App on this deployment, so nothing is measured | `200` |
   | `ok` | measured at most 15 minutes ago and within 120 s | `200` |
-  | `unknown` | never measured, or the last reading is older than 15 minutes | `200` |
+  | `unknown` | never measured, or the last reading is older than 15 minutes | `200`, except a configured App that has never measured after 15 minutes of uptime: **`503`, `ok:false`** |
   | `fail` | the last measurement is outside 120 s | **`503`, `ok:false`** |
 
   In `fail` the platform refuses to start work: `Jobs.enqueue` answers
@@ -1371,7 +1422,8 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   zero correction. A GitHub outage therefore stops App calls after at most 15
   minutes rather than serving a signature nobody re-measured. Fix the clock, then
   confirm `/readyz` is `200` again — the next measurement (at most five minutes
-  after a `fail`) clears it.
+  after a `fail` or an unmeasured `unknown`) clears it, and the scheduler takes
+  that reading on its own tick rather than waiting for App traffic.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
 - Disk: SQLite WAL files and logs.

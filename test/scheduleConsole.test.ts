@@ -173,6 +173,21 @@ test('the console page shows the saved schedule and the planner next run', async
   } finally { await f.close() }
 })
 
+test('a paused schedule names no next run, because it will not run', async () => {
+  const f = await fixture('console-paused')
+  try {
+    const row = cronRow(f.built.store, f.repoId)
+    f.built.store.setScheduleStatus(f.repoId, 'paused', Date.now())
+    const session = sessionFor(f.built, f.user)
+    const response = await f.built.app.inject({ method: 'GET', url: `/repos/${f.repoId}/schedule`, headers: { cookie: session.cookie } })
+    assert.equal(response.statusCode, 200)
+    assert.match(response.body, /data-schedule-status="paused"/, 'the page knows the schedule is paused')
+    assert.match(response.body, /data-schedule-next="unknown"/, 'a paused schedule has no next instant to name')
+    assert.doesNotMatch(response.body, /data-schedule-next="\d{4}-/, 'no instant is printed for a schedule that will not run')
+    assert.ok(row.id !== '', 'the schedule exists')
+  } finally { await f.close() }
+})
+
 test('the schedule facts have a stylesheet rule instead of the browser default', () => {
   const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
   assert.match(css, /\.schedule-facts\s*\{[^}]*display:\s*grid/, 'the facts are a grid, not a default <dl>')

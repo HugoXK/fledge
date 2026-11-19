@@ -788,14 +788,17 @@ follows it:
 |---|---|---|
 | `not-configured` | this deployment has no GitHub App, so nothing is measured | `200` |
 | `ok` | measured at most 15 minutes ago and within `thresholdSeconds` | `200` |
-| `unknown` | never measured, or the last reading is older than 15 minutes | `200` |
+| `unknown` | never measured, or the last reading is older than 15 minutes | `200`, except a configured App that has never measured after 15 minutes of uptime: **`503`, `ok:false`** |
 | `fail` | the last measurement is outside `thresholdSeconds` | **`503`, `ok:false`** |
 
 `clock.thresholdSeconds` is `CLOCK_SKEW_FAIL_SECONDS` (`src/repos/app.ts`), the
 same `120` the `FledgeClockSkewHigh` alert fires on, and `clock.measuredAt` is
-when the reported reading was taken. `unknown` and `not-configured` stay `200`
-on purpose: a GitHub outage, or a deployment without an App, is not a clock
-verdict. In `fail` the platform also refuses work — `Jobs.enqueue` answers
+when the reported reading was taken. `not-configured` stays `200` on purpose: a
+deployment without an App is not a clock verdict. A merely stale `unknown` also
+stays `200`, because a GitHub outage is not a clock verdict either. The one
+`unknown` that fails is a configured App that has never measured a clock in a
+whole reuse window — there the guard never ran, so `503` says so until a
+measurement succeeds, and the scheduler's tick takes that reading on its own. In `fail` the platform also refuses work — `Jobs.enqueue` answers
 `CLOCK_SKEW` before any job row is written, counted as
 `fledge_admission_rejected_total{reason="clock_skew"}` — and the App JWT refuses
 to sign (`CLOCK_SKEW_EXCEEDED`), where `unknown` refuses with

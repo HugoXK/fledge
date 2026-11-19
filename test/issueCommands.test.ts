@@ -6,8 +6,10 @@ const issue = { number: 7, html_url: 'https://github.com/o/r/issues/7', title: '
 const base = { action: 'created', issue }
 
 test('issue commands parse only from allowed collaborators and known commands', () => {
-  assert.deepEqual(parseIssueCommand({ ...base, comment: { id: 1, body: '/fledge status', author_association: 'MEMBER' } }), {
-    command: 'status', issueUrl: issue.html_url, number: 7, title: 'Fix it', detail: 'details', association: 'MEMBER', commentId: '1',
+  // #634: the actor is who wrote the command, so a plan decision can record the
+  // person who decided rather than the repository owner.
+  assert.deepEqual(parseIssueCommand({ ...base, comment: { id: 1, body: '/fledge status', author_association: 'MEMBER', user: { login: 'octocat' } } }), {
+    command: 'status', issueUrl: issue.html_url, number: 7, title: 'Fix it', detail: 'details', association: 'MEMBER', commentId: '1', actor: 'octocat',
   })
   assert.equal(parseIssueCommand({ ...base, comment: { id: 2, body: '/fledge plan', author_association: 'MEMBER' } })?.command, 'plan')
   assert.equal(parseIssueCommand({ ...base, comment: { id: 3, body: '/fledge fix', author_association: 'COLLABORATOR' } })?.command, 'fix')

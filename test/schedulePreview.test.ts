@@ -398,3 +398,39 @@ test('the page opens as an empty form rather than a refusal', async () => {
     await built.close()
   }
 })
+
+// #1054: the summary printed above the table is a statement about the same
+// interval the rows are laid on, so it echoes the stored value instead of
+// rounding it. A 90-second interval used to read "every 2 minute(s)" directly
+// above rows 90 seconds apart, while the console's own field read `90s`.
+test('the preview summary echoes an interval the planner could not round', async () => {
+  const { built, cookie } = await fixture()
+  const summaryOf = async (params: Record<string, string>, locale: 'en' | 'zh'): Promise<string> => {
+    const page = await built.app.inject({
+      method: 'GET',
+      url: `/schedule?${new URLSearchParams({ count: '2', from: '2026-11-16T00:00:00Z', ...params }).toString()}`,
+      headers: { cookie: `${cookie}; fledge_lang=${locale}` },
+    })
+    assert.equal(page.statusCode, 200)
+    return page.body
+  }
+  try {
+    const english = await summaryOf({ every: '90s' }, 'en')
+    assert.ok(english.includes('every 90s'), 'a 90-second interval is echoed as 90s')
+    assert.ok(!english.includes('every 2 minute'), 'the summary does not round 90 seconds up to 2 minutes')
+    assert.ok(english.includes('(90000 ms)'), 'the exact millisecond value stays beside it')
+
+    const chinese = await summaryOf({ every: '90s' }, 'zh')
+    assert.ok(chinese.includes('每 90s'), 'the Chinese summary echoes the same interval')
+    assert.ok(!chinese.includes('每 2 分钟'), 'the Chinese summary does not round it either')
+
+    // A whole number of minutes still reads as minutes, so the fix does not
+    // turn every familiar cadence into a raw suffix.
+    assert.ok((await summaryOf({ every: '15m' }, 'en')).includes('every 15 minute(s)'))
+    assert.ok((await summaryOf({ every: '15m' }, 'zh')).includes('每 15 分钟'))
+    assert.ok((await summaryOf({ every: '2h' }, 'en')).includes('every 2 hour(s)'))
+    assert.ok((await summaryOf({ every: '1d' }, 'en')).includes('every 1 day(s)'))
+  } finally {
+    await built.close()
+  }
+})
