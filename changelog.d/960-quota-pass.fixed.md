@@ -1,1 +1,0 @@
-Scheduled reviews and automatic runs no longer stop at a user whose platform quota is exhausted. The dispatcher records the refusal as a `quota_exhausted` job on that user's own repository and continues with the next repository in the same pass, so one person's exhausted balance no longer suppresses the scheduled work of every user behind them.
