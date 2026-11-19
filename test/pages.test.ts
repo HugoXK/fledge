@@ -796,7 +796,12 @@ test('a plan must be approved by a maintainer before execution', async () => {
     const user = makeUser(store, { login: 'plan-approval-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_plan_approval', userId: user.id, owner: 'o', name: 'pa', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', planRequired: true, goal: 'ship it', autoIterate: false, intervalMinutes: 1440 })
     const job = store.createJob({ id: 'job_plan_approval', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
-    store.updateJob(job.id, { status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString() })
+    // #634: a plan without structured evidence cannot be approved, so this fixture
+    // carries the packet a real plan reports.
+    store.updateJob(job.id, {
+      status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString(),
+      evidence_json: JSON.stringify({ scope: 'src/parser.ts', acceptance: 'the plan runs', testPlan: 'post the form', testRed: 'not approvable', testGreen: 'approved', tests: 'node:test', checks: 'npm run check', files: 1, risk: 'low', rollback: 'revert the commit' }),
+    })
     const { cookie, csrf } = sessionFor(built, user)
     const rejected = await built.app.inject({
       method: 'POST',

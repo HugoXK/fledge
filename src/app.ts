@@ -128,6 +128,7 @@ import { withDensity } from './views/layout.js'
 import type { PullTip } from './views/reviewMerge.js'
 import { gatePage } from './views/gate.js'
 import { planHash, validateGatePlan, type GatePlan } from './gates/plan.js'
+import { decidePlan, type PlanDecisionJob } from './lib/planDecision.js'
 import { applyGatePlan } from './gates/apply.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { rulesOverridesPage } from './views/rules.js'
@@ -565,6 +566,26 @@ function approvalMailFailed(user: UserRow, failures: Map<string, string>): boole
   if (failedAt === undefined) return false
   if (user.approval_sent_at === null) return true
   return failedAt > user.approval_sent_at
+}
+
+// #634: a form field the page did not post is absent, not an empty hash; only a
+// posted value can be compared with the stored plan.
+function planShownHash(value: string | undefined): string | null {
+  const shown = (value ?? '').trim()
+  return shown === '' ? null : shown
+}
+
+// #634: the plan decision reads the packet from the job row it is about, so both
+// doors hand the shared function the same five values and cannot drift.
+function planDecisionJob(job: JobRow): PlanDecisionJob {
+  return {
+    id: job.id,
+    summary: job.summary,
+    evidenceJson: job.evidence_json,
+    baseSha: job.base_sha,
+    approvedAt: job.plan_approved_at,
+    rejectedAt: job.plan_rejected_at,
+  }
 }
 
 export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
@@ -4003,9 +4024,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const body = form(request)
     const allow = (body.allowPaths ?? repo.allow_paths).trim().slice(0, 2000)
     const deny = (body.denyPaths ?? repo.deny_paths).trim().slice(0, 2000)
-    store.updateJob(job.id, { plan_approved_at: nowIso(), plan_approved_by: viewer.user.id, plan_rejected_at: null, plan_allow_paths: allow, plan_deny_paths: deny })
-    if (job.work_item_id !== null) store.updateWorkItem(job.work_item_id, { state: 'assigned' })
-    store.audit(viewer.user.id, 'job.plan_approved', `${job.id} allow=${allow.slice(0, 200)} deny=${deny.slice(0, 200)}`)
+    // #634: the decision is one record, written by one function from both doors.
+    // The form posts the hash of the packet the person read, so an edit between
+    // the page and the POST is refused instead of approved.
+    const outcome = decidePlan(store, {
+      job: planDecisionJob(job),
+      decision: 'approve',
+      actor: viewer.user.id,
+      at: nowIso(),
+      shownHash: planShownHash(body.planHash),
+      latestBaseSha: store.latestFinishedBaseSha(repo.id),
+      door: 'web form',
+      allowPaths: allow,
+      denyPaths: deny,
+      workItemId: job.work_item_id,
+    })
+    if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已批准，可以执行。')}`)
   })
 
@@ -4014,9 +4048,50 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以拒绝计划。')}`)
-    store.updateJob(job.id, { plan_rejected_at: nowIso(), plan_approved_at: null, plan_approved_by: null })
-    store.audit(viewer.user.id, 'job.plan_rejected', job.id)
+    const body = form(request)
+    const outcome = decidePlan(store, {
+      job: planDecisionJob(job),
+      decision: 'reject',
+      actor: viewer.user.id,
+      at: nowIso(),
+      shownHash: planShownHash(body.planHash),
+      latestBaseSha: store.latestFinishedBaseSha(repo.id),
+      door: 'web form',
+      reason: body.reason ?? '',
+      workItemId: job.work_item_id,
+    })
+    if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝。')}`)
+  })
+
+  // #634: "ask for a revised plan" is a rejection plus a new plan job on the same
+  // work item, the way `/fledge plan` queues one. A decided plan is never edited
+  // in place, so the revision cannot overwrite what a person already read.
+  app.post('/repos/:id/jobs/:jobId/revise-plan', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id || job.kind !== 'plan' || job.status !== 'succeeded') throw httpError(404, '计划任务不存在或尚未完成。', 'PLAN_NOT_READY')
+    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以要求修改计划。')}`)
+    if (job.work_item_id === null) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个计划没有关联工作项，无法排队新计划；请用 /fledge plan 生成。')}`)
+    const body = form(request)
+    const outcome = decidePlan(store, {
+      job: planDecisionJob(job),
+      decision: 'reject',
+      actor: viewer.user.id,
+      at: nowIso(),
+      shownHash: planShownHash(body.planHash),
+      latestBaseSha: store.latestFinishedBaseSha(repo.id),
+      door: 'web form',
+      reason: body.reason ?? '',
+      workItemId: job.work_item_id,
+    })
+    if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
+    const reason = (body.reason ?? '').trim().slice(0, 500)
+    const goal = `${job.goal}\n\nA maintainer rejected the previous plan and asked for a revision: ${reason}\nProduce one concrete revised plan only; do not write code, create a branch or open a PR.`
+    const t = translator(request.locale ?? 'zh')
+    const queued = await runCreate(request, viewer, repo, { kind: 'plan', goal, workItemId: job.work_item_id, priority: job.priority })
+    if (!queued.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, queued, t('新计划没有排队。', 'The revised plan was not queued.')))}&code=${queued.code}`)
+    return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝；修改后的计划已排队。')}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/execute', async (request, reply) => {
@@ -6470,10 +6545,25 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         await reply('No plan is waiting for approval.')
         return
       }
-      store.updateJob(plan.id, { plan_approved_at: nowIso(), plan_approved_by: repo.user_id, plan_rejected_at: null })
-      store.updateWorkItem(item.id, { state: 'assigned' })
-      store.audit(repo.user_id, 'plan.approved', `${plan.id} via issue command`)
-      await reply(`Plan ${plan.id} approved. Run /fledge fix to start implementation.`)
+      // #634: the same function as the web form, so the columns and the audit name
+      // are one record whichever door decided. The actor is the person who wrote
+      // the command when Fledge knows them, not the repository owner.
+      const decider = store.userByLogin(source.actor)?.id ?? repo.user_id
+      const outcome = decidePlan(store, {
+        job: planDecisionJob(plan),
+        decision: 'approve',
+        actor: decider,
+        at: nowIso(),
+        shownHash: null,
+        latestBaseSha: store.latestFinishedBaseSha(repo.id),
+        door: 'issue command',
+        allowPaths: plan.plan_allow_paths ?? repo.allow_paths,
+        denyPaths: plan.plan_deny_paths ?? repo.deny_paths,
+        workItemId: plan.work_item_id,
+      })
+      await reply(outcome.ok
+        ? `Plan ${plan.id} approved. Run /fledge fix to start implementation.`
+        : `Could not approve plan ${plan.id}: ${outcome.reason.en}`)
       return
     }
     if (command === 'plan') {

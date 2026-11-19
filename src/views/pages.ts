@@ -27,6 +27,7 @@ import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkI
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
+import { planPacketHash } from '../lib/planDecision.js'
 import { changeStoryFacts, type ChangeStory, type ChangeStoryFact } from '../lib/changeStory.js'
 import type { PreviewResult } from '../schedules/preview.js'
 import { intervalFieldText, type FrozenSnapshotField, type ScheduleConsoleState } from '../schedules/console.js'
@@ -3614,15 +3615,54 @@ export function jobPage(input: {
   // Retry, execute, resume and re-check keep their order in the disclosure; the
   // primary is removed from it, and acknowledge is primary whenever it exists.
   const secondaryHtml = [retry, execute, resume, recheck].filter((html) => html !== '' && html !== primaryHtml).join('')
-  const planCard = job.kind === 'plan' && job.status === 'succeeded'
-    ? `<section class="card">
-        <div class="row between"><div><h2>${escapeHtml(t('计划审批', 'Plan approval'))}</h2><p class="muted">${job.plan_rejected_at !== null ? escapeHtml(t('计划已被拒绝。', 'This plan was rejected.')) : job.plan_approved_at !== null ? escapeHtml(t('计划已批准；可以执行。', 'This plan is approved and can be executed.')) : escapeHtml(t('等待 maintainer 批准计划。', 'Waiting for a maintainer to approve the plan.'))}</p></div><span class="badge ${job.plan_approved_at !== null ? 'good' : job.plan_rejected_at !== null ? 'bad' : 'busy'}">${job.plan_approved_at !== null ? escapeHtml(t('已批准', 'Approved')) : job.plan_rejected_at !== null ? escapeHtml(t('已拒绝', 'Rejected')) : escapeHtml(t('待批准', 'Pending'))}</span></div>
-        ${repo.repo_role === 'maintainer' && job.plan_approved_at === null && job.plan_rejected_at === null ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}
-          <div class="row"><label class="grow">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label class="grow">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
-          <div class="row"><button class="btn" type="submit">${escapeHtml(t('批准计划', 'Approve plan'))}</button><button class="btn btn-danger" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan" data-confirm="${escapeHtml(t('拒绝这个计划？', 'Reject this plan?'))}">${escapeHtml(t('拒绝', 'Reject'))}</button></div>
-        </form>` : job.plan_approved_at !== null ? `<p class="fine">${escapeHtml(t('批准人', 'Approved by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>` : ''}
+  // #634: the decision is the page's subject, so it says which plan is being
+  // decided (the same packet hash the form posts back), offers exactly one primary
+  // action, and turns into the record once somebody decided. Missing evidence is
+  // an incomplete state with the primary disabled and the reason beside it: a
+  // plan nobody can evaluate must not be approvable by pressing the button anyway.
+  const planState = job.kind !== 'plan' || job.status !== 'succeeded'
+    ? 'none'
+    : job.plan_approved_at !== null
+      ? 'approved'
+      : job.plan_rejected_at !== null
+        ? 'rejected'
+        : evidence === null
+          ? 'incomplete'
+          : 'pending'
+  const planHash = planState === 'none'
+    ? ''
+    : planPacketHash({ summary: job.summary, evidenceJson: job.evidence_json, baseSha: job.base_sha })
+  const planWhen = (value: string | null): string => value === null ? '—' : humanTimeShort(value)
+  const planRecord = planState === 'approved'
+    ? `<p class="fine" data-plan-record>${escapeHtml(t('决策人', 'Decided by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(planWhen(job.plan_approved_at))} · ${escapeHtml(t('计划指纹', 'Plan hash'))} <code>${escapeHtml(planHash.slice(0, 12))}</code> · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>`
+    : planState === 'rejected'
+      ? `<p class="fine" data-plan-record>${escapeHtml(t('决策人', 'Decided by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(planWhen(job.plan_rejected_at))} · ${escapeHtml(t('拒绝理由', 'Reason'))} ${escapeHtml(job.plan_reject_reason ?? '—')}</p>`
+      : ''
+  const planDecisionBody = planState === 'pending' && repo.repo_role === 'maintainer'
+    ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}<input type="hidden" name="planHash" value="${escapeHtml(planHash)}" />
+        <div class="row"><label class="grow">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label class="grow">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
+        <label class="grow">${escapeHtml(t('理由（拒绝或要求修改计划时必填）', 'Reason (required to reject or ask for a revision)'))} <textarea name="reason" rows="2" maxlength="500"></textarea></label>
+        <div class="row"><button class="btn" type="submit" data-plan-primary>${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/revise-plan">${escapeHtml(t('要求修改计划', 'Ask for a revised plan'))}</button></div>
+      </form>`
+    : planState === 'pending'
+      ? `<p class="fine">${escapeHtml(t('等待 maintainer 决定这个计划。', 'Waiting for a maintainer to decide this plan.'))}</p>`
+      : planState === 'incomplete'
+        ? `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved.'))}</p>
+           <button class="btn" type="button" data-plan-primary disabled aria-describedby="plan-incomplete-reason">${escapeHtml(t('批准并运行', 'Approve and run'))}</button>`
+        : planRecord
+  const planBadge = planState === 'approved'
+    ? `<span class="badge good">${escapeHtml(t('已批准', 'Approved'))}</span>`
+    : planState === 'rejected'
+      ? `<span class="badge bad">${escapeHtml(t('已拒绝', 'Rejected'))}</span>`
+      : planState === 'incomplete'
+        ? `<span class="badge busy">${escapeHtml(t('证据不完整', 'Evidence missing'))}</span>`
+        : `<span class="badge busy">${escapeHtml(t('待决定', 'Awaiting a decision'))}</span>`
+  const planCard = planState === 'none'
+    ? ''
+    : `<section class="card" data-plan-decision="${planState}">
+        <div class="row between"><div><h2>${escapeHtml(t('计划决定', 'Plan decision'))}</h2><p class="muted">${planState === 'approved' ? escapeHtml(t('这个计划已批准；执行它现在写在页头的主操作里。', 'This plan is approved; running it is the header action now.')) : planState === 'rejected' ? escapeHtml(t('这个计划已被拒绝；新计划是新任务，不在原计划上改写。', 'This plan was rejected; a new plan is a new job, never an edit of this one.')) : planState === 'incomplete' ? escapeHtml(t('这个计划缺少证据，先要一份完整的计划。', 'This plan has no evidence; ask for a complete one first.')) : escapeHtml(t('读计划，然后决定：批准并运行、说明理由后拒绝，或要求一份修改后的计划。', 'Read the plan, then decide: approve and run, reject with a reason, or ask for a revised plan.'))}</p></div>${planBadge}</div>
+        ${planDecisionBody}
       </section>`
-    : ''
   // #390: the work type is data, so the page reads it back from the registry
   // instead of restating it. An unknown or missing type renders as iterate, which
   // is what every row written before the column means.

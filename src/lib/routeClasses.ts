@@ -117,6 +117,7 @@ const EXPENSIVE_ROUTE_LIST = [
   'POST /repos/:id/jobs/:jobId/merge',
   'POST /repos/:id/jobs/:jobId/approve-plan',
   'POST /repos/:id/jobs/:jobId/reject-plan',
+  'POST /repos/:id/jobs/:jobId/revise-plan',
   'POST /repos/:id/jobs/:jobId/execute',
   // The workspace proxy is registered with `app.all` (the two
   // `/repos/:id/workspace/app…` registrations in `src/app.ts`), so it answers

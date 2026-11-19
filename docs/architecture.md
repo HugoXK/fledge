@@ -841,7 +841,21 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. An answerless plan does not wait forever: one reminder is sent
+  until approval. #634: the decision is one record on the job row —
+  `plan_hash` (the packet hash of the plan text, its evidence and its base sha,
+  taken by the same canonical JSON the gate session hashes), `plan_approved_by`
+  as the actor of whichever decision stands, `plan_rejected_at` /
+  `plan_reject_reason` for a rejection, and the allow/deny paths. Both doors,
+  the job page form and `/fledge approve`, call `decidePlan`
+  (`src/lib/planDecision.ts`), so the columns, the audit action
+  (`job.plan_approved` / `job.plan_rejected`) and the actor are the same
+  whichever door decided. A second decision is refused rather than written: the
+  first decision's actor and time stand and one audit row exists per plan. The
+  form posts the hash it rendered, so an edit between the page and the POST is
+  `PLAN_HASH_MISMATCH`; a base sha the platform has since measured differently is
+  `PLAN_BASE_MOVED` and names both shas; a rejection needs a reason, and "ask for
+  a revised plan" queues a new plan job on the same work item instead of editing
+  the decided one. An answerless plan does not wait forever: one reminder is sent
   `PLAN_REMINDER_DAYS` before the deadline, and at `PLAN_EXPIRY_DAYS` (default 7)
   the tick closes the work item into the existing `closed` state with
   `closed_reason = 'plan_expired'` and an audit row. No state or transition was
@@ -1867,7 +1881,9 @@ on the issue with the work-item/job/PR state. `plan` and `fix` reach the job
 through `ManagementService` (`task.create` on the `chat` channel), so the
 receipt, the revision fence and the refusal codes are the console's, not a
 second copy. `/fledge approve` is maintainer-only
-and approves the latest completed plan. The issue title and body are external, so
+and approves the latest completed plan through the same `decidePlan`
+(`src/lib/planDecision.ts`) the job page form calls, recording the person who
+wrote the command as the deciding actor rather than the repository owner. The issue title and body are external, so
 `plan` and `fix` build their goal with `untrustedIssueGoal()`
 (`src/lib/untrusted.ts`): the text is fenced as `UNTRUSTED ISSUE TEXT`, a forged
 fence is escaped, and the job audit records the label and a hash, never the body.
