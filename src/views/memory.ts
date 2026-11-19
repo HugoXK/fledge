@@ -211,7 +211,8 @@ export function memoryPage(input: MemoryPageInput): string {
         <label for="memory-status">${escapeHtml(t('状态', 'Status'))}${select('status', MEMORY_STATUSES, entry?.status ?? 'active', (value) => memoryStatusLabel(t, value), t)}</label>
         ${entry?.document_path == null
       ? `<label for="memory-verification">${escapeHtml(t('验证', 'Verification'))}${select('verification', MEMORY_VERIFICATIONS, entry?.verification ?? 'human_asserted', (value) => memoryVerificationLabel(t, value), t)}</label>`
-      : `<p class="fine" data-memory-document-fixed="${escapeHtml(entry.document_path)}">${escapeHtml(t('验证方式由仓库文档决定，不能在这里改。', 'The verification is decided by the repository document and cannot be changed here.'))}</p>`}
+      : `<input type="hidden" name="verification" value="${escapeHtml(entry.verification)}" />
+        <p class="fine" data-memory-document-fixed="${escapeHtml(entry.document_path)}">${escapeHtml(t('验证方式由仓库文档决定，不能在这里改。', 'The verification is decided by the repository document and cannot be changed here.'))}</p>`}
         <label for="memory-audience">${escapeHtml(t('可见范围', 'Audience'))}${select('audience', audiences, entry?.audience ?? 'project', (value) => memoryAudienceLabel(t, value), t)}</label>
         <label for="memory-scope">${escapeHtml(t('范围（模块或路径）', 'Scope (module or path)'))}<input id="memory-scope" name="scope" value="${escapeHtml(entry?.scope ?? '')}" /></label>
       <p class="fine">${escapeHtml(t(`当前仓库角色：${role === null ? '未选择' : role}。角色条目只有该角色能读到；即使是管理员，切到别的角色也读不到。`, `Current repository role: ${role === null ? 'not chosen' : role}. A role entry is readable only by that role, and an administrator acting as another role cannot read it either.`))}</p>

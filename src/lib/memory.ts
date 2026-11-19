@@ -119,7 +119,7 @@ function text(value: unknown): string {
 
 export function parseMemoryInput(
   form: Record<string, unknown>,
-  options: { role: RepoRole | null; allowedRoles: RepoRole[] },
+  options: { role: RepoRole | null; allowedRoles: RepoRole[]; documentOwned?: boolean },
 ): MemoryParse {
   const key = text(form.key)
   const body = text(form.body)
@@ -136,8 +136,12 @@ export function parseMemoryInput(
   if (!MEMORY_KINDS.includes(kind)) return { ok: false, refused: 'kind_invalid' }
   if (!MEMORY_STATUSES.includes(status)) return { ok: false, refused: 'status_invalid' }
   // `document` is not a value a form may set: only the merge/blob proof in the
-  // route writes it, so a typed one is refused like any other unknown value.
-  if (!(MEMORY_VERIFICATIONS as readonly string[]).includes(verification)) return { ok: false, refused: 'verification_invalid' }
+  // route writes it, so a typed one is refused like any other unknown value. A
+  // row a document already owns echoes that stored value back in a hidden field,
+  // which is the only way its page can be submitted at all; the store's own
+  // fence still decides what that write may change.
+  const echoOfStoredDocument = options.documentOwned === true && verification === MEMORY_DOCUMENT_VERIFICATION
+  if (!(MEMORY_VERIFICATIONS as readonly string[]).includes(verification) && !echoOfStoredDocument) return { ok: false, refused: 'verification_invalid' }
   if (!isMemoryAudience(audience)) return { ok: false, refused: 'audience_invalid' }
   // A writer may not author an entry for a role it cannot act as. Without this a
   // developer-role reader could plant a maintainer-scoped "decision" that only

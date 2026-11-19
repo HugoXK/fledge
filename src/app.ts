@@ -2981,7 +2981,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const role = parseRepoRole(repo.repo_role)
     const values = form(request)
-    const parsed = parseMemoryInput(values, { role, allowedRoles: allowedRepoRoles(repo.permission) })
+    // The page of a document-owned entry replaces the verification select with a
+    // hidden field carrying the stored value, because the store's fence refuses
+    // any write that does not echo it. The parser accepts that echo only when the
+    // row it targets already holds the document proof, so a typed `document` on
+    // any other write is still refused.
+    const targetedKey = typeof values.key === 'string' ? values.key.trim() : ''
+    const targeted = store.getMemory(repo.id, targetedKey)
+    const parsed = parseMemoryInput(values, {
+      role,
+      allowedRoles: allowedRepoRoles(repo.permission),
+      documentOwned: targeted?.document_path != null,
+    })
     if (!parsed.ok) {
       return reply.redirect(`/repos/${repo.id}/memory?refused=${encodeURIComponent(parsed.refused)}`)
     }
@@ -3048,7 +3059,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // An entry outside the actor's audience is not a write target. Refuse it
     // before the revision fence so a hidden key is not a revision oracle, and use
     // the same refusal an update to a missing entry gives.
-    const current = store.getMemory(repo.id, input.key)
+    const current = targeted
     if (current !== undefined && !audienceVisible(current.audience, role)) {
       return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
     }
