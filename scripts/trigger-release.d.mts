@@ -30,8 +30,29 @@ export interface ReleaseRun {
 
 export interface DispatchRunProof extends ReleaseRun {}
 
-export interface DispatchWithProofResult extends DispatchReleaseResult {
+export interface DispatchProof extends DispatchReleaseResult {
   run: DispatchRunProof | null
+}
+
+/** #881: no request was made, because the clock had not reached the day's
+ * `02:00Z` boundary yet. */
+export interface DispatchRefusal {
+  ok: false
+  reason: string
+  at: string
+  boundary: string
+  repo: string
+  workflow: string
+  ref: string
+  run: null
+}
+
+export type DispatchWithProofResult = DispatchProof | DispatchRefusal
+
+export interface DispatchWindow {
+  dispatch: boolean
+  boundary: string
+  reason: string
 }
 
 export interface ReleaseSlotVerdict {
@@ -45,5 +66,6 @@ export interface ReleaseSlotVerdict {
 export function dispatchRelease(input: DispatchReleaseInput): Promise<DispatchReleaseResult>
 export function readReleaseRuns(input: DispatchReleaseInput & { sinceIso?: string }): Promise<ReleaseRun[]>
 export function dispatchWithProof(input: DispatchReleaseInput): Promise<DispatchWithProofResult>
+export function dispatchWindow(now: string): DispatchWindow
 export function slotWindow(now: string): { boundary: string; deadline: string }
 export function releaseSlotVerdict(input: { runs: ReleaseRun[]; now: string; deadlineMinutes?: number }): ReleaseSlotVerdict

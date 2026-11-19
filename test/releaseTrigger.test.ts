@@ -129,3 +129,35 @@ test('the branch, the pull request and the tag each outrank the clock, so the re
   const blocked = decideTrigger(base({ lastTagCommittedAt: '2026-11-12T03:05:00Z', branches: ['release/v0.3.2'] }))
   assert.match(blocked.reason, /^branch-exists/)
 })
+
+// #881: the production host runs ~28 minutes ahead of GitHub (#758), so the
+// external trigger fired at 01:32Z for the 02:00Z slot and the release commit
+// kept 01:32Z as its time. Comparing the tag against the boundary *instant* then
+// read the slot as unshipped and released again on the week rollover. The tag now
+// counts for the boundary's UTC day, not from the boundary instant.
+test('#881: a tag committed earlier on the boundary day has shipped the slot', () => {
+  const decision = decideTrigger(base({
+    event: 'schedule',
+    now: '2026-11-16T02:00:00Z',
+    lastTagCommittedAt: '2026-11-16T01:32:00Z',
+  }))
+  assert.equal(decision.plan, false, 'a tag committed 28 minutes early still fills that slot')
+  assert.match(decision.reason, /^slot-shipped/)
+})
+
+test('#881: a tag from the previous UTC day leaves the slot open', () => {
+  // The control: the day rule must not swallow yesterday's tag and stop the night.
+  const decision = decideTrigger(base({
+    event: 'schedule',
+    now: '2026-11-16T02:00:00Z',
+    lastTagCommittedAt: '2026-11-15T23:59:59Z',
+  }))
+  assert.equal(decision.plan, true)
+  assert.match(decision.reason, /^slot-open/)
+})
+
+test('#881: an external dispatch before the boundary is refused, not planned', () => {
+  const decision = decideTrigger(base({ event: 'workflow_dispatch', now: '2026-11-16T01:32:00Z' }))
+  assert.equal(decision.plan, false, 'a dispatch that arrives 28 minutes early must not ship a slot')
+  assert.match(decision.reason, /^before-boundary/)
+})

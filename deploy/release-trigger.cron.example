@@ -16,4 +16,11 @@
 # fallback. The check for "was it dispatched by 02:05Z" is not in this cron file:
 # `.github/workflows/release-slot.yml` runs it at 02:10Z, and by hand it is
 #   node scripts/trigger-release.mjs --check-slot
+#
+# This line must reach the API inside [02:00Z, 02:05Z]. On a host whose clock runs
+# ahead (#758) `0 2 * * *` fires before the 02:00Z boundary; the trigger then
+# refuses the dispatch (`before-boundary`) instead of creating a release commit
+# for the previous day's slot, and the slot falls to GitHub's `schedule`. Move the
+# cron forward by the host's offset so it lands inside the window, and fix the
+# clock separately.
 0 2 * * * cd /opt/fledge && set -a && . /etc/fledge/release-trigger.env && set +a && /usr/bin/node scripts/trigger-release.mjs >> /var/log/fledge/release-trigger.log 2>&1

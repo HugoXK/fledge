@@ -173,9 +173,14 @@ jobs:
             import { readFileSync, writeFileSync, appendFileSync } from "node:fs"
             import { planRelease } from "./scripts/release-plan.mjs"
             import { plannerInput } from "./scripts/lib/release-state.mjs"
+            import { latestBoundary } from "./scripts/lib/release-trigger.mjs"
             const TMP = process.env.RUNNER_TEMP ?? "/tmp"
             const state = JSON.parse(readFileSync(TMP + "/state.json", "utf8"))
-            const input = { ...plannerInput(state), releaseAt: new Date().toISOString() }
+            // #881: the week that decides minor-vs-patch, and the day the tag is
+            // judged against, are both the scheduled 02:00Z slot — not the
+            // runner instant, which a host 28 minutes ahead (#758) can read as
+            // the previous day's slot and release it twice.
+            const input = { ...plannerInput(state), releaseAt: latestBoundary(new Date().toISOString()) ?? "" }
             const result = planRelease(input)
             const plan = {
               shouldRelease: result.shouldRelease,
