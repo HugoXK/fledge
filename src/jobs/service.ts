@@ -15,7 +15,8 @@ import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
-import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
+import { parseEvidence, parseEvidenceJson, parseRedTestRun, type Evidence } from '../lib/evidence.js'
+import { redTestEvidence } from '../lib/redTest.js'
 import { applyReport, findingId, type FindingState } from '../lib/securityFindings.js'
 import { budgetScopeWordZh, budgetStop, type BudgetScopeCandidate } from '../lib/budgetScope.js'
 import { identityPrincipalId } from '../identity/authorization.js'
@@ -373,6 +374,18 @@ export interface CallbackPayload {
   decision?: unknown
   followUps?: unknown
   triage?: unknown
+}
+
+// #1040: the agent reports the base run, so the job classifies it here and
+// stores the record beside the prose. A run taken on another tree is kept as
+// `base-mismatch`, and a job that reports no run gets no record and no verdict.
+function withRedTestRecord(evidence: Evidence | null, payload: unknown, jobBaseSha: string | null): Evidence | null {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return evidence
+  const raw = payload as Record<string, unknown>
+  const run = parseRedTestRun(raw.baseRun)
+  if (run === null) return evidence
+  const base: Evidence = evidence ?? {}
+  return { ...base, redTest: redTestEvidence(run, parseRedTestRun(raw.repeat), jobBaseSha) }
 }
 
 // The canonical form of a terminal report. Two deliveries that describe the same
@@ -3846,7 +3859,7 @@ export class Jobs {
     const summary = progressSummary(payload.summary)
     const error = typeof payload.error === 'string' ? redact(payload.error).slice(0, 2000) : undefined
     const attribution = parseAttribution(payload.attribution)
-    const evidence = parseEvidence(payload.evidence)
+    const evidence = withRedTestRecord(parseEvidence(payload.evidence), payload.evidence, job.base_sha)
     const checkpoint = typeof payload.checkpoint === 'string' ? redact(payload.checkpoint.trim()).slice(0, 4000) : undefined
     if (branch !== undefined && (!isValidBranchName(branch) || branch === job.base_branch)) {
       return { ok: false, status: 400, error: 'invalid branch' }

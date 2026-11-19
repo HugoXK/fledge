@@ -162,6 +162,11 @@ const ORDINARY_ROUTE_LIST = [
   'POST /repos/:id/jobs/:jobId/priority',
   'POST /repos/:id/jobs/:jobId/relations',
   'POST /repos/:id/jobs/:jobId/decision',
+  // #1040: answering the red-test claim writes one decision on the job — the
+  // record itself is not rewritten — and starts, stops or merges nothing, which
+  // is the shape `jobs/:jobId/decision` above already has. Expensive is reserved
+  // for routes that start, stop or merge work.
+  'POST /repos/:id/jobs/:jobId/red-test',
   'POST /repos/:id/jobs/:jobId/ack-rule-change',
   'POST /settings/notifications',
   'POST /notifications/read',
