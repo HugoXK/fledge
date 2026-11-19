@@ -5288,13 +5288,19 @@ export function schedulePage(input: {
   const scheduleLine = preview === null ? '' : preview.schedule.kind === 'cron'
     ? t('cron', 'cron') + ` <code>${escapeHtml(preview.schedule.expression)}</code> · ${escapeHtml(preview.schedule.timezone)}`
     : (() => {
-      const minutes = Math.round(preview.schedule.everyMs / 60_000)
-      const label = minutes % 1440 === 0
-        ? t(`每 ${minutes / 1440} 天`, `every ${minutes / 1440} day(s)`)
-        : minutes % 60 === 0
-          ? t(`每 ${minutes / 60} 小时`, `every ${minutes / 60} hour(s)`)
-          : t(`每 ${minutes} 分钟`, `every ${minutes} minute(s)`)
-      return `${label} <span class="fine">(${String(preview.schedule.everyMs)} ms)</span>`
+      const everyMs = preview.schedule.everyMs
+      // #1054: a whole number of minutes has an exact friendly label, and
+      // anything else is echoed verbatim. Rounding 90s to "2 minutes" printed a
+      // cadence the planner never produced, directly above rows 90 seconds apart.
+      const minutes = everyMs / 60_000
+      const label = everyMs % 60_000 !== 0
+        ? t(`每 ${intervalFieldText(everyMs)}`, `every ${intervalFieldText(everyMs)}`)
+        : minutes % 1440 === 0
+          ? t(`每 ${minutes / 1440} 天`, `every ${minutes / 1440} day(s)`)
+          : minutes % 60 === 0
+            ? t(`每 ${minutes / 60} 小时`, `every ${minutes / 60} hour(s)`)
+            : t(`每 ${minutes} 分钟`, `every ${minutes} minute(s)`)
+      return `${label} <span class="fine">(${String(everyMs)} ms)</span>`
     })()
   const rows = preview === null ? [] : preview.times.map((time, index) => {
     const when = time.local === null

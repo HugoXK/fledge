@@ -616,7 +616,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   the schedule's zone, and mark a local time the spring-forward gap removed as
   skipped rather than shifting it. Because the interval form has no timezone, an
   interval that arrives with one is refused by name instead of being accepted and
-  shown as if a zone applied. A preview stores nothing and creates no job. Each
+  shown as if a zone applied. The interval the summary line prints is the stored
+  value echoed exactly through `intervalFieldText`, the same helper the console
+  uses, so a 90-second cadence never reads as two minutes above rows 90 seconds
+  apart (#1054); a whole number of minutes keeps its day/hour/minute label because
+  that label is exact. A preview stores nothing and creates no job. Each
   refusal is authored in both Chinese and English where the planner raises it,
   The console page leads with a human mode picker (#675): every N
   minutes/hours, every day at a time, weekdays at a time, weekly on a weekday,
