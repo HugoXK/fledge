@@ -583,15 +583,31 @@ six paths at 360, 768 and 1280 px, each rendered in a light and a dark context,
 in both languages (three widths by two schemes, deliberately not the nine-width
 sweep — a width added there photographs one surface and must not become a gate
 every page has to pass). Four things are checked per page, each a pure function
-in `src/lib/visualMatrix.ts`: every control the product styles as one (`button`,
-`.btn`, `input`, `select`, `textarea`, `summary`, `.section-nav a`) is at least
-44x44 px; its computed style changes when focused on at least one of outline
-width/style, box-shadow, border colour and background colour; an icon-only
-`button` or `a` carries `aria-label` or `title`; and the rendered HTML contains
-no `{infoTip(`, `class="undefined"`, `[object Object]` or unrendered `${`. A
-checkbox is measured through its `<label>`, which is the box a pointer hits. A
-failure names all four coordinates and the control (`en width=768 scheme=dark
-/settings: button.banner-dismiss is 24x24px, under the 44px touch floor`).
+in `src/lib/visualMatrix.ts`, over the controls the walk actually collects: the
+selector `button`, `.btn`, `input`, `select`, `textarea`, `summary` and
+`.section-nav a`, kept only where `checkVisibility()` reports the element as
+rendered and its rect is non-zero. Every collected control is at least 44x44 px,
+compared with a 0.05 px tolerance, so a 44 px control the browser rounds down to
+43.99 px still passes while a 43.5 px control fails; its computed style changes
+when focused on at least one of outline width/style, box-shadow, border colour
+and background colour; an icon-only `button` or `a` carries `aria-label` or
+`title`; and the rendered HTML contains no `{infoTip(`, `class="undefined"`,
+`[object Object]` or unrendered `${`. A checkbox is measured through its
+`<label>`, which is the box a pointer hits. A failure names all four coordinates
+and the control (`en width=768 scheme=dark /settings: summary is 572x43px, under
+the 44px touch floor`).
+
+That measured set is not every control on the page, and the gate does not claim
+it is. Three surfaces stay outside it: the controls inside the four closed
+`<dialog>`s (`#add-repo`, `#new-work-item`, `#feedback-dialog`,
+`#confirm-dialog`) — the walk never opens a dialog, and `checkVisibility()` is
+false while one is closed; controls inside a closed `<details>`, which the walk
+skips on purpose; and every `a` outside `.section-nav`, including the
+`class="link"` controls, which the selector does not collect. Focus is measured
+by tabbing inside a bounded budget (`min(400, collected + 15)` presses), and the
+walk stops as soon as it has seen every collected control: a page with more
+controls than the budget leaves the ones it never reached without a focus
+measurement, and nothing fails on that.
 
 Two shapes are exempt by a documented attribute on the element itself, never by
 a selector list: the banner dismiss button is 24x24 and carries
@@ -604,8 +620,9 @@ accessible name. No category is exempt: a full-width `summary` disclosure row is
 held to the same 44 px as every other control in the list, and the product
 raises the row to that floor instead of waiving it. Both attributes live on
 the element, so a new small control cannot inherit a waiver by being written
-the same way, and `test/visualMatrix.test.ts` pins that each appears once and
-what each floor is. The gate is computed style and
+the same way; `test/visualMatrix.test.ts` pins what each floor is, counts the
+inline opt-out exactly once against `src/views/pages.ts`, and requires exactly
+one `data-compact-target` in `src/views/layout.ts`. The gate is computed style and
 geometry plus a text scan; screenshots stay artifacts and are never compared.
 One combination per width also sets the saved dark theme in a light host
 preference and reads the rendered `data-theme` and `color-scheme` meta back, so
