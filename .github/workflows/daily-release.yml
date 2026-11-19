@@ -179,7 +179,7 @@ jobs:
             // #881: the week that decides minor-vs-patch, and the day the tag is
             // judged against, are both the scheduled 02:00Z slot — not the
             // runner instant, which a host 28 minutes ahead (#758) can read as
-            // the previous day's slot and release it twice.
+            // the slot for the day before and release it twice.
             const input = { ...plannerInput(state), releaseAt: latestBoundary(new Date().toISOString()) ?? "" }
             const result = planRelease(input)
             const plan = {
