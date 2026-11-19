@@ -215,6 +215,9 @@ with an allowlist is still open work and not something a deploy changes today.
 docker compose up -d --build
 ```
 
+The compose healthcheck probes `/readyz`, not `/healthz`: a container whose
+database cannot be read is marked unhealthy instead of healthy.
+
 To make `/healthz` name the build, stamp it at build time so the image can carry
 the commit: `GIT_SHA=$(git rev-parse HEAD) BUILD_TIME=$(date -u +%Y-%m-%dT%H:%M:%SZ) docker compose build`.
 Without the stamp the image answers `unknown` — honest, and useless for
