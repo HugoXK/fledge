@@ -233,6 +233,9 @@ export interface UserRow {
   email_daily_digest: number
   /** #353: also mail a success the schedule produced. Off by default. */
   email_job_success: number
+  /** #1069: `HH:MM` in the digest timezone; both null means no window. */
+  quiet_hours_start: string | null
+  quiet_hours_end: string | null
   notify_email: string | null
   github_token_enc: string | null
   github_token_scopes: string | null
@@ -1370,6 +1373,8 @@ CREATE TABLE IF NOT EXISTS users (
   email_job_updates INTEGER NOT NULL DEFAULT 1,
   email_daily_digest INTEGER NOT NULL DEFAULT 1,
   email_job_success INTEGER NOT NULL DEFAULT 0,
+  quiet_hours_start TEXT,
+  quiet_hours_end TEXT,
   notify_email TEXT,
   github_token_enc TEXT,
   github_token_scopes TEXT,
@@ -3066,6 +3071,8 @@ export class Store {
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_job_success', 'INTEGER NOT NULL DEFAULT 0'],
+      ['quiet_hours_start', 'TEXT'],
+      ['quiet_hours_end', 'TEXT'],
       ['notify_email', 'TEXT'],
       ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['github_token_scopes', 'TEXT'],
@@ -3794,6 +3801,15 @@ export class Store {
 
   setEmailJobSuccess(id: string, enabled: boolean): void {
     this.run('UPDATE users SET email_job_success = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  // #1069: both nil/empty is the off state, and a half window never persists.
+  setUserQuietHours(id: string, start: string | null, end: string | null): void {
+    const isOff = start === null || start === '' || end === null || end === ''
+    this.run(
+      'UPDATE users SET quiet_hours_start = ?, quiet_hours_end = ? WHERE id = ?',
+      isOff ? null : start, isOff ? null : end, id,
+    )
   }
 
   setNotifyEmail(id: string, email: string | null): void {
@@ -6385,8 +6401,15 @@ export class Store {
     payload: unknown
     idempotencyKey: string
     now?: number
+    /**
+     * #1069: when the row may first be claimed. Omitted or past-due means now,
+     * so every existing caller keeps today's behaviour. A future instant is how
+     * a quiet-hours window holds a job mail.
+     */
+    dueAtMs?: number
   }): { row: NotificationOutboxRow; created: boolean } {
     const now = input.now ?? Date.now()
+    const dueAt = input.dueAtMs ?? now
     const result = this.db.prepare(
       `INSERT INTO notification_outbox
          (id, transport, destination, user_id, job_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
@@ -6400,7 +6423,7 @@ export class Store {
       input.jobId ?? null,
       JSON.stringify(input.payload),
       input.idempotencyKey.slice(0, 300),
-      now,
+      dueAt,
       new Date(now).toISOString(),
       new Date(now).toISOString(),
     ]))

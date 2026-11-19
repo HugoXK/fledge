@@ -23,7 +23,7 @@ import { identityPrincipalId } from '../identity/authorization.js'
 import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type FailureCode } from '../lib/failure.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
-import { jobEmailDecision } from '../lib/emailPolicy.js'
+import { jobEmailDecision, quietHoursDueAt } from '../lib/emailPolicy.js'
 import { actionIdFor, projectJobAction } from '../lib/actionsNeeded.js'
 import { nextRunFor, type NextRunFor } from '../lib/nextRunFor.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
@@ -3180,6 +3180,18 @@ export class Jobs {
     const windowKey = `job_email_last_failure:${repo.id}`.slice(0, 300)
     const storedWindow = this.store.getSetting(windowKey)
     const storedAt = storedWindow === undefined ? Number.NaN : Date.parse(storedWindow)
+    const nowMs = Date.now()
+    // #1069: a scheduled mail inside the person's quiet hours is due at the
+    // window's end. The window is read in the digest timezone, the clock the
+    // user already sees on this card; a run they started is never held here.
+    const quietHoursEndsAtMs = user.quiet_hours_start === null || user.quiet_hours_end === null
+      ? null
+      : quietHoursDueAt({
+        nowMs,
+        start: user.quiet_hours_start,
+        end: user.quiet_hours_end,
+        timeZone: this.config.digest.timeZone,
+      })
     const decision = jobEmailDecision({
       status: result.status,
       trigger: job.trigger,
@@ -3187,13 +3199,15 @@ export class Jobs {
       retryPending: options.retryPending === true,
       successEmailEnabled: user.email_job_success === 1,
       lastFailureMailAtMs: Number.isFinite(storedAt) ? storedAt : null,
-      nowMs: Date.now(),
+      nowMs,
       cooldownMinutes: this.config.mail.jobEmailCooldownMinutes,
+      quietHoursEndsAtMs,
     })
     // A success closes the window even when it sends nothing: the repository is
     // healthy again, so the next failure is news rather than the same incident.
     if (decision.clearWindow && storedWindow !== undefined) this.store.deleteSetting(windowKey)
-    if (!decision.send) return
+    // A deferral carries the template and due time; every other skip is final.
+    if (!decision.send && decision.reason !== 'quiet-hours') return
     const context = {
       repo: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`,
       jobId: job.id,
@@ -3213,8 +3227,17 @@ export class Jobs {
           })()
         : {}),
     }
+    const template = decision.template === 'success' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
+    if (!decision.send) {
+      // The row waits for the window end and the outbox delivers it once. The
+      // failure window starts at enqueue time so a second failure inside the
+      // same night coalesces instead of queuing a second mail.
+      this.queueEmail(job.user_id, template, `job_email:${job.id}`, decision.dueAtMs)
+      if (decision.template === 'failure') this.store.setSetting(windowKey, nowIso())
+      log.info('job email held for quiet hours', { trace: job.id, dueAt: new Date(decision.dueAtMs).toISOString() })
+      return
+    }
     try {
-      const template = decision.template === 'success' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
       await this.mailer.send({ to: email, ...template })
       // Only a failure opens the window; the success path already cleared it.
       if (decision.template === 'failure') this.store.setSetting(windowKey, nowIso())
@@ -3516,7 +3539,7 @@ export class Jobs {
     }
   }
 
-  private queueEmail(userId: string, message: Omit<MailMessage, 'to'>, key: string): void {
+  private queueEmail(userId: string, message: Omit<MailMessage, 'to'>, key: string, dueAtMs?: number): void {
     const user = this.store.userById(userId)
     try {
       this.store.enqueueNotification({
@@ -3525,6 +3548,7 @@ export class Jobs {
         userId,
         payload: message,
         idempotencyKey: key,
+        ...(dueAtMs === undefined ? {} : { dueAtMs }),
       })
     } catch (error) {
       log.warn('notification enqueue failed', { transport: 'email', error: String(error) })

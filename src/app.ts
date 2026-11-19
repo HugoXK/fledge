@@ -5113,13 +5113,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const jobUpdates = body.jobUpdates === '1'
     const dailyDigest = body.dailyDigest === '1'
     const jobSuccess = body.jobSuccess === '1'
+    // #1069: the window is two `HH:MM` values in the digest timezone. A lone
+    // time, an equal pair or a malformed value is refused rather than saved as
+    // a silent full-day mute.
+    const quietStart = (body.quietStart ?? '').trim()
+    const quietEnd = (body.quietEnd ?? '').trim()
+    const quietTime = /^([01][0-9]|2[0-3]):[0-5][0-9]$/
+    if ((quietStart === '') !== (quietEnd === '')) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('安静时段需要同时填写开始和结束，或都留空。')}`)
+    }
+    if (quietStart !== '' && (!quietTime.test(quietStart) || !quietTime.test(quietEnd))) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('安静时段的时间格式不正确。')}`)
+    }
+    if (quietStart !== '' && quietStart === quietEnd) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('安静时段的开始和结束不能相同。')}`)
+    }
     if (clear) store.setNotifyEmail(viewer.user.id, null)
     else if (rawEmail !== '') store.setNotifyEmail(viewer.user.id, rawEmail)
     store.setEmailJobUpdates(viewer.user.id, jobUpdates)
     store.setEmailDailyDigest(viewer.user.id, dailyDigest)
     store.setEmailJobSuccess(viewer.user.id, jobSuccess)
+    store.setUserQuietHours(viewer.user.id, quietStart === '' ? null : quietStart, quietEnd === '' ? null : quietEnd)
     const saved = store.userById(viewer.user.id)
-    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'} success=${jobSuccess ? 'on' : 'off'}`)
+    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'} success=${jobSuccess ? 'on' : 'off'} quiet=${quietStart === '' ? 'off' : `${quietStart}-${quietEnd}`}`)
     if (body.action === 'test') {
       const updated = saved
       const to = updated === undefined ? '' : notifyEmail(updated)

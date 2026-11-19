@@ -4,7 +4,9 @@ import { Store } from '../src/db.js'
 import type { RepoRow } from '../src/db.js'
 import { Jobs } from '../src/jobs/service.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
-import { jobEmailDecision } from '../src/lib/emailPolicy.js'
+import { jobEmailDecision, quietHoursDueAt } from '../src/lib/emailPolicy.js'
+import { deliverOutbox, OUTBOX_LEASE_MS } from '../src/notifications/outbox.js'
+import { emailTransport } from '../src/notifications/transports.js'
 import { sha256Hex } from '../src/lib/secrets.js'
 import { makeUser, MemoryMailer, testConfig } from './helpers.js'
 
@@ -339,6 +341,117 @@ test('a person-started retry keeps its ownership, so the retry result is the one
     if (scheduledSecret === undefined) assert.fail('the scheduled retry dispatch handed the run a callback secret')
     await jobs.handleCallback(scheduledRetry.id, scheduledSecret, { status: 'succeeded', summary: 'scheduled retry' })
     assert.equal(successes(), 1, 'a scheduled retry success still belongs to the digest')
+  } finally {
+    store.close()
+  }
+})
+
+// #1069: quiet hours are a deferral, not a drop. The window is read in the
+// digest's timezone; the outcome names the instant the mail may be sent so the
+// service can queue it instead of calling the mailer inline.
+test('quiet hours defer a scheduled mail to the window end and never hold a run a person started', () => {
+  const base = {
+    status: 'failed' as const,
+    trigger: 'schedule',
+    ownerStarted: false,
+    retryPending: false,
+    successEmailEnabled: false,
+    lastFailureMailAtMs: null,
+    nowMs: Date.parse('2026-01-01T23:30:00Z'),
+    cooldownMinutes: 60,
+  }
+  const dueAtMs = Date.parse('2026-01-02T07:00:00Z')
+
+  const deferred = jobEmailDecision({ ...base, quietHoursEndsAtMs: dueAtMs })
+  assert.equal(deferred.send, false, 'a scheduled failure inside the window is not sent inline')
+  if (deferred.send || deferred.reason !== 'quiet-hours') assert.fail('the decision must be a quiet-hours deferral')
+  assert.equal(deferred.dueAtMs, dueAtMs, 'the mail is due when the window ends')
+  assert.equal(deferred.template, 'failure')
+  assert.equal(deferred.clearWindow, false)
+
+  assert.equal(jobEmailDecision({ ...base, quietHoursEndsAtMs: null }).send, true, 'no window leaves the decision untouched')
+
+  const manual = jobEmailDecision({ ...base, trigger: 'manual', quietHoursEndsAtMs: dueAtMs })
+  assert.equal(manual.send, true, 'a run a person started answers a click and is never held')
+  const markedFollowUp = jobEmailDecision({ ...base, trigger: 'followup', ownerStarted: true, quietHoursEndsAtMs: dueAtMs })
+  assert.equal(markedFollowUp.send, true, 'a marked follow-up is a person too')
+
+  const success = jobEmailDecision({ ...base, status: 'succeeded', successEmailEnabled: true, quietHoursEndsAtMs: dueAtMs })
+  assert.equal(success.send, false)
+  if (success.send || success.reason !== 'quiet-hours') assert.fail('a scheduled success with the opt-in is deferred too')
+  assert.equal(success.template, 'success')
+  assert.equal(success.clearWindow, true, 'a deferred success still closes the failure window')
+
+  const quietSuccess = jobEmailDecision({ ...base, status: 'succeeded', quietHoursEndsAtMs: dueAtMs })
+  assert.equal(quietSuccess.send, false)
+  assert.equal(quietSuccess.send === false ? quietSuccess.reason : '', 'scheduled-success', 'a success that is not mailed is not deferred')
+
+  const cooldown = jobEmailDecision({ ...base, lastFailureMailAtMs: base.nowMs - 60_000, quietHoursEndsAtMs: dueAtMs })
+  assert.equal(cooldown.send, false)
+  assert.equal(cooldown.send === false ? cooldown.reason : '', 'cooldown', 'a message the policy already drops is not deferred')
+})
+
+test('the quiet-hours window is read in the digest timezone and spans midnight', () => {
+  const at = (iso: string): number => Date.parse(iso)
+  const window = { start: '23:00', end: '07:00', timeZone: 'UTC' }
+
+  assert.equal(
+    quietHoursDueAt({ ...window, nowMs: at('2026-01-01T23:30:00Z') }),
+    at('2026-01-02T07:00:00Z'),
+    'an evening instant is held until the next morning',
+  )
+  assert.equal(
+    quietHoursDueAt({ ...window, nowMs: at('2026-01-01T03:30:00Z') }),
+    at('2026-01-01T07:00:00Z'),
+    'a small-hours instant is held until the same morning',
+  )
+  assert.equal(quietHoursDueAt({ ...window, nowMs: at('2026-01-01T12:00:00Z') }), null, 'outside the window nothing changes')
+  assert.equal(quietHoursDueAt({ ...window, nowMs: at('2026-01-01T07:00:00Z') }), null, 'the end is exclusive, so a mail due at 07:00 is not held again')
+  assert.equal(quietHoursDueAt({ ...window, nowMs: at('2026-01-01T23:00:00Z') }), at('2026-01-02T07:00:00Z'), 'the start is inclusive')
+
+  // 2025-12-31T20:30Z is 04:30 on 2026-01-01 in Asia/Shanghai; 07:00 local is
+  // 2025-12-31T23:00Z. A UTC reading would have refused to hold this one.
+  assert.equal(
+    quietHoursDueAt({ start: '23:00', end: '07:00', timeZone: 'Asia/Shanghai', nowMs: at('2025-12-31T20:30:00Z') }),
+    at('2025-12-31T23:00:00Z'),
+  )
+
+  assert.equal(quietHoursDueAt({ ...window, start: '07:00', end: '07:00', nowMs: at('2026-01-01T03:30:00Z') }), null, 'an empty window is no window')
+  assert.equal(quietHoursDueAt({ ...window, start: '7:00', nowMs: at('2026-01-01T03:30:00Z') }), null, 'a malformed time never holds mail')
+  assert.equal(quietHoursDueAt({ ...window, end: '', nowMs: at('2026-01-01T03:30:00Z') }), null, 'half a window never holds mail')
+})
+
+
+test('a scheduled failure inside quiet hours is queued for the window end and delivered once there', async () => {
+  const config = testConfig({ digest: { hour: 0, timeZone: 'UTC' }, inboundEmailSecret: 'secret' })
+  const store = new Store(':memory:')
+  const mailer = new MemoryMailer()
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, mailer)
+  try {
+    const user = makeUser(store, { login: 'quiet-service', status: 'approved' })
+    const repo = repoFor(store, user.id, 'repo_quiet_service')
+    const clock = (offsetMs: number): string => {
+      const date = new Date(Date.now() + offsetMs)
+      return `${String(date.getUTCHours()).padStart(2, '0')}:${String(date.getUTCMinutes()).padStart(2, '0')}`
+    }
+    store.setUserQuietHours(user.id, clock(-60 * 60_000), clock(60 * 60_000))
+
+    await run(jobs, store, { repoId: repo.id, userId: user.id, trigger: 'schedule', status: 'failed' })
+    assert.equal(mailer.messages.filter((message) => FAILURE_SUBJECT.test(message.subject)).length, 0, 'nothing is sent inside the window')
+
+    const queued = store.listNotificationOutbox({ transport: 'email', state: 'pending' }, 10, 0)
+    assert.equal(queued.length, 1, 'the mail is one durable row instead of an inline send')
+    assert.ok((queued[0]?.next_attempt_at ?? 0) > Date.now(), 'the row is due after the window ends')
+    assert.match(queued[0]?.payload_json ?? '', /任务失败/)
+
+    const due = queued[0]?.next_attempt_at
+    if (due === null || due === undefined) assert.fail('the queued mail carries its due time')
+    const pass = await deliverOutbox(store, {
+      email: emailTransport(store, mailer),
+      webhook: { send: async () => ({ state: 'sent' }) },
+    }, { now: due, leaseMs: OUTBOX_LEASE_MS })
+    assert.equal(pass.sent, 1)
+    assert.equal(mailer.messages.filter((message) => FAILURE_SUBJECT.test(message.subject)).length, 1, 'the held mail is delivered once, unchanged')
   } finally {
     store.close()
   }
