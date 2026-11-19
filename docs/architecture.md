@@ -68,7 +68,13 @@ one event that reaches the page on two paths prints once. A page that used to
 render its own ad-hoc banner hands its messages to the layout as
 `notifications` instead, so a page cannot classify the same event a second time
 outside the region; an entry may carry already-escaped `html` when it needs a
-list or a button the plain-text builder cannot express. A message that belongs
+list or a button the plain-text builder cannot express. The exhausted-quota
+banner is the one page message whose severity depends on a fact the page has to
+be handed: `quotaExhaustedNotice` is built for both the dashboard and the
+console, and it prints only for an account with a repository the platform pays
+for (`platformFundedFor`), so an account running on its own model is not told
+that its jobs stopped; the sentence states that split and links
+`/settings#model-providers`, the same target the next action uses. A message that belongs
 to a form or a control — the release card, the settings provider/email/token
 forms, the schedule cron error, the danger card's stale-confirmation step —
 keeps its place next to that form. Each message carries

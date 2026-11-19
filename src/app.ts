@@ -188,6 +188,18 @@ function scheduledNextFor(row: ScheduleRow): ScheduledNext {
   return { kind: schedule.kind, at: nextTime(schedule, Date.now()) }
 }
 
+// #1104: "this account can run on a model of its own" is read once and shared,
+// because the dashboard checklist and the console's quota banner must answer it
+// the same way job dispatch does (`platformFundedFor`). A provider row alone is
+// not an own model — a repository has to select one.
+function ownModelConfigured(store: Store, user: UserRow, repos: RepoRow[]): boolean {
+  const legacyOwnModel =
+    user.own_llm_base_url !== null &&
+    user.own_llm_base_url !== '' &&
+    user.own_llm_key_enc !== null
+  return legacyOwnModel || repos.some((repo) => store.listRepoModelSelection(repo.id).length > 0)
+}
+
 function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED'): Error {
   return Object.assign(new Error(message), { statusCode, code })
 }
@@ -1580,10 +1592,6 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const providerConfigured = store
       .listModelProviders(viewer.user.id)
       .some((provider) => store.listProviderModels(provider.id).length > 0)
-    const legacyOwnModel =
-      viewer.user.own_llm_base_url !== null &&
-      viewer.user.own_llm_base_url !== '' &&
-      viewer.user.own_llm_key_enc !== null
     const setupQuota = quotaView(viewer.user, config)
     const platformAvailable =
       config.llm.baseUrl !== '' &&
@@ -1593,9 +1601,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       repos: reposTotal,
       roleChosen: allRepos.some((repo) => repo.repo_role !== null),
       providerConfigured,
-      modelConfigured:
-        legacyOwnModel ||
-        allRepos.some((repo) => store.listRepoModelSelection(repo.id).length > 0),
+      modelConfigured: ownModelConfigured(store, viewer.user, allRepos),
       platformAvailable,
       platformQuotaRemainingCny: setupQuota.remainingCny,
       platformQuotaUnlimited: setupQuota.unlimited,
@@ -1722,6 +1728,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal: store.countJobsForUser(viewer.user.id),
         activeJobs: store.listActiveJobsForUser(viewer.user.id).length,
         questions,
+        // #1104: the console needs the fact the dashboard checklist has, so its
+        // quota banner states the same per-repository rule.
+        modelConfigured: ownModelConfigured(store, viewer.user, repos),
         notice: request.flash?.notice?.text,
         error: request.flash?.error?.text,
       }),

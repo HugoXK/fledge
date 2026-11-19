@@ -2747,3 +2747,79 @@ test('the settings page offers quiet hours in the digest timezone and saves or c
     await built.close()
   }
 })
+
+// #1104: the platform quota stops only a repository whose model the platform
+// pays for (`platformFundedFor`), so the page message may not tell an account
+// that runs on its own model that its jobs cannot continue — the page's own next
+// action already refuses to offer that step to that account.
+const bannerStack = (html: string): string => {
+  const start = html.indexOf('data-notification-stack')
+  assert.notEqual(start, -1, 'the page renders the banner stack')
+  const end = html.indexOf('</section>', start)
+  assert.notEqual(end, -1, 'the banner stack closes')
+  return html.slice(start, end)
+}
+
+const quotaBannerSetup = (modelConfigured: boolean) => ({
+  repos: 1,
+  roleChosen: true,
+  providerConfigured: true,
+  modelConfigured,
+  platformAvailable: false,
+  platformQuotaRemainingCny: 0,
+  platformQuotaUnlimited: false,
+  platformQuotaComfortCny: 50,
+  instanceReady: true,
+  jobs: 3,
+  firstJobStatus: 'merged',
+  firstPrUrl: 'https://github.com/o/r/pull/1',
+  repoHref: '/repos/repo_quota_banner',
+})
+
+test('the exhausted-quota banner never claims an own-model account is blocked', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'quota-banner-own-model', status: 'approved', quota: 0 })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+
+    const dashboard = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(true) })
+    assert.doesNotMatch(dashboard, /keep jobs running|任务才能继续/, 'the dashboard must not say the jobs stopped for an account that runs on its own model')
+    assert.doesNotMatch(dashboard, /Platform quota is used up|平台额度已用完/, 'no quota banner remains for an account whose repositories are not platform-funded')
+
+    const consoleHtml = workspacePage({ config, locale: 'en', viewer, repos: [], jobs: [], modelConfigured: true })
+    assert.doesNotMatch(consoleHtml, /keep jobs running|任务才能继续/, 'the console must not say the jobs stopped for an account that runs on its own model')
+    assert.doesNotMatch(consoleHtml, /Platform quota is used up|平台额度已用完/, 'the console carries no quota banner for that account')
+  } finally {
+    store.close()
+  }
+})
+
+test('the exhausted-quota banner states the per-repository rule and links the fix', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'quota-banner-platform-model', status: 'approved', quota: 0 })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const link = 'href="/settings#model-providers"'
+
+    const dashboard = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(false) })
+    const banner = bannerStack(dashboard)
+    assert.match(banner, /Platform quota is used up/, 'a platform-funded account is still told that the quota is spent')
+    assert.match(banner, /repositories on the platform model pause/, 'the banner names the repositories that actually stop')
+    assert.match(banner, /repositories with their own model keep running/, 'the banner names the repositories that keep running')
+    assert.doesNotMatch(banner, /keep jobs running|任务才能继续/, 'the banner does not claim every job stopped')
+    assert.ok(banner.includes(link), 'the banner links the section that fixes it')
+
+    const chinese = bannerStack(dashboardPage({ config, locale: 'zh', viewer, repos: [], jobs: [], notifications: [], setup: quotaBannerSetup(false) }))
+    assert.match(chinese, /使用平台模型的仓库会暂停/, 'the Chinese banner states the same split')
+    assert.ok(chinese.includes(link), 'the Chinese banner carries the same link')
+
+    const consoleBanner = bannerStack(workspacePage({ config, locale: 'en', viewer, repos: [], jobs: [], modelConfigured: false }))
+    assert.match(consoleBanner, /Platform quota is used up/, 'the console keeps the message for the account that really is stopped')
+    assert.match(consoleBanner, /repositories on the platform model pause/, 'the console states the same split')
+    assert.ok(consoleBanner.includes(link), 'the console banner links the same section')
+  } finally {
+    store.close()
+  }
+})

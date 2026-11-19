@@ -953,6 +953,24 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
 // mapping this test is what keeps the raw text off the headline card.
 const CJK_TEXT = /[\u4e00-\u9fff]/
 
+// #1104: the platform quota only stops a repository whose model the platform
+// pays for (`platformFundedFor`, src/db.ts), so the page message states that
+// split instead of claiming every job stopped, and it links the section that
+// changes it — the same target the next action uses. One builder, so the
+// dashboard and the console cannot drift apart.
+function quotaExhaustedNotice(t: Translate): PageNotification {
+  return {
+    level: 'error',
+    key: 'quota-exhausted',
+    html: `${escapeHtml(
+      t(
+        '平台额度已用完：使用平台模型的仓库会暂停，直到额度恢复或为它选择自己的模型；已选自己模型的仓库照常运行。',
+        'Platform quota is used up: repositories on the platform model pause until it is restored or a model is chosen for them; repositories with their own model keep running.',
+      ),
+    )} <a class="link" href="/settings#model-providers">${escapeHtml(t('配置模型', 'Add a model'))}</a>`,
+  }
+}
+
 function nextActionFor(input: {
   t: Translate
   locale: Locale
@@ -1359,12 +1377,12 @@ export function dashboardPage(input: {
   // #472 slice 3: page-level messages are entries, not hand-written banners.
   // The stack owns their order, region and dismiss control.
   const pageMessages: PageNotification[] = []
-  if (quota.exhausted) {
-    pageMessages.push({
-      level: 'error',
-      key: 'quota-exhausted',
-      text: t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'),
-    })
+  // #1104: the same condition the page's next action uses. An account whose
+  // repositories all run on its own model has nothing paused, so it gets no red
+  // error; only an account with a platform-funded repository is told the quota
+  // stops it.
+  if (quota.exhausted && (input.setup === undefined || !input.setup.modelConfigured)) {
+    pageMessages.push(quotaExhaustedNotice(t))
   }
   const loopRepos = input.allRepos ?? repos
   const nextAction = nextActionFor({
@@ -3439,6 +3457,10 @@ export function workspacePage(input: {
   jobsTotal?: number
   activeJobs?: number
   questions?: InboxQuestion[]
+  // #1104: the console reads the same fact the dashboard checklist does, so the
+  // quota banner does not tell an own-model account that its jobs stopped. Absent
+  // means "not configured" — the message that was there before this fact existed.
+  modelConfigured?: boolean
   notice?: string
   error?: string
 }): string {
@@ -3450,12 +3472,8 @@ export function workspacePage(input: {
   // #472 slice 3: page-level messages are entries, not hand-written banners.
   // The stack owns their order, region and dismiss control.
   const pageMessages: PageNotification[] = []
-  if (quota.exhausted) {
-    pageMessages.push({
-      level: 'error',
-      key: 'quota-exhausted',
-      text: t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'),
-    })
+  if (quota.exhausted && input.modelConfigured !== true) {
+    pageMessages.push(quotaExhaustedNotice(t))
   }
   const active = input.activeJobs ?? jobs.filter((job) => job.status === 'queued' || job.status === 'running').length
   const recent = jobs.slice(0, 10)
