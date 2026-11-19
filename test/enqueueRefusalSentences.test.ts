@@ -145,7 +145,8 @@ test('INSTANCE_NOT_READY hides the bridge host and port from the banner but keep
     const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie: `${session.cookie}; ${flash}`, 'accept-language': 'en' } })
     assert.equal(page.statusCode, 200)
     const text = banner(page.body)
-    assert.match(text, /FlyBot instance is not ready/i, `the banner lost the fixed sentence: ${text}`)
+    assert.match(text, /workspace is not ready/i, `the banner lost the fixed sentence: ${text}`)
+    assert.doesNotMatch(text, /FlyBot|DSH/, `the banner still names the machinery: ${text}`)
     assert.doesNotMatch(text, LEAK, `the banner leaked the upstream exception text: ${text}`)
 
     // #540 moved the console writes behind the management contract, so a refused

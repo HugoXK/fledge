@@ -1,4 +1,5 @@
 import type { UserRow } from '../db.js'
+import { sanitizeActionSentence } from '../lib/actionsNeeded.js'
 
 function escapeHtml(value: string): string {
   return value.replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch] ?? ch)
@@ -207,6 +208,10 @@ export interface JobMailContext {
   summary: string
   error: string
   reviewScore: number | null
+  // #633: the same id the in-app row carries, and the page that resolves it.
+  // Both are optional so the approval and quota mail keep their shape.
+  actionId?: string
+  actionUrl?: string
 }
 
 function mailFooter(): string {
@@ -254,17 +259,23 @@ ${context.summary === '' ? '' : `<p style="white-space:pre-wrap">${escapeHtml(co
 
 export function jobFailedEmail(user: UserRow, context: JobMailContext): { subject: string; text: string; html: string } {
   const subject = context.kind === 'review' ? `[Fledge] 审核失败：${context.repo}` : `[Fledge] 任务失败：${context.repo}`
+  // #633: a mail may carry the machine's error, but not the raw one. The same
+  // sanitizer the in-app sentence uses keeps a token, an address, a stack frame
+  // or a file path out of the subject and both bodies.
+  const reason = sanitizeActionSentence(context.error)
+  const actionLine = context.actionUrl === undefined ? '' : `处理这一步：${context.actionUrl}`
   const text = [
     `@${user.login}，你好：`,
     '',
     `${context.repo} 的${context.kind === 'review' ? '审核' : '任务'}没有完成。`,
     '',
     `任务：${context.jobId}`,
-    context.error === '' ? '' : `原因：${context.error}`,
+    reason === '' ? '' : `原因：${reason}`,
     linkLine('Issue', context.issueUrl),
     linkLine('PR', context.prUrl),
     '',
     '可以在任务页查看最后进度，修正后重新运行；Fledge 不会自动合并。',
+    actionLine,
     '',
     `查看任务：${context.teamUrl}`,
     '',
@@ -276,11 +287,12 @@ export function jobFailedEmail(user: UserRow, context: JobMailContext): { subjec
 <p>${escapeHtml(context.repo)} 的${escapeHtml(kind)}没有完成。</p>
 <ul>
   <li>任务：<code>${escapeHtml(context.jobId)}</code></li>
-  ${context.error === '' ? '' : `<li>原因：${escapeHtml(context.error)}</li>`}
+  ${reason === '' ? '' : `<li>原因：${escapeHtml(reason)}</li>`}
   <li>Issue：${context.issueUrl === null ? '—' : `<a href="${escapeHtml(context.issueUrl)}">${escapeHtml(context.issueUrl)}</a>`}</li>
   <li>PR：${context.prUrl === null ? '—' : `<a href="${escapeHtml(context.prUrl)}">${escapeHtml(context.prUrl)}</a>`}</li>
 </ul>
 <p>可以在任务页查看最后进度，修正后重新运行；Fledge 不会自动合并。</p>
+${context.actionUrl === undefined ? '' : `<p><a href="${escapeHtml(context.actionUrl)}">处理这一步</a></p>`}
 <p><a href="${escapeHtml(context.teamUrl)}">打开任务</a></p>`)
   return { subject, text, html }
 }

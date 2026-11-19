@@ -37,6 +37,21 @@ export interface ReleaseNotesInput {
   commitsComplete: boolean
 }
 
+/**
+ * #546 slice 5: which path produced the body. Written by the release path that
+ * built it, so the page can say "organised by this skill at this commit" or name
+ * why the built-in list was used, without re-reading GitHub on every render.
+ */
+export interface ReleaseNotesProvenance {
+  kind: 'skill' | 'builtin'
+  /** The skill's path in the repository; present when `kind` is `skill`. */
+  skillPath?: string
+  /** `repo_releases.target_sha`, the commit the skill was read at. */
+  commit?: string
+  reason?: 'no_skill' | 'skill_refused' | 'skill_too_large' | 'gateway_refused' | 'answer_rejected'
+  detail?: string
+}
+
 export interface ReleaseNotes {
   previousTag: string | null
   targetSha: string
@@ -44,6 +59,7 @@ export interface ReleaseNotes {
   /** False when the range was read only in part; the body says so. */
   complete: boolean
   body: string
+  organisedBy?: ReleaseNotesProvenance
 }
 
 function shortSha(sha: string): string {
@@ -179,7 +195,36 @@ export function releaseNotesSourceJson(notes: ReleaseNotes): string {
     targetSha: notes.targetSha,
     complete: notes.complete,
     sources: notes.sources,
+    // #546 slice 5: the page names the path that produced the body. It rides in
+    // the column the sources already use, so no migration and no second reader.
+    ...(notes.organisedBy === undefined ? {} : { organisedBy: notes.organisedBy }),
   })
+}
+
+const PROVENANCE_REASONS = new Set(['no_skill', 'skill_refused', 'skill_too_large', 'gateway_refused', 'answer_rejected'])
+
+// A row written before #546 slice 5 has no `organisedBy`: it renders as the
+// built-in list, which is what built it. The provenance line is an explanation,
+// never a page error, so a wrong shape is dropped rather than thrown.
+export function readReleaseNotesProvenance(json: string | null): ReleaseNotesProvenance | null {
+  if (json === null) return null
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(json)
+  } catch {
+    return null
+  }
+  if (typeof parsed !== 'object' || parsed === null) return null
+  const value = (parsed as { organisedBy?: unknown }).organisedBy
+  if (typeof value !== 'object' || value === null) return null
+  const record = value as Record<string, unknown>
+  if (record.kind !== 'skill' && record.kind !== 'builtin') return null
+  const provenance: ReleaseNotesProvenance = { kind: record.kind }
+  if (typeof record.skillPath === 'string' && record.skillPath !== '') provenance.skillPath = record.skillPath
+  if (typeof record.commit === 'string' && /^[0-9a-f]{7,40}$/.test(record.commit)) provenance.commit = record.commit
+  if (typeof record.reason === 'string' && PROVENANCE_REASONS.has(record.reason)) provenance.reason = record.reason as ReleaseNotesProvenance['reason']
+  if (typeof record.detail === 'string' && record.detail !== '') provenance.detail = record.detail.slice(0, 300)
+  return provenance
 }
 
 // A stored value that is missing, unparsable or structurally wrong renders as no

@@ -21,6 +21,12 @@
 # test/nginxCheck.test.ts drives this script with a stub `nginx` and inspects
 # that file, so an edit that drops the pid declaration fails the suite; the test
 # does not read this script or the workflow text.
+#
+# #1009: before the parse, the rendered sample is also checked statically for the
+# four console security headers in every top-level server block, each with
+# `always`. test/securityHeaders.test.ts drives that half too, including the two
+# negative proofs in scripts/check-deploy-samples.sh (a deleted header, and an
+# HSTS line that lost `always`).
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -69,6 +75,57 @@ sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#"
     -e 's#listen 443 ssl http2;#listen 127.0.0.1:18443 ssl;#' \
     -e 's#listen 80;#listen 127.0.0.1:18080;#' \
     "$sample" > "$tmp/site.conf"
+
+# #1009: the sample is what a self-hoster copies, so a missing security header
+# has to fail here rather than in a browser. Every top-level `server` block must
+# carry the four headers with `always`: two leading spaces is the sample's
+# server level, and `always` is what keeps them on nginx's own 4xx/5xx (a 502
+# while the app is down). This is static on purpose — a live 2xx probe passes
+# today because the app itself already sends three of the four.
+if ! header_errors="$(awk \
+  -v names="Strict-Transport-Security X-Content-Type-Options Referrer-Policy X-Frame-Options" \
+  -v label="$label" '
+  function close_block() {
+    for (i = 1; i <= n; i++) {
+      if (!(want[i] in seen)) {
+        bad++
+        printf "nginx: %s security headers: server block opened at line %d has no `add_header %s ... always;`\n", label, start, want[i]
+      }
+    }
+  }
+  BEGIN { n = split(names, want, " ") }
+  /^server[ \t]*\{/ {
+    if (open) {
+      bad++
+      printf "nginx: %s security headers: unterminated server block opened at line %d\n", label, start
+    }
+    open = 1
+    depth = 1
+    start = NR
+    split("", seen)
+    next
+  }
+  open {
+    line = $0
+    depth += gsub(/\{/, "{", line) - gsub(/\}/, "}", line)
+    if (depth == 1) {
+      for (i = 1; i <= n; i++) {
+        if (index($0, "  add_header " want[i] " ") == 1 && $0 ~ /[ \t]always;[ \t]*$/) seen[want[i]] = 1
+      }
+    }
+    if (depth <= 0) {
+      close_block()
+      open = 0
+    }
+  }
+  END {
+    if (open) close_block()
+    exit bad > 0 ? 1 : 0
+  }
+' "$tmp/site.conf")"; then
+  printf '%s\n' "$header_errors"
+  exit 1
+fi
 
 # Absolute paths, so the result does not depend on nginx's prefix, and a pid
 # path this user can open (#795).

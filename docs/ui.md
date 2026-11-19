@@ -450,6 +450,15 @@ and the accessibility contract are fixed:
   `/settings`, `/dashboard` and the shell and fails on any control whose whole
   visible content is one of those characters, so the next component does not
   type one again.
+- The dashboard's decision queue (`#decisions`, `src/views/pages.ts`) is one row
+  per repository, and a row carries at most one action: an answer, the
+  repository's most urgent alert, or its newest failed job, ranked in that order
+  and never stacked into two buttons. A repository that needs nothing is a calm
+  row — no button, a muted title, the next automatic run and what it last
+  produced — because a control a reader cannot use reads as a broken one. The
+  account-level card above the queue keeps the page's only primary button, so the
+  queue never competes with it; each row's action is a link with a 44px target,
+  and rows stack rather than scroll at 360 px.
 - The empty state's action comes from the page that renders it: a repository
   page offers that repository's own `Run now`, the dashboard offers
   `Add repository`, Settings offers `Add provider`. No page inherits another
@@ -472,6 +481,33 @@ and the accessibility contract are fixed:
   11 pass / 0 fail at `eef9cfa`, where the set landed. The icons have their own
   captures, `docs/images/ui-v2/476-before-*.jpg` and `476-after-*.jpg` at 1280,
   768 and 360, Chinese and English on one page.
+
+## Plan decision (计划决定) (#634)
+
+A completed plan is a decision, not a form at the foot of a page. The job page
+renders one card, `data-plan-decision="pending|approved|rejected|incomplete"`,
+above the evidence, and the card is the only place the decision is offered:
+
+- **pending** — one primary **批准并运行 / Approve and run**, plus two ghost
+  buttons on the same form: **说明理由后拒绝 / Reject with a reason** and
+  **要求修改计划 / Ask for a revised plan**. The allow/deny path fields and the
+  reason textarea are on that form. The button posts the plan hash it was
+  rendered with, so an edit between the page and the POST is refused instead of
+  approved.
+- **incomplete** — the plan carries no structured evidence, so the same primary
+  is rendered `disabled` with `aria-describedby` pointing at the sentence that
+  says why. A plan nobody can evaluate is not approvable by pressing the button
+  anyway. Reject stays on the card, and so does **要求修改计划 / Ask for a revised
+  plan** when the row has a work item to queue one on; a plan row with no work
+  item (written before that link existed) shows reject only, with a sentence
+  saying why the revision is unavailable.
+- **approved / rejected** — the card becomes the record: who decided, when, the
+  first 12 characters of the plan fingerprint, and either the paths or the
+  reason. No decision button is left on a decided plan.
+
+Execute, Re-check, Retry and Pause/Cancel stay in the header and its **更多操作 /
+More actions** disclosure (#865): the decision row carries one primary action and
+nothing else competes with it.
 
 ## Review trend numbers (审核趋势)
 
@@ -541,6 +577,43 @@ empty state links to. A page without that element is a failure
 (`the page has no #tokens anchor to scroll to`), not a skipped measurement, and
 a section that starts under the sticky header fails separately. `test/pages.test.ts`
 pins the same rule for every in-page link the page renders.
+
+Since #870 the job also runs a measured gate next to the screenshot sweep: the
+six paths at 360, 768 and 1280 px, each rendered in a light and a dark context,
+in both languages (three widths by two schemes, deliberately not the nine-width
+sweep — a width added there photographs one surface and must not become a gate
+every page has to pass). Four things are checked per page, each a pure function
+in `src/lib/visualMatrix.ts`: every control the product styles as one (`button`,
+`.btn`, `input`, `select`, `textarea`, `summary`, `.section-nav a`) is at least
+44x44 px; its computed style changes when focused on at least one of outline
+width/style, box-shadow, border colour and background colour; an icon-only
+`button` or `a` carries `aria-label` or `title`; and the rendered HTML contains
+no `{infoTip(`, `class="undefined"`, `[object Object]` or unrendered `${`. A
+checkbox is measured through its `<label>`, which is the box a pointer hits. A
+failure names all four coordinates and the control (`en width=768 scheme=dark
+/settings: button.banner-dismiss is 24x24px, under the 44px touch floor`).
+
+Two shapes are exempt by a documented attribute on the element itself, never by
+a selector list: the banner dismiss button is 24x24 and carries
+`data-compact-target`, which lowers its floor to WCAG 2.5.8's 24 px and no
+further — a compact control under 24 px still fails; the info marker is 15x15
+and carries `data-inline-target`, which WCAG 2.5.8's inline exception covers (a
+target in a sentence is read with the sentence, and growing it would break the
+line it sits in), so it is skipped by the size check but still needs an
+accessible name. No category is exempt: a full-width `summary` disclosure row is
+held to the same 44 px as every other control in the list, and the product
+raises the row to that floor instead of waiving it. Both attributes live on
+the element, so a new small control cannot inherit a waiver by being written
+the same way, and `test/visualMatrix.test.ts` pins that each appears once and
+what each floor is. The gate is computed style and
+geometry plus a text scan; screenshots stay artifacts and are never compared.
+One combination per width also sets the saved dark theme in a light host
+preference and reads the rendered `data-theme` and `color-scheme` meta back, so
+"the explicit choice wins" is measured rather than assumed. Focus is measured
+by tabbing, not by calling `focus()`: programmatic focus does not match
+`:focus-visible` in Chromium, so the resting style would read as unchanged for
+every control.
+
 
 ## Owner search (#362)
 `/search` searches only the signed-in owner's rows — repositories, jobs, work items
