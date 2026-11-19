@@ -1171,7 +1171,13 @@ function repoDecisionFor(input: {
       actionLabel: alert.prUrl === undefined ? t('打开', 'Open') : t('打开 PR', 'Open pull request'),
     }
   }
-  const failed = jobs.find((job) => job.status === 'failed')
+  // #655 rework: the row says "the latest job ... failed", so it must only
+  // exist when the newest run is the failure. `jobs` is newest first (the route
+  // reads listJobsForRepo, created_at DESC); an older failure behind a success
+  // stays on the attention table and does not headline this queue. This is the
+  // same rule the account card applies above.
+  const newest = jobs[0]
+  const failed = newest?.status === 'failed' ? newest : undefined
   if (failed !== undefined) {
     const reason = (failed.error ?? '').trim()
     const localized = (localizeMessage(locale, reason) ?? '').trim()

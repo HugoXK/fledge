@@ -126,6 +126,21 @@ test('a repository that needs nothing is calm: no button, and it names the next 
   assert.match(row, /Nothing has run yet\./, 'and that nothing has run, instead of a zero')
 })
 
+test('a failure behind a newer success is not headlined as the latest job', () => {
+  const html = render('en', (store, user) => {
+    const moving = repo(store, user.id, 'repo_moving', 'moving')
+    store.createJob({ id: 'job_old_fail', repoId: moving.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_old_fail', { status: 'failed', error: 'bridge refused the run' })
+    store.createJob({ id: 'job_new_ok', repoId: moving.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob('job_new_ok', { status: 'succeeded' })
+    return { repos: [moving], jobs: store.listJobsForRepo(moving.id, 5) }
+  })
+  const row = rowFor(html, 'repo_moving')
+  assert.doesNotMatch(row, /data-decision="job"/, 'an older failure behind a newer success is not the row')
+  assert.doesNotMatch(row, /The latest job in this repository failed/)
+  assert.match(row, /data-decision="growing"/, 'the repository is calm because its newest run succeeded')
+})
+
 test('a failure outside the visible job table still reaches the queue', () => {
   const html = render('en', (store, user) => {
     const hidden = repo(store, user.id, 'repo_hidden', 'hidden')
