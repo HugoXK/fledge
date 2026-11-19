@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { runInNewContext } from 'node:vm'
 
 // #1012: `public/workspace-brand.js` is a plain browser script with no module
 // exports, so this fixture is the smallest document its globals need.
@@ -58,8 +59,10 @@ function runScript(leaves: FixtureLeaf[]): { appended: Array<{ id: string; inner
     constructor(callback: () => void) { observers.push(callback) }
     observe(): void {}
   }
+  // The script is a classic browser IIFE served as-is, so it is executed in a
+  // context holding the two globals it reads rather than imported.
   const source = readFileSync(new URL('../public/workspace-brand.js', import.meta.url), 'utf8')
-  new Function('document', 'MutationObserver', source)(document, FakeObserver)
+  runInNewContext(source, { document, MutationObserver: FakeObserver })
   return { appended, observers }
 }
 
