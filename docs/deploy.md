@@ -401,11 +401,13 @@ one that showed it. The reasoning is recorded in
 The release routine refreshes the generated UI snapshot once per release:
 run `npm run mock:snapshot`, then `npm run mock:check`, and commit the
 regenerated `mock/` with the release work or its follow-up docs pull request.
-The nightly release job runs `npm run mock:check` before it plans a branch; a
-stale snapshot is a red night and names the command. `mock/` is generated from
-the released views and is read-only; do not edit it by hand and do not add a
-per-PR drift gate. The snapshot is the UI at the release tip, not a second
-application.
+The nightly release job also runs `npm run mock:check` before it plans a
+branch; a stale snapshot is a red night and names the command. `mock/` is
+generated from the released views and is read-only; do not edit it by hand.
+Every pull request runs the same check as the required `mock-check` job in
+`ci.yml`, so staleness is caught at the tip that introduces it instead of at
+release time; there is no second drift gate. The snapshot is still the UI at
+the release tip, not a second application.
 
 The daily workflow pushes `release/v<next>` and then opens exactly one release
 pull request for it, because a pull request opened with `GITHUB_TOKEN` starts no

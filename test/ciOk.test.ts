@@ -219,3 +219,39 @@ test('the needs list in ci.yml and the required list in the script agree', async
   // `needs`; GitHub cannot express a cross-workflow dependency.
   assert.deepEqual([...listed].sort(), [...required].sort(), 'a job in needs without a required entry (or the reverse) is the drift this test exists for')
 })
+
+// #973: `mock/` is generated from the views and the stylesheet, and no
+// pull-request job read it, so a stale snapshot merged green and only the
+// nightly release drive noticed hours later. This pins the whole gate, because
+// its three halves can drift apart: the required list, the aggregate's needs,
+// and the job's own step. One without the others reports green or never runs.
+test('the UI mock snapshot is a required pull-request job', async () => {
+  const required = await requiredJobs()
+  assert.ok(
+    required.includes('mock-check'),
+    'scripts/ci-ok.mjs REQUIRED_JOBS must name mock-check; a job the aggregate does not require can fail without failing the merge gate',
+  )
+
+  const workflow = readFileSync(workflowPath, 'utf8')
+  const needsOf = (job: string): string[] => {
+    const start = workflow.indexOf(`\n  ${job}:`)
+    assert.ok(start !== -1, `ci.yml must declare the ${job} job`)
+    const match = /needs:\s*\[([^\]]*)\]/.exec(workflow.slice(start))
+    assert.ok(match !== null, `the ${job} job must declare needs as an inline list so it can be read here`)
+    return match[1]!.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
+  }
+  assert.ok(needsOf('ci-ok').includes('mock-check'), 'ci-ok must wait on mock-check, or the required context never sees it')
+  assert.ok(needsOf('main-health').includes('mock-check'), 'main-health mirrors ci-ok so the tracker can name the job that failed')
+
+  const jobStart = workflow.indexOf('\n  mock-check:')
+  assert.ok(jobStart !== -1, 'ci.yml must declare the mock-check job')
+  const job = workflow.slice(jobStart + 1)
+  const nextJob = job.search(/\n  [a-z][a-z0-9-]*:\n/)
+  const block = nextJob === -1 ? job : job.slice(0, nextJob)
+  assert.match(block, /^    needs: changes$/m, 'the job depends on the classifier like every other job')
+  assert.match(block, /^    permissions:\n      contents: read$/m, 'the job only reads the tree')
+  assert.match(block, /run: \|\n(?:.*\n)*?\s+npm run mock:check$|run: npm run mock:check$/m, 'the job has to run the snapshot check, not a lookalike')
+
+  const { SKIPPABLE_ON } = (await import('../scripts/ci-ok.mjs')) as { SKIPPABLE_ON: Record<string, string[]> }
+  assert.equal(SKIPPABLE_ON['mock-check'], undefined, 'any diff can stale the snapshot, so this job is never skippable')
+})

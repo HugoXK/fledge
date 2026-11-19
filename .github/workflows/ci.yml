@@ -699,6 +699,32 @@ jobs:
         # event payload, so a dependency install cannot be the thing that fails.
         run: node base/scripts/codeql-required.mjs
 
+  # #973: `mock/` is generated from the views and `public/app.css`, and no
+  # pull-request job read it. A change that staled the snapshot merged green,
+  # and the first thing that noticed was the nightly release drive, hours
+  # later, refusing to plan. This is that check on the pull request's own tree:
+  # it fails, it does not repair, and it has no path filter because any diff
+  # that moves a rendered surface can stale the snapshot.
+  mock-check:
+    name: mock-check
+    needs: changes
+    runs-on: ubuntu-latest
+    # Measured: the check itself is sub-second (`mock-snapshot: ok (13 files)`
+    # in 0.33s locally); the timeout exists for a cold `npm ci` on a runner.
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: The generated UI snapshot matches the views and the stylesheet
+        run: |
+          set -euo pipefail
+          npm ci --ignore-scripts --no-audit --no-fund
+          npm run mock:check
+
   # #644: a deploy-only diff is not code, so the app gates skip it, but `deploy/`
   # ships executable and syntax-sensitive files. `changes` sets `deploy` when any
   # deploy/ path is in the diff; this job reads those files instead of letting a
@@ -774,7 +800,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, deploy-check]
+    needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, mock-check, deploy-check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -822,7 +848,7 @@ jobs:
   main-health:
     name: main-health
     if: always() && github.ref == 'refs/heads/main'
-    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, deploy-check]
+    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, mock-check, deploy-check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
