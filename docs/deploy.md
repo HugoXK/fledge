@@ -1012,6 +1012,42 @@ with the header named. That half is static on purpose: a proxied 2xx probe is
 green today because the app already sends three of the four, so it could not be
 the assertion.
 
+The assertion also reads one level deeper (#1097). nginx does not merge header
+sets: a `location` that declares any `add_header` of its own stops inheriting the
+server-level set, so that path serves none of the four — including the
+nginx-generated 4xx/5xx that `always` exists for. The sample states this trap at
+`deploy/nginx.conf.example:19-21` but declares no such header, so nothing proved
+the gate could see one. Now a `location` that declares a header anywhere in its
+body must repeat all four with `always` at its own level, and the check fails
+naming the location's opening line when it does not. The rule reads directives as
+a token stream, so the shape does not matter: a one-liner
+(`location = /health { add_header …; }`), a location whose `{` sits on the next
+line, and a CRLF copy all read the same as the sample's indented form (the CRLF
+copy used to fail with a missing-header message although every header was
+present). The contract drives the shapes: a `Cache-Control` inside `location /`
+(refused, location named), that location repeating the four (accepted, so the
+rule cannot pass by refusing every location), and the one-liner in both forms
+plus the brace-on-the-next-line copy.
+
+Two further shapes close the same rule (#1097 security review). A `}` that
+nginx keeps inside a token — a regex such as `location ~ ^/v}v[0-9]+` — does not
+close the block, so the location is still read and one `add_header` there is
+still refused; the control is the same `}`-in-token shape repeating the whole
+set, which must be accepted rather than refused for carrying a brace. A `{` is
+the other way round: nginx opens a block at every `{` outside a quoted string,
+even in the middle of what looks like a token, so an unquoted regex quantifier
+(`^/v[0-9]{1,3}$`) is invalid nginx (`unknown directive "1,3}$"` on nginx 1.18)
+and must be quoted. The `${var}` form is the one exception, where the `{`
+directly after `$` stays in the token; the contract's quoted-quantifier control
+pins the accepted shape. And the shadowing level is not always a `location`: an
+`if` (or `limit_except`) inside a server or a location that declares any
+`add_header` drops the enclosing set for exactly the responses it applies to, so
+that level is now judged on what it serves, named by its own opening line, and
+accepted once it repeats the four. `include` stays unresolved in this static
+half: an included file is not read, so a header set that arrives through an
+`include` is still only covered by the real `nginx -t` parse, which is why that
+step remains load-bearing.
+
 The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
 chosen over `systemd-analyze verify` because that binary is absent on a GitHub
 runner and its output names the runner's unrelated units. It reads the sections,

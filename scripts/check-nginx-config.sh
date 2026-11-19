@@ -82,44 +82,148 @@ sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#"
 # server level, and `always` is what keeps them on nginx's own 4xx/5xx (a 502
 # while the app is down). This is static on purpose — a live 2xx probe passes
 # today because the app itself already sends three of the four.
+#
+# #1097: the same rule at the level that can silently undo it. nginx does not
+# merge header sets — a `location` that declares any `add_header` of its own
+# stops inheriting the whole server set, so every response from that location
+# (including the nginx-generated 4xx/5xx `always` exists for) would carry none of
+# the four. The rule below reads a `location` body of any nesting depth: if it
+# declares a header anywhere, it must repeat all four with `always` at its own
+# level. The shipped sample declares none, so it stays as it is.
+#
+# #1097 security review: two shapes still walked past it, both legal nginx. A `}`
+# that nginx keeps inside a token (`location ~ ^/v}v[0-9]+`) does not close the
+# block, and an `if` inside a location is a header-owning level of its own: when
+# it declares any `add_header`, the responses it applies to drop the enclosing
+# set. The reader therefore closes a block only on a `}` at a token boundary,
+# opens one on every `{` outside a quoted string and outside the `${var}` form
+# (`nginx -t` rejects an unquoted regex quantifier), refuses a brace that closes
+# or opens nothing, and judges every block that declares a header — not just the
+# innermost `location`. `include` stays unread here; the real `nginx -t` below is
+# what covers a header set that arrives through one.
 if ! header_errors="$(awk \
   -v names="Strict-Transport-Security X-Content-Type-Options Referrer-Policy X-Frame-Options" \
   -v label="$label" '
-  function close_block() {
-    for (i = 1; i <= n; i++) {
-      if (!(want[i] in seen)) {
-        bad++
-        printf "nginx: %s security headers: server block opened at line %d has no `add_header %s ... always;`\n", label, start, want[i]
-      }
-    }
+  function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+  function push_block(header, at_line,   i, kind) {
+    depth++
+    kind = "other"
+    # #1097 review: the block is recognised from its header text, not from where
+    # its `{` sits, so `location x\n{` and a one-liner read the same.
+    if (header ~ /^server([ \t]|$)/) { kind = "server"; servers++ }
+    else if (header ~ /^location[ \t]/) kind = "location"
+    kind_at[depth] = kind
+    line_at[depth] = at_line
+    any_at[depth] = 0
+    for (i = 1; i <= n; i++) delete seen_at[depth, want[i]]
   }
-  BEGIN { n = split(names, want, " ") }
-  /^server[ \t]*\{/ {
-    if (open) {
-      bad++
-      printf "nginx: %s security headers: unterminated server block opened at line %d\n", label, start
-    }
-    open = 1
-    depth = 1
-    start = NR
-    split("", seen)
-    next
-  }
-  open {
-    line = $0
-    depth += gsub(/\{/, "{", line) - gsub(/\}/, "}", line)
-    if (depth == 1) {
+  function close_block(   i, kind, parent) {
+    if (depth <= 0) return
+    kind = kind_at[depth]
+    parent = (depth > 1) ? kind_at[depth - 1] : "other"
+    if (kind == "server") {
       for (i = 1; i <= n; i++) {
-        if (index($0, "  add_header " want[i] " ") == 1 && $0 ~ /[ \t]always;[ \t]*$/) seen[want[i]] = 1
+        if (seen_at[depth, want[i]] != 1) {
+          bad++
+          printf "nginx: %s security headers: server block opened at line %d has no `add_header %s ... always;`\n", label, line_at[depth], want[i]
+        }
+      }
+    } else if (any_at[depth] == 1) {
+      # #1097 audit: the level that stops inheritance is not always a `location`.
+      # An `if` (or `limit_except`) inside a server or a location that declares
+      # any `add_header` drops the enclosing set for exactly the responses it
+      # applies to, so that level is judged on what it serves.
+      for (i = 1; i <= n; i++) {
+        if (seen_at[depth, want[i]] != 1) {
+          bad++
+          if (kind == "location") {
+            printf "nginx: %s security headers: location block opened at line %d declares its own `add_header`, which stops nginx inheriting the server-level set, so that block must repeat `add_header %s ... always;`\n", label, line_at[depth], want[i]
+          } else {
+            printf "nginx: %s security headers: block opened at line %d inside a %s declares its own `add_header`, which stops nginx inheriting the enclosing set for the responses it applies to, so that block must repeat `add_header %s ... always;`\n", label, line_at[depth], parent, want[i]
+          }
+        }
       }
     }
-    if (depth <= 0) {
-      close_block()
-      open = 0
+    depth--
+  }
+  function directive(text,   i) {
+    if (depth == 0 || text !~ /^add_header[ \t]/) return
+    any_at[depth] = 1
+    if (text !~ /[ \t]always$/) return
+    for (i = 1; i <= n; i++) {
+      if (text ~ ("^add_header[ \t]+" want[i] "[ \t]")) seen_at[depth, want[i]] = 1
     }
+  }
+  BEGIN { n = split(names, want, " "); depth = 0; bad = 0; servers = 0; buf = ""; quote = ""; esc = 0; sq = sprintf("%c", 39) }
+  {
+    line = $0
+    # #1097 review: a CRLF copy used to fail with "has no add_header" although
+    # every header was there; the `\r` sat between the value and `always`.
+    gsub(/\r/, "", line)
+    for (c = 1; c <= length(line); c++) {
+      ch = substr(line, c, 1)
+      if (quote != "") {
+        buf = buf ch
+        if (esc) { esc = 0; continue }
+        if (ch == "\\") { esc = 1; continue }
+        if (ch == quote) quote = ""
+        continue
+      }
+      if (ch == "#") break
+      if (ch == "\"" || ch == sq) { quote = ch; buf = buf ch; continue }
+      # #1097 review: a directive is read as a token stream, so `{`, `}` and `;`
+      # may share a line with the header and the body.
+      #
+      # #1097 audit: nginx keeps a `}` inside a token, so `^/v}v[0-9]+` is one
+      # token and the block still opens at the `{`. A `}` closes a block only at
+      # a token boundary; anywhere else it stays in the token, and the block is
+      # still classified from its header text. A `}` arriving at a boundary with
+      # no block open is refused rather than dropped, because this half must fail
+      # closed.
+      #
+      # #1097 audit, real nginx 1.18: a `{` is a block opener wherever it appears
+      # outside a quoted string, even mid-token — nginx reports
+      # `unknown directive "1,3}$"` for an unquoted `^/v[0-9]{1,3}$`, so a regex
+      # quantifier has to be quoted. The one exception is the `${var}` form,
+      # where the `{` directly after `$` belongs to the token. A `{` with nothing
+      # before it opens nothing, so it is refused too.
+      at_boundary = (buf == "" || buf ~ /[ \t]$/)
+      if (ch == "{") {
+        if (buf ~ /\$$/) { buf = buf ch }
+        else if (trim(buf) == "") {
+          bad++
+          printf "nginx: %s: unexpected open brace at line %d\n", label, NR
+        } else {
+          push_block(trim(buf), NR)
+          buf = ""
+        }
+        continue
+      }
+      if (ch == "}") {
+        if (!at_boundary) { buf = buf ch; continue }
+        if (depth == 0) {
+          bad++
+          printf "nginx: %s: unexpected close brace at line %d\n", label, NR
+        } else {
+          close_block()
+        }
+        buf = ""
+        continue
+      }
+      if (ch == ";") { directive(trim(buf)); buf = ""; continue }
+      buf = buf ch
+    }
+    if (quote != "") { quote = ""; esc = 0 }
+    buf = buf " "
   }
   END {
-    if (open) close_block()
+    while (depth > 0) close_block()
+    # #1097 test: an empty or comment-only sample has nothing to assert, so the
+    # half used to pass vacuously. A sample with no server block is a refusal.
+    if (servers == 0) {
+      bad++
+      printf "nginx: %s security headers: no server block to check — a sample that has none cannot carry the four headers\n", label
+    }
     exit bad > 0 ? 1 : 0
   }
 ' "$tmp/site.conf")"; then
