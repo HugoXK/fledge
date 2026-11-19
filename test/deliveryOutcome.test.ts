@@ -1,11 +1,14 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
-import { revertMatchOf, summariseDeliveries, type DeliveryOutcomeRow } from '../src/lib/deliveryOutcome.js'
+import { followUpLinks, revertMatchOf, summariseDeliveries, type DeliveryOutcomeRow } from '../src/lib/deliveryOutcome.js'
 import { RETENTION_CLASSES, retentionDefaultWindows } from '../scripts/lib/retention.mjs'
+import { Jobs } from '../src/jobs/service.js'
+import { MockRunner } from '../src/jobs/mock.js'
+import { GithubClient } from '../src/repos/github.js'
 import { quotaMoney } from '../src/views/layout.js'
 import { repoPage } from '../src/views/pages.js'
-import { makeUser, testConfig } from './helpers.js'
+import { json, makeUser, MemoryMailer, startFakeServer, testConfig } from './helpers.js'
 
 // #371: Fledge records that a pull request merged, then forgets it. These cases
 // pin the ledger the card asks for: one row per merged pull request, a revert
@@ -225,4 +228,64 @@ test('one delivery is a hint, not a rate, and an empty ledger says so in words',
   } finally {
     store.close()
   }
+})
+
+test('a merge copies the producing job cost and model, and a merge with no job carries neither', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const { repoId, userId } = receiver(store, 'copy')
+    job(store, repoId, userId, 'job_delivery_copy', 1.5)
+    store.updateJob('job_delivery_copy', { provider_model: 'deepseek/v4.1', work_type: 'implement' })
+    const jobs = new Jobs(store, config, new MockRunner(), new MemoryMailer())
+    jobs.recordMergedDelivery({
+      repoId, jobId: 'job_delivery_copy', prUrl: 'https://github.com/o/delivery-copy/pull/1',
+      mergeCommit: MERGE_A, mergedAt: '2026-11-18T10:00:00.000Z', title: 'fix the adder carry',
+    })
+    const row = store.getDeliveryOutcomeByMerge(repoId, MERGE_A)!
+    assert.equal(row.cost_usd, 1.5)
+    assert.equal(row.model, 'deepseek/v4.1', 'the window can be read per model without a join')
+    assert.equal(row.playbook, 'implement')
+    jobs.recordMergedDelivery({
+      repoId, jobId: null, prUrl: 'https://github.com/o/delivery-copy/pull/2',
+      mergeCommit: MERGE_B, mergedAt: '2026-11-18T11:00:00.000Z', title: 'a human merge',
+    })
+    const human = store.getDeliveryOutcomeByMerge(repoId, MERGE_B)!
+    assert.equal(human.job_id, null)
+    assert.equal(human.cost_usd, null, 'no job means no cost to copy, and the card prints —')
+    assert.equal(human.model, null)
+    assert.equal(human.playbook, null)
+  } finally {
+    store.close()
+  }
+})
+
+test('the commit read returns one page and drops an entry it cannot name', async () => {
+  const seen: string[] = []
+  const github = await startFakeServer((request, response) => {
+    seen.push(request.url ?? '')
+    if ((request.url ?? '').startsWith('/repos/o/recent/commits')) {
+      return json(response, 200, [
+        { sha: MERGE_A, commit: { message: `fix the adder\n\nThis reverts commit ${MERGE_B}.` } },
+        { sha: MERGE_B },
+        { commit: { message: 'no sha to name' } },
+      ])
+    }
+    return json(response, 200, { message: 'not a list' })
+  })
+  try {
+    const client = new GithubClient('token', github.url)
+    const commits = await client.listRecentCommits('o', 'recent', 'main')
+    assert.deepEqual(commits, [{ sha: MERGE_A, message: `fix the adder\n\nThis reverts commit ${MERGE_B}.` }])
+    assert.match(seen[0] ?? '', /^\/repos\/o\/recent\/commits\?sha=main&per_page=50$/)
+    assert.deepEqual(await client.listRecentCommits('o', 'other', 'main'), [], 'a response that is not a list is no history, not a guess')
+  } finally {
+    await github.close()
+  }
+})
+
+test('a follow-up list that cannot be parsed is no link, never a thrown page', () => {
+  assert.deepEqual(followUpLinks({ follow_up_json: 'not json' }), [])
+  assert.deepEqual(followUpLinks({ follow_up_json: '{"a":1}' }), [], 'an object is not a list of links')
+  assert.deepEqual(followUpLinks({ follow_up_json: '["https://github.com/o/r/issues/1",2]' }), ['https://github.com/o/r/issues/1'])
 })
