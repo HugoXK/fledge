@@ -137,7 +137,7 @@ import { rulesOverridesPage } from './views/rules.js'
 import { ciGatePage } from './views/ciGate.js'
 import { reportCiGate } from './lib/ciGate.js'
 import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
-import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
+import { AGENT_NOTE_LIMIT, audienceVisible, canDecideProposal, memoryDigest, parseAgentNoteInput, parseMemoryInput, proposalDecisionStatus, proposalDecisionVerification, searchMemories, visibleMemories } from './lib/memory.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, GithubError, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
@@ -3010,6 +3010,44 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const base = `/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}`
     return reply.redirect(result.noop ? `${base}&unchanged=1` : `${base}&saved=1`)
   })
+
+  // #638 slice 1: the human half of an agent proposal. The console shows the
+  // proposal with its job source; accepting is a person asserting the text, and
+  // rejecting keeps the row as the record of what the agent offered. Either way
+  // the agent stays the author of the entry — the revision records who decided.
+  const decideMemoryProposal = (decision: 'accept' | 'reject') => async (request: FastifyRequest, reply: FastifyReply) => {
+    const params = request.params as Record<string, string>
+    const { viewer, repo } = ownedRepo(request, String(params.id), true)
+    const role = parseRepoRole(repo.repo_role)
+    const back = `/repos/${repo.id}/memory`
+    if (role === null) return reply.redirect(`${back}?refused=role_not_allowed`)
+    const key = String(params.key ?? '')
+    const entry = store.getMemory(repo.id, key)
+    if (entry === undefined || !audienceVisible(entry.audience, role)) return reply.redirect(`${back}?refused=memory_not_found`)
+    if (!canDecideProposal(entry, role)) return reply.redirect(`${back}?key=${encodeURIComponent(key)}&refused=not_a_proposal`)
+    const result = store.writeMemory({
+      repoId: repo.id,
+      key: entry.key,
+      kind: entry.kind,
+      status: proposalDecisionStatus(decision),
+      verification: proposalDecisionVerification(decision),
+      audience: entry.audience,
+      scope: entry.scope,
+      body: entry.body,
+      digest: entry.digest,
+      sourcesJson: entry.sources_json,
+      actorType: 'human',
+      actorId: viewer.user.id,
+      sourceJobId: entry.source_job_id,
+      reason: decision === 'accept' ? 'the maintainer accepted the agent proposal' : 'the maintainer rejected the agent proposal',
+      expectedRevision: entry.revision,
+    })
+    if (!result.ok) return reply.redirect(`${back}?key=${encodeURIComponent(key)}&conflict=${result.revision}`)
+    store.audit(viewer.user.id, decision === 'accept' ? 'memory.proposal_accepted' : 'memory.proposal_rejected', `${repo.id}: ${key}${entry.source_job_id === null ? '' : ` job=${entry.source_job_id}`}`)
+    return reply.redirect(`${back}?key=${encodeURIComponent(key)}&saved=1`)
+  }
+  app.post('/repos/:id/memory/:key/accept', decideMemoryProposal('accept'))
+  app.post('/repos/:id/memory/:key/reject', decideMemoryProposal('reject'))
 
   // #543 first slice: a gate plan is proposed and confirmed, and nothing is
   // written to the repository. The API is the handoff for the gate-PR slice.
@@ -6408,6 +6446,52 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       canReview: result.canReview,
       canCreateIssue: result.canCreateIssue,
     }
+  })
+
+  // #638 slice 1: the agent's own writer. It is the callback credential — the
+  // same secret the job uses for its context and its report — so only the running
+  // job can propose, it can propose at most three notes per run, and it can never
+  // replace an entry a person already wrote. A duplicate key is refused, not
+  // overwritten: the console shows the proposal and a human decides.
+  app.post('/api/jobs/:id/memory', async (request, reply) => {
+    const jobId = String((request.params as Record<string, string>).id)
+    if (!apiLimiter.take(`job-memory:${jobId}:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'too many requests' } })
+    const job = store.getJob(jobId)
+    if (job === undefined) return reply.code(404).send({ error: { type: 'job_not_found', message: 'job not found' } })
+    const secret = bearerSecret(request)
+    if (secret === '' || !safeEqual(sha256Hex(secret), job.callback_hash)) return reply.code(401).send({ error: { type: 'bad_callback_secret', message: 'bad job secret' } })
+    if (job.status !== 'queued' && job.status !== 'running') return reply.code(409).send({ error: { type: 'job_finished', message: 'job already finished' } })
+    const parsed = parseAgentNoteInput((request.body ?? {}) as Record<string, unknown>)
+    if (!parsed.ok) return reply.code(400).send({ error: { type: parsed.refused, message: `the note was refused: ${parsed.refused}` } })
+    const note = parsed.value
+    if (store.countAgentNotesForJob(job.id) >= AGENT_NOTE_LIMIT) {
+      return reply.code(429).send({ error: { type: 'agent_note_limit', message: `a run may propose at most ${AGENT_NOTE_LIMIT} notes` } })
+    }
+    const existing = store.getMemory(job.repo_id, note.key)
+    if (existing !== undefined) {
+      return reply.code(409).send({ error: { type: 'memory_exists', message: `the key ${note.key} already exists at revision ${existing.revision}; a proposal never overwrites an entry` } })
+    }
+    const written = store.writeMemory({
+      repoId: job.repo_id,
+      key: note.key,
+      kind: note.kind,
+      status: 'needs_review',
+      verification: 'unverified',
+      audience: 'project',
+      scope: '',
+      body: note.body,
+      digest: memoryDigest(note.body),
+      sourcesJson: note.sourcesJson,
+      actorType: 'agent',
+      actorId: job.id,
+      sourceJobId: job.id,
+      reason: `proposed by job ${job.id}`,
+      expectedRevision: 0,
+    })
+    if (!written.ok) return reply.code(409).send({ error: { type: 'memory_exists', message: written.code } })
+    store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.memory_proposed', step: 'memory', meta: note.key })
+    store.audit(job.user_id, 'memory.proposed_by_agent', `${job.repo_id}: ${note.key} job=${job.id}`)
+    return reply.send({ ok: true, key: note.key, revision: written.row.revision, id: written.row.id })
   })
 
   app.post('/api/jobs/:id/callback', async (request, reply) => {
