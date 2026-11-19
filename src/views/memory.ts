@@ -11,6 +11,8 @@ import {
   memoryAudienceLabel,
   memoryKindLabel,
   memoryStatusLabel,
+  canDecideProposal,
+  isAgentProposal,
   memoryVerificationLabel,
   sourcesOf,
   type MemorySearch,
@@ -126,7 +128,7 @@ export function memoryPage(input: MemoryPageInput): string {
     .map((row) => {
       const href = `/repos/${escapeHtml(repo.id)}/memory?key=${encodeURIComponent(row.key)}`
       return `<tr data-memory-key="${escapeHtml(row.key)}" data-memory-row-revision="${row.revision}">
-        <td><a href="${href}"><code>${escapeHtml(row.key)}</code></a></td>
+        <td><a href="${href}"><code>${escapeHtml(row.key)}</code></a>${isAgentProposal(row) ? ` <span class="badge busy" data-memory-proposal="agent">${escapeHtml(t('助手提议，待确认', 'agent proposal, needs a human'))}</span>` : ''}</td>
         <td>${escapeHtml(memoryKindLabel(t, row.kind))}</td>
         <td>${escapeHtml(memoryStatusLabel(t, row.status))}</td>
         <td>${escapeHtml(memoryVerificationLabel(t, row.verification))}${documentCell(row)}</td>
@@ -186,6 +188,11 @@ export function memoryPage(input: MemoryPageInput): string {
         ${entry.document_path === null ? '' : `<p class="muted" data-memory-document-owner="${escapeHtml(entry.document_path)}">${escapeHtml(t(`这条记忆由仓库文档 ${entry.document_path}${entry.document_pr === null ? '' : `（PR #${entry.document_pr}）`} 拥有，正文只读。`, `This entry is owned by the repository document ${entry.document_path}${entry.document_pr === null ? '' : ` (PR #${entry.document_pr})`}, so its body is read-only.`))}</p>`}
         <p class="muted">${escapeHtml(t('正文摘要', 'Body digest'))}: <code>${escapeHtml(detail.version.digest)}</code> · ${escapeHtml(t('写入', 'Written'))} ${escapeHtml(humanTimeShort(detail.version.created_at))}${detail.version.reason === '' ? '' : ` · ${escapeHtml(t('原因', 'Reason'))}: ${escapeHtml(detail.version.reason)}`}</p>
         <pre class="memory-body">${escapeHtml(detail.version.body)}</pre>
+        ${canDecideProposal(entry, role) ? `<div class="memory-decision" data-memory-proposal="${escapeHtml(entry.key)}">
+          <p class="muted">${escapeHtml(t('这是助手提出的记忆，还没有人确认过。接受表示你以人的身份确认这段正文；拒绝会保留这条记录，但把它标记为已撤销。', 'This note was proposed by the agent and no human has confirmed it. Accepting asserts the text as your own; rejecting keeps the record and marks it revoked.'))}${entry.source_job_id === null ? '' : ` · ${escapeHtml(t('来源任务', 'Job'))} <a class="link" href="/jobs/${escapeHtml(entry.source_job_id)}">${escapeHtml(entry.source_job_id)}</a>`}</p>
+          <form method="post" action="/repos/${escapeHtml(repo.id)}/memory/${encodeURIComponent(entry.key)}/accept" class="inline">${csrf(viewer)}<button class="btn" type="submit" data-memory-accept="${escapeHtml(entry.key)}">${escapeHtml(t('接受提议', 'Accept proposal'))}</button></form>
+          <form method="post" action="/repos/${escapeHtml(repo.id)}/memory/${encodeURIComponent(entry.key)}/reject" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit" data-memory-reject="${escapeHtml(entry.key)}">${escapeHtml(t('拒绝提议', 'Reject proposal'))}</button></form>
+        </div>` : ''}
         ${entrySources.length === 0 ? '' : `<div class="memory-sources" data-memory-sources="${entrySources.length}">
           <h3>${escapeHtml(t('来源', 'Sources'))}</h3>
           <ul>${sourceItems(entrySources)}</ul>

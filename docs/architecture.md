@@ -1049,6 +1049,13 @@ tiles at the bottom. Metrics and webhooks remain superadmin-only; the other
 three are available to admins. The opening paragraph always names the role and
 the audit logging, and carries no tool links.
 
+Every page also loads the optional DeepWiki console panel
+(`public/fledge-deepwiki.js` and `.css`, linked from `src/views/layout.ts`). It
+asks the hosted `https://mcp.deepwiki.com/mcp` endpoint about this repository's
+DeepWiki index, is bilingual, and marks its answers as third-party and
+model-generated. The page CSP adds only `connect-src https://mcp.deepwiki.com`;
+the panel carries no credential and makes no change to the repository.
+
 ### Team console and live events
 
 The team console is admin-only. `GET /api/repos/:id/team/events` streams
@@ -3114,9 +3121,31 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
 
 The slice is the repository page (`/repos/:id/memory`, `src/views/memory.ts`).
 Not built yet: the bounded index handed to a job prompt and the agent read tool
-(`src/jobs/service.ts`), the three-notes-per-run agent writer, the read-time
-`source_changed`/`source_unavailable` re-check of a promoted document, review
-scheduling and export.
+(`src/jobs/service.ts`), the read-time `source_changed`/`source_unavailable` re-check of a
+promoted document, review scheduling and export.
+
+### The agent may propose, a human decides (`#638` slice 1)
+
+`POST /api/jobs/:id/memory` is the agent's only writer. It authenticates with the
+job's own callback secret, answers only while the job is queued or running, and
+accepts `key`, `kind`, `body` and `sources` — never verification, status or
+audience, which the server fixes at `unverified`, `needs_review` and `project`.
+A run may propose at most three notes: the bound is counted from the rows
+(`source_job_id`, `owner_type = 'agent'`) so a second callback cannot reset it. A
+duplicate key is a `409 memory_exists`, never an overwrite, which is what keeps an
+agent note from replacing a person's entry.
+
+The console half is on the entry page: a proposal is listed and rendered with an
+`agent proposal, needs a human` badge, its job as the source, and two buttons.
+Accepting is a new revision with `verification: human_asserted` and
+`status: active`, written by the person who accepted it — the entry keeps the
+agent as its author, and the revision records the decision. Rejecting is a
+revision with `status: revoked` that keeps the body: the record of what the agent
+offered is not destroyed. The proposal predicate is all three of agent-owned,
+`unverified` and still `needs_review`, so a decision moves the row out of it in
+both directions — accepting changes the verification, rejecting changes the
+status — and a decided proposal is neither badged nor offered a second decision.
+Only a reader inside the entry's audience can decide.
 
 ## Gate plans and sessions (`#543` first slice)
 

@@ -11,7 +11,7 @@ import { makeUser, testConfig } from './helpers.js'
 
 // #700: the four-hour cache on /assets is the host's, so the in-repo fix is the
 // URL. Every emitter has to carry a token derived from the bytes it serves:
-// the layout's four files, the repository page's two, the team and application
+// the layout's six files, the repository page's two, the team and application
 // pages' one each, and the two the workspace snippet injects. A slice that
 // versions the layout alone leaves the defect alive on the pages where a stale
 // script actually hurts.
@@ -63,12 +63,12 @@ function fixtures(): { store: Store; repo: ReturnType<Store['createRepo']>; view
   return { store, repo, viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' } }
 }
 
-test('the shared layout versions all four of its asset URLs', () => {
+test('the shared layout versions all six of its asset URLs', () => {
   const config = testConfig()
   const { store, viewer } = fixtures()
   try {
     const html = layout({ title: 'console', viewer, body: '<p>body</p>', config, locale: 'zh' })
-    assert.deepEqual(versioned(html, 'layout'), ['/assets/app.css', '/assets/app.js', '/assets/questions.js', '/assets/section-nav.js'])
+    assert.deepEqual(versioned(html, 'layout'), ['/assets/app.css', '/assets/app.js', '/assets/fledge-deepwiki.css', '/assets/fledge-deepwiki.js', '/assets/questions.js', '/assets/section-nav.js'])
   } finally {
     store.close()
   }
@@ -82,7 +82,7 @@ test('the repository page versions the two scripts it loads, wherever the sessio
     const found = versioned(html, 'repository page')
     assert.ok(found.includes('/assets/repoTabs.js'), 'the repository page no longer loads repoTabs.js')
     for (const path of found) {
-      assert.ok(path === '/assets/repoTabs.js' || path === '/assets/chief.js' || path === '/assets/app.css' || path === '/assets/app.js' || path === '/assets/questions.js' || path === '/assets/section-nav.js', `repository page: unexpected asset ${path}`)
+      assert.ok(path === '/assets/repoTabs.js' || path === '/assets/chief.js' || path === '/assets/app.css' || path === '/assets/app.js' || path === '/assets/questions.js' || path === '/assets/section-nav.js' || path === '/assets/fledge-deepwiki.css' || path === '/assets/fledge-deepwiki.js', `repository page: unexpected asset ${path}`)
     }
   } finally {
     store.close()

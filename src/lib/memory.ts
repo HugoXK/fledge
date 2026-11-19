@@ -249,3 +249,83 @@ export function memoryAudienceLabel(t: Translate, audience: string): string {
   if (audience === 'role:developer') return t('仅开发者', 'Developer role only')
   return t('项目共享', 'Shared with the project')
 }
+
+// #638 slice 1: the agent may propose a lesson, and a human decides what it
+// means. A proposal is bounded per run (three), is always `unverified` and owned
+// by the agent, and never replaces an entry a person or a merged document already
+// wrote: a duplicate key is a conflict the console shows, not an overwrite. The
+// human side is two actions on the entry page — accept and reject — so this slice
+// changes what a maintainer sees and does, not only what the store holds.
+export const AGENT_NOTE_LIMIT = 3
+
+export type AgentNoteRefusal =
+  | 'key_invalid'
+  | 'body_empty'
+  | 'body_too_long'
+  | 'kind_invalid'
+  | 'source_invalid'
+  | 'agent_note_limit'
+  | 'memory_exists'
+  | 'memory_not_found'
+  | 'not_a_proposal'
+  | 'memory_revision_conflict'
+
+export interface AgentNoteInput {
+  key: string
+  kind: MemoryKind
+  body: string
+  sourcesJson: string
+}
+
+export function parseAgentNoteInput(body: Record<string, unknown>): { ok: true; value: AgentNoteInput } | { ok: false; refused: AgentNoteRefusal } {
+  // The agent may not choose its own verification, status or audience: a proposal
+  // that could call itself `human_asserted` or write into a role it does not act
+  // as would be the exact privilege escalation this slice exists to prevent.
+  const key = text(body.key)
+  const kind = text(body.kind) as MemoryKind
+  const note = text(body.body)
+  if (!MEMORY_KEY_PATTERN.test(key)) return { ok: false, refused: 'key_invalid' }
+  if (note === '') return { ok: false, refused: 'body_empty' }
+  if (note.length > MEMORY_BODY_MAX) return { ok: false, refused: 'body_too_long' }
+  if (!MEMORY_KINDS.includes(kind)) return { ok: false, refused: 'kind_invalid' }
+  let sources: unknown = body.sources ?? []
+  if (typeof sources === 'string') {
+    try {
+      sources = JSON.parse(sources)
+    } catch {
+      return { ok: false, refused: 'source_invalid' }
+    }
+  }
+  if (!Array.isArray(sources) || sources.length > 20) return { ok: false, refused: 'source_invalid' }
+  if (!sources.every((item) => typeof item === 'string' && item.length > 0 && item.length <= 300)) {
+    return { ok: false, refused: 'source_invalid' }
+  }
+  return { ok: true, value: { key, kind, body: note, sourcesJson: JSON.stringify(sources) } }
+}
+
+// A proposal is an agent-owned entry no human has confirmed yet, and a decision
+// moves the row out of that state: accepting makes it human-asserted, rejecting
+// leaves it revoked. The status is part of the predicate because a rejection
+// keeps `verification: 'unverified'` on purpose — the row is the record of what
+// the agent offered, not a claim a human made — so verification alone would keep
+// offering a decided proposal a second decision and badge it as still waiting.
+const PROPOSAL_STATUS: MemoryStatus = 'needs_review'
+
+/** A proposal is an agent-owned entry no human has confirmed yet. */
+export function isAgentProposal(entry: { owner_type: string; verification: string; status: string }): boolean {
+  return entry.owner_type === 'agent' && entry.verification === 'unverified' && entry.status === PROPOSAL_STATUS
+}
+
+/** A reader may decide only on a proposal it can see: audience first, then type. */
+export function canDecideProposal(entry: { owner_type: string; verification: string; status: string; audience: string }, role: RepoRole | null): boolean {
+  return audienceVisible(entry.audience, role) && isAgentProposal(entry)
+}
+
+/** Accepting asserts the body as a human's; rejecting keeps the row as a record. */
+export function proposalDecisionStatus(decision: 'accept' | 'reject'): MemoryStatus {
+  return decision === 'accept' ? 'active' : 'revoked'
+}
+
+export function proposalDecisionVerification(decision: 'accept' | 'reject'): MemoryVerification {
+  return decision === 'accept' ? 'human_asserted' : 'unverified'
+}
