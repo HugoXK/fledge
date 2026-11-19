@@ -1964,9 +1964,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const t = translator(request.locale ?? 'zh')
     const result = await jobs.runScheduleNow(repo, form(request).command_key, role)
     if (!result.ok) {
+      // #1047: the refusal travels as its code and parameter, so the banner
+      // builds the sentence in the console's language instead of echoing the
+      // Chinese-only sentence the job service wrote.
       const message = result.code === 'schedule_missing'
         ? t('这个仓库还没有排期。', 'This repository has no schedule yet.')
-        : (result.message ?? t('这次运行没有开始。', 'The run did not start.'))
+        : refusalValue({ code: result.code, detail: result.detail, error: result.message }, t('这次运行没有开始。', 'The run did not start.'))
       return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
     }
     return reply.redirect(`${back}?ran=${encodeURIComponent(result.jobId ?? '')}`)

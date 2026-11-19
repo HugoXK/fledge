@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>排期控制台 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=f1ada170f538" />
+  <link rel="stylesheet" href="assets/app.css?v=64b144352667" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -86,6 +86,7 @@
     </section>
     <section class="card"><h2>编辑排期</h2>
       <p class="muted">排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。</p>
+      
       <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><div class="row">
         <label>cron 表达式 <input name="cron" value="0 9 * * 1-5" placeholder="0 9 * * 1-5" /></label>
         <label>或固定间隔 <input name="every" value="" placeholder="15m" /></label>
