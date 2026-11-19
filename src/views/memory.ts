@@ -180,7 +180,8 @@ export function memoryPage(input: MemoryPageInput): string {
     <form method="post" action="/repos/${escapeHtml(repo.id)}/memory" class="form memory-form">
       ${csrf(viewer)}
       <input type="hidden" name="expected_revision" value="${entry === undefined ? 0 : entry.revision}" />
-        <label for="memory-key">${escapeHtml(t('键', 'Key'))}<input id="memory-key" name="key" value="${escapeHtml(entry?.key ?? '')}" required pattern="[a-z0-9][a-z0-9._-]{0,63}" /></label>
+        <label for="memory-key">${escapeHtml(t('键', 'Key'))}<input id="memory-key" name="key" value="${escapeHtml(entry?.key ?? '')}" required${entry === undefined ? '' : ' readonly aria-describedby="memory-key-rule"'} pattern="[a-z0-9][a-z0-9._-]{0,63}" /></label>
+        ${entry === undefined ? '' : `<p class="fine" id="memory-key-rule">${escapeHtml(t('键是条目的身份：写入新版本不能改名。要用别的键，请作为新条目重新写入。', 'The key is the entry identity: a new revision cannot rename it. Write a new entry to use a different key.'))}</p>`}
         <label for="memory-kind">${escapeHtml(t('类型', 'Kind'))}${select('kind', MEMORY_KINDS, entry?.kind ?? 'decision', (value) => memoryKindLabel(t, value), t)}</label>
         <label for="memory-status">${escapeHtml(t('状态', 'Status'))}${select('status', MEMORY_STATUSES, entry?.status ?? 'active', (value) => memoryStatusLabel(t, value), t)}</label>
         <label for="memory-verification">${escapeHtml(t('验证', 'Verification'))}${select('verification', MEMORY_VERIFICATIONS, entry?.verification ?? 'human_asserted', (value) => memoryVerificationLabel(t, value), t)}</label>

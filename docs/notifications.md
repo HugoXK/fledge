@@ -46,7 +46,9 @@ The in-app row and the failure mail both carry the action id:
 - `jobFailedEmail` carries `actionId` and `actionUrl`, so the mail links
   `/actions/<id>` too;
 - `GET /actions/<id>` marks the notification rows that carry the id as read and
-  redirects to the object the action describes;
+  redirects to the object the action describes — for a failed job that is the
+  job page `/repos/<repoId>/jobs/<jobId>`, which is where the retry control is,
+  not `/jobs/<jobId>`, which no route serves;
 - `POST /actions/<id>/resolve` resolves it.
 
 Reading one therefore marks the same decision everywhere it was delivered. Both

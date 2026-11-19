@@ -162,6 +162,25 @@ test('the console page shows the same local times and keeps the form filled', as
   }
 })
 
+test('the console page echoes the zone an interval URL carries', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    // #1058 rework: the interval panel has no zone control, so this zone can only
+    // come from a hand-written URL. Dropping it before the page renders silently
+    // replaced the maintainer's value with the default in the select, which is a
+    // form rewrite nobody asked for; the page keeps it in the form.
+    const page = await built.app.inject({
+      method: 'GET',
+      url: `/schedule?${new URLSearchParams({ mode: 'interval', every_amount: '2', every_unit: 'h', timezone: 'Europe/Berlin', count: '4', from: '2026-11-16T00:00:00Z' }).toString()}`,
+      headers: { cookie },
+    })
+    assert.equal(page.statusCode, 200, 'the interval itself is valid, so the page previews')
+    assert.match(page.body, /value="Europe\/Berlin" selected/, 'the submitted zone is echoed, not replaced by the default')
+  } finally {
+    await built.close()
+  }
+})
+
 test('the console page explains a bad expression instead of returning a bare 400', async () => {
   const { built, cookie } = await fixture()
   try {
@@ -430,6 +449,87 @@ test('the preview summary echoes an interval the planner could not round', async
     assert.ok((await summaryOf({ every: '15m' }, 'zh')).includes('每 15 分钟'))
     assert.ok((await summaryOf({ every: '2h' }, 'en')).includes('every 2 hour(s)'))
     assert.ok((await summaryOf({ every: '1d' }, 'en')).includes('every 1 day(s)'))
+  } finally {
+    await built.close()
+  }
+})
+
+// #1058: an interval has no zone. The planner already refused one that arrived
+// as a bare `every=`, but the `mode=interval` path built its request and dropped
+// the zone, so the same zone was refused in one shape and accepted in the other.
+// One rule, asserted against both shapes, and the console keeps previewing
+// because its interval mode has no zone control to send.
+test('an interval with a zone is refused the same way with and without mode', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    const bare = await built.app.inject({
+      method: 'GET',
+      url: previewUrl({ every: '2h', timezone: 'Asia/Shanghai', count: '2', from: '2026-11-16T00:00:00Z' }),
+      headers: { cookie: `${cookie}; fledge_lang=en` },
+    })
+    const withMode = await built.app.inject({
+      method: 'GET',
+      url: previewUrl({ mode: 'interval', every_amount: '2', every_unit: 'h', timezone: 'Asia/Shanghai', count: '2', from: '2026-11-16T00:00:00Z' }),
+      headers: { cookie: `${cookie}; fledge_lang=en` },
+    })
+    assert.equal(bare.statusCode, 400, 'a bare interval with a zone is refused')
+    const bareError = (bare.json() as { error: string }).error
+    assert.match(bareError, /no timezone/)
+    assert.equal(withMode.statusCode, bare.statusCode, 'mode=interval must refuse the zone exactly like the bare form')
+    assert.equal((withMode.json() as { error: string }).error, bareError, 'the same sentence, not a second reason')
+    assert.equal(built.store.scheduleForRepo('none'), undefined, 'a preview writes nothing')
+  } finally {
+    await built.close()
+  }
+})
+
+test('an interval without a zone previews identically with and without mode', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    const bare = await built.app.inject({
+      method: 'GET',
+      url: previewUrl({ every: '90m', count: '3', from: '2026-11-16T00:00:00Z' }),
+      headers: { cookie },
+    })
+    const withMode = await built.app.inject({
+      method: 'GET',
+      url: previewUrl({ mode: 'interval', every_amount: '90', every_unit: 'm', count: '3', from: '2026-11-16T00:00:00Z' }),
+      headers: { cookie },
+    })
+    // The mode's unit set is m/h/d, so 90 seconds is expressed in minutes there;
+    // both must land on the same instants for the interval they name.
+    assert.equal(bare.statusCode, 200)
+    assert.equal(withMode.statusCode, 200)
+    const modeBody = withMode.json() as { schedule: { kind: string; everyMs: number }; times: Array<{ at: string }> }
+    assert.equal(modeBody.schedule.kind, 'interval')
+    const bareBody = bare.json() as { times: Array<{ at: string }> }
+    assert.deepEqual(modeBody.times.map((time) => time.at), bareBody.times.map((time) => time.at), 'the two shapes name the same instants')
+    assert.deepEqual(modeBody.times.map((time) => time.at), ['2026-11-16T01:30:00.000Z', '2026-11-16T03:00:00.000Z', '2026-11-16T04:30:00.000Z'])
+  } finally {
+    await built.close()
+  }
+})
+
+test('the console keeps previewing an interval while its shared zone select stays in the form', async () => {
+  const { built, cookie } = await fixture()
+  try {
+    // The form always submits the shared timezone select (it defaults to
+    // Asia/Shanghai), and the interval panel has no zone control of its own.
+    const page = await built.app.inject({
+      method: 'GET',
+      url: `/schedule?mode=interval&every_amount=15&every_unit=m&timezone=Asia/Shanghai&count=3&from=2026-11-16T00:00:00Z`,
+      headers: { cookie },
+    })
+    assert.equal(page.statusCode, 200, 'the interval mode still previews on the page')
+    assert.match(page.body, /data-schedule-panel="interval"/)
+    // The same query against the API is the refusal, because the API has no
+    // interval panel to know the zone came from the shared select.
+    const api = await built.app.inject({
+      method: 'GET',
+      url: previewUrl({ mode: 'interval', every_amount: '15', every_unit: 'm', timezone: 'Asia/Shanghai', count: '3' }),
+      headers: { cookie },
+    })
+    assert.equal(api.statusCode, 400)
   } finally {
     await built.close()
   }
