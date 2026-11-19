@@ -698,8 +698,12 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   neither the schedule nor the lease above could be felt. It shows the stored
   schedule, the next run from `nextTime`, the newest decided instant with its
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
-  last instant whose job succeeded. A value nobody recorded prints `unknown`: a
-  schedule with no occurrence row has not run, so it is not a zero. The delivery
+  last instant whose job succeeded, read at any age rather than searched for in
+  the twenty-instant window the page lists (#1055): `newestSucceededDispatch` asks
+  the store for the newest `dispatched` occurrence whose job ended `succeeded`, so
+  a schedule that was skipped twenty times after a good run still names that run
+  instead of denying it. A value nobody recorded prints `unknown`: a schedule
+  with no occurrence row has not run, so it is not a zero. The delivery
   fact is read from the outbox (`notification_outbox.job_id`, below) for the job
   the newest decided instant dispatched: a job that queued a send reports that
   send's state, and a finished job that queued none prints `none` — a run with

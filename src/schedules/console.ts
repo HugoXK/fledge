@@ -228,6 +228,14 @@ export function scheduleConsole(input: {
   occurrences: ScheduleOccurrenceRow[]
   now: number
   jobStatus: (jobId: string) => string | null
+  /**
+   * #1055: `Store.newestSucceededDispatch` — the newest dispatched instant whose
+   * job succeeded, at any age. `occurrences` is only a window of the newest
+   * decided instants, so a success older than it is invisible there and the
+   * console used to print `unknown` for a run that existed. A caller that did
+   * not read it leaves it out, and the window answer stands unchanged.
+   */
+  lastSucceeded?: ScheduleOccurrenceRow | null
   runsToday?: number
   jobDeliveries?: (jobId: string) => Array<{ state: NotificationOutboxState }>
 }): ScheduleConsoleState {
@@ -239,7 +247,9 @@ export function scheduleConsole(input: {
     : schedule === null
       ? 'unreadable'
       : row.kind === 'cron' ? 'cron' : 'interval'
-  const lastSuccess = occurrences.find((occurrence) => occurrence.jobId !== null && input.jobStatus(occurrence.jobId) === 'succeeded') ?? null
+  const lastSuccess = input.lastSucceeded === undefined
+    ? occurrences.find((occurrence) => occurrence.jobId !== null && input.jobStatus(occurrence.jobId) === 'succeeded') ?? null
+    : input.lastSucceeded === null ? null : viewOf(input.lastSucceeded, now)
   const dailyRuns = row === undefined ? null : row.daily_runs
   const runsToday = row === undefined ? null : (input.runsToday ?? null)
   return {

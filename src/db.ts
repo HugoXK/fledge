@@ -6034,6 +6034,23 @@ export class Store {
     )
   }
 
+  // #1055: the newest instant whose dispatched run succeeded, at any age. The
+  // console's `occurrences` list is a twenty-row window over *every* decided
+  // instant, so once a schedule had been skipped twenty times after a good run
+  // the success fell out of the window and the page denied it. This answers the
+  // question the console actually asks, from the job's terminal state, instead of
+  // searching a window the success may have left.
+  newestSucceededDispatch(repoId: string): ScheduleOccurrenceRow | undefined {
+    return this.get<ScheduleOccurrenceRow>(
+      `SELECT occurrence.* FROM schedule_occurrences AS occurrence
+         JOIN jobs AS job ON job.id = occurrence.job_id
+        WHERE occurrence.repo_id = ? AND occurrence.state = 'dispatched' AND job.status = 'succeeded'
+        ORDER BY occurrence.logical_time DESC, occurrence.decided_at DESC
+        LIMIT 1`,
+      repoId,
+    )
+  }
+
   // #544 slice 6: how much of a schedule's daily budget a logical day has
   // already spent. Only `dispatched` rows count — a skipped instant did not run,
   // and a claimed one has not dispatched yet — and the window is half-open, so
