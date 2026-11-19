@@ -270,6 +270,128 @@ test('a CRLF copy of the shipped sample passes instead of naming missing headers
   }
 })
 
+/** The whole set on one line, `always` on each, for a control that must pass. */
+function repeatSet(indent: string): string {
+  return HEADERS.map((name) => `${indent}add_header ${name} ${HEADER_VALUES[name] ?? '""'} always;`).join(' ')
+}
+
+test('a `}` inside a regex token does not close the block, and the location is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // #1097 audit, first hole: nginx keeps `}` inside a token, so the regex
+    // `^/v}v[0-9]+` is one token and the block still opens at the `{`. The old
+    // reader closed on that `}`, lost the location and let a one-header
+    // location that serves only `Cache-Control` through.
+    const path = editedSample(dir, (text) =>
+      text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
+        `  location ~ ^/v}v[0-9]+ { add_header Cache-Control "no-store" always; }\n${_match}`,
+      ),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 1, 'a location with a brace inside its regex and one header must be refused')
+    assert.match(run.stdout, /location block opened at line \d+/, 'the failure must name the location block')
+    for (const name of ['Strict-Transport-Security', 'X-Frame-Options']) {
+      assert.match(run.stdout, new RegExp(name), `the failure must name a header the location dropped: ${name}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a regex-quantifier brace in a location header is read as part of the token', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // Control: the same brace shape is legal nginx (`^/v[0-9]{1,3}$`) and the
+    // location repeats the whole set, so the rule must not refuse a valid regex
+    // for carrying a brace.
+    const path = editedSample(dir, (text) =>
+      text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
+        `  location ~ ^/v[0-9]{1,3}$ { ${repeatSet('')} }\n${_match}`,
+      ),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 0, `a brace inside a header token must not close the block; stdout: ${run.stdout}`)
+    assert.match(run.stdout, /nginx: .* parsed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an `if` inside a location that declares its own header is refused and named', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // #1097 audit, second hole: the header belongs to the innermost block, so an
+    // `if` that declares one header was recorded against the `if` and the
+    // enclosing location was judged clean, although the matched responses serve
+    // only that one header.
+    const path = editedSample(dir, (text) =>
+      text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
+        '  location /ifx { if ($always) { add_header Cache-Control "no-store" always; } }\n' + _match,
+      ),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 1, 'an if block that declares one header must be refused')
+    assert.match(run.stdout, /block opened at line \d+ inside a location/, 'the failure must name the inner block')
+    for (const name of ['Strict-Transport-Security', 'X-Frame-Options']) {
+      assert.match(run.stdout, new RegExp(name), `the failure must name a header the if block dropped: ${name}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('an `if` that repeats the whole set with always is accepted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // Control: the responses the `if` applies to carry all four, and the rest
+    // inherit the server set, so this shape is what the rule should allow.
+    const path = editedSample(dir, (text) =>
+      text.replace(/^( {2}location \/ \{)$/m, (_match: string) =>
+        `  location /ifx { if ($always) { ${repeatSet('')} } }\n${_match}`,
+      ),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 0, `an if block that repeats the set must pass; stdout: ${run.stdout}`)
+    assert.match(run.stdout, /nginx: .* parsed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a `}` with no block open is refused rather than dropped', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // #1097 audit: the reader used to ignore a close at depth 0, so a sample
+    // nginx rejects could still look clean to the static half.
+    const path = editedSample(dir, (text) => `${text}\n}\n`)
+    const run = runCheck(path)
+    assert.equal(run.status, 1, 'a stray `}` must fail the static half')
+    assert.match(run.stdout, /unexpected close brace at line \d+/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a sample with no server block is refused instead of passing vacuously', () => {
+  // #1097 test: with no server block the rule had nothing to assert, so an empty
+  // file and a comment-only file both exited 0 "parsed" — a fail-open on an
+  // input the gate is supposed to judge.
+  for (const [shape, text] of [
+    ['empty', ''],
+    ['comment-only', '# a sample with no server block\n# nothing to check here\n'],
+  ] as const) {
+    const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+    try {
+      const path = editedSample(dir, () => text)
+      const run = runCheck(path)
+      assert.equal(run.status, 1, `a ${shape} sample must be refused, not passed vacuously`)
+      assert.match(run.stdout, /no server block to check/, `the ${shape} refusal must name the reason`)
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
+  }
+})
+
 const STUB_REJECTS_MARKED = `#!/usr/bin/env bash
 set -euo pipefail
 config=""
@@ -312,6 +434,14 @@ test('the deploy-check contract proves the header check can fail', () => {
     assert.match(stdout, /security headers: negative proof — a one-liner location that declares its own add_header was rejected/)
     assert.match(stdout, /security headers: control — a one-liner location that repeats all four headers with always was accepted/)
     assert.match(stdout, /security headers: negative proof — a location whose `\{` sits on the next line was rejected/)
+    // #1097 security review: the brace-inside-a-token and the if-level shapes
+    // are part of the same table, so neither can silently come back.
+    assert.match(stdout, /security headers: negative proof — a location whose regex carries a `\}` and serves one header was rejected/)
+    assert.match(stdout, /security headers: negative proof — an if inside a location that declares one header was rejected/)
+    assert.match(stdout, /security headers: control — a brace inside a location token with the whole set was accepted/)
+    assert.match(stdout, /security headers: control — an if that repeats the whole set with always was accepted/)
+    // #1097 test: an empty sample used to pass with nothing asserted.
+    assert.match(stdout, /security headers: negative proof — an empty and a comment-only sample were refused/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

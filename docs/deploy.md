@@ -1029,6 +1029,19 @@ present). The contract drives the shapes: a `Cache-Control` inside `location /`
 rule cannot pass by refusing every location), and the one-liner in both forms
 plus the brace-on-the-next-line copy.
 
+Two further shapes close the same rule (#1097 security review). A `}` that
+nginx keeps inside a token — a regex such as `location ~ ^/v}v[0-9]+` — does not
+close the block, so the location is still read and one `add_header` there is
+still refused; the control is a valid `^/v[0-9]{1,3}$` location that repeats the
+whole set, which must be accepted rather than refused for carrying a brace. And
+the shadowing level is not always a `location`: an `if` (or `limit_except`)
+inside a server or a location that declares any `add_header` drops the enclosing
+set for exactly the responses it applies to, so that level is now judged on what
+it serves, named by its own opening line, and accepted once it repeats the four.
+`include` stays unresolved in this static half: an included file is not read, so
+a header set that arrives through an `include` is still only covered by the real
+`nginx -t` parse, which is why that step remains load-bearing.
+
 The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
 chosen over `systemd-analyze verify` because that binary is absent on a GitHub
 runner and its output names the runner's unrelated units. It reads the sections,

@@ -3,7 +3,7 @@
 #
 #   bash scripts/check-deploy-samples.sh
 #
-# Eleven checks, and the summary says which kind each one is:
+# Sixteen checks, and the summary says which kind each one is:
 #
 # 1. real: a real `nginx -t` parses deploy/nginx.conf.example;
 # 2. real negative proof: the same invocation rejects a copy of the sample with a
@@ -26,7 +26,20 @@
 # 10. control for it: the same one-liner that repeats all four with `always` is
 #    accepted, so the rule refuses the shadowing and not the shape;
 # 11. static negative proof for the brace position: a location whose `{` sits on
-#    the next line is still read and rejected.
+#    the next line is still read and rejected;
+# 12. static negative proof for a brace inside a token: a location whose regex
+#    carries a `}` (`^/v}v[0-9]+`) is still read, and one header there is
+#    rejected, because nginx keeps the brace in the token (#1097 review);
+# 13. static negative proof for an inner level: an `if` inside a location that
+#    declares one header is rejected and the inner block is named, because that
+#    is the level which stops inheriting for the responses it applies to;
+# 14. control for 12: a valid regex-quantifier location (`^/v[0-9]{1,3}$`) that
+#    repeats the whole set is accepted, so a brace in a token is not refused;
+# 15. control for 13: an `if` that repeats the whole set with `always` is
+#    accepted, so the rule judges the level and not the block kind;
+# 16. static negative proof for an empty input: an empty and a comment-only copy
+#    are refused with "no server block to check", because a sample with no server
+#    block used to pass with nothing asserted (#1097 test).
 #
 # Exit 1 on the first check that does not hold. No branch of this script records a
 # gap and exits 0: `deploy-check` installs nginx, and the parser is plain node.
@@ -207,5 +220,85 @@ if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
   exit 1
 fi
 echo 'security headers: negative proof — a location whose `{` sits on the next line was rejected'
+
+# 12/13. The two levels a brace-shape rule still missed (#1097 security review):
+# a `}` that nginx keeps inside a regex token, and an `if` inside a location that
+# declares its own header. Both are legal nginx and both serve fewer headers than
+# the server set, so a rule that reads either as clean lets the shadowing back in.
+awk '
+  /^  location \/ \{/ && !inserted { print "  location ~ ^/v}v[0-9]+ { add_header Cache-Control \"no-store\" always; }"; inserted = 1 }
+  { print }
+' deploy/nginx.conf.example > "$work/location-brace-in-token.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-brace-in-token.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED a location whose regex carries a `}` and that serves one header — nginx keeps the brace in the token and the block still opens (#1097)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of a brace-inside-a-token location did not name the location block (#1097)'
+  exit 1
+fi
+echo 'security headers: negative proof — a location whose regex carries a `}` and serves one header was rejected'
+
+awk '
+  /^  location \/ \{/ && !inserted { print "  location /ifx { if ($always) { add_header Cache-Control \"no-store\" always; } }"; inserted = 1 }
+  { print }
+' deploy/nginx.conf.example > "$work/location-if-header.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-if-header.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED an if inside a location that declares one header — the matched responses serve only that header (#1097)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'inside a location'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of an if-level header did not name the inner block (#1097)'
+  exit 1
+fi
+echo 'security headers: negative proof — an if inside a location that declares one header was rejected'
+
+awk '
+  /^  location \/ \{/ && !inserted { print "  location ~ ^/v[0-9]{1,3}$ { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; }"; inserted = 1 }
+  { print }
+' deploy/nginx.conf.example > "$work/location-brace-in-token-repeat.conf"
+if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-brace-in-token-repeat.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: REJECTED a valid regex location that repeats the whole set — a brace inside a token is not a block boundary (#1097)'
+  exit 1
+fi
+echo 'security headers: control — a brace inside a location token with the whole set was accepted'
+
+awk '
+  /^  location \/ \{/ && !inserted { print "  location /ifx { if ($always) { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; } }"; inserted = 1 }
+  { print }
+' deploy/nginx.conf.example > "$work/location-if-repeat.conf"
+if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-if-repeat.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: REJECTED an if that repeats the whole set with always — the rule must judge the level, not the block kind (#1097)'
+  exit 1
+fi
+echo 'security headers: control — an if that repeats the whole set with always was accepted'
+
+# 16. The vacuous pass (#1097 test): with no `server` block the static half had
+# nothing to assert, so an empty copy exited 0 "parsed". The gate has to refuse an
+# input it cannot judge instead of passing it.
+: > "$work/empty-nginx.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/empty-nginx.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED an empty sample — a check with nothing to assert is not a gate (#1097)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'no server block to check'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of an empty sample did not name the reason (#1097)'
+  exit 1
+fi
+printf '# a sample with no server block\n' > "$work/comment-only-nginx.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/comment-only-nginx.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED a comment-only sample — a vacuously green check is the bug (#1097)'
+  exit 1
+fi
+echo 'security headers: negative proof — an empty and a comment-only sample were refused'
 
 echo 'deploy-check: every sample check above is real or static; none is recorded as a gap.'
