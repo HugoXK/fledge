@@ -1,0 +1,16 @@
+#fledge-workspace-badge {
+  position: fixed;
+  right: 14px;
+  bottom: 14px;
+  z-index: 2147483647;
+  padding: 6px 10px;
+  border: 1px solid rgba(226, 213, 196, 0.28);
+  border-radius: 999px;
+  background: rgba(13, 12, 11, 0.82);
+  color: #d8cfc2;
+  font: 11px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  letter-spacing: 0.02em;
+  pointer-events: none;
+  backdrop-filter: blur(8px);
+}
+#fledge-workspace-badge strong { color: #d97745; font-weight: 600; }

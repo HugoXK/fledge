@@ -452,7 +452,14 @@ function compare(expected: string, actual: string): string[] {
 async function generate(output: string): Promise<number> {
   rmSync(output, { recursive: true, force: true })
   mkdirSync(join(output, 'assets'), { recursive: true })
-  copyFileSync(join(ROOT, 'public/app.css'), join(output, 'assets/app.css'))
+  // Every stylesheet the product serves, not just the main one: a mock page
+  // links whatever `public/` holds, so a second sheet added there is part of the
+  // rendered snapshot. Naming one file left `workspace-brand.css` out of
+  // `mock/assets/` and kept a stale copy of the sheet that was named.
+  const sheets = readdirSync(join(ROOT, 'public')).filter((file) => file.endsWith('.css')).sort()
+  for (const sheet of sheets) {
+    copyFileSync(join(ROOT, 'public', sheet), join(output, 'assets', sheet))
+  }
 
   const config = testConfig()
   config.env = 'test'

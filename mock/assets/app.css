@@ -644,6 +644,7 @@ a.repo-status:hover { border-color: var(--accent); }
 .banner-stack .banner-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .banner[hidden] { display: none; }
 .banner-dismiss { flex: none; display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px; padding: 0; border: 1px solid var(--line); border-radius: var(--radius-pill); background: transparent; color: var(--muted); font-size: 16px; line-height: 1; cursor: pointer; }
+.banner-dismiss svg { display: block; }
 .banner-dismiss:hover { color: var(--text); border-color: var(--line-strong); }
 .banner-dismiss:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .memory-form select { min-height: var(--touch); }
@@ -721,6 +722,7 @@ label.check { min-height: var(--touch); }
   display: inline-flex; align-items: center; justify-content: center; width: 24px; height: 24px;
   border: 1px solid var(--line-strong); border-radius: 50%; font-size: 12px; font-weight: 700; color: var(--muted);
 }
+.setup-mark svg { display: block; }
 .setup-step.is-done .setup-mark { color: var(--good); border-color: var(--good); }
 .setup-step.is-current .setup-mark { color: var(--mark-ink); background: var(--accent); border-color: var(--accent); }
 .setup-main { display: grid; gap: 2px; min-width: 0; }
@@ -1309,6 +1311,7 @@ body:has(.add-repo-dialog[open]) { overflow: hidden; }
 @media (max-width: 640px) { .add-repo-dialog { width: calc(100vw - 16px); max-height: calc(100vh - 16px); padding: 16px; } }
 
 .info-tip { display: inline-flex; align-items: center; justify-content: center; width: 15px; height: 15px; margin-left: 4px; padding: 0; border: 1px solid var(--line); border-radius: 50%; background: transparent; color: var(--muted-2); font: inherit; font-size: 12px; line-height: 1; cursor: help; position: relative; vertical-align: middle; }
+.info-tip svg { display: block; }
 .info-tip::after { content: attr(data-tip); position: absolute; left: 0; top: 130%; z-index: 60; width: 270px; max-width: min(270px, calc(100vw - 48px)); padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--surface-raised); color: var(--tip-ink); font-size: 12px; font-weight: 400; line-height: 1.45; white-space: normal; overflow-wrap: anywhere; display: none; opacity: 0; pointer-events: none; transform: translateY(-3px); transition: opacity .12s ease; box-shadow: 0 8px 24px rgba(0, 0, 0, .35); }
 /* Hover and focus are the no-JavaScript fallback only: with no script there is no
    state to toggle, so CSS must still reveal the hint. Once app.js runs it sets
