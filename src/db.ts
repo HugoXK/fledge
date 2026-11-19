@@ -10,6 +10,7 @@ import { canonicalSections, strategyHash } from './strategy/bundle.js'
 import { currentStrategySections } from './strategy/sources.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
+import { loopMetrics } from './metrics/product.js'
 import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
@@ -4870,8 +4871,29 @@ export class Store {
     usersWithPr: number
     costUsd: number
     events: Array<{ name: string; n: number }>
+    // #635 slice: the two durations the counts above cannot answer. Samples are
+    // reported beside each median so a `null` median is read as "nothing to
+    // measure yet", not as a confident zero.
+    firstMerge: { repositories: number; samples: number; medianMs: number | null }
+    readyWait: { samples: number; medianMs: number | null }
   } {
     const count = (sql: string, ...params: Array<string | number>): number => Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0)
+    // Both inputs are timestamp pairs only; `src/metrics/product.ts` owns the
+    // medians so the page and any later caller compute them the same way.
+    const loop = loopMetrics({
+      repositories: this.all<{ created_at: string; first_merged_at: string | null }>(
+        `SELECT r.created_at AS created_at,
+                (SELECT MIN(w.merged_at) FROM work_items w WHERE w.repo_id = r.id AND w.merged_at IS NOT NULL) AS first_merged_at
+           FROM repos r WHERE r.created_at >= ?`,
+        sinceIso,
+      ).map((row) => ({ createdAt: row.created_at, firstMergedAt: row.first_merged_at })),
+      readyPrs: this.all<{ finished_at: string; merged_at: string }>(
+        `SELECT j.finished_at AS finished_at, w.merged_at AS merged_at
+           FROM work_items w JOIN jobs j ON j.id = w.job_id
+          WHERE w.merged_at IS NOT NULL AND w.merged_at >= ? AND j.finished_at IS NOT NULL`,
+        sinceIso,
+      ).map((row) => ({ readyAt: row.finished_at, mergedAt: row.merged_at })),
+    })
     return {
       users: count('SELECT COUNT(*) AS n FROM users WHERE created_at >= ?', sinceIso),
       approved: count("SELECT COUNT(*) AS n FROM users WHERE status = 'approved' AND created_at >= ?", sinceIso),
@@ -4883,6 +4905,8 @@ export class Store {
       usersWithPr: count("SELECT COUNT(DISTINCT user_id) AS n FROM jobs WHERE pr_url IS NOT NULL AND created_at >= ?", sinceIso),
       costUsd: Number(this.get<{ n: number | null }>("SELECT SUM(cost_usd) AS n FROM jobs WHERE created_at >= ?", sinceIso)?.n ?? 0),
       events: this.all<{ name: string; n: number }>('SELECT name, COUNT(*) AS n FROM events WHERE at >= ? GROUP BY name ORDER BY n DESC', sinceIso),
+      firstMerge: { repositories: loop.repositories, ...loop.firstMerge },
+      readyWait: loop.readyWait,
     }
   }
 
