@@ -16,6 +16,13 @@ export interface RulesOverridesPageInput {
   conflictPath?: string
   conflictRevision?: number
   refused?: string
+  // #983: the text and the revision the maintainer submitted on a refused write,
+  // so the page can render them back instead of losing them to a redirect. The
+  // revision is the raw submitted string: an invalid one stays invalid, and a
+  // stale one stays stale, until the maintainer reloads.
+  draftPath?: string
+  draftContent?: string
+  draftRevision?: string
 }
 
 function csrf(viewer: Viewer): string {
@@ -23,9 +30,10 @@ function csrf(viewer: Viewer): string {
 }
 
 export function rulesOverridesPage(input: RulesOverridesPageInput): string {
-  const { config, locale, viewer, repo, overrides, saved, cleared, conflictPath, conflictRevision, refused } = input
+  const { config, locale, viewer, repo, overrides, saved, cleared, conflictPath, conflictRevision, refused, draftPath, draftContent, draftRevision } = input
   const t = translator(locale)
   const byPath = new Map(overrides.map((row) => [row.path, row]))
+  const draft = draftContent === undefined ? undefined : { path: draftPath ?? '', content: draftContent, revision: draftRevision }
 
   const banners: string[] = []
   if (saved !== undefined) banners.push(`<p class="banner ok" data-rules-override-saved="${escapeHtml(saved)}">${escapeHtml(t('覆盖已保存。', 'Override saved.'))}</p>`)
@@ -52,12 +60,14 @@ export function rulesOverridesPage(input: RulesOverridesPageInput): string {
 
   const cards = RULE_PATHS.map((path) => {
     const override = byPath.get(path)
+    // #983: the refused submission wins over the stored row for its own path.
+    const submitted = draft !== undefined && draft.path === path ? draft : undefined
     const form = `<form method="post" action="/repos/${escapeHtml(repo.id)}/rules" class="form" data-rules-override-form="${escapeHtml(path)}">
       ${csrf(viewer)}
       <input type="hidden" name="path" value="${escapeHtml(path)}" />
-      <input type="hidden" name="expected_revision" value="${override?.revision ?? 0}" />
+      <input type="hidden" name="expected_revision" value="${escapeHtml(submitted?.revision ?? String(override?.revision ?? 0))}" />
       <label for="rules-content-${escapeHtml(path.replace(/[^a-z0-9]+/gi, '-'))}">${escapeHtml(t('覆盖内容', 'Override content'))}
-        <textarea id="rules-content-${escapeHtml(path.replace(/[^a-z0-9]+/gi, '-'))}" name="content" rows="8" required>${escapeHtml(override?.content ?? '')}</textarea>
+        <textarea id="rules-content-${escapeHtml(path.replace(/[^a-z0-9]+/gi, '-'))}" name="content" rows="8" required${submitted === undefined ? '' : ` data-rules-override-kept="${escapeHtml(path)}"`}>${escapeHtml(submitted?.content ?? override?.content ?? '')}</textarea>
       </label>
       <button class="btn" type="submit">${escapeHtml(override === undefined ? t('添加覆盖', 'Add override') : t('保存覆盖', 'Save override'))}</button>
     </form>`
@@ -78,11 +88,24 @@ export function rulesOverridesPage(input: RulesOverridesPageInput): string {
     </section>`
   }).join('\n')
 
+  // #983: a refused path outside the three rule files has no card of its own, so
+  // the submitted text is kept in a read-only box rather than thrown away.
+  const keptElsewhere = draft === undefined || RULE_PATHS.includes(draft.path as typeof RULE_PATHS[number])
+    ? ''
+    : `<section class="card" data-rules-override-kept="${escapeHtml(draft.path)}" data-rules-override-kept-state="unrouted">
+      <h2>${escapeHtml(t('你这次提交的内容', 'What you submitted'))}</h2>
+      <p class="muted">${escapeHtml(draft.path === ''
+        ? t('这次提交没有带路径，所以没有保存。下面是你的内容。', 'This submission carried no path, so nothing was saved. Your text is below.')
+        : t(`\`${draft.path}\` 不在三个规则文件里，所以没有保存。下面是你的内容，复制后改到有效路径可以重新提交。`, `\`${draft.path}\` is not one of the three rule files, so nothing was saved. Your text is below; copy it and resubmit under a valid path.`))}</p>
+      <textarea rows="8" readonly aria-label="${escapeHtml(t('你提交的内容', 'Your submitted text'))}">${escapeHtml(draft.content)}</textarea>
+    </section>`
+
   const body = `<section class="card">
     <h1>${escapeHtml(t('仓库规则覆盖', 'Repository rule overrides'))}</h1>
     <p class="muted">${escapeHtml(t('生效顺序：仓库文件 > 控制台覆盖 > 内置行为。控制台覆盖只影响没有同名仓库文件的规则文件，并且从下一个任务开始生效。', 'Precedence: repository file > console override > built-in behaviour. A console override only applies when the repository has no file at that path, and it affects later jobs.'))} · <a href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to the repository'))}</a></p>
     ${banners.join('\n')}
     ${cards}
+    ${keptElsewhere}
   </section>`
 
   return layout({ title: t('仓库规则覆盖', 'Repository rule overrides'), viewer, body, config, locale, path: `/repos/${repo.id}/rules`, active: 'dashboard' })
