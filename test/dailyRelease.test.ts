@@ -290,6 +290,17 @@ test('the planner and the state projection are still the tested modules', () => 
   assert.match(readFileSync('scripts/lib/release-state.mjs', 'utf8'), /labels: \(Array\.isArray\(pr\?\.labels\) \? pr\.labels : \[\]\)\.map\(\(label\) => String\(label\?\.name/)
 })
 
+test('#881: the planner is given the slot boundary, not the runner clock', () => {
+  // The week that decides minor-vs-patch, and the slot the tag is judged
+  // against, must both be the scheduled 02:00Z slot. `new Date()` made them the
+  // runner's instant, which on a host 28 minutes ahead (#758) is the previous
+  // day's slot and can release the same slot twice.
+  const planStep = between('      - name: Plan', '      - name: Decide')
+  assert.match(planStep, /releaseAt: latestBoundary\(/, 'releaseAt is derived from the slot boundary')
+  assert.match(planStep, /import \{ latestBoundary \} from "\.\/scripts\/lib\/release-trigger\.mjs"/, 'the boundary is the tested module, not a literal in the YAML')
+  assert.doesNotMatch(planStep, /releaseAt: new Date\(\)\.toISOString\(\)/, 'the runner clock may not decide the slot or the week')
+})
+
 test('the state job names the ci-ok check in the request, so a busy tip cannot page it away', () => {
   // #567: `GET /commits/{sha}/check-runs?per_page=100` returns the newest 100
   // runs and `ci-ok` sits behind four comment-triggered runs per comment, so a

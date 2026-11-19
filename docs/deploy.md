@@ -368,6 +368,20 @@ once the slot is filled. Install it only on a host whose clock is trustworthy
 `deploy/release-trigger.cron.example`. Raise one alert if no plan exists by
 `02:30Z`.
 
+The trigger refuses to dispatch before the boundary (#881). On a host whose
+clock runs ahead (#758) a `0 2 * * *` cron reaches the API before `02:00Z`, and a
+dispatch then creates a release commit that belongs to the previous day's slot.
+`scripts/trigger-release.mjs` compares its own clock with that day's `02:00Z`
+boundary and exits without making a request (`before-boundary`), so the slot
+falls to GitHub's `schedule` rather than shipping twice; move the cron forward by
+the host's offset so it lands inside `[02:00Z, 02:05Z]`, and fix the clock
+separately. The workflow applies the same rule to a `workflow_dispatch` that
+arrives early, and the slot's own tag rule counts a release committed earlier on
+the slot's UTC day as that slot shipped, so a commit made 28 minutes early no
+longer leaves the slot "unshipped" at the boundary. A tag committed on an earlier
+UTC day still leaves the slot open, and the planner's week comes from the slot
+boundary rather than the runner's instant.
+
 #### The slot watchdog (#941)
 
 The hourly `ci-watchdog` workflow also judges the `02:00Z` slot. Once the
