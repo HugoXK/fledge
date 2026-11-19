@@ -1340,7 +1340,9 @@ attempt is a refusal, because a missing run is not a failure. `--record
 (`src/jobs/mock.ts`, wrapped by `src/jobs/shadow.ts`) over the fixtures and
 writes both the attempts record and the report, so the loop is exercised end to
 end without a bridge, a repository or a token, and the record can be replayed
-through `--attempts` months later. Nothing in that
+through `--attempts` months later. `--versions <id>[,<id>]` names the playbooks,
+models or routers to score; two or more are what a version comparison and a
+saturated-task label need, and the single `mock` default is a smoke run. Nothing in that
 path touches the FlyBot bridge, a user repository or a user token, and the
 report is an artifact rather than a PR comment: promotion stays a human
 decision.
