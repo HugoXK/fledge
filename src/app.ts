@@ -3617,7 +3617,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/repos/:id/jobs/:jobId', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const queued = store.listQueuedJobs()
@@ -3634,6 +3634,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       job,
+      // #1040: the press is gated on the actor's role, so the page that draws the
+      // control reads the same role the route decides with.
+      viewerRole: role === 'maintainer' || role === 'developer' || role === 'viewer' ? role : 'viewer',
       changeStory: pull.story,
       pullTip: pull.tip,
       // #264: the card's merge control is the same `task.merge` command the
@@ -3906,12 +3909,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // record, no challenge reason, a role that cannot answer) is refused before a
   // write, and the record itself is never rewritten by the press.
   app.post('/repos/:id/jobs/:jobId/red-test', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const back = `/repos/${repo.id}/jobs/${job.id}`
     const t = translator(request.locale ?? 'zh')
-    if (repo.repo_role !== 'maintainer') {
+    // #1040: the actor's role, not `repo.repo_role`. That column declares what
+    // access Fledge was granted upstream and stays NULL on a connected
+    // repository, so reading it locked the owner out while letting a member
+    // through on a repository that happened to declare itself maintainer.
+    if (role !== 'maintainer') {
       return reply.redirect(`${back}?error=${encodeURIComponent(t('只有 maintainer 可以复核红测记录。', 'Only a maintainer can decide the red-test claim.'))}`)
     }
     const evidence = parseEvidenceJson(job.evidence_json)

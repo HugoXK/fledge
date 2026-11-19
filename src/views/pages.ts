@@ -3365,6 +3365,11 @@ export function jobPage(input: {
   resume?: { revision: number; idempotencyKey: string }
   retry?: { revision: number; idempotencyKey: string }
   supportMode?: boolean
+  // #1040: the actor's role on this repository (`ownedRepo`'s own answer), not
+  // `repo.repo_role`: that column declares Fledge's upstream access and stays
+  // NULL on a connected repository. Absent on a surface that cannot write, which
+  // draws no control.
+  viewerRole?: 'maintainer' | 'developer' | 'viewer'
   notice?: string
   error?: string
 }): string {
@@ -3547,7 +3552,7 @@ export function jobPage(input: {
   // The control exists only where the operation can succeed: a maintainer, a
   // stored record to answer, and a writable surface. A press is refused by the
   // route as well, so a bypassed form decides nothing.
-  const redTestForm = redTest === null || supportMode || repo.repo_role !== 'maintainer'
+  const redTestForm = redTest === null || supportMode || input.viewerRole !== 'maintainer'
     ? ''
     : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/red-test" class="row" data-red-test-form>${csrf(viewer)}<input type="text" name="note" maxlength="300" placeholder="${escapeHtml(t('质疑时写理由（至少 8 字）', 'Reason when you challenge (8+ characters)'))}" aria-label="${escapeHtml(t('红测决定理由', 'Red-run decision reason'))}" /><button class="btn btn-ghost btn-small" type="submit" name="decision" value="confirm">${escapeHtml(t('确认这是预期的红', 'Confirm the intended red'))}</button><button class="btn btn-ghost btn-small" type="submit" name="decision" value="challenge">${escapeHtml(t('质疑这次红测', 'Challenge this red run'))}</button></form>`
 
