@@ -2668,3 +2668,55 @@ test('the job page shows the selected tests, the impact reason and the quarantin
     store.close()
   }
 })
+
+// #1069: quiet hours are a window on the notification card, read in the digest
+// timezone. Both languages must carry the fields; a lone time, an equal pair or
+// a malformed value is refused instead of being saved as a silent 24h mute.
+test('the settings page offers quiet hours in the digest timezone and saves or clears them', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'quiet-hours-ui', status: 'approved' })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="quietStart"/, 'the start time is on the notification card')
+    assert.match(page.body, /name="quietEnd"/, 'the end time is on the card')
+    assert.match(page.body, /安静时段/, 'the Chinese label is present')
+    assert.match(page.body, /Asia\/Shanghai/, 'the window names the zone it is read in')
+
+    const english = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie, 'accept-language': 'en' } })
+    assert.equal(english.statusCode, 200)
+    assert.match(english.body, /name="quietStart"/)
+    assert.match(english.body, /Quiet hours/i)
+
+    const save = (fields: Record<string, string>): Promise<{ statusCode: number }> => built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, jobUpdates: '1', dailyDigest: '1', action: 'save', ...fields }),
+    })
+
+    assert.equal((await save({ quietStart: '23:00', quietEnd: '07:00' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_start, '23:00')
+    assert.equal(store.userById(user.id)?.quiet_hours_end, '07:00')
+
+    const rendered = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.match(rendered.body, /name="quietStart" value="23:00"/)
+    assert.match(rendered.body, /name="quietEnd" value="07:00"/)
+
+    assert.equal((await save({ quietStart: '07:00', quietEnd: '07:00' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_start, '23:00', 'an empty window is refused, not saved')
+    assert.equal(store.userById(user.id)?.quiet_hours_end, '07:00')
+
+    assert.equal((await save({ quietStart: '23:00', quietEnd: '' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_end, '07:00', 'half a window is refused')
+
+    assert.equal((await save({ quietStart: '', quietEnd: '' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_start, null, 'leaving both blank turns the window off')
+    assert.equal(store.userById(user.id)?.quiet_hours_end, null)
+  } finally {
+    await built.close()
+  }
+})

@@ -361,3 +361,72 @@ test('a send whose installation still resolves is delivered', async () => {
     assert.equal(store.listNotificationOutbox({}, 10, 0)[0]?.state, 'sent')
   } finally { store.close() }
 })
+
+// #1069: quiet hours queue the mail with a due time instead of sending it
+// inline. The queue must not claim it early, and once the window has ended a
+// send that cannot be confirmed is `unknown`, never a fabricated `sent`.
+test('a notification queued with a due time waits for it, then a held send that cannot be confirmed is unknown', async () => {
+  const h = harness('quiet-due')
+  try {
+    const due = T0 + 4 * 60 * 60 * 1000
+    const queued = h.store.enqueueNotification({
+      transport: 'email',
+      destination: 'user@example.com',
+      userId: h.userId,
+      payload: { subject: 'Held until morning', text: 'Body' },
+      idempotencyKey: 'job_email:held',
+      now: T0,
+      dueAtMs: due,
+    })
+    assert.equal(queued.row.next_attempt_at, due, 'the row carries the window end')
+    assert.equal(queued.row.state, 'pending')
+
+    assert.equal(h.store.claimNotificationOutbox(due - 1, OUTBOX_LEASE_MS, 10).length, 0, 'the row is not claimable before its due time')
+    assert.equal(h.store.claimNotificationOutbox(due, OUTBOX_LEASE_MS, 10).length, 1, 'the row is claimable at its due time')
+
+    const unconfirmedRow = h.store.enqueueNotification({
+      transport: 'email',
+      destination: 'user@example.com',
+      userId: h.userId,
+      payload: { subject: 'Held until morning, unconfirmed', text: 'Body' },
+      idempotencyKey: 'job_email:held-unknown',
+      now: T0,
+      dueAtMs: due,
+    })
+    const unconfirmed = await deliverOutbox(h.store, {
+      email: emailTransport(h.store, {
+        send: async () => { throw new Error('timed out after the request left the process') },
+      }),
+      webhook: { send: async () => ({ state: 'sent' }) },
+    }, { now: due + 1, leaseMs: OUTBOX_LEASE_MS })
+    assert.equal(unconfirmed.unknown, 1)
+
+    const settled = h.store.getNotificationOutbox(unconfirmedRow.row.id)
+    assert.equal(settled?.state, 'unknown', 'an unconfirmable held send is never guessed as sent')
+    assert.equal(settled?.sent_at, null)
+    assert.equal(settled?.next_attempt_at, null, 'unknown waits for a human instead of retrying')
+    assert.equal(h.store.claimNotificationOutbox(due + 2, OUTBOX_LEASE_MS, 10).length, 0, 'unknown is not resent automatically')
+
+    const delivered = h.store.enqueueNotification({
+      transport: 'email',
+      destination: 'user@example.com',
+      userId: h.userId,
+      payload: { subject: 'Held until morning, delivered', text: 'Body' },
+      idempotencyKey: 'job_email:held-ok',
+      now: T0,
+      dueAtMs: due,
+    })
+    const mailer = new MemoryMailer()
+    const pass = await deliverOutbox(h.store, {
+      email: emailTransport(h.store, mailer),
+      webhook: { send: async () => ({ state: 'sent' }) },
+    }, { now: due + 1, leaseMs: OUTBOX_LEASE_MS })
+    assert.equal(pass.sent, 1)
+    assert.equal(mailer.messages.length, 1, 'the held message is delivered exactly once, unchanged')
+    assert.equal(mailer.messages[0]?.subject, 'Held until morning, delivered')
+    assert.equal(h.store.getNotificationOutbox(delivered.row.id)?.state, 'sent')
+  } finally {
+    h.store.close()
+  }
+})
+

@@ -55,11 +55,23 @@ export interface JobEmailInput {
   lastFailureMailAtMs: number | null
   nowMs: number
   cooldownMinutes: number
+  /**
+   * When the user's quiet-hours window ends, epoch ms, or null when no window
+   * contains `nowMs`. The caller computes it with `quietHoursDueAt`; a
+   * scheduled mail that would otherwise send is deferred to this instant.
+   */
+  quietHoursEndsAtMs?: number | null
 }
 
 export type JobEmailDecision =
   | { send: true; template: 'success' | 'failure'; clearWindow: boolean }
   | { send: false; reason: JobEmailSkipReason; clearWindow: boolean }
+  /**
+   * The mail exists but its send is held until the quiet-hours window ends.
+   * `template` and `clearWindow` carry what an immediate send would have done.
+   */
+  | { send: false; reason: 'quiet-hours'; template: 'success' | 'failure'; clearWindow: boolean; dueAtMs: number }
+
 
 /**
  * `manual` is a person by construction: every enqueue of it is a console route.
@@ -72,11 +84,83 @@ export function isOwnerStartedRun(input: { trigger: string; ownerStarted: boolea
   return input.ownerStarted || input.trigger === 'manual'
 }
 
+/** Strict `HH:MM` in 24-hour form; anything that does not parse is not a window. */
+function clockMinutes(value: string): number | null {
+  const match = /^([01][0-9]|2[0-3]):([0-5][0-9])$/.exec(value)
+  if (match === null) return null
+  return Number(match[1]) * 60 + Number(match[2])
+}
+
+/** The local wall clock in `timeZone`, as seconds since that day's midnight. */
+function localSecondsOfDay(nowMs: number, timeZone: string): number | null {
+  try {
+    const parts = new Intl.DateTimeFormat('en-GB', {
+      timeZone,
+      hour: '2-digit',
+      minute: '2-digit',
+      second: '2-digit',
+      hour12: false,
+    }).formatToParts(new Date(nowMs))
+    const part = (type: string): number => Number(parts.find((entry) => entry.type === type)?.value ?? Number.NaN)
+    const hour = part('hour')
+    const minute = part('minute')
+    const second = part('second')
+    if (![hour, minute, second].every((value) => Number.isFinite(value))) return null
+    return hour * 3600 + minute * 60 + second
+  } catch {
+    return null
+  }
+}
+
+/**
+ * #1069: the instant a quiet-hours window ends when `nowMs` sits inside it,
+ * or null when the window is absent, malformed or does not contain `nowMs`.
+ *
+ * The window is wall-clock time in `timeZone` (the digest's zone, because that
+ * is the clock the user already reads). A start equal to the end is "no window"
+ * rather than a full day, and a malformed value never holds a mail: a bad
+ * setting must not become a permanent mute.
+ */
+export function quietHoursDueAt(input: {
+  nowMs: number
+  start: string
+  end: string
+  timeZone: string
+}): number | null {
+  const start = clockMinutes(input.start)
+  const end = clockMinutes(input.end)
+  if (start === null || end === null || start === end) return null
+  const local = localSecondsOfDay(input.nowMs, input.timeZone)
+  if (local === null) return null
+
+  const startSeconds = start * 60
+  const endSeconds = end * 60
+  const inside = start < end
+    ? local >= startSeconds && local < endSeconds
+    : local >= startSeconds || local < endSeconds
+  if (!inside) return null
+
+  let deltaSeconds = endSeconds - local
+  if (deltaSeconds <= 0) deltaSeconds += 24 * 3600
+  return input.nowMs + deltaSeconds * 1000
+}
+
+function quietHoursDeferral(
+  input: JobEmailInput,
+  template: 'success' | 'failure',
+  clearWindow: boolean,
+): { send: false; reason: 'quiet-hours'; template: 'success' | 'failure'; clearWindow: boolean; dueAtMs: number } | null {
+  const dueAtMs = input.quietHoursEndsAtMs
+  if (dueAtMs === null || dueAtMs === undefined || !Number.isFinite(dueAtMs)) return null
+  return { send: false, reason: 'quiet-hours', template, clearWindow, dueAtMs }
+}
+
 export function jobEmailDecision(input: JobEmailInput): JobEmailDecision {
   if (input.status === 'succeeded') {
     if (isOwnerStartedRun(input)) return { send: true, template: 'success', clearWindow: true }
-    if (input.successEmailEnabled) return { send: true, template: 'success', clearWindow: true }
-    return { send: false, reason: 'scheduled-success', clearWindow: true }
+    if (!input.successEmailEnabled) return { send: false, reason: 'scheduled-success', clearWindow: true }
+    const deferred = quietHoursDeferral(input, 'success', true)
+    return deferred ?? { send: true, template: 'success', clearWindow: true }
   }
   // The retry is the next word, so this failure is not the one to send.
   if (input.retryPending) return { send: false, reason: 'retry-pending', clearWindow: false }
@@ -90,5 +174,6 @@ export function jobEmailDecision(input: JobEmailInput): JobEmailDecision {
   if (windowMs > 0 && since !== null && input.nowMs - since < windowMs) {
     return { send: false, reason: 'cooldown', clearWindow: false }
   }
-  return { send: true, template: 'failure', clearWindow: false }
+  const deferred = quietHoursDeferral(input, 'failure', false)
+  return deferred ?? { send: true, template: 'failure', clearWindow: false }
 }

@@ -791,9 +791,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   row instead of a call whose failure lived only in a log line — the digests,
   question mails, ops alerts and per-job/PR webhooks are queued with an
   idempotency key, so a replayed callback or a second tick
-  keeps one row rather than sending twice. Per-job success/failure mail and the
-  transactional approval, quota, trial and feedback mail still send inline in
-  this slice; they are not queued rows yet. A tick pass sweeps lapsed `sending`
+  keeps one row rather than sending twice. Per-job success/failure mail sends
+  inline, except inside the user's quiet-hours window (#1069): it is then queued
+  as a durable row whose `next_attempt_at` is the window's end, read in the
+  digest timezone from `users.quiet_hours_start`/`_end`, and delivered once by
+  the same outbox; a run the user started is never held. The transactional
+  approval, quota, trial and feedback mail still send inline; they are not
+  queued rows. A tick pass sweeps lapsed `sending`
   leases into `unknown`, then attempts the due `pending`/`retry` rows one at a
   time.
   The states are deliberately not interchangeable: a 429/5xx webhook or a 4xx
