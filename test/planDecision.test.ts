@@ -16,7 +16,10 @@ import type { Runner } from '../src/jobs/runner.js'
 import { flashOf, formBody, json, makeUser, MemoryMailer, readBody, sessionFor, startFakeServer, testConfig } from './helpers.js'
 import type { UserRow } from '../src/db.js'
 
-const WEBHOOK_SECRET = 'plan-decision-secret'
+// #634: the fixture stays under the 16-character floor on purpose —
+// `scripts/secret-scan.mjs` reds a qualified `*_SECRET =` value of 16 characters
+// or more, and this file is tracked, so a longer one fails the suite's own scan.
+const WEBHOOK_SECRET = 'secret'
 const ISSUE_URL = 'https://github.com/octo/decision/issues/1'
 const PLAN_SUMMARY = 'Plan: change one file and add one test'
 const PLAN_BASE = '1111111111111111111111111111111111111111'
