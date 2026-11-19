@@ -1357,6 +1357,24 @@ export type MemoryWriteResult =
   | { ok: true; created: boolean; noop: boolean; row: ProjectMemoryRow }
   | { ok: false; code: 'memory_revision_conflict' | 'memory_not_found'; current: ProjectMemoryRow | null; revision: number }
 
+// #1026: the ledger's shape is written once and used twice — `SCHEMA` creates it
+// on a fresh database, and the migration replaces an old-shape table with this
+// same statement — so the two cannot drift. It is a whole table rather than a
+// set of columns because SQLite cannot widen a UNIQUE constraint in place.
+const TEST_RUNS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS test_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  name TEXT NOT NULL,
+  passed INTEGER NOT NULL,
+  recorded_at TEXT NOT NULL,
+  UNIQUE(job_id, head_sha, name)
+);
+CREATE INDEX IF NOT EXISTS test_runs_repo_name_idx ON test_runs(repo_id, name, id DESC);
+`
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -1808,18 +1826,7 @@ CREATE TABLE IF NOT EXISTS settings (
 -- the same job at a new tip: that second run has to reach the ledger, while a
 -- re-check of the same job at the same tip must not count twice. The ledger is
 -- bounded per (repo_id, name) when a run is recorded, not by a retention window.
-CREATE TABLE IF NOT EXISTS test_runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_id TEXT NOT NULL,
-  job_id TEXT NOT NULL,
-  head_sha TEXT NOT NULL,
-  name TEXT NOT NULL,
-  passed INTEGER NOT NULL,
-  recorded_at TEXT NOT NULL,
-  UNIQUE(job_id, head_sha, name)
-);
-CREATE INDEX IF NOT EXISTS test_runs_repo_name_idx ON test_runs(repo_id, name, id DESC);
-
+${TEST_RUNS_SCHEMA}
 CREATE TABLE IF NOT EXISTS job_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -2779,6 +2786,7 @@ export class Store {
     this.migrateNotificationJobColumns()
     this.migratePrincipalColumns()
     this.migrateReleaseColumns()
+    this.migrateTestRunsShape()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -2855,6 +2863,20 @@ export class Store {
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE schedule_occurrences ADD COLUMN ${name} ${type}`)
     }
+  }
+
+  // #1026: `CREATE TABLE IF NOT EXISTS` is a no-op on a database that already has
+  // `test_runs`, and `PRAGMA user_version` reads 48 on both shapes, so nothing
+  // noticed a ledger created before the head sha joined the key — the first write
+  // after the upgrade threw `table test_runs has no column named head_sha`. The
+  // ledger is derived data: nothing references it and a run can be recorded
+  // again, so an old-shape table is replaced from the same statement instead of
+  // being copied row by row.
+  private migrateTestRunsShape(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(test_runs)').map((row) => row.name))
+    if (columns.size === 0 || columns.has('head_sha')) return
+    this.db.exec('DROP TABLE test_runs')
+    this.db.exec(TEST_RUNS_SCHEMA)
   }
 
   migrateIndexes(): void {

@@ -1523,8 +1523,12 @@ A green test check is not proof on its own while the same test has been changing
 its mind. Every completed test-named check run is written to the `test_runs`
 ledger (one row per job, head sha and name — re-checking a job at the same tip
 adds nothing, while the push that re-verifies it at a new tip adds a run — with
-the newest twelve runs kept per repository and name), and `quarantineTests` in
-`src/lib/verification.ts` counts the flips:
+the newest twelve runs kept per repository and name). A ledger written before the
+head sha joined that key is not recognised by `PRAGMA user_version`, which reads
+48 on both shapes: on open, a `test_runs` table without a `head_sha` column is
+dropped and recreated from the statement that also creates it on a fresh database,
+because the ledger is derived data that the next run repopulates. `quarantineTests`
+in `src/lib/verification.ts` counts the flips:
 a test that alternated at least twice inside at least three recorded runs is
 quarantined. A single failure, or a first failure that has not alternated, is not
 a quarantine, because the rule is the alternation and not the red. The evidence
