@@ -162,6 +162,40 @@ test('the retention class deletes the outcome row in the run that deletes the jo
   }
 })
 
+// #1062 review: the rate's numerator summed *failing runs* while its denominator
+// counted deliveries, so one delivery with two failing runs printed 200% — a rate
+// that cannot exist. The rate counts deliveries that carried a failure; the run
+// total stays a count of runs and is printed per row.
+test('the post-merge failure rate counts deliveries, never failing runs', () => {
+  const summary = summariseDeliveries([rowFor('repo_rate', 'one', { post_merge_failures: 2 })])
+  assert.equal(summary.merged, 1)
+  assert.equal(summary.postMergeFailures, 2, 'the run total stays the run total')
+  assert.equal(summary.withPostMergeFailure, 1, 'one delivery carries both failing runs')
+
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'delivery-rate', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_delivery_rate', userId: user.id, owner: 'o', name: 'delivery-rate', defaultBranch: 'main',
+      tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440,
+    })
+    const page = repoPage({
+      config,
+      locale: 'en',
+      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+      repo,
+      jobs: [],
+      deliveryOutcomes: [rowFor(repo.id, 'one', { post_merge_failures: 2 })],
+    })
+    assert.match(page, /data-delivery-merged="1"/)
+    assert.match(page, /data-delivery-post-merge-failure-rate="100%"/, 'one delivery out of one carried a failure')
+    assert.doesNotMatch(page, /200%/, 'a rate above 100% is never printed')
+  } finally {
+    store.close()
+  }
+})
+
 function rowFor(repoId: string, id: string, patch: Partial<DeliveryOutcomeRow> = {}): DeliveryOutcomeRow {
   return {
     id, repo_id: repoId, job_id: null, title: `delivered ${id}`, model: 'v4.1', playbook: 'implement',

@@ -37,6 +37,9 @@ export interface DeliveryOutcomeSummary {
   /** Merged and not reverted: the changes that still stand. */
   kept: number
   withFollowUp: number
+  /** Deliveries that carried at least one failing run — the rate's numerator. */
+  withPostMergeFailure: number
+  /** Failing runs, not deliveries: one delivery can carry more than one. */
   postMergeFailures: number
   costUsd: number | null
   costPerKeptChange: number | null
@@ -71,7 +74,9 @@ export function summariseDeliveries(rows: readonly DeliveryOutcomeRow[]): Delive
   const reverted = rows.filter((row) => row.reverted_at !== null).length
   const kept = merged - reverted
   const withFollowUp = rows.filter((row) => followUpLinks(row).length > 0).length
-  const postMergeFailures = rows.reduce((total, row) => total + (Number.isFinite(row.post_merge_failures) ? row.post_merge_failures : 0), 0)
+  const failures = rows.map((row) => (Number.isFinite(row.post_merge_failures) ? row.post_merge_failures : 0))
+  const postMergeFailures = failures.reduce((total, count) => total + count, 0)
+  const withPostMergeFailure = failures.filter((count) => count > 0).length
   const costs = rows.flatMap((row) => (typeof row.cost_usd === 'number' && Number.isFinite(row.cost_usd) ? [row.cost_usd] : []))
   const costUsd = costs.length === 0 ? null : costs.reduce((total, cost) => total + cost, 0)
   return {
@@ -79,6 +84,7 @@ export function summariseDeliveries(rows: readonly DeliveryOutcomeRow[]): Delive
     reverted,
     kept,
     withFollowUp,
+    withPostMergeFailure,
     postMergeFailures,
     costUsd,
     costPerKeptChange: costUsd === null || kept <= 0 ? null : costUsd / kept,

@@ -1515,6 +1515,10 @@ is the merge commit. A replayed webhook event inserts nothing because the unique
 key is `(repo_id, pr_url)`. The repository's delivery tab prints the window:
 merged, reverted, the three rates and the cost per kept change, with `—` where a
 number was never recorded and a "too few deliveries" label on a single sample.
+Each rate is a count of deliveries over merged: the post-merge failure rate is
+the deliveries that carried at least one failing run, not the runs themselves, so
+one delivery with two failing runs reads 100% and never 200%; the per-run count
+stays on the row, where a count is what it is.
 The row is pruned with the jobs by `RETENTION_CLASSES.deliveryOutcomes` (365
 days), so a delivery and the job that produced it are deleted by the same run.
 Nothing here blocks a merge and nothing pauses a scheduler: the ledger records.
