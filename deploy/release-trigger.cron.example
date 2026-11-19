@@ -10,4 +10,10 @@
 #   GITHUB_TOKEN=<actions:write token>
 #
 # The script never prints the token. Keep the env file out of git.
+#
+# The log line this writes is the proof (#1035): it carries the dispatch instant
+# and the run the dispatch created, so the slot can be told from the scheduled
+# fallback. The check for "was it dispatched by 02:05Z" is not in this cron file:
+# `.github/workflows/release-slot.yml` runs it at 02:10Z, and by hand it is
+#   node scripts/trigger-release.mjs --check-slot
 0 2 * * * cd /opt/fledge && set -a && . /etc/fledge/release-trigger.env && set +a && /usr/bin/node scripts/trigger-release.mjs >> /var/log/fledge/release-trigger.log 2>&1

@@ -178,3 +178,36 @@ test('the console route starts one run per rendered key and says when it replaye
     await built.close()
   }
 })
+
+// #1047: the console's Run now redirects with the sentence the job service
+// wrote, which is Chinese only. An English console therefore prints a Chinese
+// paragraph, while the repository page's own Run now builds the same refusal
+// from its code and prints English. The refusal has to travel as a code and its
+// parameter so the banner can build it in the reader's language.
+test('a refused Run now answers in the console language, not the service language', async () => {
+  const h = harness('run-refused')
+  const base = testConfig()
+  const config = testConfig({ runner: { ...base.runner, maxActiveJobs: 0, queueDispatch: false } })
+  const built = await buildApp({ config, store: h.store, mailer: new MemoryMailer(), runner: { name: 'capture', async run() { return { status: 'running' as const } } }, startScheduler: false })
+  try {
+    saveSchedule(h)
+    const user = h.store.userById(h.userId)!
+    const session = sessionFor(built, user)
+    const repo = h.store.getRepo(h.repoId)!
+    const cookie = `${session.cookie}; fledge_lang=en`
+    const post = await built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/schedule/run-now`,
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf: session.csrf, command_key: 'cmd-key-refused' }),
+    })
+    assert.equal(post.statusCode, 302)
+    const location = String(post.headers.location)
+    assert.match(location, /refused=/, 'the refusal is reported on the page it returns to')
+    const page = await built.app.inject({ method: 'GET', url: location, headers: { cookie } })
+    assert.match(page.body, /The platform already has 0 jobs running at once/, 'the English console prints the English sentence')
+    assert.doesNotMatch(page.body, /平台当前已有/, 'the service\'s Chinese sentence does not reach the English console')
+  } finally {
+    await built.close()
+  }
+})

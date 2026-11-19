@@ -4320,6 +4320,10 @@ export class Jobs {
     ok: boolean
     code?: string
     message?: string
+    // #1047: the value a refusal names (the job limit, the skew in seconds) so
+    // the console's banner can build the sentence in the reader's language,
+    // the same way the repository page's Run now does.
+    detail?: string
     occurrence?: ScheduleOccurrenceRow
     replayed?: boolean
     jobId?: string | null
@@ -4383,6 +4387,7 @@ export class Jobs {
         ok: false,
         code: reason,
         message: result.error ?? '这次运行没有开始。',
+        ...(result.detail === undefined ? {} : { detail: result.detail }),
         ...(settled === undefined ? {} : { occurrence: settled }),
         replayed: false,
         jobId: null,

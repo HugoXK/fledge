@@ -1,0 +1,48 @@
+name: Release slot check
+
+# #1035: the 02:00Z slot is a promise the external trigger keeps, and this job is
+# the check that proves it. `scripts/trigger-release.mjs` dispatches
+# `daily-release.yml` at 02:00Z from a clock we control; GitHub's `schedule` stays
+# the fallback. Five minutes after the 02:05Z deadline, this job reads the run
+# list and fails when no `workflow_dispatch` run landed inside the slot, so a
+# scheduled run that filled it hours late is named `slot-late` rather than counted
+# as the promise kept. An unreadable run list exits 2: "we could not look" is not
+# evidence that nobody came, and the failure names which one happened.
+#
+# The promise wording lives at `daily-release.yml:43-46`, `docs/deploy.md:351-352`
+# and ADR 0024 and does not change with this check.
+
+on:
+  schedule:
+    - cron: '10 2 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-slot-check
+  cancel-in-progress: false
+
+jobs:
+  check-slot:
+    name: no dispatch by 02:05Z fails
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # Read the checker from the default branch, never from a head.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Check that the 02:00Z slot was dispatched by 02:05Z
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/trigger-release.mjs --check-slot
