@@ -473,6 +473,33 @@ and the accessibility contract are fixed:
   captures, `docs/images/ui-v2/476-before-*.jpg` and `476-after-*.jpg` at 1280,
   768 and 360, Chinese and English on one page.
 
+## Plan decision (计划决定) (#634)
+
+A completed plan is a decision, not a form at the foot of a page. The job page
+renders one card, `data-plan-decision="pending|approved|rejected|incomplete"`,
+above the evidence, and the card is the only place the decision is offered:
+
+- **pending** — one primary **批准并运行 / Approve and run**, plus two ghost
+  buttons on the same form: **说明理由后拒绝 / Reject with a reason** and
+  **要求修改计划 / Ask for a revised plan**. The allow/deny path fields and the
+  reason textarea are on that form. The button posts the plan hash it was
+  rendered with, so an edit between the page and the POST is refused instead of
+  approved.
+- **incomplete** — the plan carries no structured evidence, so the same primary
+  is rendered `disabled` with `aria-describedby` pointing at the sentence that
+  says why. A plan nobody can evaluate is not approvable by pressing the button
+  anyway. Reject stays on the card, and so does **要求修改计划 / Ask for a revised
+  plan** when the row has a work item to queue one on; a plan row with no work
+  item (written before that link existed) shows reject only, with a sentence
+  saying why the revision is unavailable.
+- **approved / rejected** — the card becomes the record: who decided, when, the
+  first 12 characters of the plan fingerprint, and either the paths or the
+  reason. No decision button is left on a decided plan.
+
+Execute, Re-check, Retry and Pause/Cancel stay in the header and its **更多操作 /
+More actions** disclosure (#865): the decision row carries one primary action and
+nothing else competes with it.
+
 ## Review trend numbers (审核趋势)
 
 The repository's **Delivery** section renders one card, `#review-trend`, with two
