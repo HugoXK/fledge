@@ -29,7 +29,18 @@ const RED_TEST = {
   flaky: false,
 }
 
-async function fixture(tag: string, withRecord: boolean, role: 'maintainer' | 'developer' = 'maintainer'): Promise<Fixture> {
+// Two different roles decide this press and they are not the same column:
+// `repo_role` declares what access Fledge holds upstream and stays NULL on a
+// connected repository (production shape), while the actor's role comes from
+// `ownedRepo` (the owner, or `repo_members`). The fixture keeps them apart so a
+// case cannot pass by setting the one the other is read as.
+async function fixture(tag: string, withRecord: boolean, options: {
+  /** What the repository declares about Fledge's upstream access. A repository
+   * connected through Fledge carries NULL, which one case below covers by name. */
+  repoRole?: 'maintainer' | 'developer' | null
+  /** Who presses: the owner, or a member granted a role. */
+  actor?: 'owner' | 'maintainer' | 'developer' | 'viewer'
+} = {}): Promise<Fixture> {
   const config = testConfig()
   const store = new Store(':memory:')
   const built = await buildApp({
@@ -39,11 +50,14 @@ async function fixture(tag: string, withRecord: boolean, role: 'maintainer' | 'd
     runner: { name: 'capture', async run() { return { status: 'running' as const } } },
     startScheduler: false,
   })
-  const user = makeUser(store, { login: `red-decision-${tag}`, status: 'approved' })
+  const owner = makeUser(store, { login: `red-decision-owner-${tag}`, status: 'approved' })
+  const actor = options.actor ?? 'owner'
+  const user = actor === 'owner' ? owner : makeUser(store, { login: `red-decision-${tag}`, status: 'approved' })
   const repo = store.createRepo({
-    id: `repo_reddec_${tag}`, userId: user.id, owner: 'o', name: `reddec-${tag}`, defaultBranch: 'main',
-    tokenEnc: 'x', permission: 'admin', repoRole: role, goal: '', autoIterate: false, intervalMinutes: 1440,
+    id: `repo_reddec_${tag}`, userId: owner.id, owner: 'o', name: `reddec-${tag}`, defaultBranch: 'main',
+    tokenEnc: 'x', permission: 'admin', repoRole: options.repoRole === undefined ? 'maintainer' : options.repoRole, goal: '', autoIterate: false, intervalMinutes: 1440,
   })
+  if (actor !== 'owner') store.addRepoMember({ repoId: repo.id, userId: user.id, role: actor, grantedBy: owner.id })
   const jobId = `job_reddec_${tag}`
   store.createJob({
     id: jobId, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'fix the adder',
@@ -154,14 +168,33 @@ test('a job with no red-test record refuses the press instead of recording a dec
   }
 })
 
-test('a developer cannot decide the red claim', async () => {
-  const f = await fixture('dev', true, 'developer')
+test('a developer member cannot decide the red claim, even when the repository declares itself a maintainer', async () => {
+  const f = await fixture('dev', true, { repoRole: 'maintainer', actor: 'developer' })
   try {
     const response = await press(f, 'en', { decision: 'confirm' })
     assert.equal(response.statusCode, 302)
     assert.ok(response.flash?.error)
     assert.match(response.flash?.error?.text ?? '', /maintainer/)
-    assert.equal(storedDecision(f), undefined)
+    assert.equal(storedDecision(f), undefined, 'a member who may not decide writes nothing')
+    const html = await page(f, 'en')
+    assert.doesNotMatch(html, /action="[^"]*\/red-test"/, 'the page draws no control the route would refuse')
+  } finally {
+    await f.close()
+  }
+})
+
+test('the owner decides the claim on a repository that declares no role', async () => {
+  const f = await fixture('owner-null-role', true, { repoRole: null, actor: 'owner' })
+  try {
+    // A repository connected through Fledge carries `repo_role` NULL; the owner
+    // is still the maintainer `ownedRepo` answers, so the control must be there.
+    const html = await page(f, 'en')
+    assert.match(html, /action="[^"]*\/red-test"/, 'the owner sees the control on a connected repository')
+    const response = await press(f, 'en', { decision: 'confirm', note: 'ran the base run myself' })
+    assert.equal(response.statusCode, 302, response.flash?.error?.text ?? 'redirect')
+    assert.ok(response.flash?.notice, 'the press reports what it decided')
+    assert.equal(storedDecision(f)?.decision, 'confirmed', 'the owner decides even with no declared role')
+    assert.equal(storedDecision(f)?.by, f.user.login)
   } finally {
     await f.close()
   }
