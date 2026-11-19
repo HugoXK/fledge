@@ -243,6 +243,20 @@ function buildText(job) {
             : []),
         ]
       : []),
+    // #380: the attestation is the boundary. A job reaches this code only when
+    // every bundle was signed by the instance and its source was allowed at
+    // dispatch; naming the set here means the agent and the record agree even if
+    // a skills list is ever assembled somewhere else.
+    ...(typeof job.skillBundleHash === 'string' && job.skillBundleHash !== ''
+      ? [
+          '',
+          `Attested skill bundles (set ${job.skillBundleHash}):`,
+          ...(Array.isArray(job.skillBundles)
+            ? job.skillBundles.map((bundle) => `- ${bundle.name} from ${bundle.source} (${bundle.state}, sha256 ${bundle.contentHash})`)
+            : []),
+          'Only the bundles listed here may influence this job; do not load a skill from another source.',
+        ]
+      : []),
     '- Do not print the GitHub token or the job token.',
     '- Do not merge; Fledge handles maintainer-enabled auto-merge. Never force-push.',
     '- End every GitHub issue, PR and comment with one small line: "<sub>Fledge · <team> · <role> · <step></sub>" where step is claimed, implemented, tested or reviewed. Never claim a role that did not do the work.',

@@ -955,6 +955,33 @@ test('the dashboard shows a personal delivery card with a selectable window', ()
   }
 })
 
+test('the dashboard masthead uses singular labels for one repository, job and work item', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'masthead-singular', status: 'approved' })
+    const repoOne = store.createRepo({ id: 'repo_masthead_one', userId: user.id, owner: 'o', name: 'one', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repoTwo = store.createRepo({ id: 'repo_masthead_two', userId: user.id, owner: 'o', name: 'two', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const jobOne = makeTerminalJob(store, { id: 'job_masthead_one', repoId: repoOne.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const jobTwo = makeTerminalJob(store, { id: 'job_masthead_two', repoId: repoTwo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const personal = { repos: 1, jobs: 1, succeeded: 1, failed: 0, prs: 0, merged: 0, costUsd: 0, openWorkItems: 1, lastJobAt: jobOne.created_at }
+    const one = dashboardPage({ config, locale: 'en', viewer, repos: [repoOne], jobs: [jobOne], notifications: [], personal })
+    assert.match(one, />1<\/b> repository(?!s)/)
+    assert.doesNotMatch(one, />1<\/b> repositories/)
+    assert.match(one, />1<\/b> job(?!s)/)
+    assert.doesNotMatch(one, />1<\/b> jobs/)
+    assert.match(one, />1<\/b> open work item(?!s)/)
+    assert.doesNotMatch(one, />1<\/b> open work items/)
+    const two = dashboardPage({ config, locale: 'en', viewer, repos: [repoOne, repoTwo], jobs: [jobOne, jobTwo], notifications: [], personal: { ...personal, repos: 2, jobs: 2, openWorkItems: 2 } })
+    assert.match(two, />2<\/b> repositories/)
+    assert.match(two, />2<\/b> jobs/)
+    assert.match(two, />2<\/b> open work items/)
+  } finally {
+    store.close()
+  }
+})
+
 test('the dashboard names a non-USD bucket instead of converting it', () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -2666,5 +2693,57 @@ test('the job page shows the selected tests, the impact reason and the quarantin
     assert.match(read('en'), /No impact map/)
   } finally {
     store.close()
+  }
+})
+
+// #1069: quiet hours are a window on the notification card, read in the digest
+// timezone. Both languages must carry the fields; a lone time, an equal pair or
+// a malformed value is refused instead of being saved as a silent 24h mute.
+test('the settings page offers quiet hours in the digest timezone and saves or clears them', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'quiet-hours-ui', status: 'approved' })
+    const { cookie, csrf } = sessionFor(built, user)
+    const page = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="quietStart"/, 'the start time is on the notification card')
+    assert.match(page.body, /name="quietEnd"/, 'the end time is on the card')
+    assert.match(page.body, /安静时段/, 'the Chinese label is present')
+    assert.match(page.body, /Asia\/Shanghai/, 'the window names the zone it is read in')
+
+    const english = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie, 'accept-language': 'en' } })
+    assert.equal(english.statusCode, 200)
+    assert.match(english.body, /name="quietStart"/)
+    assert.match(english.body, /Quiet hours/i)
+
+    const save = (fields: Record<string, string>): Promise<{ statusCode: number }> => built.app.inject({
+      method: 'POST',
+      url: '/settings/notifications',
+      headers: { cookie, 'content-type': 'application/x-www-form-urlencoded' },
+      payload: formBody({ csrf, jobUpdates: '1', dailyDigest: '1', action: 'save', ...fields }),
+    })
+
+    assert.equal((await save({ quietStart: '23:00', quietEnd: '07:00' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_start, '23:00')
+    assert.equal(store.userById(user.id)?.quiet_hours_end, '07:00')
+
+    const rendered = await built.app.inject({ method: 'GET', url: '/settings', headers: { cookie } })
+    assert.match(rendered.body, /name="quietStart" value="23:00"/)
+    assert.match(rendered.body, /name="quietEnd" value="07:00"/)
+
+    assert.equal((await save({ quietStart: '07:00', quietEnd: '07:00' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_start, '23:00', 'an empty window is refused, not saved')
+    assert.equal(store.userById(user.id)?.quiet_hours_end, '07:00')
+
+    assert.equal((await save({ quietStart: '23:00', quietEnd: '' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_end, '07:00', 'half a window is refused')
+
+    assert.equal((await save({ quietStart: '', quietEnd: '' })).statusCode, 302)
+    assert.equal(store.userById(user.id)?.quiet_hours_start, null, 'leaving both blank turns the window off')
+    assert.equal(store.userById(user.id)?.quiet_hours_end, null)
+  } finally {
+    await built.close()
   }
 })

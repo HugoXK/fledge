@@ -158,3 +158,50 @@ test('previewAndDispatch refuses before writing when the preview is not eligible
   await assert.rejects(previewAndDispatch(options(fake.fetch)), /release preview refused/)
   assert.equal(fake.calls.some((call) => call.method === 'POST' && call.url.includes('/dispatches')), false)
 })
+
+// #984: GitHub runs `daily-release.yml` as it exists at the ref the dispatch
+// names, with that workflow's secrets and write scopes, so a misconfigured
+// RELEASE_DISPATCH_REF would run another branch's copy with the repository's
+// privileges. The refusal has to happen before the first request leaves.
+test('a dispatch ref that is not the default branch is refused before any request', async () => {
+  for (const ref of ['some-branch', 'dev1/984-release-dispatch-ref', 'v0.4.0']) {
+    const fake = fakeFetch()
+    const offMain = { ...options(fake.fetch), ref }
+    await assert.rejects(previewRelease(offMain), new RegExp(`RELEASE_DISPATCH_REF is not the default branch: ${ref}`))
+    await assert.rejects(previewAndDispatch(offMain), new RegExp(`RELEASE_DISPATCH_REF is not the default branch: ${ref}`))
+    assert.deepEqual(fake.calls, [], `ref ${ref} must not send a request`)
+  }
+})
+
+test('a malformed repository or workflow name is refused before any request', async () => {
+  const badRepo = fakeFetch()
+  await assert.rejects(
+    previewRelease({ ...options(badRepo.fetch), repo: 'not-a-repo' }),
+    /RELEASE_DISPATCH_REPO is not owner\/name: not-a-repo/,
+  )
+  assert.deepEqual(badRepo.calls, [], 'a malformed repository must not send a request')
+
+  for (const repo of ['o/../x', '../x', 'o/r/extra']) {
+    const fake = fakeFetch()
+    await assert.rejects(previewRelease({ ...options(fake.fetch), repo }), /RELEASE_DISPATCH_REPO is not owner\/name/)
+    assert.deepEqual(fake.calls, [], `repository ${repo} must not send a request`)
+  }
+
+  for (const workflow of ['release', 'daily-release.yaml', '../../x.yml']) {
+    const fake = fakeFetch()
+    await assert.rejects(
+      previewRelease({ ...options(fake.fetch), workflow }),
+      /RELEASE_DISPATCH_WORKFLOW is not a workflow file/,
+    )
+    assert.deepEqual(fake.calls, [], `workflow ${workflow} must not send a request`)
+  }
+})
+
+test('the default branch still dispatches exactly one dry_run=false request', async () => {
+  const fake = fakeFetch()
+  const { result } = await previewAndDispatch({ ...options(fake.fetch), ref: 'main' })
+  assert.equal(result.ok, true)
+  const dispatches = fake.calls.filter((call) => call.method === 'POST' && call.url.includes('/dispatches'))
+  assert.equal(dispatches.length, 1)
+  assert.deepEqual(JSON.parse(dispatches[0]?.body ?? '{}'), { ref: 'main', inputs: { dry_run: 'false' } })
+})

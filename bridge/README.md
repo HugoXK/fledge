@@ -142,6 +142,14 @@ stages or authority, and Fledge never executes them. The body is capped at 32 Ki
 per file and 256 KiB for the set; a set whose rule text does not fit the 16000-byte
 prompt budget refuses the job instead of being truncated.
 
+Every dispatch also carries the skill bundles Fledge attested before the job
+started: `skillBundleHash` (the set hash) and `skillBundles`, a closed list of
+`{name, source, version, contentHash, state}`. The prompt lists them under
+"Attested skill bundles" and says that only the listed bundles may influence the
+job. The list is provenance, not a capability: it does not widen the rules or
+skills contract above, and an agent that loads a skill from another source is
+outside this job's attestation.
+
 The callback answers:
 
 - `200 {"ok":true}` — recorded;

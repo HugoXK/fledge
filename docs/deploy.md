@@ -343,6 +343,13 @@ preview read, and the Admin page names the scope it needs.
 An empty value disables the action instead of failing the Admin page. The token
 is never rendered, logged or returned by the route.
 
+`RELEASE_DISPATCH_REPO` must be `owner/name`, `RELEASE_DISPATCH_WORKFLOW` must be
+a `.yml` file name, and `RELEASE_DISPATCH_REF` must be the default branch
+(`main`). GitHub runs the workflow file as it exists at the dispatched ref, with
+that run's secrets and write scopes, so any other value is refused before the
+first request with a message naming the setting; the same `main` the preview
+reads is the only ref the action can mean.
+
 A release is not a deploy. Production may already run `main` ahead of the latest
 tag; the next infra `service-update-fledge.sh` run installs the version-bump
 commit after the release PR merges. A separate operator action owns any restart.
