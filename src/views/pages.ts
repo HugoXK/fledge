@@ -1149,6 +1149,7 @@ export function dashboardPage(input: {
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const questions = input.questions ?? []
   const personal = input.personal
+  const openWorkItems = personal?.openWorkItems ?? 0
   const windowDays = input.windowDays ?? 7
   const alerts = input.alerts ?? []
   const reposPage = input.reposPage ?? 1
@@ -1247,7 +1248,7 @@ export function dashboardPage(input: {
     <div class="masthead-copy">
       <h1>${escapeHtml(t('仓库', 'Repositories'))}</h1>
       <p class="lede">${escapeHtml(t('接入仓库、写下一个目标；团队每次只交回一个 PR，由你审核并合并。', 'Connect a repository and state one goal; the team returns one pull request for you to review and merge.'))}</p>
-      <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', 'repositories'))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', 'jobs'))}</span><span><b>${personal?.openWorkItems ?? 0}</b> ${escapeHtml(t('个未完成工作项', 'open work items'))}</span></div>
+      <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', `repositor${reposTotal === 1 ? 'y' : 'ies'}`))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', `job${jobsTotal === 1 ? '' : 's'}`))}</span><span><b>${openWorkItems}</b> ${escapeHtml(t('个未完成工作项', `open work item${openWorkItems === 1 ? '' : 's'}`))}</span></div>
     </div>
     ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
   </section>

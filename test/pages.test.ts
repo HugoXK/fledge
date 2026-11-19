@@ -887,6 +887,33 @@ test('the dashboard shows a personal delivery card with a selectable window', ()
   }
 })
 
+test('the dashboard masthead uses singular labels for one repository, job and work item', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'masthead-singular', status: 'approved' })
+    const repoOne = store.createRepo({ id: 'repo_masthead_one', userId: user.id, owner: 'o', name: 'one', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const repoTwo = store.createRepo({ id: 'repo_masthead_two', userId: user.id, owner: 'o', name: 'two', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const jobOne = makeTerminalJob(store, { id: 'job_masthead_one', repoId: repoOne.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const jobTwo = makeTerminalJob(store, { id: 'job_masthead_two', repoId: repoTwo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const personal = { repos: 1, jobs: 1, succeeded: 1, failed: 0, prs: 0, merged: 0, costUsd: 0, openWorkItems: 1, lastJobAt: jobOne.created_at }
+    const one = dashboardPage({ config, locale: 'en', viewer, repos: [repoOne], jobs: [jobOne], notifications: [], personal })
+    assert.match(one, />1<\/b> repository(?!s)/)
+    assert.doesNotMatch(one, />1<\/b> repositories/)
+    assert.match(one, />1<\/b> job(?!s)/)
+    assert.doesNotMatch(one, />1<\/b> jobs/)
+    assert.match(one, />1<\/b> open work item(?!s)/)
+    assert.doesNotMatch(one, />1<\/b> open work items/)
+    const two = dashboardPage({ config, locale: 'en', viewer, repos: [repoOne, repoTwo], jobs: [jobOne, jobTwo], notifications: [], personal: { ...personal, repos: 2, jobs: 2, openWorkItems: 2 } })
+    assert.match(two, />2<\/b> repositories/)
+    assert.match(two, />2<\/b> jobs/)
+    assert.match(two, />2<\/b> open work items/)
+  } finally {
+    store.close()
+  }
+})
+
 test('the dashboard names a non-USD bucket instead of converting it', () => {
   const config = testConfig()
   const store = new Store(':memory:')
