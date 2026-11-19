@@ -616,11 +616,16 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   the schedule's zone, and mark a local time the spring-forward gap removed as
   skipped rather than shifting it. Because the interval form has no timezone, an
   interval that arrives with one is refused by name instead of being accepted and
-  shown as if a zone applied. The interval the summary line prints is the stored
-  value echoed exactly through `intervalFieldText`, the same helper the console
-  uses, so a 90-second cadence never reads as two minutes above rows 90 seconds
-  apart (#1054); a whole number of minutes keeps its day/hour/minute label because
-  that label is exact. A preview stores nothing and creates no job. Each
+  shown as if a zone applied — the same refusal whether the request names
+  `mode=interval` or the bare `every=` (#1058). The console's interval panel has no
+  zone control of its own and the shared timezone select belongs to the cron
+  modes, so the page asks the planner to plan that mode without a zone while it
+  still echoes a zone the URL carried back into the select; the API has no panel
+  to know that, and keeps refusing one. The interval the summary line prints is the
+  stored value echoed exactly through `intervalFieldText`, the same helper the
+  console uses, so a 90-second cadence never reads as two minutes above rows 90
+  seconds apart (#1054); a whole number of minutes keeps its day/hour/minute label
+  because that label is exact. A preview stores nothing and creates no job. Each
   refusal is authored in both Chinese and English where the planner raises it,
   The console page leads with a human mode picker (#675): every N
   minutes/hours, every day at a time, weekdays at a time, weekly on a weekday,
@@ -3073,6 +3078,12 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   the current entry is left untouched — the store compares inside one
   `BEGIN IMMEDIATE` transaction and appends the version only after the fence
   passes. An identical write is a no-op and creates no revision.
+- **A key is the entry's identity.** The write form renders the Key field
+  read-only when it edits an existing entry and says one sentence about it,
+  because a revision cannot rename a key; a new entry still names its own key.
+  A write aimed at a key that holds no entry stays refused as
+  `memory_not_found`, unchanged: the same answer must cover an entry hidden by
+  its audience, so the refusal cannot say which of the two happened.
 - **Reads are exact.** A read names a revision and returns that body, its
   `sha256` digest and whether it is historical. Nothing is served from a cache
   and no read returns "the latest" when a revision was asked for. A revision is

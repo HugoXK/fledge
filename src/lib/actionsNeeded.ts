@@ -50,7 +50,9 @@ export function projectJobAction(job: ActionJobFacts): ActionCandidate | null {
   if (job.status === 'failed') {
     return candidate('failed', job.repoId, job.id, {
       reason: '任务失败，可以重跑。',
-      href: `/jobs/${job.id}`,
+      // The job page is `/repos/:id/jobs/:jobId`; `/jobs/<jobId>` is served by
+      // nothing, so the row's only button used to land on the 404 page.
+      href: `/repos/${job.repoId}/jobs/${job.id}`,
       label: '重跑',
       urgent: true,
     })

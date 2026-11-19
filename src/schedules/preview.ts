@@ -189,7 +189,11 @@ function modeSchedule(mode: string, query: Record<string, string | undefined>, t
     }
     const parsed = integerInRange(amount, 1, 10_080, 'every_amount', t)
     if (!parsed.ok) return parsed
-    return { ok: true, cron: '', every: `${parsed.value}${unit}`, timezone: '' }
+    // #1058: the zone travels through even here. Dropping it made the mode path
+    // accept what the bare `every=` path refuses, so the same request got two
+    // answers; the interval rule below is the one place that decides, and it
+    // refuses a zone by name in both shapes.
+    return { ok: true, cron: '', every: `${parsed.value}${unit}`, timezone: (query.timezone ?? '').trim() }
   }
   if (mode === 'custom') {
     const cron = (query.cron ?? '').trim()

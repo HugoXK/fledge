@@ -349,3 +349,29 @@ test('an entry renders the sources it was written with', async () => {
     await h.close()
   }
 })
+
+// #1080: the write form on an existing entry pre-filled its Key field and left
+// it editable, so a person could submit a different key and lose the write to
+// "the entry no longer exists". A key is the entry's identity: the field must be
+// read-only while editing, and a new entry must still be able to name its key.
+test('the Key field of an existing entry is read-only and says why', async () => {
+  const h = await harness()
+  try {
+    const fresh = await page(h)
+    const freshKey = /<input id="memory-key"[^>]*>/.exec(fresh.body)
+    assert.ok(freshKey, 'a new entry still renders the Key field')
+    assert.doesNotMatch(freshKey[0], /\breadonly\b/, 'a new entry names its own key')
+    assert.doesNotMatch(fresh.body, /id="memory-key-rule"/, 'no identity sentence when there is nothing to rename')
+
+    await write(h, entry())
+    const editing = await page(h, '?key=migrations')
+    const editingKey = /<input id="memory-key"[^>]*>/.exec(editing.body)
+    assert.ok(editingKey, 'the edit form still shows the key it edits')
+    assert.match(editingKey[0], /value="migrations"/, 'the read-only field still carries the entry key')
+    assert.match(editingKey[0], /\breadonly\b/, 'an existing entry cannot be renamed from its edit form')
+    assert.match(editing.body, /id="memory-key-rule"/, 'the form says a key is the entry identity')
+    assert.match(editing.body, /key is the entry identity: a new revision cannot rename it/i, 'the sentence names the identity rule, not a deletion')
+  } finally {
+    await h.close()
+  }
+})
