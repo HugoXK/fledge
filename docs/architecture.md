@@ -565,7 +565,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   claim. The console offers the decision where a
   `verify` or `review` run ends, at `POST /repos/:id/jobs/:jobId/decision`, and
   preselects the framework default, so the undecided case is still one ordinary
-  `P2` task rather than an open-ended chain.
+  `P2` task rather than an open-ended chain. The card draws its form only for a
+  role the route accepts — a maintainer or a developer — and a reader who cannot
+  decide is told which role the decision needs instead of being handed a form
+  that can only come back as a refusal. The role is the actor's role on this
+  repository, the same `ownedRepo` answer the red-test control uses;
+  `repo.repo_role` declares Fledge's upstream access and is not the source for
+  who may press.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the

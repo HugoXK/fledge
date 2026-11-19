@@ -4103,9 +4103,17 @@ export function jobPage(input: {
   // offers it where that run ends and already selects the framework default —
   // a separate P2 task — for the case where nobody decides.
   const postQa = (job.kind === 'verify' || job.kind === 'review') && (job.status === 'succeeded' || job.status === 'failed')
+  // #1081: the control exists only where the write can succeed. The decision
+  // route accepts a maintainer or a developer, so any other role is told which
+  // one the decision needs instead of being handed a form that can only come
+  // back as a refusal. `viewerRole` is #1040's read of the actor's role on this
+  // repository; `repo.repo_role` is Fledge's upstream access and stays NULL on a
+  // connected repository, so it is not the source for who may press.
+  const canDecide = input.viewerRole === 'maintainer' || input.viewerRole === 'developer'
   const decisionCard = supportMode || !postQa
     ? ''
-    : `<section class="card" id="decision">
+    : canDecide
+      ? `<section class="card" id="decision">
     <div class="row between"><h2>${escapeHtml(t('下一步', 'What comes next'))}</h2><span class="fine" data-decision-default>${escapeHtml(`${DEFAULT_DECISION.kind} · ${DEFAULT_DECISION.level}`)}</span></div>
     <p class="fine">${escapeHtml(t('验证结束后只做一个有界决定：另开新任务、补充已有任务、标为相关或复发。理由至少 8 字，并给出可核对的证据。没有人做决定时，框架按 P2 另开一个任务，不猜。', 'A verify run ends in one bounded decision: a separate new task, a supplement to an existing one, related, or a recurrence. It needs a reason of at least 8 characters and checkable evidence. When nobody decides, the framework opens a separate P2 task instead of guessing.'))}</p>
     <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/decision" class="form">
@@ -4122,6 +4130,10 @@ export function jobPage(input: {
       <label>${escapeHtml(t('证据（链接、提交/工单 sha，或带单位的测量值）', 'Evidence (a link, a commit/issue sha, or a measurement with a unit)'))} <input name="evidence" maxlength="300" /></label>
       <button class="btn" type="submit">${escapeHtml(t('记下这一步', 'Record this step'))}</button>
     </form>
+  </section>`
+      : `<section class="card" id="decision">
+    <h2>${escapeHtml(t('下一步', 'What comes next'))}</h2>
+    <p class="fine" data-decision-role-required="viewer">${escapeHtml(t('只有维护者或开发者可以决定下一步。', 'Only a maintainer or a developer can decide what comes next.'))}</p>
   </section>`
   const relationsCard = supportMode
     ? ''
