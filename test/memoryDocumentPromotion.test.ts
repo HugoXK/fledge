@@ -147,6 +147,38 @@ function redirectLocation(result: { headers: Record<string, unknown> }): string 
   return String(result.headers.location ?? '')
 }
 
+function decodeHtml(value: string): string {
+  return value
+    .replaceAll('&amp;', '&')
+    .replaceAll('&quot;', '"')
+    .replaceAll('&#39;', "'")
+    .replaceAll('&lt;', '<')
+    .replaceAll('&gt;', '>')
+}
+
+// What a browser would send when the reader presses the write form's own
+// button: every named control inside #memory-write, with the value the server
+// rendered. A control the page does not render cannot be sent, so a form that
+// omits a required field is not submittable at all.
+function renderedWriteForm(html: string): Record<string, string> {
+  const section = html.slice(html.indexOf('id="memory-write"'))
+  const form = section.slice(0, section.indexOf('</form>'))
+  const values: Record<string, string> = {}
+  for (const tag of form.match(/<input\b[^>]*>/g) ?? []) {
+    const name = /\bname="([^"]*)"/.exec(tag)?.[1]
+    if (name === undefined) continue
+    values[name] = decodeHtml(/\bvalue="([^"]*)"/.exec(tag)?.[1] ?? '')
+  }
+  for (const match of form.matchAll(/<select\b[^>]*\bname="([^"]*)"[^>]*>([\s\S]*?)<\/select>/g)) {
+    const options = match[2] ?? ''
+    const chosen = /<option\b[^>]*\bvalue="([^"]*)"[^>]*\bselected\b/.exec(options) ?? /<option\b[^>]*\bvalue="([^"]*)"/.exec(options)
+    values[match[1] ?? ''] = decodeHtml(chosen?.[1] ?? '')
+  }
+  const body = /<textarea\b[^>]*\bname="body"[^>]*>([\s\S]*?)<\/textarea>/.exec(form)
+  if (body !== null) values.body = decodeHtml(body[1] ?? '')
+  return values
+}
+
 test('a merged document on the default branch promotes the entry and the row names the path and the PR', async () => {
   const h = await harness()
   try {
@@ -243,6 +275,34 @@ test('a promoted entry refuses a body rewrite and names the document that owns i
     const row = h.store.getMemory(h.repo.id, 'release-notes-format')
     assert.equal(row?.body, 'Release notes are grouped by area, newest first.')
     assert.equal(row?.revision, 1)
+  } finally {
+    await h.close()
+  }
+})
+
+// The lock is only a product behaviour if the reader can reach it: the page a
+// document-owned entry renders must be submittable as rendered, and the store's
+// refusal has to be the answer that comes back. Rebuilding the fields from the
+// test's own constants hides this, because the form the browser sends is the
+// page's, not the test's.
+test('the page for a document-owned entry submits its own form and the store refuses it as locked', async () => {
+  const h = await harness()
+  try {
+    await write(h, entry({ document_path: PATH, document_pr: '12' }))
+    const page = await h.built.app.inject({
+      method: 'GET',
+      url: `/repos/${h.repo.id}/memory?key=release-notes-format`,
+      headers: { cookie: `${h.cookie}; fledge_lang=en` },
+    })
+    assert.equal(page.statusCode, 200)
+    const fields = renderedWriteForm(page.body)
+    assert.equal(fields.verification, 'document', 'the rendered write form must carry the verification the store holds')
+    assert.equal(fields.expected_revision, '1')
+
+    const result = await write(h, fields)
+    assert.equal(result.statusCode, 302)
+    assert.match(redirectLocation(result), /refused=memory_document_locked/)
+    assert.equal(h.store.getMemory(h.repo.id, 'release-notes-format')?.revision, 1)
   } finally {
     await h.close()
   }
