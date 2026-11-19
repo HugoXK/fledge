@@ -147,19 +147,16 @@ function redirectLocation(result: { headers: Record<string, unknown> }): string 
   return String(result.headers.location ?? '')
 }
 
-function decodeHtml(value: string): string {
-  return value
-    .replaceAll('&amp;', '&')
-    .replaceAll('&quot;', '"')
-    .replaceAll('&#39;', "'")
-    .replaceAll('&lt;', '<')
-    .replaceAll('&gt;', '>')
-}
-
 // What a browser would send when the reader presses the write form's own
 // button: every named control inside #memory-write, with the value the server
 // rendered. A control the page does not render cannot be sent, so a form that
 // omits a required field is not submittable at all.
+//
+// The values are read verbatim: this fixture's entry contains no `&`, `<`, `>`
+// or quote, so the attribute text is byte-for-byte what a browser submits. A
+// decoder here would only exist to undo escaping the page never applied, and a
+// decode-then-resubmit helper is how a test starts sending a different value
+// than the reader's browser would.
 function renderedWriteForm(html: string): Record<string, string> {
   const section = html.slice(html.indexOf('id="memory-write"'))
   const form = section.slice(0, section.indexOf('</form>'))
@@ -167,15 +164,15 @@ function renderedWriteForm(html: string): Record<string, string> {
   for (const tag of form.match(/<input\b[^>]*>/g) ?? []) {
     const name = /\bname="([^"]*)"/.exec(tag)?.[1]
     if (name === undefined) continue
-    values[name] = decodeHtml(/\bvalue="([^"]*)"/.exec(tag)?.[1] ?? '')
+    values[name] = /\bvalue="([^"]*)"/.exec(tag)?.[1] ?? ''
   }
   for (const match of form.matchAll(/<select\b[^>]*\bname="([^"]*)"[^>]*>([\s\S]*?)<\/select>/g)) {
     const options = match[2] ?? ''
     const chosen = /<option\b[^>]*\bvalue="([^"]*)"[^>]*\bselected\b/.exec(options) ?? /<option\b[^>]*\bvalue="([^"]*)"/.exec(options)
-    values[match[1] ?? ''] = decodeHtml(chosen?.[1] ?? '')
+    values[match[1] ?? ''] = chosen?.[1] ?? ''
   }
   const body = /<textarea\b[^>]*\bname="body"[^>]*>([\s\S]*?)<\/textarea>/.exec(form)
-  if (body !== null) values.body = decodeHtml(body[1] ?? '')
+  if (body !== null) values.body = body[1] ?? ''
   return values
 }
 
