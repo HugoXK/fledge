@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
-import { revertMatchOf, summariseDeliveries } from '../src/lib/deliveryOutcome.js'
+import { revertMatchOf, summariseDeliveries, type DeliveryOutcomeRow } from '../src/lib/deliveryOutcome.js'
 import { RETENTION_CLASSES, retentionDefaultWindows } from '../scripts/lib/retention.mjs'
 import { makeUser } from './helpers.js'
 
@@ -109,16 +109,18 @@ test('the commit matcher reads a revert and leaves an ordinary commit alone', ()
 })
 
 test('the windowed summary prints a missing number as null, never zero', () => {
-  const rows = [
+  const rows: DeliveryOutcomeRow[] = [
     {
+      id: 'delivery_1', repo_id: 'repo', job_id: 'job', title: 'fix the adder', model: 'v4.1', playbook: 'implement',
       pr_url: 'https://github.com/o/r/pull/1', merge_commit: MERGE_A, merged_at: '2026-11-18T10:00:00.000Z', reverted_at: null,
-      cost_usd: 2, follow_up_json: '[]', post_merge_failures: 0, model: 'v4.1', playbook: 'implement',
+      revert_commit: null, cost_usd: 2, follow_up_json: '[]', post_merge_failures: 0,
     },
     {
+      id: 'delivery_2', repo_id: 'repo', job_id: null, title: 'fix the carry', model: null, playbook: null,
       pr_url: 'https://github.com/o/r/pull/2', merge_commit: MERGE_B, merged_at: '2026-11-17T10:00:00.000Z', reverted_at: '2026-11-18T10:00:00.000Z',
-      cost_usd: null, follow_up_json: '["https://github.com/o/r/issues/2"]', post_merge_failures: 1, model: null, playbook: null,
+      revert_commit: 'c'.repeat(40), cost_usd: null, follow_up_json: '["https://github.com/o/r/issues/2"]', post_merge_failures: 1,
     },
-  ] as never
+  ]
   const summary = summariseDeliveries(rows)
   assert.equal(summary.merged, 2)
   assert.equal(summary.reverted, 1)
@@ -127,7 +129,7 @@ test('the windowed summary prints a missing number as null, never zero', () => {
   assert.equal(summary.postMergeFailures, 1)
   assert.equal(summary.costUsd, 2, 'a missing cost is left out of the sum rather than counted as zero')
   assert.equal(summary.costPerKeptChange, 2)
-  assert.equal(summariseDeliveries([{ ...rows[1], reverted_at: null }] as never).costPerKeptChange, null, 'a cost that is not known is null')
+  assert.equal(summariseDeliveries([{ ...rows[1]!, reverted_at: null }]).costPerKeptChange, null, 'a cost that is not known is null')
 })
 
 test('the retention class deletes the outcome row in the run that deletes the job', () => {
@@ -144,7 +146,7 @@ test('the retention class deletes the outcome row in the run that deletes the jo
     assert.ok(cls !== undefined, 'the ledger names its retention class')
     assert.equal(cls.table, 'delivery_outcomes')
     assert.equal(cls.defaultDays, 365, 'the ledger and the jobs it describes share one window')
-    const windows = { ...retentionDefaultWindows(), jobs: 0, deliveryOutcomes: 0 }
+    const windows = { ...retentionDefaultWindows(), jobs: 1, deliveryOutcomes: 1 }
     store.pruneOldData(windows)
     assert.equal(store.getJob('job_delivery_old'), undefined, 'the job row is gone')
     assert.equal(store.listDeliveryOutcomes(repoId, '2000-01-01T00:00:00.000Z').length, 0, 'and its outcome row with it')

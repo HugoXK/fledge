@@ -26,6 +26,7 @@ import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRo
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
+import { followUpLinks, summariseDeliveries, type DeliveryOutcomeRow } from '../lib/deliveryOutcome.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { changeStoryFacts, type ChangeStory, type ChangeStoryFact } from '../lib/changeStory.js'
 import type { PreviewResult } from '../schedules/preview.js'
@@ -1345,7 +1346,7 @@ export interface BudgetScopeView {
   unknownCount: number
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; errorField?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[] }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; errorField?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[]; deliveryOutcomes?: DeliveryOutcomeRow[] }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -1462,6 +1463,36 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     ${openPostmortems.length === 0
       ? `<p class="muted">${escapeHtml(t('没有未关闭的复盘。', 'No open postmortems.'))}</p>`
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('任务', 'Job'))}</th><th>${escapeHtml(t('分类', 'Category'))}</th><th>${escapeHtml(t('疑似原因', 'Suspected cause'))}</th><th>${escapeHtml(t('复发', 'Recurrence'))}</th><th>${escapeHtml(t('首次 / 最近', 'First / last'))}</th><th>${escapeHtml(t('预防措施', 'Preventive action'))}</th></tr></thead><tbody>${postmortemRows}</tbody></table></div>`}
+  </section>`
+  // #371: the post-merge ledger, read as one window. Every number a row did not
+  // record prints as — and a window with no delivery says so, because a
+  // confident zero is a claim the ledger cannot make.
+  const deliveryOutcomes = input.deliveryOutcomes ?? []
+  const deliverySummary = summariseDeliveries(deliveryOutcomes)
+  const deliveryRate = (part: number, total: number): string => (total === 0 ? '—' : `${Math.round((part / total) * 100)}%`)
+  const deliveryCost = deliverySummary.costPerKeptChange === null ? '—' : quotaMoney(deliverySummary.costPerKeptChange * config.quota.usdCny)
+  const deliveryOutcomeRows = deliveryOutcomes.slice(0, 20).map((row) => {
+    const links = followUpLinks(row)
+    return `<tr data-delivery-row="${escapeHtml(row.merge_commit.slice(0, 12))}">
+      <td data-label="${escapeHtml(t('交付', 'Delivery'))}"><a href="${escapeHtml(row.pr_url)}" target="_blank" rel="noreferrer">${escapeHtml(row.title.slice(0, 60))}</a><br /><small class="muted"><code>${escapeHtml(row.merge_commit.slice(0, 12))}</code> · ${escapeHtml(humanTimeShort(row.merged_at))}</small></td>
+      <td data-label="${escapeHtml(t('模型 / 角色', 'Model / role'))}"><small class="muted">${escapeHtml([row.model, row.playbook].filter((part) => part !== null && part !== '').join(' · ') || '—')}</small></td>
+      <td data-label="${escapeHtml(t('回滚', 'Reverted'))}">${row.reverted_at === null ? '—' : `${escapeHtml(humanTimeShort(row.reverted_at))}<br /><small class="muted"><code>${escapeHtml((row.revert_commit ?? '').slice(0, 12))}</code></small>`}</td>
+      <td data-label="${escapeHtml(t('跟进', 'Follow-ups'))}">${links.length === 0 ? '—' : links.length}</td>
+      <td data-label="${escapeHtml(t('合并后失败', 'Post-merge failures'))}">${row.post_merge_failures === 0 ? '—' : row.post_merge_failures}</td>
+      <td data-label="${escapeHtml(t('成本', 'Cost'))}">${row.cost_usd === null ? '—' : quotaMoney(row.cost_usd * config.quota.usdCny)}</td>
+    </tr>`
+  }).join('')
+  const deliveryOutcomesCard = deliveryOutcomes.length === 0
+    ? `<section class="card" id="delivery-outcomes" data-delivery-outcomes="0"><h2>${escapeHtml(t('交付结果', 'Delivered changes'))}</h2><p class="muted">${escapeHtml(t('这个仓库还没有已合并的交付，所以这里不显示 0，而是等你拿到第一行。', 'No delivery has merged in this repository yet, so this card waits for the first row instead of showing a 0.'))}</p></section>`
+    : `<section class="card" id="delivery-outcomes" data-delivery-outcomes="${deliveryOutcomes.length}">
+    <h2>${escapeHtml(t('交付结果', 'Delivered changes'))}</h2>
+    <p class="muted">${escapeHtml(t('合并之后发生了什么：回滚、跟进、合并后的失败，以及每个留存改动的成本。', 'What happened after the merge: reverts, follow-ups, post-merge failures and the cost of each kept change.'))}</p>
+    <div class="list">
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('合并 / 回滚', 'Merged / reverted'))}</strong><small data-delivery-merged="${deliverySummary.merged}" data-delivery-reverted="${deliverySummary.reverted}">${deliverySummary.merged} / ${deliverySummary.reverted}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('回滚率 / 跟进率 / 合并后失败率', 'Revert / follow-up / post-merge failure rate'))}</strong><small data-delivery-revert-rate="${escapeHtml(deliveryRate(deliverySummary.reverted, deliverySummary.merged))}" data-delivery-follow-up-rate="${escapeHtml(deliveryRate(deliverySummary.withFollowUp, deliverySummary.merged))}">${escapeHtml(`${deliveryRate(deliverySummary.reverted, deliverySummary.merged)} · ${deliveryRate(deliverySummary.withFollowUp, deliverySummary.merged)} · ${deliveryRate(deliverySummary.postMergeFailures, deliverySummary.merged)}`)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('每个留存改动的成本', 'Cost per kept change'))}</strong><small data-delivery-cost-per-kept="${escapeHtml(deliveryCost)}">${escapeHtml(deliveryCost)}${deliverySummary.merged < 2 ? ` · ${escapeHtml(t('样本太少，只是提示', 'Too few deliveries to be a rate, shown as a hint only'))}` : ''}</small></div></div>
+    </div>
+    <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('交付', 'Delivery'))}</th><th>${escapeHtml(t('模型 / 角色', 'Model / role'))}</th><th>${escapeHtml(t('回滚', 'Reverted'))}</th><th>${escapeHtml(t('跟进', 'Follow-ups'))}</th><th>${escapeHtml(t('合并后失败', 'Post-merge failures'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th></tr></thead><tbody>${deliveryOutcomeRows}</tbody></table></div>
   </section>`
   const reviewTrendCard = reviewTrend === undefined ? '' : `<section class="card" id="review-trend">
     <div class="row between"><div><div class="eyebrow">${escapeHtml(t('审核质量', 'Review quality'))}</div><h2>${escapeHtml(t('审核趋势', 'Review trend'))}</h2><p class="muted">${escapeHtml(t('只统计这个仓库已完成的审核。空窗口显示 —；少于 5 个审核标注为小样本；要求修改率的分母是记录了结果的审核，不是全部审核。PR→首次决定每个工作项只取第一次审核；改判率的分母是窗口内记录了「要求修改」的决定，分子是这些决定之后仍然合并的次数。', 'Completed reviews for this repository only. An empty window shows —; fewer than 5 reviews is labelled a small sample; the changes-requested rate is over reviews that recorded an outcome, not all reviews. PR→first decision takes one sample per work item at its first review; the override rate is over recorded changes-requested decisions in the window, and its numerator is merges that went past one.'))}</p></div></div>
@@ -2059,7 +2090,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
     }).join('')}</ul>`}
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryOutcomesCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error, notifications: pageMessages })
 }
 

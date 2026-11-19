@@ -1428,6 +1428,21 @@ sha256 of the output, and a second run of the same command at the same base that
 disagrees makes it `unverified` and flaky. Nothing enforces it yet: the base run
 has no producer, so requiring the record would block every pull request rather
 than prove one.
+**After the merge (#371).** A pull request that merges is a delivery, and Fledge
+now keeps what happened next. `delivery_outcomes` holds one row per merged pull
+request — the merge commit, the instant, the title, the producing job's cost,
+model and work type — and the facts that arrive later attach to it: a revert
+(git's own `This reverts commit <sha>.` trailer, found by scanning the base
+branch's recent commits, recorded once with its first instant), a follow-up issue
+whose body names the pull request, and each failing default-branch run whose head
+is the merge commit. A replayed webhook event inserts nothing because the unique
+key is `(repo_id, pr_url)`. The repository's delivery tab prints the window:
+merged, reverted, the three rates and the cost per kept change, with `—` where a
+number was never recorded and a "too few deliveries" label on a single sample.
+The row is pruned with the jobs by `RETENTION_CLASSES.deliveryOutcomes` (365
+days), so a delivery and the job that produced it are deleted by the same run.
+Nothing here blocks a merge and nothing pauses a scheduler: the ledger records.
+
 A claimed green test with a failing test check is contradicted and
 blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and

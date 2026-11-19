@@ -1498,6 +1498,7 @@ built-in value, which is the number the service already enforced:
 | `RETENTION_OUTBOX_DEAD_DAYS` | dead/blocked `notification_outbox` | 90 |
 | `RETENTION_OUTBOX_UNKNOWN_DAYS` | unknown `notification_outbox` | 365 |
 | `RETENTION_JOBS_DAYS` | finished `jobs` | 365 |
+| `RETENTION_DELIVERY_OUTCOMES_DAYS` | `delivery_outcomes` (by `merged_at`) | 365 |
 | `RETENTION_AUDIT_LOG_DAYS` | `audit_log` | 365 |
 | `RETENTION_QUOTA_LEDGER_DAYS` | `quota_ledger` | 730 |
 

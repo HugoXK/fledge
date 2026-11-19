@@ -138,6 +138,7 @@ import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibl
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, GithubError, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
+import { revertMatchOf } from './lib/deliveryOutcome.js'
 import { checkWebhookSignature, GithubApp, webhookSecretSlot } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
@@ -2333,6 +2334,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // what each number means, including when a window has no review at all.
     const trendSince = (days: number): string => new Date(Date.now() - days * 86_400_000).toISOString()
     const reviewTrend = { week: store.reviewTrend(repo.id, trendSince(7)), month: store.reviewTrend(repo.id, trendSince(30)) }
+    // #371: one window for the ledger card; the card itself prints — where a
+    // fact was never recorded rather than a zero.
+    const deliveryOutcomes = store.listDeliveryOutcomes(repo.id, trendSince(90))
     // #697: the two budget scopes this page can set, each with the spend it is
     // compared against. Both read the same rolling 30-day window the repository
     // budget already uses, and both are USD-billed only.
@@ -2431,6 +2435,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         }),
         ...(workState !== undefined && isWorkItemState(workState) ? { workState } : {}),
         reviewTrend,
+        deliveryOutcomes,
         // #544: a repository with a schedule row is answered by the planner, not
         // by the legacy interval rule the page computed for every repository.
         // #723: `enabled` answers before the row does, so a paused repository
@@ -6191,6 +6196,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       }
       store.updateWorkflowFailureLog(stored.row.id, { excerpt, error })
     }
+    // #371: a failing run on the default branch at a delivery's merge commit is a
+    // post-merge failure of that delivery. It counts per run, so a second failing
+    // run is a second fact rather than the same one seen twice.
+    if (!pullRequestRun && headSha !== '' && store.getDeliveryOutcomeByMerge(repo.id, headSha) !== undefined) {
+      store.recordPostMergeFailure(repo.id, headSha, nowIso())
+      store.event('delivery_post_merge_failure', { userId: repo.user_id, repoId: repo.id, meta: `${headSha.slice(0, 12)}:${runId}`.slice(0, 300) })
+    }
     store.event('workflow_failure', {
       userId: repo.user_id,
       repoId: repo.id,
@@ -6503,6 +6515,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     await reply(outcome.ok ? `Implementation job ${commandJobId(outcome) ?? ''} queued.` : `Could not queue a fix: ${outcome.message}`)
   }
 
+  // #371: a merge is a delivery. The row is written here; the revert scan runs
+  // beside it and is best-effort, so a token or network failure leaves the row
+  // un-reverted instead of failing the webhook delivery GitHub will not resend
+  // for the same reason twice.
+  const recordMergedDelivery = (repo: RepoRow, jobId: string | null, prUrl: string, title: string, mergeCommit: string | null): void => {
+    if (mergeCommit === null || mergeCommit === '') return
+    jobs.recordMergedDelivery({ repoId: repo.id, jobId, prUrl, mergeCommit, mergedAt: nowIso(), title })
+    void scanDeliveryReverts(repo).catch((error: unknown) => log.warn('delivery revert scan failed', { repo: repo.id, error: String(error) }))
+  }
+
+  const scanDeliveryReverts = async (repo: RepoRow): Promise<void> => {
+    const token = await repoGithubToken(repo, config, githubApp, store)
+    const client = new GithubClient(token, config.github.apiBase)
+    const commits = await client.listRecentCommits(repo.owner, repo.name, repo.default_branch, 50)
+    for (const commit of commits) {
+      const reverted = revertMatchOf(commit.message)
+      if (reverted === null) continue
+      if (store.markDeliveryReverted({ repoId: repo.id, mergeCommit: reverted, revertCommit: commit.sha, revertedAt: nowIso() })) {
+        store.event('delivery_reverted', { userId: repo.user_id, repoId: repo.id, meta: `${reverted}:${commit.sha}`.slice(0, 300) })
+      }
+    }
+  }
+
   const handleWorkItemEvent = async (event: string, body: Record<string, unknown>): Promise<void> => {
     if (event !== 'issues' && event !== 'pull_request' && event !== 'pull_request_review') return
     const installation = typeof body.installation === 'object' && body.installation !== null ? (body.installation as Record<string, unknown>) : {}
@@ -6534,6 +6569,17 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (existing === undefined) {
         store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, detail, issueUrl, state, priority })
       } else {
+        // #371: an issue that names a delivered pull request is a follow-up to it.
+        // The link counts once; a second comment on the same issue names the same
+        // link and adds nothing.
+        if (!closed) {
+          const since = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString()
+          for (const row of store.listDeliveryOutcomes(repo.id, since)) {
+            if (detail.includes(row.pr_url) && store.linkDeliveryFollowUp(repo.id, row.merge_commit, issueUrl)) {
+              store.event('delivery_follow_up', { userId: repo.user_id, repoId: repo.id, meta: `${row.merge_commit.slice(0, 12)}:${issueUrl}`.slice(0, 300) })
+            }
+          }
+        }
         store.updateWorkItem(existing.id, {
           title,
           detail,
@@ -6555,7 +6601,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       store.updateJobsPrState(prUrl, merged ? 'merged' : closed ? 'closed' : 'open')
       if (existing === undefined && action !== 'opened') return
       if (existing === undefined) {
-        store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? nowIso() : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
+        const created = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? nowIso() : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
+        if (merged) recordMergedDelivery(repo, created.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null)
         return
       }
       if (closed) {
@@ -6564,6 +6611,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           pr_state: merged ? 'merged' : 'closed',
           ...(merged ? { merged_at: nowIso(), merge_commit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null } : {}),
         })
+        if (merged) recordMergedDelivery(repo, existing.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null)
       } else {
         store.updateWorkItem(existing.id, { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
       }

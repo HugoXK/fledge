@@ -34,6 +34,9 @@ const DEFAULT_WINDOWS = {
   outboxDead: 90,
   outboxUnknown: 365,
   jobs: 365,
+  // #371: the post-merge ledger shares the jobs window, so one run removes a
+  // delivery and the job that produced it.
+  deliveryOutcomes: 365,
   auditLog: 365,
   quotaLedger: 730,
 }
