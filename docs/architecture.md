@@ -3199,6 +3199,33 @@ disagree about what the release contains. A stored value that is missing or
 malformed renders no sources rather than an error — the draft Release is the
 record of what shipped, the column is its explanation.
 
+## The release notes may follow the repository's skill (#546 slice 5)
+
+When the repository carries `.agents/skills/release-notes/SKILL.md`, the draft body
+is organised by that skill instead of the plain list. The skill is read through the
+one loader `src/rules.ts` exports, at the commit the release row already pinned —
+`repo_releases.target_sha`, the commit the tag's workflow shipped. A pull request
+head and the default-branch head are never the pin: a release body has to be
+reproducible against what shipped, which is why two rows on the same repository may
+legitimately produce two different bodies. No column was added for the pin; the row
+already carried it.
+
+The prompt carries the skill text and the collected sources, and nothing else: no
+history crawl, no other repository file, no earlier release. The model goes through
+Fledge's own metered gateway with a short-lived repository token minted for the one
+call and revoked in the same request, so the spend is counted by the quota code that
+counts job work rather than by a second, unmetered provider call. The model may
+reorder, group and reword the sources; it may not introduce one. Every URL,
+`#number` and commit sha in the answer must already exist in the collected set, and
+an answer that names anything else is refused whole.
+
+An absent skill, a refused skill, a refused gateway call, and a rejected answer all
+keep the built-in body byte-for-byte — one renderer, not two that agree today — and
+the page says which path produced the body, naming the skill path and the pinned
+commit when the skill was used. The provenance rides in the existing
+`notes_source_json` column; a row written before this slice reads as the built-in
+list.
+
 ## The failed run analysis is read-only (#546 slice 4)
 
 `POST /repos/:id/releases/:releaseId/analyze` reads the failed jobs of the run the

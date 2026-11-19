@@ -11,7 +11,8 @@ import { openStore, type GateSessionRow, type JobRow, type ProjectMemoryVersionR
 import { RETENTION_IDLE_TABLES } from '../scripts/lib/retention.mjs'
 import { createAnnotatedTag, parseVersion, releasePreflight, releaseRefusals } from './releases/release.js'
 import { reconcileRelease, trackingUpdate } from './releases/tracking.js'
-import { collectReleaseNotes, releaseNotesSourceJson } from './releases/notes.js'
+import { collectReleaseNotes, releaseNotesSourceJson, type ReleaseNotes } from './releases/notes.js'
+import { organiseReleaseNotes, readReleaseNotesSkill } from './releases/notesSkill.js'
 import { readReleaseReadiness } from './releases/readiness.js'
 import { AnalysisTokenUnavailable, analyzeReleaseRun, mintAnalysisToken, releaseAnalysisJson } from './releases/analysis.js'
 import { currentStrategySections } from './strategy/sources.js'
@@ -2565,6 +2566,81 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }))
   })
 
+  // #546 slice 5: the draft body may be organised by the repository's own
+  // release-notes skill. The skill is read through the loader #609 merged — one
+  // reader, no second `.agents/skills` walk — at the exact commit the release
+  // row pinned, so a moving default branch or a pull request head cannot change
+  // what a shipped release says. The model call goes through this process's own
+  // metered gateway with a short-lived repository token, so the spend is counted
+  // by the same quota code as job work instead of a direct provider call.
+  const completeNotesWithGateway = async (user: UserRow, repo: RepoRow, prompt: string): Promise<string> => {
+    const raw = `flg_${randomToken(32)}`
+    const tokenId = `tok_${randomToken(8)}`
+    store.createApiToken({
+      id: tokenId,
+      userId: user.id,
+      kind: 'release-notes',
+      name: `release-notes:${repo.id}`,
+      tokenHash: sha256Hex(raw),
+      prefix: raw.slice(0, 8),
+      repoId: repo.id,
+      expiresAt: addMinutes(15),
+    })
+    try {
+      const response = await fetch(`${config.baseUrl.replace(/\/$/, '')}/v1/chat/completions`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${raw}` },
+        body: JSON.stringify({
+          model: config.llm.model,
+          messages: [
+            { role: 'system', content: 'You organise release notes for one repository release. You may reorder, group and reword only the sources you are given; you never add a source, a link or a claim about anything outside them.' },
+            { role: 'user', content: prompt },
+          ],
+        }),
+        signal: AbortSignal.timeout(120_000),
+      })
+      if (!response.ok) throw new Error(`the model gateway answered ${response.status}`)
+      const payload = (await response.json()) as { choices?: Array<{ message?: { content?: unknown } }> }
+      const content = payload.choices?.[0]?.message?.content
+      if (typeof content !== 'string') throw new Error('the model gateway answered without a message body')
+      return content
+    } finally {
+      // One call, one token: the row is revoked whether the gateway answered or
+      // not, so a failed release never leaves a credential behind.
+      store.revokeApiToken(tokenId, user.id)
+    }
+  }
+
+  // Every fallback — no skill, a refused skill, a refused gateway call, an answer
+  // naming a source outside the range — returns #720's built-in body untouched,
+  // and names that path for the page. A range read failure still returns null so
+  // the draft keeps its placeholder sentence rather than losing the Release.
+  const releaseNotesFor = async (
+    user: UserRow,
+    repo: RepoRow,
+    client: GithubClient,
+    owner: string,
+    name: string,
+    previousTag: string | null,
+    targetSha: string,
+    tagName: string,
+  ): Promise<ReleaseNotes | null> => {
+    let notes: ReleaseNotes
+    try {
+      notes = await collectReleaseNotes(client, { owner, name, previousTag, targetSha })
+    } catch (cause) {
+      log.warn('release notes range read failed', { repo: repo.id, tag: tagName, error: String(cause) })
+      return null
+    }
+    const read = await readReleaseNotesSkill(client, owner, name, targetSha)
+    return await organiseReleaseNotes({
+      notes,
+      read,
+      commit: targetSha,
+      complete: (prompt) => completeNotesWithGateway(user, repo, prompt),
+    })
+  }
+
   // #546 slice 2: the tag action behind the readiness page. The page is a
   // prediction and this route is the authority, so the default branch head is
   // read again immediately before the write: the form carries the head it was
@@ -2718,14 +2794,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         draftReleaseId: recorded.draft_release_id === null ? null : Number(recorded.draft_release_id),
         // #546 slice 3: the draft body is the release range. A read failure keeps
         // the draft with its placeholder body instead of losing the Release.
-        notes: async () => {
-          try {
-            return await collectReleaseNotes(client, { owner, name, previousTag: plan.previousTag, targetSha: plan.targetSha })
-          } catch (cause) {
-            log.warn('release notes range read failed', { repo: repo.id, tag: plan.tagName, error: String(cause) })
-            return null
-          }
-        },
+        notes: () => releaseNotesFor(viewer.user, repo, client, owner, name, plan.previousTag, plan.targetSha, plan.tagName),
       })
       store.updateReleaseTracking(recorded.id, trackingUpdate(tracked, {
         draftReleaseId: recorded.draft_release_id,
@@ -2778,14 +2847,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         targetSha: release.target_sha,
         prerelease: (parseVersion(release.version)?.prerelease.length ?? 0) > 0,
         draftReleaseId: release.draft_release_id === null ? null : Number(release.draft_release_id),
-        notes: async () => {
-          try {
-            return await collectReleaseNotes(client, { owner, name, previousTag, targetSha: release.target_sha })
-          } catch (cause) {
-            log.warn('release notes range read failed', { repo: repo.id, tag: release.tag_name, error: String(cause) })
-            return null
-          }
-        },
+        notes: () => releaseNotesFor(viewer.user, repo, client, owner, name, previousTag, release.target_sha, release.tag_name),
       })
     } catch (error) {
       log.warn('release run check failed', { repo: repo.id, tag: release.tag_name, error: String(error) })
