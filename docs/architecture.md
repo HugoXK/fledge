@@ -68,7 +68,24 @@ one event that reaches the page on two paths prints once. A page that used to
 render its own ad-hoc banner hands its messages to the layout as
 `notifications` instead, so a page cannot classify the same event a second time
 outside the region; an entry may carry already-escaped `html` when it needs a
-list or a button the plain-text builder cannot express. A message that belongs
+list or a button the plain-text builder cannot express. The exhausted-quota
+banner is the one page message whose severity depends on a fact the page has to
+be handed: `quotaExhaustedNotice` is built for both the dashboard and the
+console, and each route hands it `platformFunded`, whether any repository of the
+account still runs on the platform model, and the banner prints only when that is
+true. The fact is the per-repository answer (`platformFundedFor`) unless no
+repository is platform-funded *and* the account has a model of its own
+(`setup.modelConfigured` on the dashboard, the same helper on the console): an
+account with no repository at all has chosen nothing yet, so a spent platform
+quota still has something to pause and still shows the banner, which is the state
+every account starts in. The question stays per repository on purpose: one
+own-model repository does not unpause another repository the platform pays for,
+so a mixed account keeps the banner for the paused one, while an account running
+entirely on its own model gets none and is not told that its jobs stopped.
+`setup.modelConfigured` stays the checklist's account-level fact (a model is
+configured somewhere) and only gates the suppression, never the wording. The sentence
+states the split and links `/settings#model-providers`, the same target the next
+action uses. A message that belongs
 to a form or a control — the release card, the settings provider/email/token
 forms, the schedule cron error, the danger card's stale-confirmation step —
 keeps its place next to that form. Each message carries
