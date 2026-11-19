@@ -3521,6 +3521,33 @@ than reported as "no change". The older job keeps its own hash and its own page;
 a bundle change is a diff between two jobs, never a rewrite of the earlier one. A
 job whose row predates the columns renders "no strategy was recorded" rather than
 an empty strategy.
+## Every job can be checked against what it was told (#364)
+
+A dispatched job receives a goal, the playbook, `AGENTS.md`, the path rules, the
+evidence and section requirements, the carry-over and the model and role it runs
+as — today as prose in one prompt. `compileInstructionContract` in
+`src/lib/instructions.ts` compiles that set into one `InstructionContract`, and
+`instructionContractHash` takes its SHA-256 over the canonical JSON of the
+compiled object, so the same instructions always hash the same and any changed
+input is a different contract. `strategy_hash` (#433) records the strategy a job
+ran under; this is the same shape for the instruction set beside it.
+
+`evaluateAdherence` then answers one clause at a time from what a callback
+reports: `contract.hash`, `branch.base`, `paths.denied`, `paths.allowed`,
+`evidence.required`, `sections.required` and `actions.forbidden`. A clause is
+`pass` when it was observed and satisfied, `violation` when it was observed and
+broken, and `unverifiable` when the runner could not observe it — never `pass`,
+because the record exists to separate "checked and clean" from "not checked". A
+callback whose echoed hash is another contract's, or missing, is recorded as not
+verified whatever else it reports. The whole record is `violation` if any clause
+is, otherwise `unverifiable` if any clause is, otherwise `pass`; the clause list
+keeps the reason even when a stronger status decides the record.
+
+The compiler and the evaluator are pure: no store, no clock and no network. The
+job column that keeps the contract, the bridge echo that carries its hash, the
+job-page clause list and the merge refusal that a violation raises are the next
+slice of the same card, and they read this record rather than re-deriving it.
+
 ## One decision, one action id (#633)
 
 The `actions` table holds one row per decision a maintainer has to make, keyed by
