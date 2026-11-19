@@ -452,6 +452,22 @@ deletions }` for that page, and reports no totals when the walk was capped — t
 same rule as the path guard, stated once: a partial listing is unavailable, never
 rounded down and presented as the change.
 
+## Post-merge ledger reads
+
+`GET /repos/:owner/:name/commits?sha=<branch>&per_page=50` supplies the base
+branch's recent history to the post-merge ledger (#371). `listRecentCommits`
+returns `{ sha, message }` for each commit and nothing else, so the caller
+recognises a revert from git's own trailer (`This reverts commit <sha>.`) rather
+than from a title that merely begins with "Revert". One page is read on purpose:
+the ledger only needs the history around the merges a window can see, and a
+commit outside that page is simply not seen yet, not judged and skipped.
+
+A response that is not an array yields an empty list, and an entry missing either
+`sha` or `commit.message` is dropped instead of being half-read. A revert marks
+`merge_commit` only when the ledger already holds that merge, so the read is
+additive: an unrecorded commit, or a second scan of the same history, changes no
+row and moves no clock.
+
 ## Job endpoints
 
 These are called by the FlyBot bridge/agent, not by a browser.

@@ -3,7 +3,9 @@ import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { revertMatchOf, summariseDeliveries, type DeliveryOutcomeRow } from '../src/lib/deliveryOutcome.js'
 import { RETENTION_CLASSES, retentionDefaultWindows } from '../scripts/lib/retention.mjs'
-import { makeUser } from './helpers.js'
+import { quotaMoney } from '../src/views/layout.js'
+import { repoPage } from '../src/views/pages.js'
+import { makeUser, testConfig } from './helpers.js'
 
 // #371: Fledge records that a pull request merged, then forgets it. These cases
 // pin the ledger the card asks for: one row per merged pull request, a revert
@@ -150,6 +152,76 @@ test('the retention class deletes the outcome row in the run that deletes the jo
     store.pruneOldData(windows)
     assert.equal(store.getJob('job_delivery_old'), undefined, 'the job row is gone')
     assert.equal(store.listDeliveryOutcomes(repoId, '2000-01-01T00:00:00.000Z').length, 0, 'and its outcome row with it')
+  } finally {
+    store.close()
+  }
+})
+
+function rowFor(repoId: string, id: string, patch: Partial<DeliveryOutcomeRow> = {}): DeliveryOutcomeRow {
+  return {
+    id, repo_id: repoId, job_id: null, title: `delivered ${id}`, model: 'v4.1', playbook: 'implement',
+    pr_url: `https://github.com/o/delivery-page/pull/${id}`, merge_commit: MERGE_A, merged_at: '2026-11-18T10:00:00.000Z',
+    reverted_at: null, revert_commit: null, cost_usd: 1, follow_up_json: '[]', post_merge_failures: 0,
+    ...patch,
+  }
+}
+
+test('the repo page prints what happened after each merge, and — where a fact is missing', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'delivery-page', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_delivery_page', userId: user.id, owner: 'o', name: 'delivery-page', defaultBranch: 'main',
+      tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440,
+    })
+    const rows: DeliveryOutcomeRow[] = [
+      rowFor(repo.id, 'one', {
+        title: 'fix the adder carry', merge_commit: MERGE_A, reverted_at: '2026-11-18T12:00:00.000Z', revert_commit: REVERT_A,
+        cost_usd: 3, follow_up_json: '["https://github.com/o/delivery-page/issues/1","https://github.com/o/delivery-page/issues/2"]',
+        post_merge_failures: 2,
+      }),
+      rowFor(repo.id, 'two', { title: 'fix the carry', merge_commit: MERGE_B, model: null, playbook: null, cost_usd: null }),
+    ]
+    const page = repoPage({ config, locale: 'en', viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' }, repo, jobs: [], deliveryOutcomes: rows })
+    assert.match(page, /id="delivery-outcomes" data-delivery-outcomes="2"/)
+    assert.match(page, /data-delivery-merged="2" data-delivery-reverted="1"/)
+    assert.match(page, /data-delivery-revert-rate="50%"/)
+    assert.match(page, /data-delivery-follow-up-rate="50%"/)
+    assert.match(page, new RegExp(`data-delivery-cost-per-kept="${quotaMoney(3 * config.quota.usdCny).replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}"`))
+    // The row that recorded everything counts a revert, two follow-ups, two failures and its cost.
+    assert.match(page, /data-delivery-row="aaaaaaaaaaaa"/)
+    assert.match(page, /<code>cccccccccccc<\/code>/)
+    assert.match(page, /<td data-label="Follow-ups">2<\/td>/)
+    assert.match(page, /<td data-label="Post-merge failures">2<\/td>/)
+    // The row that recorded nothing prints — for every fact it never had, model and role included.
+    assert.match(page, /<td data-label="Reverted">—<\/td>/)
+    assert.match(page, /<td data-label="Follow-ups">—<\/td>/)
+    assert.match(page, /<td data-label="Post-merge failures">—<\/td>/)
+    assert.match(page, /<td data-label="Cost">—<\/td>/)
+    assert.match(page, /<td data-label="Model \/ role"><small class="muted">—<\/small><\/td>/)
+  } finally {
+    store.close()
+  }
+})
+
+test('one delivery is a hint, not a rate, and an empty ledger says so in words', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'delivery-page-one', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_delivery_page_one', userId: user.id, owner: 'o', name: 'delivery-page-one', defaultBranch: 'main',
+      tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440,
+    })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const one = repoPage({ config, locale: 'en', viewer, repo, jobs: [], deliveryOutcomes: [rowFor(repo.id, 'only')] })
+    assert.match(one, /data-delivery-merged="1" data-delivery-reverted="0"/)
+    assert.match(one, /Too few deliveries to be a rate, shown as a hint only/)
+    const none = repoPage({ config, locale: 'en', viewer, repo, jobs: [], deliveryOutcomes: [] })
+    assert.match(none, /data-delivery-outcomes="0"/)
+    assert.match(none, /No delivery has merged in this repository yet/)
+    assert.doesNotMatch(none, /data-delivery-merged=/)
   } finally {
     store.close()
   }
