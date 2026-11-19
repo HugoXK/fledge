@@ -112,7 +112,7 @@ test('a genuinely empty installation keeps its sentence and gains the manage lin
       installationId: 1,
       repos: [],
     }), 'zh')
-    assert.doesNotMatch(bare, /github\.com\/apps/, 'zh: no App slug, no manage link')
+    assert.equal(bare.includes('github.com/apps'), false, 'zh: no App slug, no manage link')
   } finally {
     store.close()
   }
