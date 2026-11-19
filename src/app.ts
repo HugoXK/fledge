@@ -53,6 +53,7 @@ import { decryptSecret, encryptSecret, randomId, randomToken, redact, safeEqual,
 import { expiryFromDays, GATEWAY_SCOPE, isTokenScope, JOBS_READ_SCOPE, patExpiryDays } from './lib/tokens.js'
 import { AGREEMENT_VERSION, agreementHashFor } from './users/agreements.js'
 import { addMinutes, nowIso } from './lib/time.js'
+import { parseEvidenceJson } from './lib/evidence.js'
 import { isLocale, LOCALE_COOKIE, localizeMessage, resolveLocale, translator, type Locale, type Translate } from './i18n.js'
 import { decodeFlash, encodeFlash, FLASH_COOKIE, readRedirectMessage } from './lib/flash.js'
 import { DISCOVERY_INTERVALS, REVIEW_INTERVALS, intervalSubmissionAccepted, normalizeInterval } from './lib/intervals.js'
@@ -3897,6 +3898,43 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const repaired = result.repaired === true ? t('（“新任务”与已有任务 id 同时出现，已按相关处理一次。）', ' (a separate new task and an existing task id came together; it was repaired once into related.)') : ''
     const notice = t(`已记为下一步：${label}。${repaired}`, `Recorded as the next step: ${label}.${repaired}`)
     return reply.redirect(`${back}?notice=${encodeURIComponent(notice)}`)
+  })
+
+  // #1040: the red-test record is a claim, and a claim needs an answer. A
+  // maintainer presses confirm or challenge here; the decision is written on the
+  // job and the page reads it back. A press that cannot decide anything (no
+  // record, no challenge reason, a role that cannot answer) is refused before a
+  // write, and the record itself is never rewritten by the press.
+  app.post('/repos/:id/jobs/:jobId/red-test', async (request, reply) => {
+    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const job = store.getJob(String((request.params as Record<string, string>).jobId))
+    if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
+    const back = `/repos/${repo.id}/jobs/${job.id}`
+    const t = translator(request.locale ?? 'zh')
+    if (repo.repo_role !== 'maintainer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('只有 maintainer 可以复核红测记录。', 'Only a maintainer can decide the red-test claim.'))}`)
+    }
+    const evidence = parseEvidenceJson(job.evidence_json)
+    const record = evidence?.redTest
+    if (evidence === null || record === undefined) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('这个任务没有红测记录，无法复核。', 'This job has no red-test record to decide.'))}`)
+    }
+    const body = form(request)
+    const decision = body.decision === 'confirm' ? 'confirmed' : body.decision === 'challenge' ? 'challenged' : null
+    if (decision === null) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('红测决定无效，请确认或质疑。', 'That red-test decision is not valid; confirm or challenge.'))}`)
+    }
+    const note = (body.note ?? '').trim().slice(0, 300)
+    if (decision === 'challenged' && note.length < 8) {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('质疑红测需要至少 8 个字的理由。', 'Challenging a red run needs a reason of at least 8 characters.'))}`)
+    }
+    const next = { ...evidence, redTestDecision: { decision, note, by: viewer.user.login, at: nowIso() } }
+    store.updateJob(job.id, { evidence_json: JSON.stringify(next) })
+    store.audit(viewer.user.id, `job.red_test_${decision}`, `${job.id}: ${record.signature}`)
+    const message = decision === 'confirmed'
+      ? t('已确认这次红测是预期的失败。', 'This red run is confirmed as the intended failure.')
+      : t('已质疑这次红测，理由记在任务上。', 'This red run is challenged; the reason is recorded on the job.')
+    return reply.redirect(`${back}?notice=${encodeURIComponent(message)}`)
   })
 
   app.post('/repos/:id/jobs/:jobId/recheck', async (request, reply) => {

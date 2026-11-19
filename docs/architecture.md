@@ -1425,9 +1425,18 @@ environment or network error, a timeout, a skipped test and any unrecognised
 shape are `unverified`, and a run that exits 0 at the base is `passed`. The
 record keeps the command, the base SHA, the exit code, the signature and the
 sha256 of the output, and a second run of the same command at the same base that
-disagrees makes it `unverified` and flaky. Nothing enforces it yet: the base run
-has no producer, so requiring the record would block every pull request rather
-than prove one.
+disagrees makes it `unverified` and flaky. The record has a producer now: an implement callback may carry
+`evidence.baseRun` (and a `repeat`) inside its evidence, the callback classifies
+it and stores the result as `redTest` in `evidence_json` — no migration — and a
+run whose `baseSha` is not the job's `base_sha` is `unverified` with the
+`base-mismatch` signature, because it says nothing about this diff. A job that
+reports no base run stores no record and the page keeps the agent's sentence.
+The job page shows the verdict, the signature, the reason and a digest beside
+that sentence, and a maintainer answers the claim there: confirm, or challenge
+with a reason of at least eight characters. The answer is stored beside the
+record as `redTestDecision` (decision, note, who, when) and the page reads it
+back. Nothing enforces it yet: requiring the record would block every job until
+the fleet reports the field, so the gate follows once it is populated.
 A claimed green test with a failing test check is contradicted and
 blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and

@@ -3525,6 +3525,32 @@ export function jobPage(input: {
           const state = entry.state === 'unverified' ? t('未验证', 'unverified') : entry.state
           return `<p class="fine" data-observation data-state="${escapeHtml(entry.state)}">${escapeHtml(t('观测于', 'Observed'))} ${escapeHtml(`${when} ${state}`)} — ${escapeHtml(entry.link)}</p>`
         }).join('')}</div>`
+  // #1040: the red-test record is a claim with two readers. The badge says what
+  // the base run was; the control lets a maintainer answer it; the answer is
+  // read back from the row, so the page states who decided and when instead of
+  // letting a badge look self-certified.
+  const redTest = evidence?.redTest ?? null
+  const redTestDecision = evidence?.redTestDecision ?? null
+  const redTestVerdictLabel = redTest === null
+    ? ''
+    : redTest.verdict === 'red'
+      ? t('红', 'red')
+      : redTest.verdict === 'passed'
+        ? t('已通过', 'passed')
+        : t('未验证', 'unverified')
+  const redTestBadge = redTest === null
+    ? ''
+    : `<small class="fine" data-red-test-verdict="${escapeHtml(redTest.verdict)}" data-red-test-signature="${escapeHtml(redTest.signature)}" data-red-test-flaky="${redTest.flaky ? 'true' : 'false'}">${escapeHtml(`${redTestVerdictLabel} (${redTest.signature}) · ${redTest.reason} · ${t('基线', 'base')} ${redTest.baseSha.slice(0, 12)} · ${t('摘要', 'digest')} ${redTest.outputSha256.slice(0, 12)}`)}</small>`
+  const redTestDecisionLine = redTestDecision === null
+    ? ''
+    : `<small class="fine" data-red-test-decision="${escapeHtml(redTestDecision.decision)}">${escapeHtml(`${redTestDecision.decision === 'confirmed' ? t('维护者已确认这次红测。', 'A maintainer confirmed this red run.') : t('维护者已质疑这次红测。', 'A maintainer challenged this red run.')}${redTestDecision.note === '' ? '' : ` ${redTestDecision.note}`} · ${redTestDecision.by} · ${redTestDecision.at.slice(0, 16).replace('T', ' ')}Z`)}</small>`
+  // The control exists only where the operation can succeed: a maintainer, a
+  // stored record to answer, and a writable surface. A press is refused by the
+  // route as well, so a bypassed form decides nothing.
+  const redTestForm = redTest === null || supportMode || repo.repo_role !== 'maintainer'
+    ? ''
+    : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/red-test" class="row" data-red-test-form>${csrf(viewer)}<input type="text" name="note" maxlength="300" placeholder="${escapeHtml(t('质疑时写理由（至少 8 字）', 'Reason when you challenge (8+ characters)'))}" aria-label="${escapeHtml(t('红测决定理由', 'Red-run decision reason'))}" /><button class="btn btn-ghost btn-small" type="submit" name="decision" value="confirm">${escapeHtml(t('确认这是预期的红', 'Confirm the intended red'))}</button><button class="btn btn-ghost btn-small" type="submit" name="decision" value="challenge">${escapeHtml(t('质疑这次红测', 'Challenge this red run'))}</button></form>`
+
   const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
@@ -3537,7 +3563,7 @@ export function jobPage(input: {
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('范围', 'Scope'))}</strong><small>${escapeHtml(evidence.scope ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('验收标准', 'Acceptance'))}</strong><small>${escapeHtml(evidence.acceptance ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试计划', 'Test plan'))}</strong><small>${escapeHtml(evidence.testPlan ?? '—')}</small></div></div>
-        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('失败测试', 'Red test'))}</strong><small>${escapeHtml(evidence.testRed ?? '—')}</small></div></div>
+        <div class="list-row" data-red-test-row><div class="list-main"><strong>${escapeHtml(t('失败测试', 'Red test'))}</strong><small>${escapeHtml(evidence.testRed ?? '—')}</small>${redTestBadge}${redTestDecisionLine}${redTestForm}</div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('通过测试', 'Green test'))}</strong><small>${escapeHtml(evidence.testGreen ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试', 'Tests'))}</strong><small>${escapeHtml(evidence.tests ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('CI / checks', 'CI / checks'))}</strong><small>${escapeHtml(evidence.checks ?? '—')}</small></div></div>
