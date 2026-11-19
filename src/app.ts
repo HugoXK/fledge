@@ -3928,6 +3928,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       viewer: viewOf(viewer),
       repo,
       job,
+      // #369: the bundle diff is against the previous job of this repository that
+      // recorded one, read from the rows rather than inferred from list order.
+      previousJob: store.previousJobWithBundle(repo.id, job.id) ?? null,
       // #1040: the press is gated on the actor's role, so the page that draws the
       // control reads the same role the route decides with.
       viewerRole: role === 'maintainer' || role === 'developer' || role === 'viewer' ? role : 'viewer',

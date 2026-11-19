@@ -236,6 +236,9 @@ export class FlyBotRunner implements Runner {
         'If you ran the failing test at the base commit, also send "baseRun": {"command":"<command>","baseSha":"<the base sha you ran it on>","exitCode":<exit code>,"output":"<output, at most 20 KB>"} inside "evidence", plus "repeat" with the same shape only if you ran that command twice. Fledge classifies it: a compile or environment failure is not the intended red.',
         `The job is failed after ${context.timeoutMinutes} minutes without a final callback; finish one focused change before then or report the concrete blocker.`,
         `When done, POST ${context.callback.url} with JSON {status, branch, prUrl, issueUrl, reviewScore, summary, error} and "Authorization: Bearer ${context.callback.secret}".`,
+        ...(context.contextBundleHash === undefined ? [] : [
+          `This job was dispatched under the sealed context bundle ${context.contextBundleHash}. Echo that value back unchanged as "contextBundleHash" in your final callback: it is how Fledge can tell that the policy the row recorded is the policy you were given.`,
+        ]),
         'Do not print the GitHub token or the job token. Do not force-push. Do not merge; Fledge handles maintainer-enabled auto-merge.',
       ].join('\n'),
     }
