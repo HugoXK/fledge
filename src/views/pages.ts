@@ -166,7 +166,7 @@ function retiredMark(model: { retired_at?: string | null }, t: Translate): strin
 }
 
 function infoTip(text: string): string {
-  return `<button type="button" class="info-tip" aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">${icon('info', 12)}</button>`
+  return `<button type="button" class="info-tip" data-inline-target aria-label="${escapeHtml(text)}" aria-expanded="false" data-tip="${escapeHtml(text)}">${icon('info', 12)}</button>`
 }
 
 function recurrenceRepositories(json: string): string[] {
