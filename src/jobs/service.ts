@@ -4102,6 +4102,39 @@ export class Jobs {
       snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!created.created) return this.runNowAnswer(created.row, true)
+    // #1027: the press settles its row `dispatched`, and every budget layer counts
+    // `dispatched` rows, so it spends the same three layers the tick asks about.
+    // It has to ask first, or a press spends past a limit and — because the count
+    // is nested — the next instants of every other repository the owner runs are
+    // skipped `budget-exceeded`. The window is the row's own logical day:
+    // `createRunNowOccurrence` may step the instant forward by under a second to
+    // keep two presses distinct, and a press at the day's last millisecond must be
+    // charged to the day it was written into.
+    const from = utcDayStart(created.row.logical_time)
+    const to = utcDayEnd(created.row.logical_time)
+    const identity = this.store.projectForRepo(repo.id)
+    const scheduleLimit = schedule.daily_runs
+    const projectLimit = identity === undefined ? null : this.store.scheduleBudget('project', identity.id)
+    const tenantLimit = identity === undefined ? null : this.store.scheduleBudget('tenant', identity.tenant_id)
+    const stop = runBudgetStop([
+      { scope: 'schedule', limit: scheduleLimit, used: scheduleLimit === null ? 0 : this.store.countScheduleDispatchesBetween(schedule.id, from, to) },
+      { scope: 'project', limit: projectLimit, used: projectLimit === null || identity === undefined ? 0 : this.store.countProjectScheduleDispatchesBetween(identity.id, from, to) },
+      { scope: 'tenant', limit: tenantLimit, used: tenantLimit === null || identity === undefined ? 0 : this.store.countTenantScheduleDispatchesBetween(identity.tenant_id, from, to) },
+    ])
+    if (stop !== null) {
+      // A skipped row is not `dispatched`, so the counting queries ignore it: the
+      // refusal costs nothing, and the key replays the same answer.
+      const settled = this.store.settleRunNowOccurrence({ id: created.row.id, state: 'skipped', reason: 'budget-exceeded', dispatchedAt: Date.now() })
+      this.store.audit(repo.user_id, 'schedule.run_now', `${repo.id}: ${parsed.key} skipped budget-exceeded`)
+      return {
+        ok: false,
+        code: 'budget-exceeded',
+        message: '这次运行没有开始。',
+        ...(settled === undefined ? {} : { occurrence: settled }),
+        replayed: false,
+        jobId: null,
+      }
+    }
     const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true, ...(actorRole === undefined ? {} : { actorRole }) })
     const dispatchedAt = Date.now()
     if (!result.ok || result.job === undefined) {

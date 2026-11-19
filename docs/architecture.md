@@ -749,6 +749,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   repository cannot bypass it. The counts are still charged to the instant's
   logical day, so a retry keeps the original bucket. A missing row is unbounded;
   `category` is reserved for the later report/development and model/cost split.
+  `Run now` spends the same three layers, because it settles a `dispatched`
+  occurrence, so the press runs the same `runBudgetStop` check before it
+  dispatches, over the window of the occurrence's own logical time; a press
+  refused there settles `skipped` with `budget-exceeded`, starts no job and is
+  not charged, and a replay of its command key answers the same row (#1027).
   The console still reads the schedule layer; the project and tenant values are
   set through the store until a form exists. The console prints the limit,
   today's used count and what is left,
