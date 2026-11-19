@@ -1441,6 +1441,37 @@ card carries that combined verdict rather than the PR evidence alone, so a pull
 request the path guard blocks never renders as evidence passed; the row names the
 guard as the reason its claim was lowered.
 
+### Change-aware test selection and quarantined tests
+
+Verification records which tests a change was expected to run, and why, in
+`src/lib/testImpact.ts`. A changed test file selects itself (`direct`); a change
+to `src/foo.ts` selects `test/foo.test.ts` by the repository's naming convention
+when that file exists (`convention`); and a test named in the repository's own
+import map (`.fledge/test-impact.json`, `{"imports": {"test/x.test.ts":
+["src/a.ts"]}}`) selects itself when it imports the changed file (`importer`).
+The map is bounded at 50 selected tests and 300 listed test files, a cut is
+recorded as `truncated` rather than silently shortened, and the result is cached
+per repository, head sha and changed-file set. A change nothing matches is not
+an empty selection pretending to be a plan: the snapshot says `no impact map`,
+and the run falls back to the full suite and says so. The job page prints the
+selected paths with their reasons, the truncation, and the fallback line.
+
+A green test check is not proof on its own while the same test has been changing
+its mind. Every completed test-named check run is written to the `test_runs`
+ledger (one row per job, head sha and name — re-checking a job at the same tip
+adds nothing, while the push that re-verifies it at a new tip adds a run — with
+the newest twelve runs kept per repository and name), and `quarantineTests` in
+`src/lib/verification.ts` counts the flips:
+a test that alternated at least twice inside at least three recorded runs is
+quarantined. A single failure, or a first failure that has not alternated, is not
+a quarantine, because the rule is the alternation and not the red. The evidence
+snapshot reads the same runs, so a quarantined test's green check moves out of
+`greenChecks` and into `quarantinedChecks` — shown as information, never the only
+reason the evidence is `verified` — and the merge gate reads that same snapshot at
+the tip, so a quarantined test cannot be the sole PASS evidence there either. A
+red from a quarantined test still contradicts: the quarantine is about a green
+nobody should trust, not about excusing a failure.
+
 ### The independent adversarial review
 
 The last gate before an automatic merge is a second read of the same change by a

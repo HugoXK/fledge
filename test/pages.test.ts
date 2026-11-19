@@ -2550,3 +2550,53 @@ test('the job page leads with one primary action and folds the rest (#865)', () 
     store.close()
   }
 })
+
+// #378: the page has to show what the change was expected to run and which test
+// was taken out of the evidence, with the reason attached to each path.
+test('the job page shows the selected tests, the impact reason and the quarantined list', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'impact-page-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_impact_page', userId: user.id, owner: 'o', name: 'ip', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_impact_page', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    const verification = {
+      ok: true,
+      checkedAt: '2026-11-09T17:00:00.000Z',
+      sha: 'c'.repeat(40),
+      prState: 'open',
+      draft: false,
+      mergeableState: 'clean',
+      checks: { total: 3, green: 3, failing: [], pending: [] },
+      combinedStatus: 'success',
+      reviews: { changesRequested: false, approvals: 1 },
+      testEvidence: { state: 'verified', claimed: true, greenChecks: ['test (24)'], failingChecks: [], quarantinedChecks: ['test (22)'] },
+      testImpact: { state: 'mapped', selected: [{ path: 'test/foo.test.ts', reason: 'convention' }, { path: 'test/bar.test.ts', reason: 'importer' }], truncated: false, limit: 50 },
+      reasons: [],
+    }
+    store.updateJob(job.id, {
+      pr_url: 'https://github.com/o/ip/pull/6',
+      pr_state: 'open',
+      verification_json: JSON.stringify(verification),
+      path_guard_json: JSON.stringify({ ok: true, checkedAt: '2026-11-09T17:00:00.000Z', allow: [], deny: [], files: ['src/foo.ts'], violations: [] }),
+    })
+    const read = (locale: 'en' | 'zh'): string => jobPage({ config, locale, viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' }, repo, job: store.getJob(job.id)! })
+
+    const en = read('en')
+    assert.match(en, /Test selection/)
+    assert.match(en, /test\/foo\.test\.ts \(convention\)/)
+    assert.match(en, /test\/bar\.test\.ts \(importer\)/)
+    assert.match(en, /quarantined 1: test \(22\)/)
+    const zh = read('zh')
+    assert.match(zh, /测试选择/)
+    assert.match(zh, /隔离 1 个/)
+    assert.doesNotMatch(zh, /Test selection/, 'the Chinese page uses the Chinese label')
+
+    store.updateJob(job.id, {
+      verification_json: JSON.stringify({ ...verification, testImpact: { state: 'no impact map', selected: [], truncated: false, limit: 50 } }),
+    })
+    assert.match(read('en'), /No impact map/)
+  } finally {
+    store.close()
+  }
+})

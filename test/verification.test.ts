@@ -86,3 +86,29 @@ test('the test check pattern is anchored and plural-aware', () => {
     assert.deepEqual(evidence.greenChecks, [])
   }
 })
+
+// #378: three recorded runs that alternate pass/fail are a flaky test, and a
+// flaky test is information rather than the sole proof a pull request works.
+// The gate reads the same runs the quarantine rule does, so a green check from a
+// quarantined job cannot be the only reason to call the evidence verified.
+const run = (name: string, passed: boolean): { name: string; passed: boolean } => ({ name, passed })
+
+test('a test alternating pass/fail across three runs cannot be the sole PASS evidence', () => {
+  const green = [check('test (22)', 'success')]
+  const alternating = [run('test (22)', true), run('test (22)', false), run('test (22)', true)]
+  const evidence = evaluateTestEvidence(true, green, alternating)
+  assert.equal(evidence.state, 'unverified', 'a quarantined test is information, not the sole verifier')
+  assert.deepEqual(evidence.quarantinedChecks, ['test (22)'])
+
+  const stable = [run('test (22)', true), run('test (22)', true), run('test (22)', true)]
+  const stableEvidence = evaluateTestEvidence(true, green, stable)
+  assert.equal(stableEvidence.state, 'verified', 'a stable test remains evidence')
+  assert.deepEqual(stableEvidence.quarantinedChecks, [])
+})
+
+test('one recorded run cannot quarantine a test', () => {
+  const green = [check('test (22)', 'success')]
+  const evidence = evaluateTestEvidence(true, green, [run('test (22)', false)])
+  assert.equal(evidence.state, 'verified', 'a one-off failure is not enough to take a test out of the evidence')
+  assert.deepEqual(evidence.quarantinedChecks, [])
+})
