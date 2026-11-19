@@ -72,6 +72,18 @@ import { parseTriage } from '../lib/triage.js'
 import { repoGithubToken, ReadOnlyTokenUnavailable, triageReadOnlyToken } from '../repos/token.js'
 import { parseTeam } from '../flybot/instances.js'
 import { isRuleChange, loadRepoRules, RulesError, type RepoRules } from '../rules.js'
+import {
+  PLAYBOOK_BUNDLE_SOURCE,
+  assembleSkillBundles,
+  parseSkillBundleRecord,
+  playbookBundle,
+  repoBundleSource,
+  repoSkillBundle,
+  skillBundleMergeBlock,
+  skillBundleRecord,
+  type SkillBundleRecord,
+} from '../lib/skillBundle.js'
+import type { TeamRole } from '../flybot/playbook.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
 
@@ -1015,6 +1027,45 @@ export class Jobs {
     }
   }
 
+  // #380: what a dispatch is allowed to load. The playbook is one bundle and
+  // every repository skill is another; each is signed with the instance key and
+  // then checked against the source allowlist. `held` and `refused` are dispatch
+  // refusals: a job that cannot name the bundles it loaded does not start.
+  private attestSkillBundles(repo: RepoRow, rules: RepoRules, role: TeamRole): { ok: true; hash: string; json: string } | { ok: false; code: 'SKILL_BUNDLE_HELD' | 'SKILL_BUNDLE_REFUSED'; error: string; detail: string; hash: string } {
+    const instanceKey = this.config.tokenEncryptionKey
+    this.store.ensureSkillBundleSource({ repoId: repo.id, source: PLAYBOOK_BUNDLE_SOURCE, updatedBy: 'system:builtin' })
+    if (rules.skills.length > 0) {
+      // Trust on first load: connecting the repository is the owner's decision to
+      // trust its own `.agents/skills`. A source this instance has never seen
+      // stays absent and is held.
+      this.store.ensureSkillBundleSource({ repoId: repo.id, source: repoBundleSource(rules.owner, rules.name), updatedBy: 'system:first-load' })
+    }
+    const bundles = [
+      playbookBundle(repo.goal, instanceKey),
+      ...rules.skills.map((skill) => repoSkillBundle({ owner: rules.owner, name: rules.name, skill, instanceKey })),
+    ]
+    const set = assembleSkillBundles({ bundles, instanceKey, sources: this.store.listSkillBundleSources(repo.id), role })
+    if (set.state !== 'accepted') {
+      return {
+        ok: false,
+        code: set.state === 'held' ? 'SKILL_BUNDLE_HELD' : 'SKILL_BUNDLE_REFUSED',
+        detail: set.reason,
+        // The audit records the set hash even when the set is refused, so the
+        // decision and the hash are one line a later reader can compare.
+        hash: set.hash,
+        error: set.state === 'held'
+          ? `技能包来源不在允许列表中，任务已暂缓：${set.reason}`
+          : `技能包未通过校验，任务未派发：${set.reason}`,
+      }
+    }
+    return { ok: true, hash: set.hash, json: JSON.stringify(skillBundleRecord(set)) }
+  }
+
+  private skillBundlesFor(job: JobRow): { skillBundles?: SkillBundleRecord } {
+    const record = parseSkillBundleRecord(job.skill_bundle_json)
+    return record === null ? {} : { skillBundles: record }
+  }
+
   private async duplicatePreflight(repo: RepoRow, goal: string, workItemId?: string): Promise<{ ok: boolean; error?: string; code?: EnqueueRefusalCode; detail?: string }> {
     // Only the FlyBot runner reads the upstream repository; the sibling
     // `preflight` has the same guard at its first line. Without it a deployment
@@ -1372,9 +1423,17 @@ export class Jobs {
     if (!this.config.runner.queueDispatch && this.config.flybot.instanceImage !== '') {
       if (this.instances === undefined) return { ok: false, error: 'FlyBot 实例管理器未配置', code: 'INSTANCE_UNAVAILABLE' }
       try {
-        await this.instances.ensurePlaybook(repo.id).catch((error) => {
+        // #380: a revoked playbook source is a dispatch refusal, not a warning.
+        // A transient DSH failure stays `unavailable` so an instance hiccup does
+        // not read as a security stop.
+        const playbook = await this.instances.ensurePlaybook(repo.id).catch((error) => {
           log.warn('team playbook not refreshed', { repo: repo.id, error: String(error) })
+          return 'unavailable' as const
         })
+        if (playbook === 'refused') {
+          this.store.audit(user.id, 'job.skill_bundle_refused', `${repo.id}: team playbook source revoked`.slice(0, 300))
+          return { ok: false, error: '团队手册来源已被撤销，任务没有开始。', code: 'SKILL_BUNDLE_REFUSED' }
+        }
         await this.instances.refreshTeam(repo.id).catch((error) => log.warn('team session refresh before dispatch failed', { repo: repo.id, error: String(error) }))
         const bridge = this.instances.bridgeFor(repo.id)
         const assignment = await this.instances.applyBotModels(repo.id).catch((error) => {
@@ -1423,6 +1482,18 @@ export class Jobs {
       if (!loaded.ok) return { ok: false, error: loaded.error, code: loaded.code, detail: loaded.detail }
       rules = loaded.rules
     }
+    // #380: attest what this dispatch will load before a token row or a job row
+    // exists, so a held/refused bundle cannot leave a half-created job behind.
+    let skillBundle: { hash: string; json: string; state: string } | undefined
+    if (rules !== undefined) {
+      const attested = this.attestSkillBundles(repo, rules, flybot?.role ?? 'lead')
+      if (!attested.ok) {
+        this.store.audit(user.id, 'job.skill_bundle_refused', `${repo.id}: ${attested.code} hash=${attested.hash} ${attested.detail}`.slice(0, 300))
+        return { ok: false, error: attested.error, code: attested.code, detail: attested.detail }
+      }
+      skillBundle = { hash: attested.hash, json: attested.json, state: 'accepted' }
+      this.store.audit(user.id, 'job.skill_bundle_attested', `${jobId}: ${attested.hash}`.slice(0, 300))
+    }
 
     const platformToken = `flg_${randomToken(32)}`
     const tokenRow = this.store.createApiToken({
@@ -1439,7 +1510,7 @@ export class Jobs {
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
     let job: JobRow
     try {
-      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, workType: workType.type, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options) })
+      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, workType: workType.type, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options), ...(skillBundle === undefined ? {} : { skillBundle }) })
     } catch (error) {
       // SQLite reports the column of a partial unique index, not its name, so
       // this index surfaces as "UNIQUE constraint failed: jobs.repo_id". Only
@@ -1562,6 +1633,7 @@ export class Jobs {
         platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
         ...(flybot === undefined ? {} : { flybot }),
         ...(rules === undefined ? {} : { rules }),
+        ...this.skillBundlesFor(job),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {
@@ -2574,6 +2646,23 @@ export class Jobs {
     if (repo === undefined) return { ok: false, message: '仓库不存在。' }
     if (repo.repo_role !== 'maintainer') return { ok: false, message: '只有 maintainer 可以合并。' }
     if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
+    // #380: the sources are read again here, not from the job's snapshot, so a
+    // source revoked after the job started stops the automatic merge. The job is
+    // marked once per revocation, not on every reconcile pass, and a maintainer
+    // merging by hand keeps that decision with an audited override.
+    const bundleBlock = skillBundleMergeBlock(parseSkillBundleRecord(job.skill_bundle_json), this.store.listSkillBundleSources(repo.id))
+    if (bundleBlock !== null) {
+      if (job.skill_state !== 'skill-revoked') {
+        this.store.updateJob(job.id, { skill_state: 'skill-revoked' })
+        this.store.audit(job.user_id, 'job.skill_bundle_revoked', `${job.id}: ${bundleBlock.source} (${bundleBlock.state}) hash=${job.skill_bundle_hash ?? 'none'}`.slice(0, 300))
+        this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: job.user_id, kind: 'job.skill_revoked', step: 'merge', meta: bundleBlock.source.slice(0, 200) })
+        this.store.notify(job.user_id, 'job', `任务 ${job.id} 加载过的技能包来源 ${bundleBlock.source} 已被撤销，自动合并已阻止。`)
+      }
+      if (!manual) {
+        return { ok: false, message: '任务加载过的技能包来源已被撤销，自动合并已阻止。' }
+      }
+      this.store.audit(job.user_id, 'job.skill_bundle_override', `${job.id}: manual merge over revoked ${bundleBlock.source} hash=${job.skill_bundle_hash ?? 'none'}`.slice(0, 300))
+    }
     // #507: the reviewer's signal has to reach the merge path. A low score or a
     // changes_requested work item blocks the automatic merge; a maintainer can
     // override it explicitly, and that override is audited.
@@ -4399,9 +4488,15 @@ export class Jobs {
     if (this.config.flybot.instanceImage !== '') {
       if (this.instances === undefined) return fail('FlyBot 实例管理器未配置')
       try {
-        await this.instances.ensurePlaybook(repo.id).catch((error) => {
+        // #380: the queued path refuses the same way the inline path does.
+        const playbook = await this.instances.ensurePlaybook(repo.id).catch((error) => {
           log.warn('team playbook not refreshed', { repo: repo.id, error: String(error) })
+          return 'unavailable' as const
         })
+        if (playbook === 'refused') {
+          this.store.audit(job.user_id, 'job.skill_bundle_refused', `${repo.id}: team playbook source revoked`.slice(0, 300))
+          return fail('团队手册来源已被撤销，任务没有开始。')
+        }
         await this.instances.refreshTeam(repo.id).catch((error) => log.warn('team session refresh before dispatch failed', { repo: repo.id, error: String(error) }))
         const bridge = this.instances.bridgeFor(repo.id)
         const assignment = await this.instances.applyBotModels(repo.id).catch((error) => {
@@ -4439,6 +4534,20 @@ export class Jobs {
       if (!loaded.ok) return fail(loaded.error)
       rules = loaded.rules
     }
+    // #380: the queued path loads the rules here, so the attestation is written
+    // to the job before the attempt starts; a held/refused set fails the job
+    // instead of handing it an unattested bundle.
+    let dispatchJob = job
+    if (rules !== undefined) {
+      const attested = this.attestSkillBundles(repo, rules, flybot?.role ?? 'lead')
+      if (!attested.ok) {
+        this.store.audit(job.user_id, 'job.skill_bundle_refused', `${job.id}: ${attested.code} hash=${attested.hash} ${attested.detail}`.slice(0, 300))
+        return fail(attested.error)
+      }
+      this.store.updateJob(job.id, { skill_bundle_hash: attested.hash, skill_bundle_json: attested.json, skill_state: 'accepted' })
+      this.store.audit(job.user_id, 'job.skill_bundle_attested', `${job.id}: ${attested.hash}`.slice(0, 300))
+      dispatchJob = this.store.getJob(job.id) ?? job
+    }
     // #247: the attempt row and the running transition are one commit.
     const attempt = this.store.startJobAttempt(job.id, worker, 5 * 60_000)
     if (attempt === undefined) return
@@ -4465,7 +4574,7 @@ export class Jobs {
     const jobLog = log.with({ trace: job.id })
     try {
       const result = await this.runner.run({
-        job,
+        job: dispatchJob,
         log: jobLog,
         repo,
         user,
@@ -4484,6 +4593,7 @@ export class Jobs {
         platform: { baseUrl: `${this.config.baseUrl}/v1`, model: this.config.llm.model, token: platformToken },
         ...(flybot === undefined ? {} : { flybot }),
         ...(rules === undefined ? {} : { rules }),
+        ...this.skillBundlesFor(dispatchJob),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {

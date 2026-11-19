@@ -47,6 +47,9 @@ const MESSAGES: Record<string, string> = {
 
   '找不到': 'Not found',
   '这一步不存在，或不属于你。': 'This step does not exist, or it is not yours.',
+  '未知的技能包来源。': 'Unknown skill bundle source.',
+  '来源已允许，对之后的任务生效。': 'Source allowed; it applies to later jobs.',
+  '来源已撤销，已加载它的任务不能自动合并。': 'Source revoked; jobs that loaded it can no longer auto-merge.',
   '请稍后再试。': 'Please try again later.',
   '缺少 token': 'Missing token',
   '请填写一个 GitHub token。': 'Enter a GitHub token.',

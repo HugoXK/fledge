@@ -9,6 +9,7 @@ import { log } from '../lib/log.js'
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from '../lib/secrets.js'
 import { nowIso } from '../lib/time.js'
 import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor } from './playbook.js'
+import { PLAYBOOK_BUNDLE_SOURCE, attestSkillBundle, playbookBundle } from '../lib/skillBundle.js'
 import { flybotContainerArgs } from './isolation.js'
 import { clearWorkspaceCookie, dshCookie } from './workspace.js'
 import { readZipText } from '../lib/zip.js'
@@ -698,22 +699,42 @@ server.listen(3081, '0.0.0.0')
     return true
   }
 
-  async ensurePlaybook(repoId: string): Promise<void> {
+  // #380: the playbook is a bundle too, and it is attested on every job start —
+  // including the already-applied path, so a revocation takes effect without a
+  // restart. A refused playbook is not applied and is not silently skipped: the
+  // caller turns `refused` into a dispatch refusal, while a transient DSH failure
+  // stays `unavailable` and keeps the old warning path.
+  async ensurePlaybook(repoId: string): Promise<'applied' | 'unchanged' | 'refused' | 'unavailable'> {
     const instance = this.store.getRepoInstance(repoId)
-    if (instance === undefined || instance.status !== 'ready' || instance.bridge_token_enc === null) return
+    if (instance === undefined || instance.status !== 'ready' || instance.bridge_token_enc === null) return 'unavailable'
     const team = parseTeam(instance.team_json)
-    if (team === null) return
+    if (team === null) return 'unavailable'
     const repo = this.store.getRepo(repoId)
     const goal = repo?.goal ?? ''
     const hash = playbookFingerprint(goal)
-    if (team.playbook === PLAYBOOK_VERSION && team.playbookHash === hash) return
+    const bundle = playbookBundle(goal, this.config.tokenEncryptionKey)
+    this.store.ensureSkillBundleSource({ repoId, source: PLAYBOOK_BUNDLE_SOURCE, updatedBy: 'system:builtin' })
+    const attestation = attestSkillBundle({
+      manifest: bundle.manifest,
+      content: bundle.content,
+      instanceKey: this.config.tokenEncryptionKey,
+      sources: this.store.listSkillBundleSources(repoId),
+      role: 'lead',
+    })
+    if (attestation.state !== 'accepted') {
+      this.store.audit(instance.user_id, 'flybot.playbook_refused', `${repoId}: ${attestation.state} ${attestation.reason}`)
+      log.warn('team playbook refused', { repo: repoId, state: attestation.state, reason: attestation.reason })
+      return 'refused'
+    }
+    if (team.playbook === PLAYBOOK_VERSION && team.playbookHash === hash) return 'unchanged'
     const token = decryptSecret(instance.bridge_token_enc, this.config.tokenEncryptionKey)
-    if (!await this.applyPlaybook(instance.bridge_port, token, team, goal)) return
+    if (!await this.applyPlaybook(instance.bridge_port, token, team, goal)) return 'unavailable'
     this.store.updateRepoInstance(repoId, {
       team_json: JSON.stringify({ ...team, playbook: PLAYBOOK_VERSION, playbookHash: hash }),
       updated_at: nowIso(),
     })
     log.info('team playbook applied', { repo: repoId, version: PLAYBOOK_VERSION })
+    return 'applied'
   }
 
   bridgeFor(repoId: string): InstanceBridge {

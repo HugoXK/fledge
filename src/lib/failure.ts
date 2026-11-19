@@ -206,6 +206,11 @@ export const ENQUEUE_REFUSAL_CODES = [
   'RUNNER_ERROR',
   'RULES_UNAVAILABLE',
   'RULES_INVALID',
+  // #380: a skill bundle the instance cannot attest stops the dispatch before a
+  // job row exists. `HELD` waits for a human allowlist decision; `REFUSED` means
+  // the signature, the content hash, the role or the revocation said no.
+  'SKILL_BUNDLE_HELD',
+  'SKILL_BUNDLE_REFUSED',
   // #758 slice 2: the platform clock is outside the threshold, so no job starts.
   'CLOCK_SKEW',
 ] as const
@@ -266,6 +271,11 @@ export const REFUSAL_SENTENCES: Record<EnqueueRefusalCode, [string, string]> = {
   // the file that crossed the limit and the byte count the maintainer can act on.
   RULES_UNAVAILABLE: ['无法读取这个仓库的规则或技能，任务没有开始。', "This repository's rules or skills could not be read, so the job did not start."],
   RULES_INVALID: ['这个仓库的规则或技能不合法：{detail}。', 'The repository rules or skills are invalid: {detail}.'],
+  // #380: the two attestation refusals stay distinct because their next step is
+  // different: a held source needs a human allowlist decision, a refused bundle
+  // needs the manifest (or the revocation) fixed.
+  SKILL_BUNDLE_HELD: ['技能包来源不在允许列表中，任务暂缓，等待人工批准：{detail}。', 'A skill bundle source is not in the allowlist, so the job is held for human approval: {detail}.'],
+  SKILL_BUNDLE_REFUSED: ['技能包未通过校验，任务没有开始：{detail}。', 'A skill bundle failed attestation, so the job did not start: {detail}.'],
   // #758 slice 2: the refusal carries the measured seconds, because "the clock is
   // wrong" without the number sends the reader to the wrong machine. The
   // threshold rides on `clockState()` and in docs/deploy.md, not in this sentence.

@@ -3,6 +3,7 @@ import type { JobRow, RepoRow, UserRow } from '../db.js'
 import type { Logger } from '../lib/log.js'
 import type { RepoRole } from '../lib/repoRole.js'
 import type { RepoRules } from '../rules.js'
+import type { SkillBundleRecord } from '../lib/skillBundle.js'
 import { FlyBotRunner } from './flybot.js'
 import { MockRunner } from './mock.js'
 
@@ -53,6 +54,9 @@ export interface RunnerContext {
   platform: PlatformModel
   flybot?: { url: string; token: string; sessionId: string; role: 'chief' | 'lead' | 'reviewer' | 'product' | 'test'; leadName: string }
   rules?: RepoRules
+  // #380: the bundles the dispatch attested. The bridge prompt names this set,
+  // so the agent reads only skills the instance signed and the allowlist allowed.
+  skillBundles?: SkillBundleRecord
   timeoutMinutes: number
 }
 

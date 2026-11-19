@@ -234,6 +234,7 @@ test('the destructive routes ask the route-level limiter for their bucket, on th
   // helper that calls a hand-rolled limiter is invisible to both.
   const limited = source.split('\n').filter((line) => line.includes('config: { rateLimit: destructiveLimit }'))
   assert.deepEqual(limited.map((line) => /app\.post\('([^']+)'/.exec(line)?.[1]), [
+    '/repos/:id/skill-source',
     '/repos/:id/instance/stop',
     '/repos/:id/settings',
     '/repos/:id/delete',
@@ -243,7 +244,7 @@ test('the destructive routes ask the route-level limiter for their bucket, on th
     '/admin/users/:id/reject',
     '/admin/users/:id/quota',
     '/admin/users/:id/delete',
-  ], 'the nine destructive registrations must carry the route-level limit')
+  ], 'the ten destructive registrations must carry the route-level limit')
   const block = /const destructiveLimit = \{([\s\S]*?)\n  \}/.exec(source)?.[1] ?? ''
   assert.match(block, /max: 60,/, 'the ceiling has to stay stated in code')
   assert.match(block, /timeWindow: 60_000,/, 'the window has to stay stated in code')

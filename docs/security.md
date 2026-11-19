@@ -1279,3 +1279,47 @@ message that is only those parts becomes a fixed fallback. `jobFailedEmail` runs
 the same sanitizer over `error` before it reaches the subject and both bodies.
 The action id itself is derived (`act_` plus twelve hex characters of
 `sha256(kind, repoId, objectId)`), so it carries no address, path or secret.
+
+## Signed skill bundles, source allowlist and revocation (`#380`)
+
+The team playbook and every repository skill a job loads are attested before the
+job starts. Each bundle is a manifest — `name`, `version`, `source`, `contentHash`
+(SHA-256 over the exact content) and `allowedRoles` — signed by this instance with
+the token-encryption key through `signPayload`, which adds the short expiry the
+platform already uses for signed payloads. The signature is therefore not a
+permanent grant: a manifest verifies only while its payload matches the bundle it
+names, the content still hashes to the signed value, and the expiry has not
+passed. A bundle that fails any of those checks is `refused` and the job does not
+dispatch.
+
+The source allowlist is per repository and lives in settings, so it disappears
+with the repository. The built-in source (`builtin:fledge`, the playbook) is
+seeded on first use. A repository's own `.agents/skills` source
+(`repo:<owner>/<name>`) is recorded on first load: connecting the repository is
+already the owner's decision to trust its own skill files, so the first load is
+the trust decision (trust on first use). A source this instance has never seen is
+`held`, which delays the job instead of running an unknown source. A source an
+operator marks `revoked` stays in the table so the record of the revocation
+survives, and every later job from it is refused. The repository page exposes
+that decision to a maintainer: one form per recorded source posts to
+`/repos/:id/skill-source`, and the route only flips a source this instance
+already recorded, so the page cannot invent an allowlist entry.
+
+The dispatch computes one set hash over the attested bundles (sorted by source
+and name, so loader order cannot change it) and writes the record to the job row.
+The set counts as `accepted` only when every bundle is accepted; a held or refused
+bundle makes the whole set non-dispatchable, because a job that cannot name every
+bundle it loaded is not the job the review was about.
+
+Revocation also has to reach a job that already started: the automatic merge
+re-reads the allowlist and blocks when a source the job recorded is revoked or no
+longer resolves, marks the job `skill-revoked` once, and writes an audit row and
+a notification. A maintainer may still merge by hand — the revocation removes the
+automatic path, it does not take the decision away — and that merge is audited as
+a `job.skill_bundle_override`.
+
+Scope of this slice: the manifest covers the playbook and repository skill text
+loaded from the rules store; it is not a signature over the FlyBot agent binary,
+the bridge script or the model, and it does not verify a bundle against an
+external registry. The repository page lists the set the latest job recorded,
+with each bundle's source, content-hash prefix and state.
