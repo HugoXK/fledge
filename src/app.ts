@@ -832,8 +832,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         `Repository limit reached (${refusal.used}/${refusal.cap}). Remove a repository or ask an admin to raise the limit.`,
       )
       : t(
-        `FlyBot 实例数量已达上限（${refusal.used}/${refusal.cap}）。请先停止或移除一个实例，或请管理员调整上限。`,
-        `FlyBot instance limit reached (${refusal.used}/${refusal.cap}). Stop or remove an instance, or ask an admin to raise the limit.`,
+        `工作区数量已达上限（${refusal.used}/${refusal.cap}）。请先停止或移除一个工作区，或请管理员调整上限。`,
+        `Workspace limit reached (${refusal.used}/${refusal.cap}). Stop or remove a workspace, or ask an admin to raise the limit.`,
       )
     const joiner = back.includes('?') ? '&' : '?'
     return reply.redirect(`${back}${joiner}error=${encodeURIComponent(message)}&code=${refusal.code}`)
@@ -2330,7 +2330,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (config.flybot.instanceImage !== '') {
         instances.ensureUserDir(viewer.user.id)
         void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
-        bits.push(t('FlyBot 实例初始化中。', 'FlyBot instance is initializing.'))
+        bits.push(t('工作区初始化中。', 'Workspace is initializing.'))
       }
       return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(bits.join(' '))}`)
     } catch (error) {
@@ -4702,7 +4702,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/instance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
-    if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
+    if (config.flybot.instanceImage === '') throw httpError(400, '这个部署没有启用仓库工作区。', 'INSTANCE_DISABLED')
     // #457 review: the guard used to run before this route knew the repository
     // already had a row, so a stopped instance counted against its own restart
     // and the only way out was deleting it. Exclude the row being provisioned
@@ -4713,7 +4713,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     instances.ensureUserDir(viewer.user.id)
     if (existing !== undefined && existing.status !== 'ready' && !instances.isProvisioning(repo.id)) await instances.stop(repo.id)
     void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(translator(request.locale ?? 'zh')('工作区初始化中。', 'Workspace is initializing.'))}`)
   })
 
   app.post('/repos/:id/instance/stop', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
@@ -4722,7 +4722,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     await instances.stop(repo.id)
     await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止', 'BRIDGE_ERROR')
     store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例已停止。')}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(translator(request.locale ?? 'zh')('工作区已停止。', 'Workspace stopped.'))}`)
   })
 
   app.post('/repos/:id/review', async (request, reply) => {
