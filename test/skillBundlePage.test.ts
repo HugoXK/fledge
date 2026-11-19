@@ -79,13 +79,14 @@ test('a maintainer gets the revoke control for each recorded source', () => {
     const repo = store.createRepo({ id: 'repo_bundle_source', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     store.ensureSkillBundleSource({ repoId: repo.id, source: SOURCE, updatedBy: 'system:first-load' })
     const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
-    const html = repoPage({ config, locale: 'en', viewer, repo, jobs: [], skillSources: store.listSkillBundleSources(repo.id) })
+    const html = repoPage({ config, locale: 'en', viewer, repo, jobs: [], skillSources: store.listSkillBundleSources(repo.id), canMaintain: true })
     assert.ok(html.includes('/repos/repo_bundle_source/skill-source'), 'the owner path is a form on the page')
     assert.match(html, /name="source" value="repo:o\/r"/)
     assert.match(html, /Revoke this source/)
-    // A developer does not get the write control; the card stays read-only.
-    store.updateRepo(repo.id, { repo_role: 'developer' })
-    const developer = repoPage({ config, locale: 'en', viewer, repo: store.getRepo(repo.id)!, jobs: [], skillSources: store.listSkillBundleSources(repo.id) })
+    // The control follows the actor, not the upstream declaration: a developer
+    // does not get the write control even when the repository says maintainer.
+    store.updateRepo(repo.id, { repo_role: 'maintainer' })
+    const developer = repoPage({ config, locale: 'en', viewer, repo: store.getRepo(repo.id)!, jobs: [], skillSources: store.listSkillBundleSources(repo.id), canMaintain: false })
     assert.equal(developer.includes('/repos/repo_bundle_source/skill-source'), false)
   } finally {
     store.close()
