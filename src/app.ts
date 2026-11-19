@@ -1779,6 +1779,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const locale = request.locale ?? 'zh'
     const t = translator(locale)
     const query = previewQuery(request)
+    // #1058: the interval panel has no zone control; the timezone select belongs
+    // to the cron modes and is always submitted with the form, so for the interval
+    // mode the page passes no zone. The planner's rule is unchanged — an interval
+    // that does carry a zone is refused on the API, and the page has no way to
+    // express one for that mode.
+    if (query.mode === 'interval') delete query.timezone
     // No query at all is the empty form, not a refusal: opening the page should
     // not look like an error.
     const asked = Object.values(query).some((value) => value !== undefined)
