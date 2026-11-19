@@ -1049,6 +1049,13 @@ tiles at the bottom. Metrics and webhooks remain superadmin-only; the other
 three are available to admins. The opening paragraph always names the role and
 the audit logging, and carries no tool links.
 
+Every page also loads the optional DeepWiki console panel
+(`public/fledge-deepwiki.js` and `.css`, linked from `src/views/layout.ts`). It
+asks the hosted `https://mcp.deepwiki.com/mcp` endpoint about this repository's
+DeepWiki index, is bilingual, and marks its answers as third-party and
+model-generated. The page CSP adds only `connect-src https://mcp.deepwiki.com`;
+the panel carries no credential and makes no change to the repository.
+
 ### Team console and live events
 
 The team console is admin-only. `GET /api/repos/:id/team/events` streams
