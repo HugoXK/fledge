@@ -380,6 +380,20 @@ API's `Date` header, never the host's. A rerun of the same day opens nothing,
 because the card carries a marker built from the slot. The detector writes
 nothing else: it dispatches no workflow and creates no tag, release or deploy.
 
+#### Reading the slot back (#1035)
+
+The dispatch is proven, not assumed (#1035). `scripts/trigger-release.mjs` reads
+back the run it created and prints it, so a release can name whether the slot
+came from the trigger or from GitHub's late `schedule`. The
+`.github/workflows/release-slot.yml` job runs at `02:10Z` and fails when no
+`workflow_dispatch` run landed inside `[02:00Z, 02:05Z]`: a run that filled the
+slot hours late is reported as `slot-late`, no run at all as `slot-missed`, and
+a run list the job cannot read as `unreadable` (exit 2) rather than as a missed
+promise — "we could not look" is not evidence that nobody came. The check only
+reads the runs API; it dispatches nothing and changes no release record. Run it
+by hand with `node scripts/trigger-release.mjs --check-slot` and the same
+`GITHUB_REPOSITORY` / `GITHUB_TOKEN` variables.
+
 A release that changes user-facing behaviour updates `README.md`,
 `README.zh.md` and the relevant `docs/` page in the same pull request. The
 documentation site builds from this repository's `README.md`, `README.zh.md` and
