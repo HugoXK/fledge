@@ -218,17 +218,19 @@ test('a compact control is still held to the 24px WCAG floor', () => {
   assert.equal((gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 24, height: 24, compact: true }]) ?? []).length, 0)
 })
 
-test('a 44px control laid out at 43.6875px still passes the touch floor', () => {
+test('a control that lost half a pixel fails the touch floor', () => {
   assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker')
-  assert.equal(
-    (gate.touchFailures?.([{ name: 'input', width: 736, height: 43.6875 }]) ?? []).length,
-    0,
-    'Chromium lays a 44px control out below 44 at 1x; that is rounding, not a lost target',
-  )
   assert.equal(
     (gate.touchFailures?.([{ name: 'input', width: 736, height: 43.5 }]) ?? []).length,
     1,
     'a control that lost half a pixel is still below the floor',
+  )
+  // The 0.35px slack #1095 shipped is gone: a control laid out at 43.6875px is
+  // now a failure again, and the fix belongs in the control, not in the gate.
+  assert.equal(
+    (gate.touchFailures?.([{ name: 'input', width: 736, height: 43.6875 }]) ?? []).length,
+    1,
+    '43.6875px is under the floor now that the tolerance is 0.05px again',
   )
 })
 
