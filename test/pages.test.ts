@@ -2823,3 +2823,35 @@ test('the exhausted-quota banner states the per-repository rule and links the fi
     store.close()
   }
 })
+
+test('the next-step card offers its form only to a role the decision route accepts', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'decision-role-user', status: 'approved' })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({ id: 'repo_decision_role', userId: user.id, owner: 'o', name: 'decision-role', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const job = store.createJob({ id: 'job_decision_role', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'verify the fix', callbackHash: 'cb-decision-role', platformTokenHash: '', kind: 'verify' })
+    store.updateJob(job.id, { status: 'succeeded' })
+    const row = store.getJob(job.id)!
+    const action = /action="\/repos\/repo_decision_role\/jobs\/job_decision_role\/decision"/
+
+    // The route refuses every role but maintainer and developer, so the card
+    // must not hand a viewer a form whose only outcome is that refusal.
+    const viewerHtml = jobPage({ config, locale: 'en', viewer, repo, job: row, events: [], viewerRole: 'viewer' })
+    assert.doesNotMatch(viewerHtml, action, 'a viewer is not given the decision form')
+    assert.match(viewerHtml, /Only a maintainer or a developer can decide what comes next\./, 'the card names the role the decision needs')
+
+    const viewerZh = jobPage({ config, locale: 'zh', viewer, repo, job: row, events: [], viewerRole: 'viewer' })
+    assert.doesNotMatch(viewerZh, action, 'the Chinese page draws no form for a viewer either')
+    assert.match(viewerZh, /只有维护者或开发者可以决定下一步。/, 'and says in Chinese which role the decision needs')
+
+    for (const role of ['maintainer', 'developer'] as const) {
+      const html = jobPage({ config, locale: 'en', viewer, repo, job: row, events: [], viewerRole: role })
+      assert.match(html, action, `a ${role} keeps the form the route accepts`)
+      assert.doesNotMatch(html, /Only a maintainer or a developer can decide what comes next\./, `a ${role} is not told the decision is closed to them`)
+    }
+  } finally {
+    store.close()
+  }
+})

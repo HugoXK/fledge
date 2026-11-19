@@ -78,7 +78,10 @@ export const SKIP_WHEN = {
   lint: 'source',
   typecheck: 'source',
   build: 'source',
-  visual: 'frontend',
+  // #1103: bound to the job's own trigger. While this read `frontend`, a diff
+  // that reported `visual: true` (the matrix code changed) could skip the job
+  // and still pass here — the output said the gate applied and nothing measured.
+  visual: 'visual',
   docker: 'docker',
   audit: 'deps',
   'restore-drill': 'db',

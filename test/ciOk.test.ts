@@ -158,6 +158,31 @@ test('a skipped conditional job fails on a push even when the flag is false', as
   assert.equal(result.code, 1, 'a push verifies the whole tree; conditional skips are pull-request only')
 })
 
+// #1103: the matrix gained its own flag, so `ci-ok` must be bound to that flag
+// and not to the page flag. Widening the trigger without moving this binding
+// would let a diff report `visual: true`, skip the job and still pass: the
+// output would say "this gate applies" while nothing measured the change.
+test('a visual job skipped while the matrix changed fails the gate', async () => {
+  const required = await requiredJobs()
+  assert.ok(required.includes('visual'), 'visual stays a required job; this change moves its trigger, not its rank')
+
+  const needs = allSuccess(required)
+  needs['visual'] = { result: 'skipped' }
+
+  const matrixChanged = await runCiOk(needs, {
+    GITHUB_EVENT_NAME: 'pull_request',
+    CHANGES: JSON.stringify({ visual: 'true', frontend: 'false' }),
+  })
+  assert.equal(matrixChanged.code, 1, 'the flag says the gate applies, so a skipped leg is red even with frontend false')
+  assert.match(matrixChanged.stderr, /visual/)
+
+  const notApplicable = await runCiOk(needs, {
+    GITHUB_EVENT_NAME: 'pull_request',
+    CHANGES: JSON.stringify({ visual: 'false', frontend: 'false' }),
+  })
+  assert.equal(notApplicable.code, 0, `a diff the matrix cannot read may skip it: ${notApplicable.stderr}`)
+})
+
 test('every conditional job is wired to the change classifier', async () => {
   const module = (await import('../scripts/ci-ok.mjs')) as { SKIP_WHEN?: Record<string, string> }
   assert.ok(module.SKIP_WHEN !== undefined, 'scripts/ci-ok.mjs must export SKIP_WHEN')

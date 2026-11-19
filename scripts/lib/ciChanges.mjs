@@ -40,6 +40,20 @@ const FRONTEND_PATHS = [
   /^src\/app\.ts$/,
 ]
 
+// #1103: a gate must run on a diff that changes its own rules. The matrix lives
+// in `src/lib/visualMatrix.ts`, is driven by `scripts/visual-matrix.ts` and is
+// pinned by `test/visualMatrix.test.ts`; none of those is a page, so the
+// `frontend` flag never saw them and `#1095` widened the touch tolerance to
+// 0.35 with the `visual` leg absent. The set is `FRONTEND_PATHS` plus the matrix
+// code, so no page loses the gate and the only new runs are diffs that change
+// what the gate measures.
+const VISUAL_PATHS = [
+  ...FRONTEND_PATHS,
+  /^src\/lib\/visualMatrix[^/]*\.ts$/,
+  /^test\/visualMatrix[^/]*\.test\.ts$/,
+  /^scripts\/visual-matrix\.ts$/,
+]
+
 const DEPENDENCY_PATHS = [/^package\.json$/, /^package-lock\.json$/]
 
 const DB_PATHS = [
@@ -110,6 +124,10 @@ export function isFrontendPath(path) {
   return matches(FRONTEND_PATHS, normalize(path))
 }
 
+export function isVisualPath(path) {
+  return matches(VISUAL_PATHS, normalize(path))
+}
+
 export function isDependencyPath(path) {
   return matches(DEPENDENCY_PATHS, normalize(path))
 }
@@ -139,6 +157,7 @@ export function allGateChanges() {
     docsOnly: false,
     source: true,
     frontend: true,
+    visual: true,
     deps: true,
     db: true,
     docker: true,
@@ -159,6 +178,7 @@ export function classifyChanges(paths) {
   const unknown = list.some((path) => !isKnownNonCode(path) && !isSourcePath(path) && !isDockerInputPath(path))
   const source = unknown || list.some(isSourcePath)
   const frontend = list.some(isFrontendPath)
+  const visual = list.some(isVisualPath)
   const deps = list.some(isDependencyPath)
   const db = list.some(isDbPath)
   const workflows = list.some(isWorkflowPath)
@@ -170,7 +190,7 @@ export function classifyChanges(paths) {
   // edits them must not also remove the analysis that judges it.
   const codeql = source || frontend || workflows
 
-  return { docsOnly, source, frontend, deps, db, docker, workflows, codeql, deploy }
+  return { docsOnly, source, frontend, visual, deps, db, docker, workflows, codeql, deploy }
 }
 
 // #752: the changed paths of a pull request whose base commit is not in the
