@@ -4868,7 +4868,11 @@ export function searchPage(input: {
   // is masked on the way out even when the row itself carries one.
   const text = (value: string | null | undefined): string => escapeHtml(String(value ?? '').replace(/[\w.+-]+@[\w.-]+/g, '***@***'))
   const labels = new Map(repos.map((repo) => [repo.id, `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`]))
-  const table = (title: string, heads: string[], rows: string[], note: boolean, badgeText = ''): string => rows.length === 0 ? '' : `<section class="card"><h2>${escapeHtml(title)}${badgeText === '' ? '' : ` <span class="badge">${escapeHtml(badgeText)}</span>`}</h2><div class="table-scroll"><table><thead><tr>${heads.map((head) => `<th>${escapeHtml(head)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>${note ? `<p class="fine">${escapeHtml(t('还有更多结果，缩小关键词或加筛选。', 'More results — narrow the keyword or add a filter.'))}</p>` : ''}</section>`
+  // #1010: this renderer drew the Repositories, Jobs, Work items and Audit cards
+  // on the person's search page with a bare `<th>`, so a screen reader read the
+  // value and dropped the column it belongs to. The filtered-result card on
+  // /admin/search already declared the scope; the four cards this one draws did not.
+  const table = (title: string, heads: string[], rows: string[], note: boolean, badgeText = ''): string => rows.length === 0 ? '' : `<section class="card"><h2>${escapeHtml(title)}${badgeText === '' ? '' : ` <span class="badge">${escapeHtml(badgeText)}</span>`}</h2><div class="table-scroll"><table><thead><tr>${heads.map((head) => `<th scope="col">${escapeHtml(head)}</th>`).join('')}</tr></thead><tbody>${rows.join('')}</tbody></table></div>${note ? `<p class="fine">${escapeHtml(t('还有更多结果，缩小关键词或加筛选。', 'More results — narrow the keyword or add a filter.'))}</p>` : ''}</section>`
   const open = (url: string | null): string => url === null ? '—' : `<a href="${escapeHtml(url)}" target="_blank" rel="noreferrer">${escapeHtml(t('打开', 'Open'))}</a>`
   // The empty state goes through the shared renderer like the other four kinds:
   // a hand-built copy carried a literal '0' where the SVG set belongs, so this
