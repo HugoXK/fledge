@@ -6,7 +6,12 @@
   z-index: 60;
   display: inline-flex;
   align-items: center;
+  justify-content: center;
   gap: var(--space-2);
+  /* The visual matrix measured this at width 360: the label is hidden and the padding drops to
+     var(--space-2), so an 18px glyph plus 16px of padding and 2px of border came
+     to a 36px-wide button. The floor is declared here, not left to the content. */
+  min-width: var(--touch);
   min-height: var(--touch);
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--accent-strong);
