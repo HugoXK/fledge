@@ -137,7 +137,8 @@ import { rulesOverridesPage } from './views/rules.js'
 import { ciGatePage } from './views/ciGate.js'
 import { reportCiGate } from './lib/ciGate.js'
 import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
-import { AGENT_NOTE_LIMIT, audienceVisible, canDecideProposal, memoryDigest, parseAgentNoteInput, parseMemoryInput, proposalDecisionStatus, proposalDecisionVerification, searchMemories, visibleMemories } from './lib/memory.js'
+import { AGENT_NOTE_LIMIT, audienceVisible, canDecideProposal, MEMORY_DOCUMENT_VERIFICATION, memoryDigest, parseAgentNoteInput, parseMemoryInput, proposalDecisionStatus, proposalDecisionVerification, searchMemories, visibleMemories } from './lib/memory.js'
+import { documentRefusal, fileBlobSha, isAncestorStatus, isDocumentPath, type DocumentProof } from './lib/memoryDocument.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, GithubError, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
@@ -833,8 +834,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         `Repository limit reached (${refusal.used}/${refusal.cap}). Remove a repository or ask an admin to raise the limit.`,
       )
       : t(
-        `FlyBot 实例数量已达上限（${refusal.used}/${refusal.cap}）。请先停止或移除一个实例，或请管理员调整上限。`,
-        `FlyBot instance limit reached (${refusal.used}/${refusal.cap}). Stop or remove an instance, or ask an admin to raise the limit.`,
+        `工作区数量已达上限（${refusal.used}/${refusal.cap}）。请先停止或移除一个工作区，或请管理员调整上限。`,
+        `Workspace limit reached (${refusal.used}/${refusal.cap}). Stop or remove a workspace, or ask an admin to raise the limit.`,
       )
     const joiner = back.includes('?') ? '&' : '?'
     return reply.redirect(`${back}${joiner}error=${encodeURIComponent(message)}&code=${refusal.code}`)
@@ -2145,6 +2146,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         error = cause instanceof Error ? cause.message : String(cause)
       }
     }
+    // #1099: the picker has to tell a repository this workspace already holds
+    // from a fresh one; the set lives here, so the view is told rather than left
+    // to re-read the store.
+    const connected = new Map(store.listRepos(viewer.user.id).map((repo) => [`${repo.owner}/${repo.name}`.toLowerCase(), repo.id]))
     return reply.type('text/html').send(appReposPage({
       config,
       locale: request.locale ?? 'zh',
@@ -2152,6 +2157,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       installations,
       installationId,
       repos,
+      connected,
       notice: request.flash?.notice?.text,
       error,
     }))
@@ -2261,7 +2267,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('github app repo add failed', { repo: repoInfo.fullName, error: String(error) })
       }
     }
-    if (added.length === 0) return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('没有新增仓库；可能已经添加过，或 App 权限不足。')}`)
+    if (added.length === 0) {
+      // #1099: "already connected" and "the App cannot reach it" are different
+      // answers. The first is a successful selection of known repositories, so it
+      // names them (the picker above links each one) instead of blaming the App.
+      const alreadyConnected = chosen.filter((fullName) => {
+        const info = byName.get(fullName)
+        return info !== undefined && store.getRepoByOwnerName(viewer.user.id, info.owner, info.name) !== undefined
+      })
+      if (alreadyConnected.length === chosen.length) {
+        return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(`已经接入：${alreadyConnected.join('、')}。`)}`)
+      }
+      return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('没有新增仓库；App 权限不足或仓库无法访问。')}`)
+    }
     return reply.redirect(`/dashboard?notice=${encodeURIComponent(`已接入 ${added.length} 个仓库。`)}`)
   })
 
@@ -2331,7 +2349,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       if (config.flybot.instanceImage !== '') {
         instances.ensureUserDir(viewer.user.id)
         void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
-        bits.push(t('FlyBot 实例初始化中。', 'FlyBot instance is initializing.'))
+        bits.push(t('工作区初始化中。', 'Workspace is initializing.'))
       }
       return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(bits.join(' '))}`)
     } catch (error) {
@@ -2984,15 +3002,86 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/memory', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const role = parseRepoRole(repo.repo_role)
-    const parsed = parseMemoryInput(form(request), { role, allowedRoles: allowedRepoRoles(repo.permission) })
+    const values = form(request)
+    // The page of a document-owned entry replaces the verification select with a
+    // hidden field carrying the stored value, because the store's fence refuses
+    // any write that does not echo it. The parser accepts that echo only when the
+    // row it targets already holds the document proof, so a typed `document` on
+    // any other write is still refused.
+    const targetedKey = typeof values.key === 'string' ? values.key.trim() : ''
+    const targeted = store.getMemory(repo.id, targetedKey)
+    const parsed = parseMemoryInput(values, {
+      role,
+      allowedRoles: allowedRepoRoles(repo.permission),
+      documentOwned: targeted?.document_path != null,
+    })
     if (!parsed.ok) {
       return reply.redirect(`/repos/${repo.id}/memory?refused=${encodeURIComponent(parsed.refused)}`)
     }
     const input = parsed.value
+    // #1070: a write may ask to be owned by a repository document. The proof is
+    // read here, from GitHub, and only a complete one reaches the store: the PR
+    // merged, onto the default branch, its merge commit on the live default
+    // branch, and the same blob at the path in both places. The refusal names the
+    // one fact that failed, and a refused write changes nothing.
+    const documentPathRaw = typeof values.document_path === 'string' ? values.document_path.trim() : ''
+    const documentPrRaw = typeof values.document_pr === 'string' ? values.document_pr.trim() : ''
+    const wantsDocument = documentPathRaw !== '' || documentPrRaw !== ''
+    let documentPath: string | null = null
+    let documentPr: number | null = null
+    if (wantsDocument) {
+      if (!isDocumentPath(documentPathRaw)) {
+        return reply.redirect(`/repos/${repo.id}/memory?refused=document_path_invalid`)
+      }
+      const prNumber = Number(documentPrRaw)
+      if (documentPrRaw === '' || !Number.isInteger(prNumber) || prNumber <= 0) {
+        return reply.redirect(`/repos/${repo.id}/memory?refused=document_pr_invalid`)
+      }
+      const token = await repoGithubToken(repo, config, githubApp, store)
+      if (token === '') return reply.redirect(`/repos/${repo.id}/memory?refused=document_unavailable`)
+      let proof: DocumentProof
+      try {
+        const client = new GithubClient(token, config.github.apiBase)
+        const pull = await client.getPullRequest(repo.owner, repo.name, prNumber)
+        const mergeCommitSha = pull.merged ? pull.mergeCommitSha ?? '' : ''
+        const ancestor = mergeCommitSha === ''
+          ? false
+          : isAncestorStatus((await client.compareCommits(repo.owner, repo.name, mergeCommitSha, repo.default_branch)).status)
+        const mergeBlob = mergeCommitSha === ''
+          ? null
+          : await client.getContentAtRef(repo.owner, repo.name, documentPathRaw, mergeCommitSha)
+        const liveBlob = await client.getContentAtRef(repo.owner, repo.name, documentPathRaw, repo.default_branch)
+        proof = {
+          path: documentPathRaw,
+          pr: prNumber,
+          merged: pull.merged,
+          base: pull.base,
+          defaultBranch: repo.default_branch,
+          mergeCommitSha,
+          ancestor,
+          mergeBlobSha: fileBlobSha(mergeBlob),
+          liveBlobSha: fileBlobSha(liveBlob),
+        }
+      } catch (error) {
+        // A PR that does not exist (or that this token cannot read) is the same
+        // answer as a bad number; anything else is the API being unavailable, and
+        // neither is a promotion.
+        if (error instanceof GithubError && error.status === 404) {
+          return reply.redirect(`/repos/${repo.id}/memory?refused=document_pr_invalid`)
+        }
+        return reply.redirect(`/repos/${repo.id}/memory?refused=document_unavailable`)
+      }
+      const refused = documentRefusal(proof)
+      if (refused !== null) {
+        return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&refused=${refused}`)
+      }
+      documentPath = documentPathRaw
+      documentPr = prNumber
+    }
     // An entry outside the actor's audience is not a write target. Refuse it
     // before the revision fence so a hidden key is not a revision oracle, and use
     // the same refusal an update to a missing entry gives.
-    const current = store.getMemory(repo.id, input.key)
+    const current = targeted
     if (current !== undefined && !audienceVisible(current.audience, role)) {
       return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
     }
@@ -3001,7 +3090,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       key: input.key,
       kind: input.kind,
       status: input.status,
-      verification: input.verification,
+      verification: documentPath === null ? input.verification : MEMORY_DOCUMENT_VERIFICATION,
       audience: input.audience,
       scope: input.scope,
       body: input.body,
@@ -3010,6 +3099,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       actorType: 'human',
       actorId: viewer.user.id,
       sourceJobId: null,
+      documentPath,
+      documentPr,
       reason: input.reason,
       expectedRevision: input.expectedRevision,
     })
@@ -3017,6 +3108,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // A write aimed at a revision that no longer exists has no key to show, so
       // it names the refusal instead of landing on a page for an entry that is gone.
       if (result.code === 'memory_not_found') return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
+      if (result.code === 'memory_document_locked') {
+        return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&refused=memory_document_locked`)
+      }
       return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&conflict=${result.revision}`)
     }
     const base = `/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}`
@@ -4707,7 +4801,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.post('/repos/:id/instance', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true, true)
-    if (config.flybot.instanceImage === '') throw httpError(400, 'FlyBot 实例未配置', 'INSTANCE_DISABLED')
+    if (config.flybot.instanceImage === '') throw httpError(400, '这个部署没有启用仓库工作区。', 'INSTANCE_DISABLED')
     // #457 review: the guard used to run before this route knew the repository
     // already had a row, so a stopped instance counted against its own restart
     // and the only way out was deleting it. Exclude the row being provisioned
@@ -4718,7 +4812,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     instances.ensureUserDir(viewer.user.id)
     if (existing !== undefined && existing.status !== 'ready' && !instances.isProvisioning(repo.id)) await instances.stop(repo.id)
     void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例初始化中。')}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(translator(request.locale ?? 'zh')('工作区初始化中。', 'Workspace is initializing.'))}`)
   })
 
   app.post('/repos/:id/instance/stop', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
@@ -4727,7 +4821,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     await instances.stop(repo.id)
     await jobs.cancelRepoJobs(repo.id, 'FlyBot 实例已停止', 'BRIDGE_ERROR')
     store.audit(viewer.user.id, 'flybot.instance.stopped', `${repo.owner}/${repo.name}`)
-    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent('FlyBot 实例已停止。')}`)
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(translator(request.locale ?? 'zh')('工作区已停止。', 'Workspace stopped.'))}`)
   })
 
   app.post('/repos/:id/review', async (request, reply) => {

@@ -96,7 +96,7 @@ const MESSAGES: Record<string, string> = {
   '这个安装已经绑定到另一个 Fledge 用户。': 'This installation is already bound to another Fledge user.',
   '这个安装不属于当前 GitHub 用户；请用安装它的账号登录。': 'This installation does not belong to the current GitHub user; sign in with the account that installed it.',
   '请选择至少一个仓库。': 'Choose at least one repository.',
-  '没有新增仓库；可能已经添加过，或 App 权限不足。': 'No repositories were added; they may already be connected, or the App lacks permission.',
+  '没有新增仓库；App 权限不足或仓库无法访问。': 'No repositories were added; the App cannot reach them.',
   '这个仓库已有任务在运行。': 'A job is already running for this repository.',
   '只有已暂停的任务可以恢复。': 'Only a paused job can be resumed.',
   '这个任务已经结束。': 'This job has already finished.',
@@ -121,7 +121,6 @@ const MESSAGES: Record<string, string> = {
   '不允许使用内网地址': 'Private network addresses are not allowed.',
   '无法解析这个域名': 'Could not resolve this domain.',
   '不允许使用解析到内网地址的域名': 'A domain that resolves to a private address is not allowed.',
-  'FlyBot 实例管理器未配置': 'The FlyBot instance manager is not configured.',
   '任务超时未回报': 'The job timed out before reporting back.',
   '任务排队超时未启动': 'The queued job timed out before starting.',
   '任务失败': 'The job failed.',
@@ -173,9 +172,9 @@ const MESSAGES: Record<string, string> = {
   '这个仓库已有任务在运行': 'A job is already running for this repository.',
   '用户不可用': 'The user is not available.',
   '平台额度已用完，请先配置自己的模型 API': 'Platform quota is used up. Configure your own model API first.',
-  'FlyBot 实例初始化中。': 'FlyBot instance is initializing.',
-  'FlyBot 实例未配置': 'FlyBot instance is not configured.',
-  'FlyBot 实例已停止。': 'FlyBot instance stopped.',
+  '工作区初始化中。': 'Workspace is initializing.',
+  '这个部署没有启用仓库工作区。': 'This deployment does not enable workspaces.',
+  '工作区已停止。': 'Workspace stopped.',
   'FlyBot 实例未就绪': 'FlyBot instance is not ready.',
   '已批准': 'Approved',
   '已拒绝': 'Rejected',
@@ -278,6 +277,9 @@ export function localizeMessage(locale: Locale, message: string | undefined): st
   if (message === undefined || locale === 'zh') return message
   const application = /^@(.+) 的申请已(批准|拒绝)。$/.exec(message)
   if (application !== null) return `@${application[1]}'s application was ${application[2] === '批准' ? 'approved' : 'rejected'}.`
+  // #1099: the picker's refusal names the repositories it found already connected.
+  const alreadyConnected = /^已经接入：(.+)。$/.exec(message)
+  if (alreadyConnected !== null) return `Already connected: ${(alreadyConnected[1] ?? '').split('、').join(', ')}.`
   const connected = /^已接入 (\d+) 个仓库。$/.exec(message)
   if (connected !== null) return `Connected ${connected[1]} ${connected[1] === '1' ? 'repository' : 'repositories'}.`
   const fork = /^已创建 fork (.+)。$/.exec(message)
