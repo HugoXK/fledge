@@ -156,6 +156,9 @@ export interface BuildOptions {
   // Injected by tests that drive the route with a fake live-session controller;
   // production always builds its own.
   instances?: InstanceManager
+  // Injected by tests that need a GithubApp with a process age or a stubbed
+  // measurement; production always builds its own.
+  githubApp?: GithubApp
 }
 
 export interface BuiltApp {
@@ -586,7 +589,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   if (options.instances === undefined && options.startScheduler !== false && config.env !== 'test' && config.flybot.instanceImage !== '') {
     void instances.healthSweep().catch((error) => log.warn('startup instance health sweep failed', { error: String(error) }))
   }
-  const githubApp = new GithubApp(config)
+  const githubApp = options.githubApp ?? new GithubApp(config)
   const jobs = new Jobs(store, config, runner, mailer, instances, githubApp)
   // #540: one contract behind the console writes that have migrated — the job
   // cancel, pause, create, resume and retry forms. Settings, releases and member
@@ -1134,12 +1137,16 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const failed = instances.filter((entry) => entry.status === 'failed').length
     // #758 slice 2: readiness fails on a measured clock outside the threshold, so
     // a monitor that reads only the status code stops seeing a "healthy" instance
-    // whose every stored time is 28 minutes ahead. `unknown` and
-    // `not-configured` stay 200: a GitHub outage, or a deployment with no App, is
-    // not a clock verdict. The object keeps `source` and adds `state` and
-    // `thresholdSeconds`, so a reader can tell "no number" from "a number that is
-    // too far".
+    // whose every stored time is 28 minutes ahead. `not-configured` stays 200 (a
+    // deployment with no App is not a clock verdict), and so does `unknown` while
+    // the process is young or the last reading is merely stale: a GitHub outage
+    // is not a clock verdict either. #1028: a configured App that has been up for
+    // a whole reuse window and has never measured once is a different `unknown` —
+    // the guard never ran there, so it fails until a measurement succeeds. The
+    // object keeps `source` and adds `state` and `thresholdSeconds`, so a reader
+    // can tell "no number" from "a number that is too far".
     const clock = githubApp.clockState()
+    const clockUnverified = githubApp.clockUnverified()
     // #282: the model router is reported beside the database, instance and clock
     // fields rather than in front of them, so a router outage can never hide a
     // database or instance failure. With no `MODEL_ROUTER_URL` the field is
@@ -1153,7 +1160,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const router = config.router.url === '' ? null : await cachedRouterProbe(config)
     const routerReady = router === null || (router.state !== 'unreachable' && !router.allKeysCapped)
     const body = {
-      ok: clock.state !== 'fail' && routerReady,
+      ok: clock.state !== 'fail' && !clockUnverified && routerReady,
       db: true,
       instances: { ready, failed, total: instances.length },
       clock: { ...clock, source: 'github' },

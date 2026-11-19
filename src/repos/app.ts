@@ -75,7 +75,9 @@ export class GithubApp {
   private measuredAt: number | null = null
   private readonly tokens = new Map<string, { token: string; expiresAt: number }>()
 
-  constructor(private readonly config: Config) {}
+  // `bootedAt` is the process age the never-measured rule is measured from;
+  // it is a constructor argument so a test can age the App instead of waiting.
+  constructor(private readonly config: Config, private readonly bootedAt: number = Date.now()) {}
 
   get configured(): boolean {
     return this.config.githubApp.id !== '' && this.config.githubApp.privateKeyPath !== ''
@@ -128,14 +130,17 @@ export class GithubApp {
 
   // #915: a `fail` verdict has no expiry of its own, and every path that can take
   // a new reading (`appJwt`) runs after admission. The scheduler tick calls this
-  // while the state is `fail`, so an operator who corrects the host clock is
+  // while the clock is not `ok`, so an operator who corrects the host clock is
   // rewarded within one refresh interval without a restart or an unrelated GitHub
-  // call. It costs nothing while the clock is healthy (the JWT path already
-  // refreshes there) and reuses `skewAt`, so a failed attempt is throttled like a
-  // reading instead of turning the tick into a retry per minute.
-  async refreshSkewWhileFailed(): Promise<void> {
+  // call. #1028: `unknown` is included — an App that has never measured (or whose
+  // reading aged out) has no verdict either, and waiting for an App JWT that may
+  // never be minted is how the instance stayed unmeasured and ready forever.
+  // It costs nothing while the clock is healthy (the JWT path already refreshes
+  // there) and reuses `skewAt`, so a failed attempt is throttled like a reading
+  // instead of turning the tick into a retry per minute.
+  async refreshSkewWhileNotOk(): Promise<void> {
     if (!this.configured) return
-    if (this.clockState().state !== 'fail') return
+    if (this.clockState().state === 'ok') return
     if (Date.now() - this.skewAt <= SKEW_REFRESH_MS) return
     await this.measureSkew()
   }
@@ -161,6 +166,18 @@ export class GithubApp {
     if (Math.abs(seconds) > thresholdSeconds) return { skewSeconds: seconds, measuredAt, thresholdSeconds, state: 'fail' }
     if (Date.now() - at > CLOCK_SKEW_REUSE_MS) return { skewSeconds: seconds, measuredAt, thresholdSeconds, state: 'unknown' }
     return { skewSeconds: seconds, measuredAt, thresholdSeconds, state: 'ok' }
+  }
+
+  // #1028: `unknown` covers two situations that are not the same. A process that
+  // has been up for a few minutes has not needed GitHub yet, which is not a clock
+  // verdict. A configured App that has been up for a whole reuse window without a
+  // single successful measurement never gets the guard's protection, and that is
+  // the hole this answers: past the window, "no number" is reported as unready
+  // instead of being read as "nothing wrong".
+  clockUnverified(): boolean {
+    if (!this.configured) return false
+    if (this.measuredAt !== null) return false
+    return Date.now() - this.bootedAt > CLOCK_SKEW_REUSE_MS
   }
 
   private async appJwt(): Promise<string> {
