@@ -730,6 +730,12 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   rule restates the worker's formula is gone with the citation it rested on.
   Saving is audited as `schedule.saved` and deleting the row as
   `schedule.removed`, each naming the repository and what changed.
+  **The controls follow the role** (#1052): the console renders only the buttons
+  `ownedRepo` will accept — a viewer reads the schedule and is told that saving
+  needs a developer or maintainer; a developer gets Save and Delete; Pause and
+  Resume need a maintainer and are replaced by the sentence that says so. Run now
+  already followed this rule (#903). The page and the routes now state one rule
+  instead of two, so a rendered button always names an action that answers.
 - **The schedule run budget** (#544, slice 6): a `schedules` row may carry
   `daily_runs`, the most instants it may dispatch in one logical UTC day. The
   window is the day of the **instant being decided** (`src/schedules/budget.ts`,

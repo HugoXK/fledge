@@ -5363,6 +5363,12 @@ export function scheduleConsolePage(input: {
 }): string {
   const { config, locale, viewer, repo, state, role, form, runNowKey, notice, error } = input
   const t = translator(locale)
+  // #1052: the routes are the rule and the console repeats it. `ownedRepo` refuses
+  // every mutating schedule route for a viewer, and pause/resume additionally
+  // require a maintainer; a control the viewer cannot use is a refusal rendered as
+  // a button, so each one is replaced by the sentence that names the role.
+  const canWrite = role !== 'viewer'
+  const canMaintain = role === 'maintainer'
   const iso = (at: number | null): string => (at === null ? 'unknown' : new Date(at).toISOString())
   const shown = (at: number | null): string => (at === null ? t('unknown', 'unknown') : humanTimeShort(new Date(at).toISOString()))
   const scheduleLine = state.schedule === null
@@ -5432,6 +5438,8 @@ export function scheduleConsolePage(input: {
       : t('运行中', 'active')
   const pauseControls = state.kind === 'none'
     ? ''
+    : !canMaintain
+      ? `<p class="fine" data-pause-role="${escapeHtml(role)}">${escapeHtml(t('暂停和恢复排期需要 maintainer 角色。', 'Pausing and resuming the schedule needs a maintainer role.'))}</p>`
     : state.status === 'paused'
       ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/resume" class="schedule-state">${csrf(viewer)}<button class="btn" type="submit">${escapeHtml(t('恢复排期', 'Resume schedule'))}</button><span class="fine">${escapeHtml(t('恢复后从下一个时刻开始，暂停期间不补跑。', 'After resuming it runs from the next instant; the paused window is not made up.'))}</span></form>`
       : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/pause" class="schedule-state">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('暂停排期', 'Pause schedule'))}</button><span class="fine">${escapeHtml(t('暂停期间走过的时刻记为 skipped，原因为 paused。', 'Instants that pass while paused are recorded as skipped with reason paused.'))}</span></form>`
@@ -5532,7 +5540,8 @@ export function scheduleConsolePage(input: {
     ${frozenCard}
     <section class="card"><h2>${escapeHtml(t('编辑排期', 'Edit the schedule'))}</h2>
       <p class="muted">${escapeHtml(t('排期是五字段 cron 或固定间隔，二选一；cron 需要 IANA 时区。开始/结束时间要带偏移。', 'A schedule is a five-field cron or a fixed interval, one of the two; cron needs an IANA zone. The start/end instants need an offset.'))}</p>
-      <form method="post" action="/repos/${escapeHtml(repo.id)}/schedule" class="form">${csrf(viewer)}<div class="row">
+      ${canWrite ? '' : `<p class="fine" data-schedule-write-role="${escapeHtml(role)}">${escapeHtml(t('只读成员可以查看排期；保存和删除需要 developer 或 maintainer 角色。', 'A viewer reads the schedule; saving and deleting need a developer or maintainer role.'))}</p>`}
+      ${canWrite ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule" class="form">${csrf(viewer)}<div class="row">
         ${field('cron', t('cron 表达式', 'cron expression'), form.cron, '0 9 * * 1-5')}
         ${field('every', t('或固定间隔', 'or interval'), form.every, '15m')}
         ${field('timezone', t('时区（仅 cron）', 'timezone (cron only)'), form.timezone, 'Asia/Shanghai')}
@@ -5542,8 +5551,8 @@ export function scheduleConsolePage(input: {
         ${field('grace', t('宽限（分钟，留空=不限）', 'grace (minutes, empty = unbounded)'), form.grace, '30')}
         ${field('daily_runs', t('每日运行上限（留空=不限）', 'daily run limit (empty = unbounded)'), form.dailyRuns, '3')}
         <button class="btn" type="submit">${escapeHtml(t('保存排期', 'Save schedule'))}</button>
-      </div></form>
-      ${state.kind === 'none' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/remove" data-confirm="${escapeHtml(t('删除这个排期？仓库将回到旧的自动间隔。', 'Delete this schedule? The repository returns to the legacy interval.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('删除排期', 'Delete schedule'))}</button></form>`}
+      </div></form>` : ''}
+      ${!canWrite || state.kind === 'none' ? '' : `<form method="post" action="/repos/${escapeHtml(repo.id)}/schedule/remove" data-confirm="${escapeHtml(t('删除这个排期？仓库将回到旧的自动间隔。', 'Delete this schedule? The repository returns to the legacy interval.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('删除排期', 'Delete schedule'))}</button></form>`}
       <p class="fine">${escapeHtml(t('改动运行时字段（表达式、间隔、时区、窗口）会让时序版本加一；已经决定过的时刻保留在原版本下可读。', 'Changing a field that decides when it fires (expression, interval, zone, window) moves the timing revision; instants already decided stay readable under the old revision.'))}</p>
     </section>
     <section class="card"><h2>${escapeHtml(t('最近的时刻', 'Recent instants'))}</h2>
