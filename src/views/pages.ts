@@ -4292,6 +4292,10 @@ export function metricsPage(input: {
     usersWithPr: number
     costUsd: number
     events: Array<{ name: string; n: number }>
+    // #635 slice: the two durations the counts above cannot answer, with the
+    // sample count beside each so an empty window reads as `n/a`.
+    firstMerge: { repositories: number; samples: number; medianMs: number | null }
+    readyWait: { samples: number; medianMs: number | null }
   }
   team: { jobs: number; avgRoles: number; leadOnly: number; roles: Array<{ role: string; calls: number; jobs: number }> }
   workItems: { total: number; open: number; merged: number; closed: number }
@@ -4387,6 +4391,8 @@ export function metricsPage(input: {
         <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianJobMs)}</strong><small>${escapeHtml(t('任务耗时中位数', 'Median job duration'))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianMergeMs)}</strong><small>${escapeHtml(t('工作项创建到合并', 'Work item created to merged'))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${durationText(delivery.medianReviewMs)}</strong><small>${escapeHtml(t('审核耗时中位数', 'Median review duration'))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong data-loop-metric="first-merge" data-loop-samples="${metrics.firstMerge.samples}">${metrics.firstMerge.medianMs === null ? 'n/a' : durationText(metrics.firstMerge.medianMs)}</strong><small>${escapeHtml(t(`仓库接入到首次合并（${metrics.firstMerge.repositories} 个仓库）`, `Repository connected to first merge (${metrics.firstMerge.repositories} repositories)`))}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong data-loop-metric="ready-wait" data-loop-samples="${metrics.readyWait.samples}">${metrics.readyWait.medianMs === null ? 'n/a' : durationText(metrics.readyWait.medianMs)}</strong><small>${escapeHtml(t(`PR 就绪到合并（${metrics.readyWait.samples} 个 PR）`, `Ready PR to merge (${metrics.readyWait.samples} PRs)`))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${delivery.reviewAverage === null ? '—' : delivery.reviewAverage}</strong><small>${escapeHtml(t(`平均审核分（${delivery.reviewCount} 次）`, `Average review score (${delivery.reviewCount})`))}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${delivery.changesRequested}</strong><small>${escapeHtml(t('被要求修改', 'Changes requested'))}</small></div></div>
       </div>

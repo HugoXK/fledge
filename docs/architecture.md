@@ -2200,7 +2200,14 @@ or a review job without a Reviewer and a score. Enforced jobs never auto-merge.
 Admins get a read-only `/admin/metrics` funnel:
 users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
-attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
+attribution events, and recent events. The page also answers two ordering
+questions the counts cannot: the median time from a repository being connected
+to its first merged work item, and the median wait from a pull request being
+ready (the job that opened it finished) to a human merging it. Both are computed
+from timestamp pairs in `repos`, `work_items` and `jobs` by
+`src/metrics/product.ts` and returned by `store.productMetrics`, with the sample
+count beside each median so an empty window renders `n/a` rather than `0s`
+(decision: [0009](decisions/0009-product-loop-metrics.md)). `/admin/search` filters jobs and audit entries by the same user
 visibility as the admin page, pages each section twenty rows at a time with a pager that carries the
 active filters and the other section's page number, and can export the current result as CSV. An export whose filter matches more than 5000 rows is refused with the matched count and the cap instead of being truncated, and the refusal is audited; a filter at the cap still gets the whole file.
 
