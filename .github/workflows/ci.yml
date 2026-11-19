@@ -51,6 +51,9 @@ jobs:
       docsOnly: ${{ steps.classify.outputs.docsOnly }}
       source: ${{ steps.classify.outputs.source }}
       frontend: ${{ steps.classify.outputs.frontend }}
+      # #1103: the matrix's own code is not a page, so the job cannot keep
+      # reading `frontend`. `ci-ok` is bound to this same output.
+      visual: ${{ steps.classify.outputs.visual }}
       deps: ${{ steps.classify.outputs.deps }}
       db: ${{ steps.classify.outputs.db }}
       docker: ${{ steps.classify.outputs.docker }}
@@ -268,10 +271,15 @@ jobs:
   # A throwaway app boots at nine widths in both locales, renders the owner,
   # account, repository, admin and workspace surfaces, and fails on page or
   # element overflow. Screenshots are artifacts, not committed files.
+  #
+  # #1103: the trigger is `visual`, not `frontend`. The matrix's own code
+  # (`src/lib/visualMatrix.ts`, its runner and its assertions) is not a page, so
+  # gating on `frontend` let `#1095` change what the gate accepts while the gate
+  # did not run.
   visual:
     name: visual
     needs: changes
-    if: needs.changes.outputs.frontend == 'true'
+    if: needs.changes.outputs.visual == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 25
     permissions:

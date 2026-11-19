@@ -28,6 +28,7 @@ test('a docs-only diff classifies as documentation and keeps the suite runnable'
     docsOnly: true,
     source: false,
     frontend: false,
+    visual: false,
     deps: false,
     db: false,
     docker: false,
@@ -73,15 +74,46 @@ test('a backend source change runs code and Docker but not visual', () => {
 test('a view or public change runs visual and Docker', () => {
   const views = classifyChanges(['src/views/pages.ts'])
   assert.equal(views.frontend, true)
+  assert.equal(views.visual, true, 'the job now reads the visual flag, so a page change has to set it')
   assert.equal(views.source, true)
   assert.equal(views.docker, true)
   assert.equal(views.codeql, true)
 
   const publicOnly = classifyChanges(['public/app.css'])
   assert.equal(publicOnly.frontend, true)
+  assert.equal(publicOnly.visual, true)
   assert.equal(publicOnly.source, false)
   assert.equal(publicOnly.docker, true)
   assert.equal(publicOnly.codeql, true)
+})
+
+// #1103: the matrix is a gate, and its own rules were outside the set that
+// starts it. `#1095` changed the tolerance in `src/lib/visualMatrix.ts` and the
+// `visual` leg never ran on the change that redefined what it accepts.
+test('a change to the matrix code runs the gate that measures with it', () => {
+  const matrix = classifyChanges(['src/lib/visualMatrix.ts'])
+  assert.equal(matrix.visual, true, 'the matrix implementation decides what the gate rejects, so it must run the gate')
+  assert.equal(matrix.frontend, false, 'the matrix is not a page; keeping frontend false is what proves the job reads the new flag')
+  assert.equal(matrix.source, true, 'it is still source: lint, typecheck and the suite run')
+  assert.equal(matrix.codeql, true)
+
+  assert.equal(classifyChanges(['test/visualMatrix.test.ts']).visual, true, 'the assertions are part of the gate')
+  assert.equal(classifyChanges(['scripts/visual-matrix.ts']).visual, true, 'the runner is the entry that drives the matrix')
+  assert.equal(classifyChanges(['docs/architecture.md']).visual, false, 'a doc diff still skips 25 minutes of browser work')
+  assert.equal(classifyChanges(['README.md']).visual, false)
+  assert.equal(classifyChanges(['src/jobs/service.ts']).visual, false, 'backend code gains no runner time it cannot use')
+})
+
+test('the changes job publishes the visual flag and the visual job reads only it', () => {
+  const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+  assert.match(
+    jobBlock(workflow, 'changes'),
+    /visual: \$\{\{ steps\.classify\.outputs\.visual \}\}/,
+    'an output the changes job does not publish arrives at ci-ok as missing, which fails closed',
+  )
+  const visual = jobBlock(workflow, 'visual')
+  assert.match(visual, /if: needs\.changes\.outputs\.visual == 'true'/, 'the job must start on the flag that means "the matrix changed"')
+  assert.doesNotMatch(visual, /outputs\.frontend/, 'leaving the job on the page flag is the defect this card fixes')
 })
 
 test('a test-only change runs the test gates but not Docker', () => {
@@ -162,10 +194,12 @@ test('the deploy job starts only on a deploy flag, runs the syntax checks, and c
 
 test('an empty diff runs everything, because an unreadable diff must not shrink the gate', () => {
   assert.deepEqual(classifyChanges([]), allGateChanges())
+  assert.equal(allGateChanges().visual, true, 'the fallback must start the matrix too; a missing flag would read as "not applicable"')
   assert.deepEqual(allGateChanges(), {
     docsOnly: false,
     source: true,
     frontend: true,
+    visual: true,
     deps: true,
     db: true,
     docker: true,
@@ -188,6 +222,11 @@ test('path predicates recognise the shapes the workflow relies on', async () => 
   assert.equal(typeof isDeployPath, 'function', 'the classifier must export the predicate the workflow relies on')
   assert.equal(isDeployPath?.('deploy/nginx.conf.example'), true)
   assert.equal(isDeployPath?.('docs/deploy.md'), false)
+  const { isVisualPath } = (await import('../scripts/lib/ciChanges.mjs')) as { isVisualPath?: (path: string) => boolean }
+  assert.equal(typeof isVisualPath, 'function', 'the classifier must export the predicate the visual flag is computed from')
+  assert.equal(isVisualPath?.('src/lib/visualMatrix.ts'), true)
+  assert.equal(isVisualPath?.('src/views/pages.ts'), true, 'the set includes the pages, so a page change still runs the matrix')
+  assert.equal(isVisualPath?.('src/jobs/service.ts'), false)
 })
 
 // #752: a pull request whose branch was cut before the latest `main` carries a
