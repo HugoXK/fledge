@@ -3101,7 +3101,9 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   repository's default branch, its merge commit is an ancestor of the live
   default branch (`compareCommits` answers `ahead` or `identical`), and the blob
   SHA at that path is the same at the merge commit and on the default branch
-  today. Each failing fact is its own refusal (`document_not_merged`,
+  today. Only a file has a blob: a directory, a submodule and a symlink each
+  answer a `sha` of their own, so the route reads their type and a non-file is
+  refused as `document_blob_missing` rather than locking the entry to a tree. Each failing fact is its own refusal (`document_not_merged`,
   `document_base_not_default`, `document_not_on_default`, `document_blob_missing`,
   `document_blob_moved`), and a refused link writes nothing. A complete proof
   stores the path and PR on the row and sets the verification to `document`; from

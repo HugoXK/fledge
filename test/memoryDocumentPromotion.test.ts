@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { encryptSecret } from '../src/lib/secrets.js'
-import { documentRefusal, type DocumentProof } from '../src/lib/memoryDocument.js'
+import { documentRefusal, fileBlobSha, type DocumentProof } from '../src/lib/memoryDocument.js'
 import { formBody, json, makeUser, MemoryMailer, sessionFor, startFakeServer, testConfig } from './helpers.js'
 
 // #1070: a merged repository document, proved by its merge commit and its blob
@@ -27,6 +27,8 @@ interface Proof {
   ancestor?: 'ahead' | 'identical' | 'behind' | 'diverged'
   mergeBlob?: string | null
   liveBlob?: string | null
+  /** The `type` the contents endpoint answers for the document path. */
+  contentsType?: string
 }
 
 interface Harness {
@@ -47,6 +49,7 @@ async function harness(proof: Proof = {}): Promise<Harness> {
   const ancestor = proof.ancestor ?? 'ahead'
   const mergeBlob = proof.mergeBlob === undefined ? BLUE : proof.mergeBlob
   const liveBlob = proof.liveBlob === undefined ? BLUE : proof.liveBlob
+  const contentsType = proof.contentsType ?? 'file'
   const server = await startFakeServer((request, response) => {
     const method = request.method ?? 'GET'
     const url = request.url ?? ''
@@ -79,7 +82,7 @@ async function harness(proof: Proof = {}): Promise<Harness> {
         json(response, 404, { message: 'Not Found' })
         return
       }
-      json(response, 200, { type: 'file', sha, size: 12, encoding: 'base64', content: Buffer.from('the decision').toString('base64') })
+      json(response, 200, { type: contentsType, sha, size: 12, encoding: 'base64', content: contentsType === 'file' ? Buffer.from('the decision').toString('base64') : '' })
       return
     }
     json(response, 404, { message: 'Not Found' })
@@ -263,6 +266,23 @@ test('a path that is missing at the merge commit is refused instead of promoted'
   }
 })
 
+// The proof compares blob SHAs, and a directory, a submodule and a symlink all
+// answer a `sha` of their own. Only a file has a blob at that path in both
+// commits, so a non-file has to be refused like a missing path instead of
+// locking the entry to a tree the reader cannot open.
+for (const type of ['dir', 'submodule', 'symlink']) {
+  test(`a ${type} at the document path is refused instead of promoted`, async () => {
+    const h = await harness({ contentsType: type })
+    try {
+      const result = await write(h, entry({ document_path: PATH, document_pr: '12' }))
+      assert.match(redirectLocation(result), /refused=document_blob_missing/)
+      assert.equal(h.store.getMemory(h.repo.id, 'release-notes-format'), undefined)
+    } finally {
+      await h.close()
+    }
+  })
+}
+
 test('a promoted entry refuses a body rewrite and names the document that owns it', async () => {
   const h = await harness()
   try {
@@ -338,4 +358,13 @@ test('the planner names each proof it is missing, in order, and accepts a full o
   // A PR that merged onto the default branch but reports no merge commit cannot
   // be proved at all, so it is refused as "not on the default branch".
   assert.equal(documentRefusal({ ...ok, mergeCommitSha: '' }), 'document_not_on_default')
+})
+
+test('only a file contributes a blob to the proof', () => {
+  assert.equal(fileBlobSha({ type: 'file', sha: BLUE }), BLUE)
+  for (const type of ['dir', 'submodule', 'symlink']) {
+    assert.equal(fileBlobSha({ type, sha: BLUE }), null, `${type} has a sha but no blob`)
+  }
+  assert.equal(fileBlobSha({ type: 'file', sha: '' }), null, 'a file with no sha proves nothing')
+  assert.equal(fileBlobSha(null), null)
 })

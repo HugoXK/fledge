@@ -60,6 +60,20 @@ export function documentRefusal(proof: DocumentProof): DocumentRefusal | null {
   return null
 }
 
+// The blob the proof compares. A path can address something that is not a file
+// — a directory, a submodule, a symlink — and each of those answers a `sha` of
+// its own, so comparing raw shas would let a tree own an entry whose page links
+// to a listing instead of a document. Only a file with a blob has a document
+// here; everything else is treated exactly like a path that is absent.
+export interface ContentsBlob {
+  type: string
+  sha: string
+}
+
+export function fileBlobSha(blob: ContentsBlob | null): string | null {
+  return blob !== null && blob.type === 'file' && blob.sha !== '' ? blob.sha : null
+}
+
 export interface DocumentLink {
   path: string
   pr: number

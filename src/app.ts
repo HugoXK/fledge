@@ -138,7 +138,7 @@ import { ciGatePage } from './views/ciGate.js'
 import { reportCiGate } from './lib/ciGate.js'
 import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
 import { audienceVisible, MEMORY_DOCUMENT_VERIFICATION, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
-import { documentRefusal, isAncestorStatus, isDocumentPath, type DocumentProof } from './lib/memoryDocument.js'
+import { documentRefusal, fileBlobSha, isAncestorStatus, isDocumentPath, type DocumentProof } from './lib/memoryDocument.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, GithubError, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
@@ -3037,8 +3037,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
           defaultBranch: repo.default_branch,
           mergeCommitSha,
           ancestor,
-          mergeBlobSha: mergeBlob === null ? null : mergeBlob.sha,
-          liveBlobSha: liveBlob === null ? null : liveBlob.sha,
+          mergeBlobSha: fileBlobSha(mergeBlob),
+          liveBlobSha: fileBlobSha(liveBlob),
         }
       } catch (error) {
         // A PR that does not exist (or that this token cannot read) is the same
