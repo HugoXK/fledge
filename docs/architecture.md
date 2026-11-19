@@ -1050,7 +1050,10 @@ nobody can trust; the JWT signs only in `ok` and otherwise raises
 `CLOCK_SKEW_EXCEEDED` (`fail`) or `CLOCK_SKEW_UNVERIFIED` (`unknown`) instead of
 signing from a stale or zero correction. A failed measurement reports `null` and
 no series rather than a zero that would read as aligned, and it never replaces
-the last reading that really was measured.
+the last reading that really was measured. The scheduler tick re-measures any
+state that is not `ok`, so a deployment whose App JWT is never minted still gets
+a reading, and a configured App that has never measured one after 15 minutes of
+uptime answers `503` from `/readyz` with the honest `unknown` state (#1028).
 
 ### Inbound email replies
 
