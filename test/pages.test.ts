@@ -13,6 +13,7 @@ import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
 import { WORK_ITEM_STATES } from '../src/lib/workItems.js'
 import { encryptSecret } from '../src/lib/secrets.js'
+import { planPacketHash } from '../src/lib/planDecision.js'
 
 test('healthz reports the package version', async () => {
   const config = testConfig()
@@ -796,7 +797,12 @@ test('a plan must be approved by a maintainer before execution', async () => {
     const user = makeUser(store, { login: 'plan-approval-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_plan_approval', userId: user.id, owner: 'o', name: 'pa', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', planRequired: true, goal: 'ship it', autoIterate: false, intervalMinutes: 1440 })
     const job = store.createJob({ id: 'job_plan_approval', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
-    store.updateJob(job.id, { status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString() })
+    // #634: a plan without structured evidence cannot be approved, so this fixture
+    // carries the packet a real plan reports.
+    store.updateJob(job.id, {
+      status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString(),
+      evidence_json: JSON.stringify({ scope: 'src/parser.ts', acceptance: 'the plan runs', testPlan: 'post the form', testRed: 'not approvable', testGreen: 'approved', tests: 'node:test', checks: 'npm run check', files: 1, risk: 'low', rollback: 'revert the commit' }),
+    })
     const { cookie, csrf } = sessionFor(built, user)
     const rejected = await built.app.inject({
       method: 'POST',
@@ -827,6 +833,68 @@ test('a plan must be approved by a maintainer before execution', async () => {
     assert.equal(contexts.length, 1)
     assert.match(contexts[0]!.goal, /Allowed paths: src\//)
     assert.match(contexts[0]!.goal, /Forbidden paths: \.github\//)
+  } finally {
+    await built.close()
+  }
+})
+
+test('a plan card pins the packet hash and offers only the decisions its state allows', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'plan-card-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_plan_card', userId: user.id, owner: 'o', name: 'pc', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', planRequired: true, goal: 'ship it', autoIterate: false, intervalMinutes: 1440 })
+    const evidence = JSON.stringify({ scope: 'src/parser.ts', acceptance: 'the plan runs', testPlan: 'read the page', testRed: 'the card offered approve only', testGreen: 'the card offers reject and revise', tests: 'node:test', checks: 'npm run check', files: 1, risk: 'low', rollback: 'revert the commit' })
+    const item = store.createWorkItem({ id: 'wi_plan_card', repoId: repo.id, userId: user.id, title: 'plan card work' })
+    const ready = store.createJob({ id: 'job_plan_card_ready', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-ready', platformTokenHash: '', kind: 'plan', baseBranch: 'main', workItemId: item.id })
+    store.updateJob(ready.id, { status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString(), evidence_json: evidence })
+    const blind = store.createJob({ id: 'job_plan_card_blind', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-blind', platformTokenHash: '', kind: 'plan', baseBranch: 'main', workItemId: item.id })
+    store.updateJob(blind.id, { status: 'succeeded', summary: 'Plan: no evidence', finished_at: new Date().toISOString() })
+    // #634: plan rows written before the work-item link existed carry no work
+    // item, so there is nothing a revision could be queued on. The card must not
+    // offer a control whose press only redirects with an error.
+    const legacy = store.createJob({ id: 'job_plan_card_legacy', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-legacy', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
+    store.updateJob(legacy.id, { status: 'succeeded', summary: 'Plan: legacy row', finished_at: new Date().toISOString() })
+    const { cookie } = sessionFor(built, user)
+
+    // The hash is the one the page rendered, computed from the same three values
+    // the page shows, because that is what both decision doors compare.
+    const packetHash = (jobId: string): string => {
+      const job = store.getJob(jobId)!
+      return planPacketHash({ summary: job.summary, evidenceJson: job.evidence_json, baseSha: job.base_sha })
+    }
+    const hiddenHash = (body: string): string | undefined => body.match(/<input type="hidden" name="planHash" value="([0-9a-f]{64})"/)?.[1]
+    const primaryButton = (body: string): string => body.match(/<button[^>]*data-plan-primary[^>]*>/)?.[0] ?? ''
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${ready.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-plan-decision="pending"/)
+    assert.equal(hiddenHash(page.body), packetHash(ready.id), 'the form posts the hash of the packet the page showed')
+    assert.doesNotMatch(primaryButton(page.body), /disabled/, 'a complete plan can be approved')
+    assert.match(page.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${ready.id}/reject-plan"`))
+    assert.match(page.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${ready.id}/revise-plan"`))
+
+    const blindPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${blind.id}`, headers: { cookie } })
+    assert.equal(blindPage.statusCode, 200)
+    assert.match(blindPage.body, /data-plan-decision="incomplete"/)
+    assert.equal(hiddenHash(blindPage.body), packetHash(blind.id), 'a refusal still names the packet it read')
+    assert.match(primaryButton(blindPage.body), /disabled/, 'a plan without evidence cannot be approved')
+    // #634: the incomplete card disabled the approval and with it the decision —
+    // no reject, no revise. A plan nobody can evaluate is exactly the plan a
+    // maintainer has to be able to send back.
+    assert.match(blindPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${blind.id}/reject-plan"`), 'reject stays available without evidence')
+    assert.match(blindPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${blind.id}/revise-plan"`), 'a revision stays available without evidence')
+
+    // A row from before the work-item link: reject still applies to the row, but
+    // a revision would have to queue a new plan on a work item that is not there.
+    const legacyPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${legacy.id}`, headers: { cookie } })
+    assert.equal(legacyPage.statusCode, 200)
+    assert.match(legacyPage.body, /data-plan-decision="incomplete"/)
+    assert.equal(store.getJob(legacy.id)?.work_item_id, null)
+    assert.match(legacyPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${legacy.id}/reject-plan"`), 'reject still applies to a plan with no work item')
+    assert.doesNotMatch(legacyPage.body, new RegExp(`/repos/${repo.id}/jobs/${legacy.id}/revise-plan`), 'a plan with no work item offers no revision it cannot queue')
+    assert.match(legacyPage.body, /id="plan-revise-unavailable"/, 'the card says why it cannot revise')
   } finally {
     await built.close()
   }
@@ -944,7 +1012,7 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
       config,
       locale: 'en',
       viewer,
-      metrics: { users: 1, approved: 1, repos: 1, jobs: 2, succeeded: 1, failed: 1, usersWithJobs: 1, usersWithPr: 1, costUsd: 0.4, events: [{ name: 'job_enqueued', n: 2 }] },
+      metrics: { users: 1, approved: 1, repos: 1, jobs: 2, succeeded: 1, failed: 1, usersWithJobs: 1, usersWithPr: 1, costUsd: 0.4, events: [{ name: 'job_enqueued', n: 2 }], firstMerge: { repositories: 1, samples: 1, medianMs: 86_400_000 }, readyWait: { samples: 1, medianMs: 3_600_000 } },
       team: { jobs: 1, avgRoles: 2, leadOnly: 0, roles: [{ role: 'lead', calls: 3, jobs: 1 }] },
       workItems: { total: 1, open: 0, merged: 1, closed: 0 },
       attribution: { unattributedCount: 0, unattributedUsd: 0, attributedUsd: 0.4 },
@@ -1260,7 +1328,7 @@ test('admin metrics shows the failure breakdown', () => {
       config,
       locale: 'en',
       viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
-      metrics: { users: 1, approved: 1, repos: 1, jobs: 2, succeeded: 1, failed: 1, usersWithJobs: 1, usersWithPr: 0, costUsd: 0, events: [] },
+      metrics: { users: 1, approved: 1, repos: 1, jobs: 2, succeeded: 1, failed: 1, usersWithJobs: 1, usersWithPr: 0, costUsd: 0, events: [], firstMerge: { repositories: 0, samples: 0, medianMs: null }, readyWait: { samples: 0, medianMs: null } },
       team: { jobs: 0, avgRoles: 0, leadOnly: 0, roles: [] },
       workItems: { total: 0, open: 0, merged: 0, closed: 0 },
       attribution: { unattributedCount: 0, unattributedUsd: 0, attributedUsd: 0 },

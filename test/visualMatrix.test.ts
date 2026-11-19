@@ -161,3 +161,132 @@ test('a .table-scroll ancestor waives only when it can actually scroll', () => {
     'and it must be a real scroller, not an inert box carrying the class',
   )
 })
+
+// #870: the visual job measured overflow and nothing else — no touch floor, no
+// focus ring, no accessible name, no raw-template scan — and it never chose a
+// colour scheme, so the dark palette was photographed only when the host
+// happened to prefer it. The four gates live as pure functions so a broken
+// fixture can pin each one here, where a browser is not needed.
+//
+// The module is read through an object rather than a named import: on a tree
+// that has not added the gate yet, this file must still load, and the missing
+// export has to read as an assertion failure rather than a module-load error.
+type GateModule = {
+  GATE_WIDTHS?: readonly number[]
+  GATE_SCHEMES?: readonly string[]
+  touchFailures?: (controls: readonly {
+    name: string
+    width: number
+    height: number
+    compact?: boolean
+    inline?: boolean
+    disclosure?: boolean
+  }[]) => string[]
+  focusFailures?: (samples: readonly {
+    name: string
+    before: Record<string, string>
+    after: Record<string, string>
+  }[]) => string[]
+  nameFailures?: (items: readonly {
+    tag: string
+    text: string
+    ariaLabel: string | null
+    title: string | null
+    hasSvg: boolean
+  }[]) => string[]
+  leftoverFailures?: (html: string) => string[]
+}
+const gate = visualMatrix as unknown as GateModule
+
+test('the gate matrix is three widths by two schemes, not nine widths by host preference', () => {
+  assert.deepEqual([...(gate.GATE_WIDTHS ?? [])], [360, 768, 1280])
+  assert.deepEqual([...(gate.GATE_SCHEMES ?? [])], ['light', 'dark'])
+})
+
+test('the touch gate fails a 24px control and names the 44px floor', () => {
+  assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker; without one a control can shrink to any size')
+  const failures = gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 24, height: 24 }]) ?? []
+  assert.equal(failures.length, 1)
+  assert.match(failures[0] ?? '', /button\.banner-dismiss/)
+  assert.match(failures[0] ?? '', /44/)
+})
+
+test('a compact control is still held to the 24px WCAG floor', () => {
+  assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker')
+  const below = gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 23, height: 24, compact: true }]) ?? []
+  assert.equal(below.length, 1, 'a compact opt-out must not waive the 24px minimum')
+  assert.equal((gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 24, height: 24, compact: true }]) ?? []).length, 0)
+})
+
+test('the focus gate fails a control whose focused style is identical', () => {
+  assert.equal(typeof gate.focusFailures, 'function', 'the matrix needs a focus-visibility checker; without one a removed ring ships unseen')
+  const resting = {
+    outlineWidth: '0px',
+    outlineStyle: 'none',
+    boxShadow: 'none',
+    borderColor: 'rgb(34, 48, 40)',
+    backgroundColor: 'rgba(0, 0, 0, 0)',
+  }
+  const ringed = { ...resting, boxShadow: 'rgb(143, 191, 168) 0px 0px 0px 2px' }
+  assert.equal((gate.focusFailures?.([{ name: 'button.banner-dismiss', before: resting, after: resting }]) ?? []).length, 1)
+  assert.equal((gate.focusFailures?.([{ name: 'button.banner-dismiss', before: resting, after: ringed }]) ?? []).length, 0)
+})
+
+test('the name gate fails an icon-only control without a label', () => {
+  assert.equal(typeof gate.nameFailures, 'function', 'the matrix needs an accessible-name checker; without one an unlabelled icon button ships')
+  const unlabelled = { tag: 'button', text: '', ariaLabel: null, title: null, hasSvg: true }
+  assert.equal((gate.nameFailures?.([unlabelled]) ?? []).length, 1)
+  assert.equal((gate.nameFailures?.([{ ...unlabelled, ariaLabel: 'Close' }]) ?? []).length, 0)
+  assert.equal((gate.nameFailures?.([{ ...unlabelled, text: 'Close', hasSvg: false }]) ?? []).length, 0)
+})
+
+test('the leftover gate names every raw-template hit it finds', () => {
+  assert.equal(typeof gate.leftoverFailures, 'function', 'the matrix needs a raw-template scan; without one a page prints its own source')
+  const hits = gate.leftoverFailures?.('<p class="undefined">{infoTip(</p>') ?? []
+  assert.equal(hits.length, 2, 'both the undefined class and the unrendered helper have to be reported')
+  assert.equal((gate.leftoverFailures?.('<p class="fine">clean</p>') ?? []).length, 0)
+  assert.equal((gate.leftoverFailures?.('<p>${name}</p>') ?? []).length, 1)
+})
+
+test('the runner drives the gate from the two constants and chooses a scheme per context', () => {
+  const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
+  assert.match(script, /for \(const width of GATE_WIDTHS\)/, 'the gate pass has to iterate GATE_WIDTHS')
+  assert.match(script, /for \(const scheme of GATE_SCHEMES\)/, 'the gate pass has to iterate GATE_SCHEMES')
+  assert.match(script, /colorScheme: scheme/, 'each gate context has to ask the browser for the scheme it measures')
+  assert.match(script, /for \(const path of VISUAL_PATHS\)/, 'every swept path has to go through the gate')
+  assert.match(script, /data-compact-target/, 'the script has to read the documented compact opt-out')
+})
+
+test('the runner exercises an explicit theme against a host preference that disagrees', () => {
+  const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
+  assert.match(script, /fledge_theme/, 'the explicit-theme pass has to set the saved preference cookie')
+  assert.match(script, /data-theme/, 'the pass has to read the rendered attribute, not assume it')
+  assert.match(script, /colorScheme: 'light'/, 'the host preference has to disagree with the explicit choice for the check to mean anything')
+})
+
+test('an inline marker is exempt from the touch floor; a disclosure row is not', () => {
+  assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker')
+  assert.equal((gate.touchFailures?.([{ name: 'button.info-tip', width: 15, height: 15, inline: true }]) ?? []).length, 0)
+  assert.equal((gate.touchFailures?.([{ name: 'button.info-tip', width: 15, height: 15 }]) ?? []).length, 1)
+  // A `summary` is a control in the same list, so the 44px floor applies to it
+  // exactly as to a button: a named category never lowers a floor, only the
+  // per-element attributes do.
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 24 }]) ?? []).length, 1)
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 44 }]) ?? []).length, 0)
+  const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
+  assert.ok(
+    css.includes('summary { min-height: var(--touch); }'),
+    'the disclosure row carries the same --touch floor the gate measures it against, on the element selector so every row moves',
+  )
+})
+
+test('the inline exemption is an attribute on the marker, not a selector that swallows every small control', () => {
+  const pages = readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8')
+  assert.match(pages, /class="info-tip" data-inline-target/, 'the info marker has to carry the documented inline opt-out')
+  assert.equal((pages.match(/data-inline-target/g) ?? []).length, 1, 'one inline marker, one opt-out; a second one needs its own reason')
+})
+
+test('the gate skips a control a closed disclosure keeps out of the rendering', () => {
+  const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
+  assert.match(script, /checkVisibility/, 'a control inside a closed <details> keeps a non-zero rect in Chromium; the walk has to ask whether it renders')
+})

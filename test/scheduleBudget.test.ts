@@ -149,6 +149,204 @@ test('the count is charged to the instant s own day, so crossing midnight grants
   }
 })
 
+test('a project daily limit stops an instant the schedule would allow', async () => {
+  const h = harness('budget-project')
+  try {
+    const { due, startAt } = dueInstant()
+    h.store.saveSchedule({ id: 'sch_project', repoId: h.repoId, kind: 'interval', everyMs: 30 * DAY, startAt, dailyRuns: null })
+    anchorAt(h.store, h.repoId, startAt)
+    const identity = h.store.projectForRepo(h.repoId)
+    assert.ok(identity !== undefined, 'the #541 project row exists for the repository')
+    h.store.saveScheduleBudget({ scope: 'project', scopeId: identity.id, dailyLimit: 1 })
+    h.store.createWorkItem({ id: 'work_project', repoId: h.repoId, userId: h.userId, title: 'fix it', issueUrl: 'https://github.com/o/mp/issues/1', state: 'triaged' })
+    const day = utcDayStart(due)
+    h.store.recordScheduleOccurrence({
+      id: 'occ_project_seed', scheduleId: 'sch_project', repoId: h.repoId,
+      logicalTime: day, timingRevision: 1, state: 'dispatched', jobId: 'job_project_seed',
+    })
+
+    await h.jobs.tick()
+
+    assert.equal(h.store.listJobsForRepo(h.repoId).length, 0, 'the project limit stops the run before a job exists')
+    const row = h.store.listScheduleOccurrences(h.repoId, 20).find((entry) => entry.logical_time === due)
+    assert.ok(row !== undefined, 'the due instant is decided, not silently dropped')
+    assert.equal(row.state, 'skipped')
+    assert.equal(row.reason, 'budget-exceeded')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('a tenant daily limit covers every repository the owner runs in the day', async () => {
+  const h = harness('budget-tenant')
+  try {
+    const { due, startAt } = dueInstant()
+    const other = h.store.createRepo({
+      id: 'repo_budget_tenant_other', userId: h.userId, owner: 'o', name: 'budget-tenant-other',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 1440,
+    })
+    h.store.saveSchedule({ id: 'sch_tenant_a', repoId: h.repoId, kind: 'interval', everyMs: 30 * DAY, startAt, dailyRuns: null })
+    h.store.saveSchedule({ id: 'sch_tenant_b', repoId: other.id, kind: 'interval', everyMs: 30 * DAY, startAt, dailyRuns: null })
+    anchorAt(h.store, h.repoId, startAt)
+    anchorAt(h.store, other.id, startAt)
+    const a = h.store.projectForRepo(h.repoId)
+    const b = h.store.projectForRepo(other.id)
+    assert.ok(a !== undefined, 'the first repository has a #541 project')
+    assert.ok(b !== undefined, 'the second repository has a #541 project')
+    assert.equal(a.tenant_id, b.tenant_id, 'both repositories belong to the same owner tenant')
+    h.store.saveScheduleBudget({ scope: 'tenant', scopeId: a.tenant_id, dailyLimit: 1 })
+    h.store.createWorkItem({ id: 'work_tenant_other', repoId: other.id, userId: h.userId, title: 'fix it', issueUrl: 'https://github.com/o/mt/issues/1', state: 'triaged' })
+    const day = utcDayStart(due)
+    h.store.recordScheduleOccurrence({
+      id: 'occ_tenant_seed', scheduleId: 'sch_tenant_a', repoId: h.repoId,
+      logicalTime: day, timingRevision: 1, state: 'dispatched', jobId: 'job_tenant_seed',
+    })
+
+    await h.jobs.tick()
+
+    assert.equal(h.store.listJobsForRepo(other.id).length, 0, 'the tenant limit stops the second repository too')
+    const row = h.store.listScheduleOccurrences(other.id, 20).find((entry) => entry.logical_time === due)
+    assert.ok(row !== undefined, 'the second instant is decided, not silently dropped')
+    assert.equal(row.state, 'skipped')
+    assert.equal(row.reason, 'budget-exceeded')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('a previous logical day does not spend the tenant budget', async () => {
+  const h = harness('budget-tenant-day')
+  try {
+    const { due, startAt } = dueInstant()
+    h.store.saveSchedule({ id: 'sch_tenant_day', repoId: h.repoId, kind: 'interval', everyMs: 30 * DAY, startAt, dailyRuns: null })
+    anchorAt(h.store, h.repoId, startAt)
+    const identity = h.store.projectForRepo(h.repoId)
+    assert.ok(identity !== undefined)
+    h.store.saveScheduleBudget({ scope: 'tenant', scopeId: identity.tenant_id, dailyLimit: 1 })
+    h.store.createWorkItem({ id: 'work_tenant_day', repoId: h.repoId, userId: h.userId, title: 'fix it', issueUrl: 'https://github.com/o/md/issues/1', state: 'triaged' })
+    const day = utcDayStart(due)
+    h.store.recordScheduleOccurrence({
+      id: 'occ_tenant_yesterday', scheduleId: 'sch_tenant_day', repoId: h.repoId,
+      logicalTime: day - 1, timingRevision: 1, state: 'dispatched', jobId: 'job_tenant_yesterday',
+    })
+
+    await h.jobs.tick()
+
+    assert.equal(h.store.listJobsForRepo(h.repoId).length, 1, 'a new logical day starts with its own tenant budget')
+  } finally {
+    h.store.close()
+  }
+})
+
+// -- Run now, which is an occurrence too ------------------------------------
+//
+// #1027: a press writes the same `dispatched` row the tick writes, so every layer
+// counts it. The tick checks the three layers before it dispatches; the press did
+// not, so it spent budget it never asked about — including other repositories'
+// share of a tenant limit.
+
+/** The runner hands the job back immediately, so the next press is not `JOB_ACTIVE`. */
+function finishJobs(h: Harness): void {
+  for (const job of h.store.listJobsForRepo(h.repoId)) {
+    if (job.status === 'queued' || job.status === 'running') {
+      h.store.updateJob(job.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    }
+  }
+}
+
+function twoWorkItems(h: Harness, prefix: string): void {
+  for (const index of [1, 2]) {
+    h.store.createWorkItem({ id: `work_${prefix}_${index}`, repoId: h.repoId, userId: h.userId, title: `fix ${index}`, issueUrl: `https://github.com/o/${prefix}/issues/${index}`, state: 'triaged' })
+  }
+}
+
+test('a Run now press is refused once the schedule layer is spent, and a refusal is not a spend', async () => {
+  const h = harness('run-now-budget')
+  try {
+    h.store.saveSchedule({ id: 'sch_run_now_budget', repoId: h.repoId, kind: 'interval', everyMs: 24 * HOUR, dailyRuns: 1 })
+    twoWorkItems(h, 'runs')
+    const repo = h.store.getRepo(h.repoId)!
+
+    const first = await h.jobs.runScheduleNow(repo, 'cmd-press-1')
+    assert.equal(first.ok, true, 'the first press fits the limit')
+    finishJobs(h)
+
+    const second = await h.jobs.runScheduleNow(repo, 'cmd-press-2')
+    const day = utcDayStart(Date.now())
+    assert.equal(second.ok, false, 'a spent layer refuses the press instead of spending past it')
+    assert.equal(second.code, 'budget-exceeded', 'the press answers with the code the tick already stores')
+    assert.equal(second.occurrence?.state, 'skipped')
+    assert.equal(second.occurrence?.reason, 'budget-exceeded')
+    assert.equal(h.store.countScheduleDispatchesBetween('sch_run_now_budget', day, day + DAY), 1, 'a refused press consumes nothing')
+
+    const replay = await h.jobs.runScheduleNow(repo, 'cmd-press-2')
+    assert.equal(replay.replayed, true, 'the refusal is settled on the command key, so the replay answers it')
+    assert.equal(replay.code, 'budget-exceeded')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('Run now presses cannot spend the tenant layer past its limit', async () => {
+  const h = harness('run-now-tenant')
+  try {
+    const other = h.store.createRepo({
+      id: 'repo_run_now_tenant_other', userId: h.userId, owner: 'o', name: 'run-now-tenant-other',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 1440,
+    })
+    h.store.saveSchedule({ id: 'sch_run_now_a', repoId: h.repoId, kind: 'interval', everyMs: 30 * DAY })
+    h.store.saveSchedule({ id: 'sch_run_now_b', repoId: other.id, kind: 'interval', everyMs: 30 * DAY })
+    anchorAt(h.store, h.repoId, Date.now())
+    anchorAt(h.store, other.id, Date.now())
+    for (const index of [1, 2, 3]) {
+      h.store.createWorkItem({ id: `work_tenant_${index}`, repoId: h.repoId, userId: h.userId, title: `fix ${index}`, issueUrl: `https://github.com/o/mt/issues/${index}`, state: 'triaged' })
+    }
+
+    const identity = h.store.projectForRepo(h.repoId)
+    assert.ok(identity !== undefined)
+    assert.equal(h.store.projectForRepo(other.id)?.tenant_id, identity.tenant_id, 'both repositories share the owner tenant')
+    h.store.saveScheduleBudget({ scope: 'tenant', scopeId: identity.tenant_id, dailyLimit: 2 })
+
+    const repo = h.store.getRepo(h.repoId)!
+    const presses: boolean[] = []
+    for (const key of ['cmd-tenant-1', 'cmd-tenant-2', 'cmd-tenant-3']) {
+      presses.push((await h.jobs.runScheduleNow(repo, key)).ok)
+      finishJobs(h)
+    }
+    const day = utcDayStart(Date.now())
+    assert.deepEqual(presses, [true, true, false], 'the third press is refused, not spent past the limit')
+    assert.equal(
+      h.store.countTenantScheduleDispatchesBetween(identity.tenant_id, day, day + DAY),
+      2,
+      'the tenant count is the limit, never one past it',
+    )
+    assert.equal(h.store.listJobsForRepo(h.repoId).length, 2, 'one job behind each allowed press')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('without a limit a Run now press dispatches as it did before', async () => {
+  const h = harness('run-now-unbounded')
+  try {
+    h.store.saveSchedule({ id: 'sch_run_now_free', repoId: h.repoId, kind: 'interval', everyMs: 24 * HOUR, dailyRuns: null })
+    twoWorkItems(h, 'free')
+    const repo = h.store.getRepo(h.repoId)!
+
+    const first = await h.jobs.runScheduleNow(repo, 'cmd-free-1')
+    finishJobs(h)
+    const second = await h.jobs.runScheduleNow(repo, 'cmd-free-2')
+    assert.equal(first.ok, true)
+    assert.equal(second.ok, true, 'no limit means no refusal')
+    assert.equal(h.store.listJobsForRepo(h.repoId).length, 2)
+    assert.equal(h.store.listScheduleOccurrences(h.repoId, 20).filter((row) => row.state === 'dispatched').length, 2)
+  } finally {
+    h.store.close()
+  }
+})
+
 // -- the console, where a person reads and sets the limit --------------------
 
 test('the console states the limit, the runs used today, and what is left', () => {

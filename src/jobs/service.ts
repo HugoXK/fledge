@@ -15,7 +15,8 @@ import { errorClass, errorMessage } from '../lib/errorText.js'
 import { redact } from '../lib/secrets.js'
 import { isValidBranchName } from '../lib/branches.js'
 import { attributionSentence, parseAttribution, type Attribution } from '../lib/attribution.js'
-import { parseEvidence, parseEvidenceJson, type Evidence } from '../lib/evidence.js'
+import { parseEvidence, parseEvidenceJson, parseRedTestRun, type Evidence } from '../lib/evidence.js'
+import { redTestEvidence } from '../lib/redTest.js'
 import { applyReport, findingId, type FindingState } from '../lib/securityFindings.js'
 import { budgetScopeWordZh, budgetStop, type BudgetScopeCandidate } from '../lib/budgetScope.js'
 import { identityPrincipalId } from '../identity/authorization.js'
@@ -23,6 +24,7 @@ import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type Fai
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { jobEmailDecision } from '../lib/emailPolicy.js'
+import { actionIdFor, projectJobAction } from '../lib/actionsNeeded.js'
 import { nextRunFor, type NextRunFor } from '../lib/nextRunFor.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
@@ -63,7 +65,7 @@ import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStat
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
 import { encodeOccurrenceSnapshot, occurrenceSnapshot } from '../schedules/snapshot.js'
-import { utcDayEnd, utcDayStart } from '../schedules/budget.js'
+import { runBudgetStop, utcDayEnd, utcDayStart } from '../schedules/budget.js'
 import type { ScheduleRow } from '../db.js'
 import { isImplementedWorkType, missingWorkTypeEvidence, resolveWorkType, workTypeForKind, workTypeMayAutoMerge } from '../lib/workTypes.js'
 import { parseTriage } from '../lib/triage.js'
@@ -374,6 +376,18 @@ export interface CallbackPayload {
   triage?: unknown
 }
 
+// #1040: the agent reports the base run, so the job classifies it here and
+// stores the record beside the prose. A run taken on another tree is kept as
+// `base-mismatch`, and a job that reports no run gets no record and no verdict.
+function withRedTestRecord(evidence: Evidence | null, payload: unknown, jobBaseSha: string | null): Evidence | null {
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return evidence
+  const raw = payload as Record<string, unknown>
+  const run = parseRedTestRun(raw.baseRun)
+  if (run === null) return evidence
+  const base: Evidence = evidence ?? {}
+  return { ...base, redTest: redTestEvidence(run, parseRedTestRun(raw.repeat), jobBaseSha) }
+}
+
 // The canonical form of a terminal report. Two deliveries that describe the same
 // result produce the same value, so a replay is a no-op while a contradicting
 // report is a conflict (docs/decisions/0004, section 2).
@@ -658,6 +672,9 @@ export class Jobs {
     // refusal has to travel with it rather than being flattened to one string.
     if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code, detail: result.detail }
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: actorUserId, kind: 'job.retry_started', step: kind, meta: result.job.id })
+    // #633: retrying is the decision the action asked for, so the action clears
+    // here instead of staying open beside the run it started.
+    this.store.resolveAction(actionIdFor('failed', job.repo_id, jobId))
     return { ok: true, job: result.job }
   }
 
@@ -1765,7 +1782,18 @@ export class Jobs {
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: eventMeta === null ? null : redact(eventMeta) })
     if (result.status === 'failed') this.notePostmortem(jobId)
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
-    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${redact(result.error ?? job.error ?? '未知原因')}`, this.store.getJob(jobId)?.error_code ?? null)
+    if (result.status === 'failed') {
+      // #633: a failure is one action, not one notice per event. The action id is
+      // derived from the job, so a duplicate callback finds the same row and gets
+      // no second in-app message; the mail carries that same id.
+      const failed = projectJobAction({ id: jobId, repoId: job.repo_id, kind: job.kind, status: 'failed', prUrl: null })
+      if (failed === null) {
+        this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${redact(result.error ?? job.error ?? '未知原因')}`, this.store.getJob(jobId)?.error_code ?? null)
+      } else {
+        const recorded = this.store.recordAction({ userId: job.user_id, kind: failed.kind, repoId: failed.repoId, objectId: failed.objectId, reason: failed.reason, href: failed.href, label: failed.label, urgent: failed.urgent })
+        if (recorded.created) this.store.notify(job.user_id, 'job', `任务 ${jobId} 失败：${failed.reason}`, this.store.getJob(jobId)?.error_code ?? null, recorded.action.id)
+      }
+    }
     if (result.status === 'succeeded' || result.status === 'failed') {
       // #353: a success has no retry behind it, so its mail is decided here; a
       // failure waits for the retry decision below.
@@ -3176,6 +3204,14 @@ export class Jobs {
       summary: redact(result.summary ?? job.summary ?? ''),
       error: redact(result.error ?? job.error ?? ''),
       reviewScore: result.reviewScore ?? job.review_score,
+      // #633: the failed mail and the in-app row name the same decision, so the
+      // id and the page that resolves it ride the mail as well.
+      ...(result.status === 'failed'
+        ? (() => {
+            const id = actionIdFor('failed', repo.id, job.id)
+            return { actionId: id, actionUrl: `${this.config.baseUrl}/actions/${id}` }
+          })()
+        : {}),
     }
     try {
       const template = decision.template === 'success' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
@@ -3823,7 +3859,7 @@ export class Jobs {
     const summary = progressSummary(payload.summary)
     const error = typeof payload.error === 'string' ? redact(payload.error).slice(0, 2000) : undefined
     const attribution = parseAttribution(payload.attribution)
-    const evidence = parseEvidence(payload.evidence)
+    const evidence = withRedTestRecord(parseEvidence(payload.evidence), payload.evidence, job.base_sha)
     const checkpoint = typeof payload.checkpoint === 'string' ? redact(payload.checkpoint.trim()).slice(0, 4000) : undefined
     if (branch !== undefined && (!isValidBranchName(branch) || branch === job.base_branch)) {
       return { ok: false, status: 400, error: 'invalid branch' }
@@ -4191,6 +4227,39 @@ export class Jobs {
       snapshotJson: this.scheduleSnapshotJson(schedule, repo),
     })
     if (!created.created) return this.runNowAnswer(created.row, true)
+    // #1027: the press settles its row `dispatched`, and every budget layer counts
+    // `dispatched` rows, so it spends the same three layers the tick asks about.
+    // It has to ask first, or a press spends past a limit and — because the count
+    // is nested — the next instants of every other repository the owner runs are
+    // skipped `budget-exceeded`. The window is the row's own logical day:
+    // `createRunNowOccurrence` may step the instant forward by under a second to
+    // keep two presses distinct, and a press at the day's last millisecond must be
+    // charged to the day it was written into.
+    const from = utcDayStart(created.row.logical_time)
+    const to = utcDayEnd(created.row.logical_time)
+    const identity = this.store.projectForRepo(repo.id)
+    const scheduleLimit = schedule.daily_runs
+    const projectLimit = identity === undefined ? null : this.store.scheduleBudget('project', identity.id)
+    const tenantLimit = identity === undefined ? null : this.store.scheduleBudget('tenant', identity.tenant_id)
+    const stop = runBudgetStop([
+      { scope: 'schedule', limit: scheduleLimit, used: scheduleLimit === null ? 0 : this.store.countScheduleDispatchesBetween(schedule.id, from, to) },
+      { scope: 'project', limit: projectLimit, used: projectLimit === null || identity === undefined ? 0 : this.store.countProjectScheduleDispatchesBetween(identity.id, from, to) },
+      { scope: 'tenant', limit: tenantLimit, used: tenantLimit === null || identity === undefined ? 0 : this.store.countTenantScheduleDispatchesBetween(identity.tenant_id, from, to) },
+    ])
+    if (stop !== null) {
+      // A skipped row is not `dispatched`, so the counting queries ignore it: the
+      // refusal costs nothing, and the key replays the same answer.
+      const settled = this.store.settleRunNowOccurrence({ id: created.row.id, state: 'skipped', reason: 'budget-exceeded', dispatchedAt: Date.now() })
+      this.store.audit(repo.user_id, 'schedule.run_now', `${repo.id}: ${parsed.key} skipped budget-exceeded`)
+      return {
+        ok: false,
+        code: 'budget-exceeded',
+        message: '这次运行没有开始。',
+        ...(settled === undefined ? {} : { occurrence: settled }),
+        replayed: false,
+        jobId: null,
+      }
+    }
     const result = await this.enqueue(repo, 'manual', undefined, 'iterate', { ownerStarted: true, ...(actorRole === undefined ? {} : { actorRole }) })
     const dispatchedAt = Date.now()
     if (!result.ok || result.job === undefined) {
@@ -4488,7 +4557,7 @@ export class Jobs {
     // can re-measure, so a quiet instance could never leave `fail`. The tick is
     // the one loop that runs without a job, a webhook or a page view; while the
     // state is healthy this is a state read and spends no GitHub call.
-    await this.githubApp.refreshSkewWhileFailed()
+    await this.githubApp.refreshSkewWhileNotOk()
     const handled = new Set<string>()
     setGauge('fledge_jobs_active', this.store.countActiveJobs(), {}, 'Active jobs')
     setGauge('fledge_jobs_queued', this.store.listQueuedJobs().length, {}, 'Queued jobs')
@@ -4656,14 +4725,27 @@ export class Jobs {
         if (plan.skipped.length > 0) this.skipScheduledOccurrence(repo, plan, 'grace-exceeded')
         continue
       }
-      // #544 slice 6: the schedule layer of the run budget. The instant is
-      // charged to its own logical UTC day, so a late or recovered run spends the
-      // day it was scheduled for and crossing midnight grants no fresh allowance.
-      // At the limit the instant is decided — a skipped row naming the reason —
-      // rather than left due, or every tick would re-decide it.
-      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined && scheduleRow.daily_runs !== null) {
-        const used = this.store.countScheduleDispatchesBetween(scheduleRow.id, utcDayStart(plan.dueAt), utcDayEnd(plan.dueAt))
-        if (used >= scheduleRow.daily_runs) {
+      // #544 slice 6/10: the layered run budget. The schedule layer lives on
+      // the row; the project and tenant layers live in `schedule_budgets` and
+      // cover every repository the owner runs in the same logical UTC day. The
+      // first spent layer decides the instant, in schedule -> project -> tenant
+      // order, so adding a repository cannot bypass a tenant limit. The count is
+      // charged to the instant's own logical day, so a late or recovered run
+      // spends the day it was scheduled for and crossing midnight grants no
+      // fresh allowance.
+      if (plan !== null && plan.dueAt !== null && scheduleRow !== undefined) {
+        const from = utcDayStart(plan.dueAt)
+        const to = utcDayEnd(plan.dueAt)
+        const identity = this.store.projectForRepo(repo.id)
+        const scheduleLimit = scheduleRow.daily_runs
+        const projectLimit = identity === undefined ? null : this.store.scheduleBudget('project', identity.id)
+        const tenantLimit = identity === undefined ? null : this.store.scheduleBudget('tenant', identity.tenant_id)
+        const stop = runBudgetStop([
+          { scope: 'schedule', limit: scheduleLimit, used: scheduleLimit === null ? 0 : this.store.countScheduleDispatchesBetween(scheduleRow.id, from, to) },
+          { scope: 'project', limit: projectLimit, used: projectLimit === null || identity === undefined ? 0 : this.store.countProjectScheduleDispatchesBetween(identity.id, from, to) },
+          { scope: 'tenant', limit: tenantLimit, used: tenantLimit === null || identity === undefined ? 0 : this.store.countTenantScheduleDispatchesBetween(identity.tenant_id, from, to) },
+        ])
+        if (stop !== null) {
           this.skipScheduledOccurrence(repo, plan, 'budget-exceeded')
           continue
         }

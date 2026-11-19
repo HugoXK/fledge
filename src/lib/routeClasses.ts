@@ -117,6 +117,7 @@ const EXPENSIVE_ROUTE_LIST = [
   'POST /repos/:id/jobs/:jobId/merge',
   'POST /repos/:id/jobs/:jobId/approve-plan',
   'POST /repos/:id/jobs/:jobId/reject-plan',
+  'POST /repos/:id/jobs/:jobId/revise-plan',
   'POST /repos/:id/jobs/:jobId/execute',
   // The workspace proxy is registered with `app.all` (the two
   // `/repos/:id/workspace/app…` registrations in `src/app.ts`), so it answers
@@ -161,9 +162,17 @@ const ORDINARY_ROUTE_LIST = [
   'POST /repos/:id/jobs/:jobId/priority',
   'POST /repos/:id/jobs/:jobId/relations',
   'POST /repos/:id/jobs/:jobId/decision',
+  // #1040: answering the red-test claim writes one decision on the job — the
+  // record itself is not rewritten — and starts, stops or merges nothing, which
+  // is the shape `jobs/:jobId/decision` above already has. Expensive is reserved
+  // for routes that start, stop or merge work.
+  'POST /repos/:id/jobs/:jobId/red-test',
   'POST /repos/:id/jobs/:jobId/ack-rule-change',
   'POST /settings/notifications',
   'POST /notifications/read',
+  // #633: resolving an action is the decision the action asked for; it changes
+  // one row the caller owns and nothing else.
+  'POST /actions/:id/resolve',
   'POST /approve/:token',
   'POST /api/jobs/:id/callback',
   'POST /api/github/webhook',

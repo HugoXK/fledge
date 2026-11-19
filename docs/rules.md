@@ -25,6 +25,14 @@ Skills under `.agents/skills/` are repository-only in this slice; they cannot be
 console-overridden. The console form edits only `.fledge/rules.md`,
 `.fledge/review.md` and `.fledge/develop.md`.
 
+One skill has a reader outside a job: `.agents/skills/release-notes/SKILL.md`
+organises the draft release body. It is read at the commit the release row pinned
+(`repo_releases.target_sha`), never at the default-branch head and never at a pull
+request head, and it is read through the same loader and the same limits as every
+job — one reader, so the skill on the rules page and the skill that shaped the
+release cannot differ. The model may only reorganise the release's own sources; an
+answer that names a source outside them is refused and the built-in list is used.
+
 A console override stores its content, a revision and the user who wrote it. The
 form submits the revision it rendered, so a concurrent edit is refused instead
 of silently overwriting the newer one. Clearing an override deletes that row; the

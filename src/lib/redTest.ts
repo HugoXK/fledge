@@ -46,6 +46,17 @@ interface Classification {
   reason: string
 }
 
+// #1040: the record is a claim the maintainer can accept or reject. The
+// decision lives beside it, written by a person, so a page can say who answered
+// and when rather than leaving the badge to look self-certified.
+export interface RedTestDecision {
+  decision: 'confirmed' | 'challenged'
+  note: string
+  /** The login of the maintainer who pressed. */
+  by: string
+  at: string
+}
+
 // A type error names a code (`error TS2345`) or the compiler's own exit path; it
 // is not this repository's test failing.
 const COMPILE = /error TS\d{4}|TSError|tsc exited \d|is not assignable to type|Cannot find name '/
@@ -77,7 +88,21 @@ export function classifyRedTestRun(run: RedTestRun): Classification {
 // The record the job keeps. `repeat` is a second run of the same command at the
 // same base: when the two disagree the result is not reproducible, which makes it
 // `unverified` regardless of what either run said.
-export function redTestEvidence(run: RedTestRun, repeat: RedTestRun | null = null): RedTestEvidence {
+export function redTestEvidence(run: RedTestRun, repeat: RedTestRun | null = null, jobBaseSha: string | null = null): RedTestEvidence {
+  // A run taken on another tree answers a question about that tree. It is kept
+  // (with the sha it ran at) so the page can say why it proves nothing here.
+  if (jobBaseSha !== null && run.baseSha !== jobBaseSha) {
+    return {
+      command: run.command,
+      baseSha: run.baseSha,
+      exitCode: run.exitCode,
+      verdict: 'unverified',
+      signature: 'base-mismatch',
+      reason: `the base run was taken at ${run.baseSha}, not at the job's base ${jobBaseSha}, so it says nothing about this diff`,
+      outputSha256: sha256(run.output),
+      flaky: false,
+    }
+  }
   const first = classifyRedTestRun(run)
   const second = repeat === null ? null : classifyRedTestRun(repeat)
   const flaky = second !== null && (second.verdict !== first.verdict || second.signature !== first.signature)

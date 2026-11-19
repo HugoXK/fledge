@@ -41,3 +41,24 @@ export function parseDailyRuns(raw: string): DailyRunsParse {
   if (!Number.isSafeInteger(value) || value < 1 || value > DAILY_RUNS_MAX) return { ok: false, reason: 'out-of-range' }
   return { ok: true, dailyRuns: value }
 }
+
+export type RunBudgetLayer = 'schedule' | 'project' | 'tenant'
+
+export interface RunBudgetInput {
+  scope: RunBudgetLayer
+  limit: number | null
+  used: number
+}
+
+/**
+ * The first layer whose logical day is already spent. The layers are checked in
+ * schedule -> project -> tenant order, and a null limit is unbounded. The counts
+ * are nested, so the layer that stops the instant is the one with no room left,
+ * whether it is the schedule, the project or the tenant.
+ */
+export function runBudgetStop(layers: RunBudgetInput[]): RunBudgetInput | null {
+  for (const layer of layers) {
+    if (layer.limit !== null && layer.used >= layer.limit) return layer
+  }
+  return null
+}

@@ -8,6 +8,9 @@ export interface IssueCommandInput {
   detail: string
   association: string
   commentId: string
+  // #634: who wrote the command. A plan decision records the person who decided,
+  // so the door has to name them; empty when the payload carries no author.
+  actor: string
 }
 
 // #637: a mention is the second way a comment starts work. It is a plain-text
@@ -69,6 +72,7 @@ export function parseIssueCommand(body: Record<string, unknown>): IssueCommandIn
   const number = typeof issue.number === 'number' ? issue.number : 0
   const commentId = typeof comment.id === 'number' || typeof comment.id === 'string' ? String(comment.id) : ''
   if (issueUrl === '' || number === 0 || commentId === '') return null
+  const author = objectOf(comment.user)
   return {
     command,
     issueUrl,
@@ -77,6 +81,7 @@ export function parseIssueCommand(body: Record<string, unknown>): IssueCommandIn
     detail: typeof issue.body === 'string' ? issue.body.slice(0, 3000) : '',
     association,
     commentId,
+    actor: typeof author.login === 'string' ? author.login : '',
   }
 }
 

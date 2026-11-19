@@ -52,3 +52,33 @@ jobs:
           GITHUB_REPOSITORY: ${{ github.repository }}
           GITHUB_API_URL: ${{ github.api_url }}
         run: node scripts/ci-watchdog.mjs
+
+  release-slot:
+    name: open one card when the release slot shipped nothing
+    # #941: the hourly tick is the existing watchdog path, so the release slot
+    # gets its backstop here rather than in a second service. The job judges the
+    # 02:00Z slot's UTC day once its grace window has passed; before that it is
+    # a no-op. A scheduled run that fires late or not at all cannot be told to
+    # fix itself, so the failure of the slot is recorded as one issue per day.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The planner is read from the default branch, never from a pull
+          # request that could rewrite the rule that judges it.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Open the card for a day whose slot shipped nothing
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: node scripts/release-slot-watchdog.mjs

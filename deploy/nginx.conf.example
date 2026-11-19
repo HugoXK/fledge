@@ -13,6 +13,17 @@ server {
   access_log /var/log/nginx/fledge-access.log;
   error_log  /var/log/nginx/fledge-error.log warn;
 
+  # #1009: the console's security headers, at server level so `location /` and
+  # `location /v1/` inherit them. `always` keeps them on the 4xx/5xx nginx
+  # generates itself, such as a 502 while the app is down; without it a plain
+  # `add_header` is skipped on those responses. A `location` that declares an
+  # `add_header` of its own would stop inheriting this set, so it has to repeat
+  # all four.
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header X-Frame-Options "DENY" always;
+
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
@@ -37,5 +48,14 @@ server {
 server {
   listen 80;
   server_name fledge.example.com;
+
+  # The redirect is nginx's own response, so it needs the same set. HSTS here is
+  # a no-op on plain HTTP, but the other three apply, and repeating the block
+  # keeps the sample honest about the inheritance rule above.
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header X-Frame-Options "DENY" always;
+
   return 301 https://$host$request_uri;
 }
