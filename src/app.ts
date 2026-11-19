@@ -126,6 +126,7 @@ import {
   type InboxQuestion,
   type ScheduledNext,
 } from './views/pages.js'
+import { productPage } from './views/product.js'
 import { withDensity } from './views/layout.js'
 import type { PullTip } from './views/reviewMerge.js'
 import { gatePage } from './views/gate.js'
@@ -2291,6 +2292,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         })
         store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name} app=${installationId} permission=${repo.permission}`)
         store.event('repo_connect_success', { userId: viewer.user.id, repoId: repo.id, meta: 'github-app' })
+        store.recordProductEvent({ name: 'repo_connected', repoId: repo.id, subject: repo.id })
         if (config.flybot.instanceImage !== '') {
           instances.ensureUserDir(viewer.user.id)
           void instances.provision(repo).catch((error) => log.error('flybot provisioning failed', { repo: repo.id, error: String(error) }))
@@ -2372,6 +2374,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       })
       store.audit(viewer.user.id, 'repo.added', `${repo.owner}/${repo.name} fork=${repo.fork_owner}/${repo.fork_name} permission=${repo.permission} reviewer=${reviewerEnabled ? 'on' : 'off'}`)
       store.event('repo_connect_success', { userId: viewer.user.id, repoId: repo.id })
+      store.recordProductEvent({ name: 'repo_connected', repoId: repo.id, subject: repo.id })
       const t = translator(request.locale ?? 'zh')
       const bits = [t('仓库已添加。', 'Repository added.')]
       if (prepared.forkCreated) bits.push(t(`已创建 fork ${prepared.fork.fullName}。`, `Created fork ${prepared.fork.fullName}.`))
@@ -3775,6 +3778,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     try {
       await instances.answerQuestion(repo.id, text('sessionId'), questionId, selected, text('custom'))
+      store.recordProductEvent({ name: 'human_action_answer', repoId: repo.id, subject: questionId })
     } catch (error) {
       return fail(error instanceof Error ? error.message : String(error))
     }
@@ -4100,6 +4104,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, outcome, t('重试失败。', 'The retry failed.')))}&code=${outcome.code}`)
     }
     const retried = commandJobId(outcome) ?? job.id
+    store.recordProductEvent({ name: 'human_action_retry', repoId: repo.id, subject: job.id })
     return reply.redirect(`/repos/${repo.id}/jobs/${retried}?notice=${encodeURIComponent(t('已重新排队。', 'Queued again.'))}`)
   })
 
@@ -4394,6 +4399,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       workItemId: job.work_item_id,
     })
     if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
+    store.recordProductEvent({ name: 'human_action_approve', repoId: repo.id, subject: job.id })
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已批准，可以执行。')}`)
   })
 
@@ -4415,6 +4421,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       workItemId: job.work_item_id,
     })
     if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
+    store.recordProductEvent({ name: 'human_action_reject', repoId: repo.id, subject: job.id })
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝。')}`)
   })
 
@@ -5649,6 +5656,23 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.resolveAction(action.id)
     store.audit(viewer.user.id, 'action.resolved', action.id)
     return reply.redirect('/dashboard')
+  })
+
+  app.get('/admin/product', async (request, reply) => {
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    const windowDays = queryText(request, 'window') === '7' ? 7 : 30
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString()
+    return reply.type('text/html').send(productPage({
+      config,
+      locale: request.locale ?? 'zh',
+      viewer: viewOf(viewer),
+      loop: store.productLoopMetrics(since),
+      windowDays,
+      since,
+      notice: queryText(request, 'notice'),
+      error: queryText(request, 'error'),
+    }))
   })
 
   app.get('/admin/metrics', async (request, reply) => {
