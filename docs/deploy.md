@@ -1363,7 +1363,7 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   |---|---|---|
   | `not-configured` | no GitHub App on this deployment, so nothing is measured | `200` |
   | `ok` | measured at most 15 minutes ago and within 120 s | `200` |
-  | `unknown` | never measured, or the last reading is older than 15 minutes | `200` |
+  | `unknown` | never measured, or the last reading is older than 15 minutes | `200`, except a configured App that has never measured after 15 minutes of uptime: **`503`, `ok:false`** |
   | `fail` | the last measurement is outside 120 s | **`503`, `ok:false`** |
 
   In `fail` the platform refuses to start work: `Jobs.enqueue` answers
@@ -1374,7 +1374,8 @@ merged, so a tag on `main` is evidence of a released version, not of a rollout.
   zero correction. A GitHub outage therefore stops App calls after at most 15
   minutes rather than serving a signature nobody re-measured. Fix the clock, then
   confirm `/readyz` is `200` again — the next measurement (at most five minutes
-  after a `fail`) clears it.
+  after a `fail` or an unmeasured `unknown`) clears it, and the scheduler takes
+  that reading on its own tick rather than waiting for App traffic.
 - The Admin panel shows the audit trail and recent jobs.
 - Quota state: `GET /v1/models` with a user token, or the dashboard.
 - Disk: SQLite WAL files and logs.

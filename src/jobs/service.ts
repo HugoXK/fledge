@@ -4511,7 +4511,7 @@ export class Jobs {
     // can re-measure, so a quiet instance could never leave `fail`. The tick is
     // the one loop that runs without a job, a webhook or a page view; while the
     // state is healthy this is a state read and spends no GitHub call.
-    await this.githubApp.refreshSkewWhileFailed()
+    await this.githubApp.refreshSkewWhileNotOk()
     const handled = new Set<string>()
     setGauge('fledge_jobs_active', this.store.countActiveJobs(), {}, 'Active jobs')
     setGauge('fledge_jobs_queued', this.store.listQueuedJobs().length, {}, 'Queued jobs')
