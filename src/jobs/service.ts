@@ -83,6 +83,9 @@ import {
   skillBundleRecord,
   type SkillBundleRecord,
 } from '../lib/skillBundle.js'
+// #369: the sealed policy a dispatch runs under, and the echo check that decides
+// whether the runner and the row agree about which policy that was.
+import { compileContextBundle, verifyContextBundleEcho } from '../lib/contextBundle.js'
 import type { TeamRole } from '../flybot/playbook.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
@@ -386,6 +389,8 @@ export interface CallbackPayload {
   decision?: unknown
   followUps?: unknown
   triage?: unknown
+  // #369: the runner's claim that it ran under the sealed bundle it was handed.
+  contextBundleHash?: unknown
 }
 
 // #1040: the agent reports the base run, so the job classifies it here and
@@ -1495,6 +1500,35 @@ export class Jobs {
       this.store.audit(user.id, 'job.skill_bundle_attested', `${jobId}: ${attested.hash}`.slice(0, 300))
     }
 
+    // #369: seal the policy this dispatch runs under, inside the same decision as
+    // the row that records it. The bundle carries no clock, no host and no
+    // environment value, so a retry of the same dispatch compiles the same hash;
+    // and it is compiled before the insert, so a job can never be created holding
+    // a hash it did not compile. Without rules there is no policy to seal and the
+    // job records none, which the page prints as "no bundle" rather than as a
+    // verified one.
+    let contextBundle: { hash: string; json: string } | undefined
+    if (rules !== undefined) {
+      const sealed = compileContextBundle({
+        repo: { id: repo.id, fullName: `${repo.owner}/${repo.name}`, defaultBranch: repo.default_branch },
+        goal,
+        // The playbook version is chosen by the instance at dispatch time, after
+        // the row exists, so the bundle records the rules commit hash it can
+        // observe; `playbook.version` stays null rather than guessing a number.
+        playbook: { version: null, hash: rules.hash },
+        contextFiles: rules.files.map((file) => ({ path: file.path, sha: file.sha256 })),
+        paths: { allow: splitPathPatterns(repo.allow_paths), deny: splitPathPatterns(repo.deny_paths) },
+        branch: { base: baseBranch, name: null },
+        required: { evidence: [], sections: [] },
+        forbidden: [],
+        carryOver: carryOverBlock === null || carryOverBlock.text === '' ? [] : [carryOverBlock.text],
+        model: { provider: null, name: this.config.llm.model ?? null },
+        role: flybot?.role ?? null,
+      })
+      contextBundle = { hash: sealed.hash, json: JSON.stringify(sealed.bundle) }
+      this.store.audit(user.id, 'job.context_bundle_sealed', `${jobId}: ${sealed.hash}`.slice(0, 300))
+    }
+
     const platformToken = `flg_${randomToken(32)}`
     const tokenRow = this.store.createApiToken({
       id: `tok_${randomToken(8)}`,
@@ -1510,7 +1544,7 @@ export class Jobs {
     const priority = options.priority ?? (trigger === 'followup' ? 20 : trigger === 'manual' ? 10 : 0)
     let job: JobRow
     try {
-      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, workType: workType.type, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options), ...(skillBundle === undefined ? {} : { skillBundle }) })
+      job = this.store.createJob({ id: jobId, repoId: repo.id, userId: user.id, trigger, goal, callbackHash, platformTokenHash: tokenRow.token_hash, kind, workType: workType.type, baseBranch, workItemId: options.workItemId ?? null, priority, baseSha: preflightSha, retryAttempt: options.retryAttempt ?? 0, retryOf: options.retryOf ?? null, ownerStarted: this.ownerStartedFor(trigger, options), ...(skillBundle === undefined ? {} : { skillBundle }), ...(contextBundle === undefined ? {} : { contextBundle }) })
     } catch (error) {
       // SQLite reports the column of a partial unique index, not its name, so
       // this index surfaces as "UNIQUE constraint failed: jobs.repo_id". Only
@@ -1634,6 +1668,9 @@ export class Jobs {
         ...(flybot === undefined ? {} : { flybot }),
         ...(rules === undefined ? {} : { rules }),
         ...this.skillBundlesFor(job),
+        // #369: the runner is told the hash it has to echo back. The row already
+        // holds it, so this adds no new secret to the payload.
+        ...(job.context_bundle_hash === null ? {} : { contextBundleHash: job.context_bundle_hash }),
         timeoutMinutes: this.config.runner.timeoutMinutes,
       })
       if (result.status === 'running') {
@@ -3993,6 +4030,16 @@ export class Jobs {
     const attribution = parseAttribution(payload.attribution)
     const evidence = withRedTestRecord(parseEvidence(payload.evidence), payload.evidence, job.base_sha)
     const checkpoint = typeof payload.checkpoint === 'string' ? redact(payload.checkpoint.trim()).slice(0, 4000) : undefined
+    // #369: the echo is the runner's claim about what it read, so it is checked
+    // against the bytes the row stored rather than against the hash the row
+    // reports. A job with no sealed bundle records `missing`, and a callback that
+    // names another job's bundle records `mismatch`; neither is ever `verified`.
+    const contextEcho = typeof payload.contextBundleHash === 'string' ? payload.contextBundleHash.slice(0, 100) : null
+    const contextVerdict = verifyContextBundleEcho(job.context_bundle_json, job.context_bundle_hash, contextEcho)
+    if (contextVerdict.state === 'mismatch') {
+      this.store.audit(job.user_id, 'job.context_bundle_mismatch', `${jobId}: ${contextVerdict.detail}`.slice(0, 300))
+    }
+    this.store.updateJob(jobId, { context_bundle_state: contextVerdict.state })
     if (branch !== undefined && (!isValidBranchName(branch) || branch === job.base_branch)) {
       return { ok: false, status: 400, error: 'invalid branch' }
     }

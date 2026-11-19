@@ -24,6 +24,9 @@ import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } f
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { parseSkillBundleRecord, type SkillBundleSourceRow } from '../lib/skillBundle.js'
+// #369: the job page reads the bundle back from the row and re-hashes it, so the
+// page never prints "verified" for bytes that no longer match the hash.
+import { diffContextBundles, readContextBundle, verifyContextBundle } from '../lib/contextBundle.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -3641,6 +3644,9 @@ export function jobPage(input: {
   viewer: Viewer
   repo: RepoRow
   job: JobRow
+  // #369: the previous job of this repository that recorded a context bundle, so
+  // the page can say what changed since the policy the reader last saw.
+  previousJob?: JobRow | null
   // #565: position and total are instance-wide counts, so the route hands over
   // the queue rather than a bare index. The ahead-list is the viewer's own
   // queued jobs only; a job owned by anybody else stays a count.
@@ -4225,6 +4231,42 @@ export function jobPage(input: {
         ...(input.merge === undefined ? {} : { merge: input.merge }),
       })
 
+  // #369: the bundle card is built from the stored bytes, never from the hash the
+  // row reports. `verifyContextBundle` re-hashes what was stored, so a row whose
+  // hash belongs to a different bundle prints as a mismatch instead of a badge.
+  const contextBundle = readContextBundle(job.context_bundle_json)
+  const contextBundleVerdict = verifyContextBundle(job.context_bundle_json, job.context_bundle_hash)
+  const previousBundle = input.previousJob === undefined || input.previousJob === null
+    ? null
+    : readContextBundle(input.previousJob.context_bundle_json)
+  const contextBundleChanges = contextBundle === null ? [] : diffContextBundles(previousBundle, contextBundle)
+  const contextBundleEcho = job.context_bundle_state === 'verified'
+    ? t('回调回传了同一个哈希。', 'The callback echoed the same hash.')
+    : job.context_bundle_state === 'mismatch'
+      ? t('回调回传的是另一个包的哈希，这次运行与记录的政策不一致。', 'The callback echoed a different bundle hash; this run and the recorded policy disagree.')
+      : job.context_bundle_state === 'missing'
+        ? t('回调没有回传包哈希，无法确认运行读到的是这份政策。', 'The callback echoed no bundle hash, so the policy the run read cannot be confirmed.')
+        : t('还没有回调回传哈希。', 'No callback has echoed a hash yet.')
+  const contextBundleCard = job.context_bundle_hash === null
+    ? `<section class="card" id="job-context-bundle">
+    <h2>${escapeHtml(t('上下文包', 'Context bundle'))}</h2>
+    <p class="muted">${escapeHtml(t('这个任务没有记录上下文包（例如规则不可读，或任务早于这项记录），所以没有可核验的哈希。', 'This job recorded no context bundle (the rules were unreadable, or the job predates the record), so there is no hash to verify.'))}</p>
+  </section>`
+    : `<section class="card" id="job-context-bundle">
+    <h2>${escapeHtml(t('上下文包', 'Context bundle'))}</h2>
+    ${contextBundleVerdict.state === 'verified'
+      ? `<p class="fine">${escapeHtml(t('已按存储字节重算，与任务记录的哈希一致。', 'Recomputed from the stored bytes and it matches the hash the job records.'))}</p>`
+      : `<p class="fine" data-context-bundle-mismatch><strong>${escapeHtml(t('记录与字节不一致，不能当作已验证。', 'The record and the bytes disagree, so this is not verified.'))}</strong> ${escapeHtml(contextBundleVerdict.detail)}</p>`}
+    <p class="fine">${escapeHtml(t('包哈希', 'Bundle hash'))}: <code>${escapeHtml(job.context_bundle_hash)}</code></p>
+    <p class="fine">${escapeHtml(contextBundleEcho)}</p>
+    ${contextBundleChanges.length === 0
+      ? `<p class="fine">${escapeHtml(previousBundle === null
+        ? t('这是这个仓库记录的第一个上下文包。', 'This is the first bundle recorded for the repository.')
+        : t('与上一个任务记录的包相同。', 'Identical to the previous job’s bundle.'))}</p>`
+      : `<h3 class="mt-16">${escapeHtml(t('与上一个任务的包相比', 'Changed since the previous bundle'))}</h3>
+        <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('字段', 'Field'))}</th><th>${escapeHtml(t('之前', 'Before'))}</th><th>${escapeHtml(t('之后', 'After'))}</th></tr></thead><tbody>${contextBundleChanges.map((change) => `<tr><td><code>${escapeHtml(change.field)}</code></td><td>${escapeHtml(change.before)}</td><td>${escapeHtml(change.after)}</td></tr>`).join('')}</tbody></table></div>`}
+  </section>`
+
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -4253,6 +4295,7 @@ export function jobPage(input: {
   ${supportMode ? '' : workTypeCard}
   ${supportMode ? '' : triageCard}
   ${changeStoryCard}
+  ${contextBundleCard}
   ${input.strategy === undefined ? '' : jobStrategyBlock({ locale, repoId: repo.id, strategy: input.strategy })}
   ${jobSecurityFindingsCard(t, findings)}
   <section class="cols">

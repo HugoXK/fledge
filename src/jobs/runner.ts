@@ -57,6 +57,10 @@ export interface RunnerContext {
   // #380: the bundles the dispatch attested. The bridge prompt names this set,
   // so the agent reads only skills the instance signed and the allowlist allowed.
   skillBundles?: SkillBundleRecord
+  // #369: the sealed policy hash this dispatch carries. The prompt asks the
+  // runner to echo it, and the callback compares the echo with the bytes the row
+  // stored rather than with the hash the row reports.
+  contextBundleHash?: string
   timeoutMinutes: number
 }
 

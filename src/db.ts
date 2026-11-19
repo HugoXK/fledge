@@ -680,6 +680,14 @@ export interface JobRow {
   strategy_hash: string | null
   strategy_version: number | null
   strategy_json: string | null
+  // #369: the sealed policy the job ran under. `context_bundle_json` is the bytes
+  // a reader re-hashes, so `context_bundle_hash` stays a claim about the row
+  // rather than evidence. `context_bundle_state` is the outcome of the callback
+  // echo; NULL means no callback has answered yet, so "no bundle", "not yet
+  // echoed" and "verified" never collapse into one another.
+  context_bundle_hash: string | null
+  context_bundle_json: string | null
+  context_bundle_state: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -1624,6 +1632,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   strategy_hash TEXT,
   strategy_version INTEGER,
   strategy_json TEXT,
+  context_bundle_hash TEXT,
+  context_bundle_json TEXT,
+  context_bundle_state TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -3300,6 +3311,12 @@ export class Store {
     if (!jobColumns.has('strategy_hash')) this.run('ALTER TABLE jobs ADD COLUMN strategy_hash TEXT')
     if (!jobColumns.has('strategy_version')) this.run('ALTER TABLE jobs ADD COLUMN strategy_version INTEGER')
     if (!jobColumns.has('strategy_json')) this.run('ALTER TABLE jobs ADD COLUMN strategy_json TEXT')
+    // #369: additive on purpose. A row that predates the context bundle reads
+    // back as "no bundle recorded", and the job page prints exactly that instead
+    // of an empty hash a reader could mistake for a verified one.
+    if (!jobColumns.has('context_bundle_hash')) this.run('ALTER TABLE jobs ADD COLUMN context_bundle_hash TEXT')
+    if (!jobColumns.has('context_bundle_json')) this.run('ALTER TABLE jobs ADD COLUMN context_bundle_json TEXT')
+    if (!jobColumns.has('context_bundle_state')) this.run('ALTER TABLE jobs ADD COLUMN context_bundle_state TEXT')
     // #359: additive on purpose; every existing row backfills as NULL, which is
     // exactly "no recorded reason", so no close that happened earlier is read as
     // a plan expiry.
@@ -6846,7 +6863,7 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string; principalId?: string | null; skillBundle?: { hash: string; json: string; state?: string } }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string; principalId?: string | null; skillBundle?: { hash: string; json: string; state?: string }; contextBundle?: { hash: string; json: string } }): JobRow {
     // #433 slice 2: the job records the strategy it was created under, from the
     // same sources the strategy page reads, so the page a maintainer opens and
     // the strategy a job names cannot disagree. An unfrozen strategy keeps its
@@ -6869,8 +6886,8 @@ export class Store {
     // The ticket is taken inside the insert, so two jobs created at the same
     // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, principal_id, principal_revision, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, skill_bundle_hash, skill_bundle_json, skill_state, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, principal_id, principal_revision, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, skill_bundle_hash, skill_bundle_json, skill_state, context_bundle_hash, context_bundle_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -6886,6 +6903,8 @@ export class Store {
       input.skillBundle?.hash ?? null,
       input.skillBundle?.json ?? null,
       input.skillBundle?.state ?? null,
+      input.contextBundle?.hash ?? null,
+      input.contextBundle?.json ?? null,
       input.kind ?? 'iterate',
       input.workType ?? 'iterate',
       input.baseBranch ?? null,
@@ -6902,6 +6921,25 @@ export class Store {
 
   getJob(id: string): JobRow | undefined {
     return this.get<JobRow>('SELECT * FROM jobs WHERE id = ?', id)
+  }
+
+  /**
+   * #369: the previous job in the same repository that recorded a bundle. The job
+   * page diffs against it, so the comparison is a fact read from the record
+   * rather than from whatever render order the page happened to get. A job whose
+   * own bundle is absent still gets the previous one: "the policy changed before
+   * this job" is information the reader needs.
+   */
+  previousJobWithBundle(repoId: string, jobId: string): JobRow | undefined {
+    return this.get<JobRow>(
+      `SELECT * FROM jobs
+        WHERE repo_id = ? AND id != ? AND context_bundle_json IS NOT NULL
+          AND (created_at < (SELECT created_at FROM jobs WHERE id = ?)
+               OR (created_at = (SELECT created_at FROM jobs WHERE id = ?) AND queue_seq < (SELECT queue_seq FROM jobs WHERE id = ?)))
+        ORDER BY created_at DESC, queue_seq DESC
+        LIMIT 1`,
+      repoId, jobId, jobId, jobId, jobId,
+    )
   }
 
   saveJobContext(input: {
@@ -7513,7 +7551,7 @@ export class Store {
     })
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc' | 'skill_bundle_hash' | 'skill_bundle_json' | 'skill_state'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc' | 'skill_bundle_hash' | 'skill_bundle_json' | 'skill_state' | 'context_bundle_hash' | 'context_bundle_json' | 'context_bundle_state'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []

@@ -591,6 +591,20 @@ Headers: `Authorization: Bearer <callbackSecret>`, `Content-Type: application/js
 }
 ```
 
+A dispatch that carries a sealed context bundle also hands the runner its hash,
+and the final callback echoes it back unchanged as `contextBundleHash`:
+
+```json
+{ "status": "succeeded", "summary": "Fixed the splitter.", "contextBundleHash": "9f2c..." }
+```
+
+Fledge compares the echo with the hash recomputed from the bytes stored on the
+job, not with the hash the row reports. A job whose stored bytes no longer hash to
+the recorded value, or whose echo names another bundle, is recorded as a mismatch
+and the job page prints it as unverified; a callback with no echo leaves the job
+without a verdict rather than with a passing one. The field is optional on the
+wire so an older runner keeps working, and its absence is recorded as `missing`.
+
 Review jobs use `kind=review` and return `reviewScore` (0–100) instead of a
 branch/PR:
 
