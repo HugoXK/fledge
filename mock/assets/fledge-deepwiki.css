@@ -1,0 +1,228 @@
+/* Ask DeepWiki inside Fledge. Colours come from public/app.css tokens. */
+.fdw-launcher {
+  position: fixed;
+  right: var(--space-4);
+  bottom: var(--space-4);
+  z-index: 60;
+  display: inline-flex;
+  align-items: center;
+  gap: var(--space-2);
+  min-height: var(--touch);
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--accent-strong);
+  border-radius: var(--radius-pill);
+  background: var(--accent);
+  color: var(--accent-ink);
+  font: 700 var(--text-sm)/1 var(--font, inherit);
+  box-shadow: var(--shadow);
+  cursor: pointer;
+}
+.fdw-launcher:hover { background: var(--accent-hover); }
+.fdw-launcher svg { width: 18px; height: 18px; flex: none; }
+.fdw-launcher .fdw-dot {
+  width: 7px; height: 7px; flex: none; border-radius: 50%;
+  background: var(--good);
+  box-shadow: 0 0 0 3px var(--accent-a16);
+}
+.fdw-launcher-text { white-space: nowrap; }
+
+.fdw-panel {
+  position: fixed;
+  right: var(--space-4);
+  bottom: calc(var(--space-4) + var(--touch) + var(--space-2));
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  width: min(392px, calc(100vw - var(--space-4)));
+  max-height: min(640px, calc(100vh - var(--space-8)));
+  overflow: hidden;
+  background: var(--panel);
+  color: var(--text);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  font: 400 var(--text-sm)/1.55 var(--font, inherit);
+}
+.fdw-panel[hidden] { display: none; }
+
+.fdw-head {
+  display: flex; align-items: center; justify-content: space-between; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  border-bottom: 1px solid var(--line);
+  background: var(--panel-2);
+}
+.fdw-brand { display: flex; align-items: center; gap: var(--space-2); min-width: 0; }
+.fdw-logo {
+  width: 34px; height: 34px; flex: none; border-radius: var(--radius-md);
+  display: grid; place-items: center;
+  background: var(--accent); color: var(--accent-ink);
+}
+.fdw-logo svg { width: 18px; height: 18px; }
+.fdw-brand strong { display: block; font-size: var(--text-md); letter-spacing: -.02em; }
+.fdw-repo {
+  display: flex; align-items: center; gap: var(--space-1);
+  margin-top: 2px; color: var(--muted-2);
+  font: 600 var(--text-xs)/1.3 ui-monospace, SFMono-Regular, Consolas, monospace;
+  overflow-wrap: anywhere;
+}
+.fdw-repo i { width: 5px; height: 5px; flex: none; border-radius: 50%; background: var(--good); }
+.fdw-head-actions { display: flex; align-items: center; gap: 2px; flex: none; }
+.fdw-icon-btn {
+  width: 30px; height: 30px; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--muted);
+  display: grid; place-items: center; cursor: pointer; text-decoration: none;
+}
+.fdw-icon-btn:hover { background: var(--panel); color: var(--text); }
+.fdw-icon-btn svg { width: 16px; height: 16px; }
+
+.fdw-tabs {
+  display: flex; gap: 3px; margin: var(--space-3) var(--space-4) 0; padding: 3px;
+  background: var(--panel-2); border-radius: var(--radius-md);
+}
+.fdw-tab {
+  flex: 1; border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--muted);
+  padding: var(--space-1) var(--space-2);
+  font: 650 var(--text-xs)/1.2 inherit; text-align: center; text-decoration: none; cursor: pointer;
+}
+.fdw-tab.active { background: var(--panel); color: var(--text); box-shadow: var(--shadow); }
+.fdw-tab:hover { color: var(--text); }
+
+.fdw-log {
+  flex: 1; min-height: 180px; max-height: 400px; overflow: auto;
+  display: flex; flex-direction: column; gap: var(--space-3);
+  padding: var(--space-3) var(--space-4);
+  overscroll-behavior: contain;
+}
+
+.fdw-empty { padding: var(--space-1) 0; }
+.fdw-empty-icon {
+  width: 40px; height: 40px; margin-bottom: var(--space-2);
+  display: grid; place-items: center;
+  border-radius: var(--radius-md); background: var(--panel-2); color: var(--accent);
+}
+.fdw-empty-icon svg { width: 20px; height: 20px; }
+.fdw-empty h3 { margin: 0 0 var(--space-1); font-size: var(--text-md); letter-spacing: -.03em; color: var(--text); }
+.fdw-empty p { margin: 0 0 var(--space-3); font-size: var(--text-xs); color: var(--muted); }
+.fdw-prompts { display: grid; gap: var(--space-1); }
+.fdw-prompt {
+  position: relative; display: flex; flex-direction: column; gap: 2px;
+  padding: var(--space-2) var(--space-3); text-align: left;
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel-2); color: var(--text); cursor: pointer;
+}
+.fdw-prompt:hover { border-color: var(--accent); background: var(--accent-a12); }
+.fdw-prompt span { padding-right: var(--space-4); font-size: var(--text-xs); font-weight: 650; }
+.fdw-prompt small { font-size: var(--text-xs); color: var(--muted-2); }
+.fdw-prompt b { position: absolute; right: var(--space-2); top: 50%; transform: translateY(-50%); color: var(--muted-2); font-weight: 400; }
+
+.fdw-msg { display: flex; gap: var(--space-2); align-items: flex-start; }
+.fdw-msg.fdw-user { justify-content: flex-end; }
+.fdw-avatar {
+  width: 26px; height: 26px; flex: none; margin-top: var(--space-3);
+  display: grid; place-items: center;
+  border-radius: var(--radius-sm);
+  background: var(--accent); color: var(--accent-ink);
+  font: 800 var(--text-xs)/1 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.fdw-bubble {
+  max-width: 88%; padding: var(--space-2) var(--space-3);
+  border-radius: var(--radius-md); font-size: var(--text-sm); line-height: 1.55; overflow-wrap: anywhere;
+}
+.fdw-user .fdw-bubble { background: var(--accent); color: var(--accent-ink); border-bottom-right-radius: var(--radius-xs); }
+.fdw-bot .fdw-bubble {
+  background: var(--panel-2); color: var(--text);
+  border: 1px solid var(--line); border-bottom-left-radius: var(--radius-xs);
+}
+.fdw-meta-row { display: flex; align-items: center; justify-content: space-between; gap: var(--space-2); margin-bottom: var(--space-1); }
+.fdw-meta {
+  font: 700 var(--text-xs)/1.2 ui-monospace, SFMono-Regular, Consolas, monospace;
+  letter-spacing: .06em; text-transform: uppercase; color: var(--muted-2);
+}
+.fdw-copy { border: 0; background: transparent; padding: 0; color: var(--muted-2); font: 600 var(--text-xs)/1.2 inherit; cursor: pointer; }
+.fdw-copy:hover { color: var(--text); }
+
+.fdw-md p { margin: 0 0 var(--space-2); }
+.fdw-md p:last-child { margin-bottom: 0; }
+.fdw-md h4 { margin: var(--space-2) 0 var(--space-1); font-size: var(--text-sm); letter-spacing: -.02em; }
+.fdw-md ul, .fdw-md ol { margin: var(--space-1) 0 var(--space-2); padding-left: var(--space-4); }
+.fdw-md li { margin: 2px 0; }
+.fdw-md code {
+  padding: 1px 4px; border: 1px solid var(--line); border-radius: var(--radius-xs);
+  background: var(--field); font: .72em ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.fdw-md pre {
+  margin: var(--space-2) 0; padding: var(--space-2) var(--space-3); overflow: auto;
+  background: var(--surface-sunken); color: var(--text);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  font: var(--text-xs)/1.5 ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.fdw-md pre code { padding: 0; border: 0; background: transparent; color: inherit; font: inherit; }
+.fdw-md a { color: var(--accent-hover); text-decoration: underline; text-underline-offset: 2px; }
+.fdw-md blockquote { margin: var(--space-2) 0; padding-left: var(--space-2); border-left: 2px solid var(--accent); color: var(--muted); }
+.fdw-error { color: var(--danger); }
+.fdw-error a { color: inherit; font-weight: 700; }
+.fdw-retry {
+  margin-top: var(--space-2); padding: var(--space-1) var(--space-2);
+  border: 1px solid var(--line); border-radius: var(--radius-sm);
+  background: var(--panel); color: var(--text); font: 650 var(--text-xs)/1.2 inherit; cursor: pointer;
+}
+.fdw-retry:hover { border-color: var(--accent); }
+
+.fdw-thinking .fdw-bubble { display: flex; align-items: center; flex-wrap: wrap; gap: var(--space-1); color: var(--muted); }
+.fdw-dots { display: inline-flex; gap: 3px; }
+.fdw-dots i { width: 4px; height: 4px; border-radius: 50%; background: currentColor; animation: fdw-blink 1.2s infinite; }
+.fdw-dots i:nth-child(2) { animation-delay: .15s; }
+.fdw-dots i:nth-child(3) { animation-delay: .3s; }
+.fdw-stop {
+  margin-left: auto; padding: 0; border: 0; background: transparent;
+  color: var(--muted); font: 600 var(--text-xs)/1.2 inherit;
+  text-decoration: underline; cursor: pointer;
+}
+.fdw-stop:hover { color: var(--text); }
+
+.fdw-form {
+  padding: var(--space-3) var(--space-4) var(--space-2);
+  border-top: 1px solid var(--line); background: var(--panel-2);
+}
+.fdw-input-wrap {
+  display: flex; align-items: flex-end; gap: var(--space-1);
+  padding: var(--space-1) var(--space-1) var(--space-1) var(--space-2);
+  border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--field);
+}
+.fdw-input-wrap:focus-within { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-a16); }
+.fdw-form textarea {
+  flex: 1; min-height: 1.9rem; max-height: 7rem; resize: none;
+  border: 0; outline: 0; background: transparent; color: var(--text);
+  font: inherit; padding: var(--space-1) 0;
+}
+.fdw-send {
+  width: 32px; height: 32px; flex: none; border: 1px solid var(--accent-strong); border-radius: var(--radius-sm);
+  display: grid; place-items: center; cursor: pointer;
+  background: var(--accent); color: var(--accent-ink);
+}
+.fdw-send:disabled { opacity: .45; cursor: wait; }
+.fdw-send svg { width: 15px; height: 15px; }
+.fdw-hint {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between; gap: 2px var(--space-2);
+  padding: var(--space-2) 0 0; color: var(--muted-2); font-size: var(--text-xs); line-height: 1.45;
+}
+.fdw-hint span { max-width: 32em; }
+.fdw-hint a { color: inherit; text-decoration: underline; white-space: nowrap; }
+
+@keyframes fdw-blink { 0%, 80%, 100% { opacity: .25; } 40% { opacity: 1; } }
+
+@media (max-width: 640px) {
+  .fdw-launcher { right: var(--space-3); bottom: var(--space-3); padding: var(--space-2); }
+  .fdw-launcher-text { display: none; }
+  .fdw-launcher .fdw-dot { position: absolute; top: 7px; right: 7px; margin: 0; }
+  .fdw-panel {
+    right: var(--space-3); left: var(--space-3); bottom: calc(var(--space-3) + var(--touch) + var(--space-2));
+    width: auto; max-height: calc(100vh - var(--space-8));
+  }
+  .fdw-log { max-height: 50vh; }
+  .fdw-form { padding-bottom: calc(var(--space-2) + env(safe-area-inset-bottom)); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .fdw-panel, .fdw-launcher, .fdw-dots i { animation: none !important; transition: none !important; }
+}
