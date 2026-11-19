@@ -190,12 +190,20 @@ function formatCount(value: number): string {
   return Number.isFinite(value) ? value.toLocaleString('en-US') : '—'
 }
 
-function durationText(ms: number | null | undefined): string {
+export function durationText(ms: number | null | undefined): string {
   if (ms === null || ms === undefined || !Number.isFinite(ms) || ms < 0) return '—'
   if (ms < 1000) return '<1s'
-  if (ms < 60_000) return `${Math.round(ms / 1000)}s`
-  if (ms < 3_600_000) return `${Math.round(ms / 60_000)}m`
-  if (ms < 86_400_000) return `${(ms / 3_600_000).toFixed(1)}h`
+  // #1057: each band rounds to its own precision, so its top end can round up
+  // to the unit it has just completed ("60s", "60m", "24.0h"). Report the next
+  // unit at that point instead; a value never prints a unit it has finished.
+  const seconds = Math.round(ms / 1000)
+  if (seconds < 60) return `${seconds}s`
+  if (ms < 60_000) return '1m'
+  const minutes = Math.round(ms / 60_000)
+  if (minutes < 60) return `${minutes}m`
+  if (ms < 3_600_000) return '1h'
+  const hours = (ms / 3_600_000).toFixed(1)
+  if (Number(hours) < 24) return `${hours}h`
   return `${(ms / 86_400_000).toFixed(1)}d`
 }
 
