@@ -122,6 +122,18 @@ export const RETENTION_CLASSES = [
     where: ({ cutoff }) => ({ sql: "status IN ('succeeded', 'failed', 'quota_exhausted') AND finished_at IS NOT NULL AND finished_at < ?", params: [cutoff] }),
   },
   {
+    // #371: the post-merge ledger describes the jobs above, so it shares their
+    // window: one run deletes a delivery and the job that produced it, and no row
+    // outlives the other.
+    id: 'deliveryOutcomes',
+    key: 'delivery_outcomes',
+    table: 'delivery_outcomes',
+    env: 'RETENTION_DELIVERY_OUTCOMES_DAYS',
+    defaultDays: 365,
+    label: ['交付结果', 'Delivery outcomes'],
+    where: ({ cutoff }) => ({ sql: 'merged_at < ?', params: [cutoff] }),
+  },
+  {
     id: 'auditLog',
     key: 'audit_log',
     table: 'audit_log',

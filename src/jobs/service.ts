@@ -1745,6 +1745,25 @@ export class Jobs {
 
   // Returns whether this call moved the row to a terminal state. Callers that
   // perform side effects must only do so when it returns true.
+  // #371: a merged pull request is a delivery. The row carries the cost and the
+  // model of the job that produced it, so the window can be read per repository,
+  // per model and per playbook without a join at read time. A merge with no job
+  // still lands — a human's pull request is a delivery too, and its cost is `—`.
+  recordMergedDelivery(input: { repoId: string; jobId: string | null; prUrl: string; mergeCommit: string; mergedAt: string; title: string }): void {
+    const job = input.jobId === null ? undefined : this.store.getJob(input.jobId)
+    this.store.recordDeliveryOutcome({
+      repoId: input.repoId,
+      jobId: input.jobId,
+      prUrl: input.prUrl,
+      mergeCommit: input.mergeCommit,
+      mergedAt: input.mergedAt,
+      title: input.title,
+      costUsd: job?.cost_usd ?? null,
+      model: job?.provider_model ?? null,
+      playbook: job?.work_type ?? null,
+    })
+  }
+
   private finish(jobId: string, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; branch?: string; prUrl?: string | null; issueUrl?: string | null; reviewScore?: number; summary?: string; error?: string; errorCode?: FailureCode }, revoke: () => void, attribution: Attribution | null = null, evidence: Evidence | null = null, fingerprint: string | null = null, owner: { worker: string; epoch: number } | null = null, reap = false): boolean {
     const job = this.store.getJob(jobId)
     if (job === undefined) return false

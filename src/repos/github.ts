@@ -1043,6 +1043,21 @@ export class GithubClient {
     }
   }
 
+  // #371: the post-merge ledger needs the base branch's recent history to spot a
+  // revert. Git names the reverted commit in its own trailer, so one page of
+  // commits is enough for the merges a window can see; a page cap is reported
+  // instead of pretending the history ended.
+  async listRecentCommits(owner: string, name: string, branch: string, perPage = 50): Promise<Array<{ sha: string; message: string }>> {
+    const data = await this.request<Array<{ sha?: string; commit?: { message?: string } }>>(
+      'GET',
+      `/repos/${encodeURIComponent(owner)}/${encodeURIComponent(name)}/commits?sha=${encodeURIComponent(branch)}&per_page=${Math.max(1, Math.min(100, Math.round(perPage)))}`,
+    )
+    if (!Array.isArray(data)) return []
+    return data.flatMap((entry) => (typeof entry?.sha === 'string' && typeof entry?.commit?.message === 'string'
+      ? [{ sha: entry.sha, message: entry.commit.message }]
+      : []))
+  }
+
   // Merged pull requests after one instant, with the labels the feature rule
   // reads. The list is ordered by `updated_at`, so a pull request merged before
   // the window can still appear on an early page with a comment; the filter runs

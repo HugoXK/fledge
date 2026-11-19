@@ -13,6 +13,7 @@ import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/model
 import { loopMetrics } from './metrics/product.js'
 import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
+import { followUpLinks, type DeliveryOutcomeRow } from './lib/deliveryOutcome.js'
 import { actionIdFor, type ActionKind } from './lib/actionsNeeded.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
@@ -1631,6 +1632,31 @@ CREATE TABLE IF NOT EXISTS jobs (
 CREATE INDEX IF NOT EXISTS jobs_repo_idx ON jobs(repo_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_user_idx ON jobs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS jobs_status_idx ON jobs(status);
+
+-- #371: one row per merged pull request. merged_at is the delivery; the facts
+-- after it (a revert, a follow-up link, a post-merge failure) attach to the same
+-- row and are never rewritten, so the ledger can be read back years later. The
+-- unique index on the (repo_id, pr_url) pair is what makes a replay a no-op.
+CREATE TABLE IF NOT EXISTS delivery_outcomes (
+  id TEXT PRIMARY KEY,
+  repo_id TEXT NOT NULL REFERENCES repos(id) ON DELETE CASCADE,
+  job_id TEXT REFERENCES jobs(id) ON DELETE SET NULL,
+  pr_url TEXT NOT NULL,
+  merge_commit TEXT NOT NULL,
+  merged_at TEXT NOT NULL,
+  title TEXT NOT NULL,
+  reverted_at TEXT,
+  revert_commit TEXT,
+  follow_up_json TEXT NOT NULL DEFAULT '[]',
+  post_merge_failures INTEGER NOT NULL DEFAULT 0,
+  last_failure_at TEXT,
+  cost_usd REAL,
+  model TEXT,
+  playbook TEXT,
+  UNIQUE (repo_id, pr_url)
+);
+CREATE INDEX IF NOT EXISTS delivery_outcomes_repo_idx ON delivery_outcomes(repo_id, merged_at DESC);
+CREATE INDEX IF NOT EXISTS delivery_outcomes_merge_idx ON delivery_outcomes(repo_id, merge_commit);
 
 CREATE TABLE IF NOT EXISTS api_tokens (
   id TEXT PRIMARY KEY,
@@ -3929,6 +3955,70 @@ export class Store {
 
   addJobCost(id: string, usd: number): void {
     this.run('UPDATE jobs SET cost_usd = cost_usd + ? WHERE id = ?', usd, id)
+  }
+
+  // #371: the post-merge ledger. One row per merged pull request, inserted when
+  // the merge event arrives; a replay of that event adds nothing. Later facts
+  // attach to the same row and a row is never rewritten to say something else.
+  recordDeliveryOutcome(input: {
+    repoId: string
+    jobId: string | null
+    prUrl: string
+    mergeCommit: string
+    mergedAt: string
+    title: string
+    costUsd: number | null
+    model?: string | null
+    playbook?: string | null
+  }): void {
+    this.db.prepare(
+      `INSERT INTO delivery_outcomes (id, repo_id, job_id, pr_url, merge_commit, merged_at, title, cost_usd, model, playbook)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (repo_id, pr_url) DO NOTHING`,
+    ).run(...clean([
+      randomId('delivery'), input.repoId, input.jobId, input.prUrl.slice(0, 500), input.mergeCommit.slice(0, 100),
+      input.mergedAt, input.title.slice(0, 300), input.costUsd, input.model ?? null, input.playbook ?? null,
+    ]))
+  }
+
+  getDeliveryOutcomeByMerge(repoId: string, mergeCommit: string): DeliveryOutcomeRow | undefined {
+    return this.get<DeliveryOutcomeRow>('SELECT * FROM delivery_outcomes WHERE repo_id = ? AND merge_commit = ?', repoId, mergeCommit)
+  }
+
+  listDeliveryOutcomes(repoId: string, sinceIso: string): DeliveryOutcomeRow[] {
+    return this.all<DeliveryOutcomeRow>(
+      'SELECT * FROM delivery_outcomes WHERE repo_id = ? AND merged_at >= ? ORDER BY merged_at DESC',
+      repoId, sinceIso,
+    )
+  }
+
+  // The first sighting of a revert wins: the scanner may see the same history
+  // twice, and a second sighting must not move the clock or double the count.
+  markDeliveryReverted(input: { repoId: string; mergeCommit: string; revertCommit: string; revertedAt: string }): boolean {
+    const result = this.db.prepare(
+      'UPDATE delivery_outcomes SET reverted_at = ?, revert_commit = ? WHERE repo_id = ? AND merge_commit = ? AND reverted_at IS NULL',
+    ).run(...clean([input.revertedAt, input.revertCommit, input.repoId, input.mergeCommit]))
+    return Number(result.changes) > 0
+  }
+
+  // A failing check after the merge is one fact per failing run, not one per
+  // repository, so the column counts rather than flips.
+  recordPostMergeFailure(repoId: string, mergeCommit: string, at: string): boolean {
+    const result = this.db.prepare(
+      'UPDATE delivery_outcomes SET post_merge_failures = post_merge_failures + 1, last_failure_at = ? WHERE repo_id = ? AND merge_commit = ?',
+    ).run(...clean([at, repoId, mergeCommit]))
+    return Number(result.changes) > 0
+  }
+
+  // A follow-up link is counted once: a second comment on the same issue names
+  // the same link, and counting it again would inflate the rate.
+  linkDeliveryFollowUp(repoId: string, mergeCommit: string, url: string): boolean {
+    const row = this.getDeliveryOutcomeByMerge(repoId, mergeCommit)
+    if (row === undefined) return false
+    const links = followUpLinks(row)
+    if (links.includes(url)) return false
+    this.run('UPDATE delivery_outcomes SET follow_up_json = ? WHERE id = ?', JSON.stringify([...links, url].slice(0, 50)), row.id)
+    return true
   }
 
   event(name: string, input: { userId?: string | null; repoId?: string | null; jobId?: string | null; meta?: string | null } = {}): void {
