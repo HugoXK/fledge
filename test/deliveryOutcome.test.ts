@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { createHmac } from 'node:crypto'
 import { Store } from '../src/db.js'
+import { buildApp } from '../src/app.js'
 import { followUpLinks, revertMatchOf, summariseDeliveries, type DeliveryOutcomeRow } from '../src/lib/deliveryOutcome.js'
 import { RETENTION_CLASSES, retentionDefaultWindows } from '../scripts/lib/retention.mjs'
 import { Jobs } from '../src/jobs/service.js'
@@ -288,4 +290,97 @@ test('a follow-up list that cannot be parsed is no link, never a thrown page', (
   assert.deepEqual(followUpLinks({ follow_up_json: 'not json' }), [])
   assert.deepEqual(followUpLinks({ follow_up_json: '{"a":1}' }), [], 'an object is not a list of links')
   assert.deepEqual(followUpLinks({ follow_up_json: '["https://github.com/o/r/issues/1",2]' }), ['https://github.com/o/r/issues/1'])
+})
+
+function signWebhook(body: Buffer, secret = 'secret'): string {
+  return `sha256=${createHmac('sha256', secret).update(body).digest('hex')}`
+}
+
+async function webhookApp(tag: string): Promise<{ built: Awaited<ReturnType<typeof buildApp>>; store: Store; repoId: string; github: { close: () => Promise<void> } }> {
+  // Every GitHub call answers 500: the revert scan and the log fetch are
+  // best-effort, so a refused read must leave the delivery recorded and the
+  // failure counted, not throw out of the webhook.
+  const github = await startFakeServer((_request, response) => json(response, 500, { message: 'no installation token' }))
+  const config = testConfig({
+    github: { ...testConfig().github, apiBase: github.url },
+    githubApp: { id: '1', slug: 'fledge-platform', privateKeyPath: '/tmp/fake.pem', webhookSecret: 'secret', useUserToken: false },
+  })
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  const user = makeUser(store, { login: `delivery-webhook-${tag}`, status: 'approved' })
+  const repo = store.createRepo({
+    id: `repo_delivery_webhook_${tag}`, userId: user.id, owner: 'o', name: `delivery-webhook-${tag}`, defaultBranch: 'main',
+    tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', installationId: 4242, goal: '', autoIterate: false, intervalMinutes: 1440,
+  })
+  return { built, store, repoId: repo.id, github }
+}
+
+test('a merged pull request webhook writes the delivery the repository page reads', async () => {
+  const { built, store, repoId, github } = await webhookApp('merge')
+  try {
+    const fullName = 'o/delivery-webhook-merge'
+    const prUrl = `https://github.com/${fullName}/pull/9`
+    const sendPull = async (action: string, pull: Record<string, unknown>, delivery: string): Promise<number> => {
+      const body = Buffer.from(JSON.stringify({
+        action, installation: { id: 4242 }, repository: { full_name: fullName }, pull_request: pull,
+      }))
+      const response = await built.app.inject({
+        method: 'POST',
+        url: '/api/github/webhook',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request', 'x-github-delivery': delivery, 'x-hub-signature-256': signWebhook(body) },
+        payload: body,
+      })
+      return response.statusCode
+    }
+    // The opened event is what creates the work item the close path attaches to;
+    // a close for a pull request Fledge never saw is dropped on purpose.
+    assert.equal(await sendPull('opened', { number: 9, html_url: prUrl, title: 'fix the adder carry', merged: false, state: 'open' }, 'delivery-opened-9'), 200)
+    const response = { statusCode: await sendPull('closed', { number: 9, html_url: prUrl, title: 'fix the adder carry', merged: true, state: 'closed', merge_commit_sha: MERGE_A }, 'delivery-merged-9') }
+    assert.equal(response.statusCode, 200)
+    const rows = store.listDeliveryOutcomes(repoId, '2000-01-01T00:00:00.000Z')
+    assert.equal(rows.length, 1, 'the merge is the delivery, written before the page can read it')
+    assert.equal(rows[0]?.merge_commit, MERGE_A)
+    assert.equal(rows[0]?.title, 'fix the adder carry')
+    assert.equal(rows[0]?.job_id, null, 'a merge with no job still lands')
+    assert.equal(store.findWorkItemByPrUrl(repoId, `https://github.com/${fullName}/pull/9`)?.state, 'merged')
+  } finally {
+    // built.close() closes the store it was given.
+    await built.close()
+    await github.close()
+  }
+})
+
+test('a failing default-branch run at a merge commit counts one post-merge failure per run', async () => {
+  const { built, store, repoId, github } = await webhookApp('fail')
+  try {
+    const fullName = 'o/delivery-webhook-fail'
+    const prUrl = `https://github.com/${fullName}/pull/11`
+    store.recordDeliveryOutcome({ repoId, jobId: null, prUrl, mergeCommit: MERGE_A, mergedAt: '2026-11-18T10:00:00.000Z', title: 'fix the carry', costUsd: null })
+    const send = async (id: number): Promise<number> => {
+      const body = Buffer.from(JSON.stringify({
+        action: 'completed',
+        installation: { id: 4242 },
+        repository: { full_name: fullName },
+        workflow_run: {
+          id, name: 'ci', conclusion: 'failure', run_attempt: 1, head_branch: 'main', head_sha: MERGE_A,
+          event: 'push', html_url: `https://github.com/${fullName}/actions/runs/${id}`,
+        },
+      }))
+      const response = await built.app.inject({
+        method: 'POST',
+        url: '/api/github/webhook',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'workflow_run', 'x-github-delivery': `delivery-run-${id}`, 'x-hub-signature-256': signWebhook(body) },
+        payload: body,
+      })
+      return response.statusCode
+    }
+    assert.equal(await send(55), 200)
+    assert.equal(store.getDeliveryOutcomeByMerge(repoId, MERGE_A)?.post_merge_failures, 1)
+    assert.equal(await send(56), 200)
+    assert.equal(store.getDeliveryOutcomeByMerge(repoId, MERGE_A)?.post_merge_failures, 2, 'a second failing run is a second fact, not the same one seen twice')
+  } finally {
+    // built.close() closes the store it was given.
+    await built.close()
+    await github.close()
+  }
 })
