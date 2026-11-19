@@ -290,3 +290,59 @@ test('the gate skips a control a closed disclosure keeps out of the rendering', 
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
   assert.match(script, /checkVisibility/, 'a control inside a closed <details> keeps a non-zero rect in Chromium; the walk has to ask whether it renders')
 })
+
+test('the touch floor keeps only sub-pixel tolerance, so a real shortfall still fails', () => {
+  assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker')
+  // Chromium can report a 44px box as 43.99px; that is rounding, not a lost target.
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 43.99 }]) ?? []).length, 0)
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 44 }]) ?? []).length, 0)
+  // Half a pixel short is a control that lost part of its target, so it fails.
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 43.5 }]) ?? []).length, 1)
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 43 }]) ?? []).length, 1)
+  // The compact 24px floor carries the same tolerance, no more.
+  assert.equal((gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 23.99, height: 23.99, compact: true }]) ?? []).length, 0)
+  assert.equal((gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 23.5, height: 23.5, compact: true }]) ?? []).length, 1)
+})
+
+test('the doc quotes a failure message the checker actually emits', () => {
+  const doc = readFileSync(new URL('../docs/ui.md', import.meta.url), 'utf8')
+  // Find the quoted example by its shape, not by the sentence around it: the
+  // section has to show one message verbatim, and the quote must be one the
+  // checker emits today.
+  const quoted = /`((?:en|zh)\s+width=\d+\s+scheme=\w+\s+\S+:\s+[^`]+?\s+is\s+\d+(?:\.\d+)?x\d+(?:\.\d+)?px,\s+under\s+the\s+\d+px[^`]*)`/.exec(doc)
+  assert.ok(quoted !== null, 'the measured-gate section has to quote one failure message so a reader can recognise the shape')
+  const message = (quoted[1] ?? '').replace(/\s+/g, ' ').trim().replace(/^(?:en|zh) width=\d+ scheme=\w+ \S+: /, '')
+  if (process.env.DEBUG_QUOTE === '1') console.error('QUOTE', JSON.stringify(message))
+  const parsed = /^(\S+) is (\d+(?:\.\d+)?)x(\d+(?:\.\d+)?)px, under the (\d+)px/.exec(message)
+  assert.ok(parsed !== null, `the quoted example has to be a message the checker emits, got ${message}`)
+  const [, name = '', width = '', height = '', floor = ''] = parsed
+  // The flag is the one the named control really carries in the product, not the
+  // one the sentence implies: the banner dismiss button has `data-compact-target`,
+  // so the checker can never quote it against the 44px floor.
+  const layout = readFileSync(new URL('../src/views/layout.ts', import.meta.url), 'utf8')
+  const compactClass = /class="([^"]+)"[^>]*data-compact-target/.exec(layout)?.[1] ?? null
+  const quotedClass = name.includes('.') ? name.slice(name.indexOf('.') + 1) : name
+  const compact = compactClass !== null && compactClass === quotedClass
+  const failures = gate.touchFailures?.([{ name, width: Number(width), height: Number(height), compact }]) ?? []
+  assert.deepEqual(failures, [message], 'the quoted example must be the message touchFailures emits for that control, not an older iteration of it')
+  assert.equal(Number(floor), compact ? 24 : 44, 'the quoted floor has to be the one the attributes of that control select')
+})
+
+test('the compact opt-out is pinned once, like the inline marker', () => {
+  const layout = readFileSync(new URL('../src/views/layout.ts', import.meta.url), 'utf8')
+  assert.equal(
+    (layout.match(/data-compact-target/g) ?? []).length,
+    1,
+    'one compact opt-out, one reason; a second one needs its own justification in the doc',
+  )
+  const pages = readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8')
+  assert.equal((pages.match(/data-inline-target/g) ?? []).length, 1)
+})
+
+test('the doc names every limit the measured set does not close', () => {
+  const doc = readFileSync(new URL('../docs/ui.md', import.meta.url), 'utf8')
+  for (const limit of ['outside `.section-nav`', 'closed `<details>`', 'closed `<dialog>`', 'bounded tab walk']) {
+    assert.ok(doc.includes(limit), `the measured-gate section has to name the limit it does not close: ${limit}`)
+  }
+  assert.match(doc, /43\.5 px box fails the 44 px floor/, 'the doc has to state the tolerance it really applies')
+})

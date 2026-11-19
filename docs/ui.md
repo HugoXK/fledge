@@ -546,16 +546,41 @@ Since #870 the job also runs a measured gate next to the screenshot sweep: the
 six paths at 360, 768 and 1280 px, each rendered in a light and a dark context,
 in both languages (three widths by two schemes, deliberately not the nine-width
 sweep — a width added there photographs one surface and must not become a gate
-every page has to pass). Four things are checked per page, each a pure function
-in `src/lib/visualMatrix.ts`: every control the product styles as one (`button`,
-`.btn`, `input`, `select`, `textarea`, `summary`, `.section-nav a`) is at least
-44x44 px; its computed style changes when focused on at least one of outline
-width/style, box-shadow, border colour and background colour; an icon-only
-`button` or `a` carries `aria-label` or `title`; and the rendered HTML contains
-no `{infoTip(`, `class="undefined"`, `[object Object]` or unrendered `${`. A
-checkbox is measured through its `<label>`, which is the box a pointer hits. A
-failure names all four coordinates and the control (`en width=768 scheme=dark
-/settings: button.banner-dismiss is 24x24px, under the 44px touch floor`).
+every page has to pass). The measured set is narrower than "every control the
+product styles as one": the run collects
+`document.querySelectorAll('button, .btn, input, select, textarea, summary,
+.section-nav a')` and keeps only the elements whose `checkVisibility()` is true
+and whose hit box has a non-zero width and height at that width. Four things
+are checked per page on that set, each a pure function in
+`src/lib/visualMatrix.ts`: the box is at least 44x44 px; its computed style
+changes when focused on at least one of outline width/style, box-shadow, border
+colour and background colour; an icon-only `button` or `a` carries `aria-label`
+or `title`; and the rendered HTML contains no `{infoTip(`,
+`class="undefined"`, `[object Object]` or unrendered `${`. A checkbox is
+measured through its `<label>`, which is the box a pointer hits. A failure
+names all four coordinates and the control, with the message the checker
+emits for that shape (`en width=768 scheme=dark /settings:
+button.banner-dismiss is 23x23px, under the 24px floor even with its compact
+opt-out`). A size failure is decided with 0.05 px of tolerance and nothing
+more: Chromium can report a 44 px box as 43.99 px, which passes, while a
+43.5 px box fails the 44 px floor; the same tolerance applies to the 24 px
+compact floor (23.99 px passes, 23.5 px fails).
+
+The measured set is exactly those two filters, so the gate does not cover:
+
+- an `a` outside `.section-nav`, including the ones the console styles as a
+  control (`<a class="link">` on the repo and dashboard pages): it is not in the
+  selector, so no size, focus or name check reaches it;
+- a control inside a closed `<details>`: Chromium keeps its rect but reports
+  `checkVisibility()` false, so it is skipped until the disclosure opens;
+- a control inside a closed `<dialog>`: the run never opens one, and four
+  dialogs stay closed for the whole pass — `#add-repo`, `#new-work-item`,
+  `#feedback-dialog` and `#confirm-dialog` — so everything inside them is
+  unmeasured;
+- focus, for a control the bounded tab walk never reaches: the walk presses Tab
+  at most `min(400, controls + 15)` times, stops when every collected control
+  has been seen, and a control it did not land on is skipped without failing
+  the page.
 
 Two shapes are exempt by a documented attribute on the element itself, never by
 a selector list: the banner dismiss button is 24x24 and carries
@@ -568,8 +593,9 @@ accessible name. No category is exempt: a full-width `summary` disclosure row is
 held to the same 44 px as every other control in the list, and the product
 raises the row to that floor instead of waiving it. Both attributes live on
 the element, so a new small control cannot inherit a waiver by being written
-the same way, and `test/visualMatrix.test.ts` pins that each appears once and
-what each floor is. The gate is computed style and
+the same way; `test/visualMatrix.test.ts` counts each exactly once against its
+one site (`data-inline-target` in `src/views/pages.ts`, `data-compact-target` in
+`src/views/layout.ts`) and pins what each floor is. The gate is computed style and
 geometry plus a text scan; screenshots stay artifacts and are never compared.
 One combination per width also sets the saved dark theme in a light host
 preference and reads the rendered `data-theme` and `color-scheme` meta back, so
