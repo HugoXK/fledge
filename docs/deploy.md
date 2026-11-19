@@ -358,6 +358,18 @@ once the slot is filled. Install it only on a host whose clock is trustworthy
 `deploy/release-trigger.cron.example`. Raise one alert if no plan exists by
 `02:30Z`.
 
+#### The slot watchdog (#941)
+
+The hourly `ci-watchdog` workflow also judges the `02:00Z` slot. Once the
+slot's 60-minute grace window has passed, `scripts/release-slot-watchdog.mjs`
+reads that UTC day's releases, the `daily-release` runs and the recent issues
+from the API and opens exactly one card when the day has no release. The card
+names the day, the expected slot, the grace window, the observed run ids (with
+the `event` that fired each one) and the API `Date` it used; the clock is the
+API's `Date` header, never the host's. A rerun of the same day opens nothing,
+because the card carries a marker built from the slot. The detector writes
+nothing else: it dispatches no workflow and creates no tag, release or deploy.
+
 A release that changes user-facing behaviour updates `README.md`,
 `README.zh.md` and the relevant `docs/` page in the same pull request. The
 documentation site builds from this repository's `README.md`, `README.zh.md` and
