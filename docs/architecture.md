@@ -3058,6 +3058,12 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   the current entry is left untouched — the store compares inside one
   `BEGIN IMMEDIATE` transaction and appends the version only after the fence
   passes. An identical write is a no-op and creates no revision.
+- **A key is the entry's identity.** The write form renders the Key field
+  read-only when it edits an existing entry and says one sentence about it,
+  because a revision cannot rename a key; a new entry still names its own key.
+  A write aimed at a key that holds no entry stays refused as
+  `memory_not_found`, unchanged: the same answer must cover an entry hidden by
+  its audience, so the refusal cannot say which of the two happened.
 - **Reads are exact.** A read names a revision and returns that body, its
   `sha256` digest and whether it is historical. Nothing is served from a cache
   and no read returns "the latest" when a revision was asked for. A revision is
