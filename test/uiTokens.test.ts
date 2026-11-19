@@ -255,6 +255,7 @@ type ContrastPalette = [string, Map<string, string>]
 function contrastPalettes(source: string): ContrastPalette[] {
   return [
     ['dark', lineTokens(source, /:root\s*\{([^}]*)\}/, 'dark')],
+    ['prefers-color-scheme light', lineTokens(source, /:root:not\(\[data-theme="dark"\]\)\s*\{([^}]*)\}/, 'prefers-color-scheme light')],
     ['[data-theme="light"]', lineTokens(source, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')],
   ]
 }
