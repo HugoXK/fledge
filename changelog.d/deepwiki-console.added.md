@@ -1,0 +1,1 @@
+The console now has a DeepWiki assistant: a floating panel on every page answers questions from the `HugoXK/fledge` DeepWiki index through the hosted MCP endpoint. The panel is bilingual, marks its answers as third-party and model-generated, and the page CSP allows only `mcp.deepwiki.com` in addition to the existing origins.
