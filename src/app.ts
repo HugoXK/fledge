@@ -2360,7 +2360,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/repos/:id', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    // #380 review finding: the page and the revoke route must read the same
+    // actor role. The connection's `repo_role` is a declaration about the
+    // upstream, not about who is looking, so it cannot decide either side.
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const jobsTotal = store.countJobsForRepo(repo.id)
     const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
@@ -2443,6 +2446,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         recentAuthAt: viewer.recentAuthAt,
         repo,
+        canMaintain: role === 'maintainer',
         releases: store.listReleasesForRepo(repo.id),
         instance,
         usage: {
@@ -3297,8 +3301,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // it cannot invent one — and the next automatic merge reads it.
   app.post('/repos/:id/skill-source', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
     if (!limits.take('destructive', `skill-source:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以修改技能包来源。', 'MAINTAINER_ONLY')
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    // #380 review finding: the actor's role, not the connection declaration. A
+    // repository connected without a recorded role still has an owner, and a
+    // developer member of a declared-maintainer repository is still a developer.
+    if (role !== 'maintainer') throw httpError(403, '只有 maintainer 可以修改技能包来源。', 'MAINTAINER_ONLY')
     const body = form(request)
     const source = (body.source ?? '').slice(0, 200)
     const state = body.state === 'revoked' ? 'revoked' : body.state === 'allowed' ? 'allowed' : null
