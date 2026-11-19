@@ -1908,7 +1908,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const misfire = body.misfire === 'once' ? 'once' : 'skip'
     const graceRaw = String(body.grace ?? '').trim()
     const graceMinutes = graceRaw === '' ? null : Number(graceRaw)
-    if (graceMinutes !== null && (!Number.isFinite(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
+    // #1053: the sentence below says integer, so a fractional field is refused
+    // rather than rounded into a bound the person never typed.
+    if (graceMinutes !== null && (!Number.isInteger(graceMinutes) || graceMinutes < 0 || graceMinutes > 10_080)) {
       return reply.redirect(`${back}?refused=${encodeURIComponent(t('宽限时间必须是 0 到 10080 分钟之间的整数。', 'The grace bound must be an integer between 0 and 10080 minutes.'))}`)
     }
     // #544 slice 6: an absent field keeps the stored limit, so a form that
