@@ -2571,7 +2571,7 @@ test('the job page shows the selected tests, the impact reason and the quarantin
       combinedStatus: 'success',
       reviews: { changesRequested: false, approvals: 1 },
       testEvidence: { state: 'verified', claimed: true, greenChecks: ['test (24)'], failingChecks: [], quarantinedChecks: ['test (22)'] },
-      testImpact: { state: 'mapped', changed: ['src/foo.ts'], selected: [{ path: 'test/foo.test.ts', reason: 'convention' }, { path: 'test/bar.test.ts', reason: 'importer' }], truncated: false, limit: 50 },
+      testImpact: { state: 'mapped', selected: [{ path: 'test/foo.test.ts', reason: 'convention' }, { path: 'test/bar.test.ts', reason: 'importer' }], truncated: false, limit: 50 },
       reasons: [],
     }
     store.updateJob(job.id, {
@@ -2593,7 +2593,7 @@ test('the job page shows the selected tests, the impact reason and the quarantin
     assert.doesNotMatch(zh, /Test selection/, 'the Chinese page uses the Chinese label')
 
     store.updateJob(job.id, {
-      verification_json: JSON.stringify({ ...verification, testImpact: { state: 'no impact map', changed: ['docs/readme.md'], selected: [], truncated: false, limit: 50 } }),
+      verification_json: JSON.stringify({ ...verification, testImpact: { state: 'no impact map', selected: [], truncated: false, limit: 50 } }),
     })
     assert.match(read('en'), /No impact map/)
   } finally {

@@ -1750,17 +1750,19 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 
 -- #378: one row per test-named check run, so an alternating pass/fail can be
--- read across jobs. A (job_id, name) pair is unique because re-checking the same
--- job must not count as a second run; the ledger is bounded per (repo_id, name)
--- when a run is recorded, not by a retention window.
+-- read across jobs. The head sha is part of the key because a push re-verifies
+-- the same job at a new tip: that second run has to reach the ledger, while a
+-- re-check of the same job at the same tip must not count twice. The ledger is
+-- bounded per (repo_id, name) when a run is recorded, not by a retention window.
 CREATE TABLE IF NOT EXISTS test_runs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   repo_id TEXT NOT NULL,
   job_id TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
   name TEXT NOT NULL,
   passed INTEGER NOT NULL,
   recorded_at TEXT NOT NULL,
-  UNIQUE(job_id, name)
+  UNIQUE(job_id, head_sha, name)
 );
 CREATE INDEX IF NOT EXISTS test_runs_repo_name_idx ON test_runs(repo_id, name, id DESC);
 
@@ -7962,15 +7964,18 @@ export class Store {
     return this.all<{ key: string; value: string }>('SELECT key, value FROM settings WHERE key LIKE ? ORDER BY key', `${prefix}%`)
   }
 
-  // #378: the flaky ledger. A run is written once per `(job, test name)`, and
-  // every write trims the older rows for that repository and name so a busy
-  // repository cannot grow an unbounded history. The cap is the window the
-  // quarantine rule reads: twelve runs is enough to see an alternation pattern
-  // and small enough to keep the read cheap on every verification.
-  recordTestRuns(repoId: string, jobId: string, runs: Array<{ name: string; passed: boolean }>, keep = TEST_RUN_HISTORY): void {
+  // #378: the flaky ledger. A run is written once per `(job, head sha, test
+  // name)`: re-checking a job at the same tip is not a second run, while the
+  // push that re-verifies it at a new tip is, and that is where a second result
+  // for the same test comes from. Every write trims the older rows for that
+  // repository and name so a busy repository cannot grow an unbounded history.
+  // The cap is the window the quarantine rule reads: twelve runs is enough to see
+  // an alternation pattern and small enough to keep the read cheap on every
+  // verification.
+  recordTestRuns(repoId: string, jobId: string, headSha: string, runs: Array<{ name: string; passed: boolean }>, keep = TEST_RUN_HISTORY): void {
     const at = nowIso()
     for (const run of runs) {
-      this.run('INSERT OR IGNORE INTO test_runs (repo_id, job_id, name, passed, recorded_at) VALUES (?, ?, ?, ?, ?)', repoId, jobId, run.name, run.passed ? 1 : 0, at)
+      this.run('INSERT OR IGNORE INTO test_runs (repo_id, job_id, head_sha, name, passed, recorded_at) VALUES (?, ?, ?, ?, ?, ?)', repoId, jobId, headSha, run.name, run.passed ? 1 : 0, at)
       this.run(
         'DELETE FROM test_runs WHERE repo_id = ? AND name = ? AND id NOT IN (SELECT id FROM test_runs WHERE repo_id = ? AND name = ? ORDER BY id DESC LIMIT ?)',
         repoId, run.name, repoId, run.name, keep,

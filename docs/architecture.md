@@ -1445,8 +1445,10 @@ selected paths with their reasons, the truncation, and the fallback line.
 
 A green test check is not proof on its own while the same test has been changing
 its mind. Every completed test-named check run is written to the `test_runs`
-ledger (one row per job and name, the newest twelve runs kept per repository and
-name), and `quarantineTests` in `src/lib/verification.ts` counts the flips:
+ledger (one row per job, head sha and name — re-checking a job at the same tip
+adds nothing, while the push that re-verifies it at a new tip adds a run — with
+the newest twelve runs kept per repository and name), and `quarantineTests` in
+`src/lib/verification.ts` counts the flips:
 a test that alternated at least twice inside at least three recorded runs is
 quarantined. A single failure, or a first failure that has not alternated, is not
 a quarantine, because the rule is the alternation and not the red. The evidence

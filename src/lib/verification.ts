@@ -33,10 +33,13 @@ export interface VerificationResult {
   combinedStatus: string
   reviews: { changesRequested: boolean; approvals: number }
   testEvidence: TestEvidence
-  // #378: which tests the change was expected to run, and why. Absent on a
-  // snapshot written before the map existed, so the page omits the row instead
-  // of printing an empty selection.
-  testImpact?: TestImpact
+  // #378: which tests the change was expected to run, and why. The changed-file
+  // list itself is not repeated here: `path_guard_json` already records the files
+  // the guard walked and the page reads only the selection, so the snapshot keeps
+  // the bounded result instead of a second copy of that list. Absent on a
+  // snapshot written before the map existed, so the page omits the row instead of
+  // printing an empty selection.
+  testImpact?: Omit<TestImpact, 'changed'>
   reasons: string[]
   ruleChange?: { paths: string[]; acknowledged: boolean }
 }

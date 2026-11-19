@@ -2230,8 +2230,10 @@ export class Jobs {
       const claimedTest = parseEvidenceJson(job.evidence_json)?.testGreen !== undefined
       // #378: a test job's result is recorded before it is read back, so an
       // alternating run shows up on the run that completes the pattern. The
-      // ledger is keyed by `(job, name)`: re-checking this job is not a new run.
-      this.store.recordTestRuns(job.repo_id, job.id, checks
+      // ledger is keyed by `(job, head sha, name)`: re-checking this job at the
+      // same tip is not a new run, and the push that re-verifies it at a new tip
+      // is — that is the second run of the same test the rule needs to see.
+      this.store.recordTestRuns(job.repo_id, job.id, pr.headSha, checks
         .filter((run) => run.status === 'completed' && isTestCheckName(run.name))
         .map((run) => ({ name: run.name, passed: run.conclusion === 'success' })))
       const testEvidence = evaluateTestEvidence(claimedTest, checks, this.store.testRunHistory(job.repo_id))
@@ -2264,7 +2266,11 @@ export class Jobs {
         reasons,
       }
       const guard = await this.pathGuardFor(client, owner, name, number, job, repo, pr.changedFiles)
-      verification.testImpact = await this.testImpactFor(client, owner, name, number, repo, pr.headSha, guard.files, pr.changedFiles)
+      // #378: the snapshot keeps the bounded selection, not the changed-file list
+      // `path_guard_json` already stores; repeating it doubled the size of
+      // `verification_json` for a list the page never reads.
+      const impact = await this.testImpactFor(client, owner, name, number, repo, pr.headSha, guard.files, pr.changedFiles)
+      verification.testImpact = { state: impact.state, selected: impact.selected, truncated: impact.truncated, limit: impact.limit }
       const rulePaths = await this.ruleChangePaths(job, client, owner, name, number, pr.changedFiles, guard.files)
       if (rulePaths.length > 0) {
         const acknowledged = this.store.getSetting(`rule_change_ack:${job.id}:${pr.headSha}`) !== undefined
@@ -2674,8 +2680,9 @@ export class Jobs {
       // merges, so the refusal the snapshot records needs a reader here too.
       const claimedTest = parseEvidenceJson(job.evidence_json)?.testGreen !== undefined
       // #378: the gate that actually merges reads the same ledger the panel does,
-      // so a quarantined test cannot be the sole PASS evidence here either.
-      this.store.recordTestRuns(job.repo_id, job.id, checks
+      // so a quarantined test cannot be the sole PASS evidence here either. The
+      // run is recorded at this tip, the same key the panel writes.
+      this.store.recordTestRuns(job.repo_id, job.id, pr.headSha, checks
         .filter((run) => run.status === 'completed' && isTestCheckName(run.name))
         .map((run) => ({ name: run.name, passed: run.conclusion === 'success' })))
       if (claimedTest && evaluateTestEvidence(true, checks, this.store.testRunHistory(job.repo_id)).state !== 'verified') {
