@@ -123,34 +123,44 @@ test('--muted-2 clears AA on every surface it is painted on and stays below --mu
   assert.ok(muted !== undefined, 'missing --muted')
   assert.ok(luminance(channels(muted) ?? [0, 0, 0]) > luminance(channels(muted2) ?? [0, 0, 0]), '--muted-2 must stay dimmer than --muted')
 
-  // #911: a token can be readable on one fill and unreadable on another, so the
-  // AA floor also covers the pairs a rule actually paints: --accent-ink on
+  // #911, #954: a token can be readable on one fill and unreadable on another, so
+  // the AA floor also covers the pairs a rule actually paints: --accent-ink on
   // --accent is 1.92:1 in the dark palette, and a 12px mark sat on it. The scan
   // reads the palette with the line-anchored reader on purpose: the :root block
   // carries a semicolon inside a comment, and the whole-block reader drops
-  // --accent with it, which is how the pair stayed unseen. Both palettes are
-  // checked, because the same rule paints in light too.
-  const palettes: Array<[string, Map<string, string>]> = [
-    ['dark', lineTokens(cssSource, /:root\s*\{([^}]*)\}/, 'dark')],
-    ['light', lineTokens(cssSource, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')],
-  ]
-  const unreadable: string[] = []
-  for (const rule of cssSource.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
-    const body = rule[2] ?? ''
-    const colour = /(?:^|;)\s*color:\s*var\((--[a-z0-9-]+)\)/.exec(body)
-    const background = /(?:^|;)\s*background(?:-color)?:\s*var\((--[a-z0-9-]+)\)/.exec(body)
-    if (colour === null || background === null) continue
-    const selector = (rule[1] ?? '').trim().split('\n').pop()?.trim() ?? ''
-    for (const [name, palette] of palettes) {
-      const foreground = palette.get(colour[1] ?? '')
-      const surface = palette.get(background[1] ?? '')
-      if (foreground === undefined || surface === undefined) continue
-      if (channels(foreground) === null || channels(surface) === null) continue
-      const ratio = contrast(foreground, surface)
-      if (ratio < 4.5) unreadable.push(`${name} ${selector}: ${colour[1]} on ${background[1]} = ${ratio.toFixed(2)}:1 (needs 4.5)`)
-    }
-  }
+  // --accent with it, which is how the pair stayed unseen. Every palette a
+  // reader can land in is checked, because the same rule paints in all of them.
+  const palettes = contrastPalettes(cssSource)
+  assert.deepEqual(
+    palettes.map(([name]) => name),
+    ['dark', 'prefers-color-scheme light', '[data-theme="light"]'],
+    'the AA scan must read every palette a reader can land in, in this order',
+  )
+  const unreadable = unreadablePairs(cssSource, palettes)
   assert.deepEqual(unreadable, [], `text below AA on the fill it is painted on:\n${unreadable.join('\n')}`)
+
+  // The reader and the walk together, on a synthetic sheet: the pair is readable
+  // in dark and in the explicit light override and 4.30:1 in the media block, so
+  // it must be reported with that palette's name. The real sheet defines the same
+  // three blocks, so a green run on it alone cannot see a palette that fell out
+  // of the list.
+  const synthetic = `:root { --accent-ink: #0b100e; --accent: #8fbfa8; }
+:root[data-theme="light"] { --accent-ink: #ffffff; --accent: #2f6b57; }
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme="dark"]) {
+    --accent-ink: #ffffff;
+    --accent: #7a7a7a;
+  }
+}
+.mark { color: var(--accent-ink); background: var(--accent); }
+`
+  const syntheticFindings = unreadablePairs(synthetic, contrastPalettes(synthetic))
+  assert.equal(syntheticFindings.length, 1, `the media-block pair must be reported once:\n${syntheticFindings.join('\n')}`)
+  assert.match(
+    syntheticFindings[0] ?? '',
+    /^prefers-color-scheme light \.mark: --accent-ink on --accent = 4\.\d{2}:1 \(needs 4\.5\)$/,
+    'the finding names the palette the pair was read from',
+  )
 })
 
 // 4. The token contract is documented, not only implemented: one row per token
@@ -234,6 +244,42 @@ function lineTokens(source: string, pattern: RegExp, label: string): Map<string,
     if (declaration !== null) tokens.set(declaration[1] ?? '', (declaration[2] ?? '').trim())
   }
   return tokens
+}
+
+type ContrastPalette = [string, Map<string, string>]
+
+// #954: the palettes a reader can land in. The media-query block is the one an
+// OS-level light preference gets when nobody set data-theme, and the explicit
+// override is a separate block, so a scan that reads only the last two cannot
+// see a token that drifts in the media block.
+function contrastPalettes(source: string): ContrastPalette[] {
+  return [
+    ['dark', lineTokens(source, /:root\s*\{([^}]*)\}/, 'dark')],
+    ['[data-theme="light"]', lineTokens(source, /:root\[data-theme="light"\]\s*\{([^}]*)\}/, '[data-theme="light"]')],
+  ]
+}
+
+// The rule walk: every rule that paints text with one token on a fill with
+// another, checked against each palette that defines both tokens. Returns one
+// line per pair below AA, prefixed with the palette the pair was read from.
+function unreadablePairs(source: string, palettes: ContrastPalette[]): string[] {
+  const unreadable: string[] = []
+  for (const rule of source.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+    const body = rule[2] ?? ''
+    const colour = /(?:^|;)\s*color:\s*var\((--[a-z0-9-]+)\)/.exec(body)
+    const background = /(?:^|;)\s*background(?:-color)?:\s*var\((--[a-z0-9-]+)\)/.exec(body)
+    if (colour === null || background === null) continue
+    const selector = (rule[1] ?? '').trim().split('\n').pop()?.trim() ?? ''
+    for (const [name, palette] of palettes) {
+      const foreground = palette.get(colour[1] ?? '')
+      const surface = palette.get(background[1] ?? '')
+      if (foreground === undefined || surface === undefined) continue
+      if (channels(foreground) === null || channels(surface) === null) continue
+      const ratio = contrast(foreground, surface)
+      if (ratio < 4.5) unreadable.push(`${name} ${selector}: ${colour[1]} on ${background[1]} = ${ratio.toFixed(2)}:1 (needs 4.5)`)
+    }
+  }
+  return unreadable
 }
 
 // 7. #547: the flight-deck foundation. The console is not a warm-cream template
