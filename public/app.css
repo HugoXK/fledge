@@ -753,10 +753,11 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--a
 /* The visual gate (issue 870): four selects rendered 40-43px tall because their
    own rule never carried the --touch floor, while every other field kept it. */
 select { min-height: var(--touch); }
-/* A disclosure row is a full-width target, and
-   WCAG 2.5.8 asks for 24px in both axes. Its text line alone is 22px, so the
-   row gains the two pixels rather than being waived. */
-summary { min-height: 24px; }
+/* A disclosure row is a control like any other: the card holds every control in
+   the gate's list to 44px, so the row carries the --touch floor instead of the
+   text line's 22px. The selector is the element, so it lifts every summary in
+   the product, not only the row a screenshot happened to cover. */
+summary { min-height: var(--touch); }
 /* A forced-colours theme paints no box-shadow and forces border-color to a
    system colour, so the ring above leaves a focused field with no indicator.
    This block repeats the same selectors after it: at equal specificity the

@@ -299,7 +299,6 @@ async function checkGatePage(
       height: number
       compact: boolean
       inline: boolean
-      disclosure: boolean
     }[] = []
     const names: { tag: string; text: string; ariaLabel: string | null; title: string | null; hasSvg: boolean }[] = []
     const baseline: { index: number; style: FocusStyle }[] = []
@@ -339,7 +338,6 @@ async function checkGatePage(
           height: rect.height,
           compact: element.hasAttribute('data-compact-target'),
           inline: element.hasAttribute('data-inline-target'),
-          disclosure: tag === 'summary',
         })
         index += 1
       }

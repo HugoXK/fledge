@@ -264,12 +264,20 @@ test('the runner exercises an explicit theme against a host preference that disa
   assert.match(script, /colorScheme: 'light'/, 'the host preference has to disagree with the explicit choice for the check to mean anything')
 })
 
-test('an inline marker is exempt from the touch floor; a block disclosure is not', () => {
+test('an inline marker is exempt from the touch floor; a disclosure row is not', () => {
   assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker')
   assert.equal((gate.touchFailures?.([{ name: 'button.info-tip', width: 15, height: 15, inline: true }]) ?? []).length, 0)
   assert.equal((gate.touchFailures?.([{ name: 'button.info-tip', width: 15, height: 15 }]) ?? []).length, 1)
-  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 22, disclosure: true }]) ?? []).length, 1)
-  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 24, disclosure: true }]) ?? []).length, 0)
+  // A `summary` is a control in the same list, so the 44px floor applies to it
+  // exactly as to a button: a named category never lowers a floor, only the
+  // per-element attributes do.
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 24 }]) ?? []).length, 1)
+  assert.equal((gate.touchFailures?.([{ name: 'summary', width: 572, height: 44 }]) ?? []).length, 0)
+  const css = readFileSync(new URL('../public/app.css', import.meta.url), 'utf8')
+  assert.ok(
+    css.includes('summary { min-height: var(--touch); }'),
+    'the disclosure row carries the same --touch floor the gate measures it against, on the element selector so every row moves',
+  )
 })
 
 test('the inline exemption is an attribute on the marker, not a selector that swallows every small control', () => {

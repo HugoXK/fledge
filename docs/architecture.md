@@ -2872,12 +2872,15 @@ The runner measures focus by tabbing: a programmatic `focus()` does not match
 `:focus-visible` in Chromium, so the resting style would read as unchanged for
 every control. It skips a control a closed `<details>` keeps out of the rendering
 (`checkVisibility()` is false while the rect is not), and it measures a checkbox
-through its `<label>`, the box a pointer hits. Three shapes are exempt by an
-attribute or a named category, never by a selector list: a 24px banner dismiss
+through its `<label>`, the box a pointer hits. Two shapes are exempt by an
+attribute on the control itself, never by a selector list: a 24px banner dismiss
 carries `data-compact-target` and is held to 24px, not less; a 15px info marker
 carries `data-inline-target` (WCAG 2.5.8's inline exception) and is skipped by
-the size check but still needs its accessible name; and a `summary` is a
-full-width disclosure row held to 24px. One pass per width saves the dark theme
+the size check but still needs its accessible name. A control is never exempt by
+belonging to a category: a full-width `summary` disclosure row is held to the
+44px floor like every other control in the list, and `public/app.css` raises the
+row to `var(--touch)` on the element selector rather than waiving it. One pass
+per width saves the dark theme
 while the host prefers light and reads the rendered `data-theme` and
 `color-scheme` meta back, so the explicit choice is measured rather than assumed.
 There is no pixel comparison and no baseline file: screenshots stay CI artifacts,

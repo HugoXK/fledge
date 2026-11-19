@@ -105,15 +105,15 @@ export interface TouchSample {
   readonly compact?: boolean
   /** An inline marker inside a sentence, exempt under WCAG 2.5.8's inline exception. */
   readonly inline?: boolean
-  /** A full-width disclosure row (`summary`), held to the 24px minimum, not the 44px floor. */
-  readonly disclosure?: boolean
 }
 
 /**
  * A control below the floor is a failure, and a compact control is still held to
  * 24px. The opt-out is an attribute on the control itself, not a selector list,
  * so a new small control cannot inherit the waiver by being written the same
- * way; it has to ask for one and say why in its markup.
+ * way; it has to ask for one and say why in its markup. A `summary` is a control
+ * like any other: the disclosure row is held to the 44px floor, so a short one
+ * is raised rather than waived.
  */
 export function touchFailures(controls: readonly TouchSample[]): string[] {
   const failures: string[] = []
@@ -123,8 +123,7 @@ export function touchFailures(controls: readonly TouchSample[]): string[] {
     // growing it would break the line it sits in. The opt-out is an attribute
     // on that control, and the accessible-name check still applies to it.
     if (control.inline === true) continue
-    const small = control.compact === true || control.disclosure === true
-    const floor = small ? COMPACT_FLOOR : TOUCH_FLOOR
+    const floor = control.compact === true ? COMPACT_FLOOR : TOUCH_FLOOR
     // A fractional layout box is compared with half a pixel of slack: 43.5px is
     // the floor rounded down by the browser, not a control that lost its target.
     if (control.width + 0.5 >= floor && control.height + 0.5 >= floor) continue
@@ -132,9 +131,7 @@ export function touchFailures(controls: readonly TouchSample[]): string[] {
     failures.push(
       control.compact === true
         ? `${control.name} is ${rounded}, under the ${String(COMPACT_FLOOR)}px floor even with its compact opt-out`
-        : control.disclosure === true
-          ? `${control.name} is ${rounded}, under the ${String(COMPACT_FLOOR)}px floor a disclosure row still has to meet`
-          : `${control.name} is ${rounded}, under the ${String(TOUCH_FLOOR)}px touch floor`,
+        : `${control.name} is ${rounded}, under the ${String(TOUCH_FLOOR)}px touch floor`,
     )
   }
   return failures

@@ -557,16 +557,16 @@ checkbox is measured through its `<label>`, which is the box a pointer hits. A
 failure names all four coordinates and the control (`en width=768 scheme=dark
 /settings: button.banner-dismiss is 24x24px, under the 44px touch floor`).
 
-Three shapes are exempt by a documented attribute or a named category, never by
+Two shapes are exempt by a documented attribute on the element itself, never by
 a selector list: the banner dismiss button is 24x24 and carries
 `data-compact-target`, which lowers its floor to WCAG 2.5.8's 24 px and no
 further — a compact control under 24 px still fails; the info marker is 15x15
 and carries `data-inline-target`, which WCAG 2.5.8's inline exception covers (a
 target in a sentence is read with the sentence, and growing it would break the
 line it sits in), so it is skipped by the size check but still needs an
-accessible name; and a `summary` is a full-width disclosure row, held to the
-same 24 px minimum (its text line is 22 px, so the row gains two pixels) rather
-than the 44 px a control that sits alone has to keep. Both attributes live on
+accessible name. No category is exempt: a full-width `summary` disclosure row is
+held to the same 44 px as every other control in the list, and the product
+raises the row to that floor instead of waiving it. Both attributes live on
 the element, so a new small control cannot inherit a waiver by being written
 the same way, and `test/visualMatrix.test.ts` pins that each appears once and
 what each floor is. The gate is computed style and
