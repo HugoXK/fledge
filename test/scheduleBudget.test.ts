@@ -239,6 +239,114 @@ test('a previous logical day does not spend the tenant budget', async () => {
   }
 })
 
+// -- Run now, which is an occurrence too ------------------------------------
+//
+// #1027: a press writes the same `dispatched` row the tick writes, so every layer
+// counts it. The tick checks the three layers before it dispatches; the press did
+// not, so it spent budget it never asked about — including other repositories'
+// share of a tenant limit.
+
+/** The runner hands the job back immediately, so the next press is not `JOB_ACTIVE`. */
+function finishJobs(h: Harness): void {
+  for (const job of h.store.listJobsForRepo(h.repoId)) {
+    if (job.status === 'queued' || job.status === 'running') {
+      h.store.updateJob(job.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    }
+  }
+}
+
+function twoWorkItems(h: Harness, prefix: string): void {
+  for (const index of [1, 2]) {
+    h.store.createWorkItem({ id: `work_${prefix}_${index}`, repoId: h.repoId, userId: h.userId, title: `fix ${index}`, issueUrl: `https://github.com/o/${prefix}/issues/${index}`, state: 'triaged' })
+  }
+}
+
+test('a Run now press is refused once the schedule layer is spent, and a refusal is not a spend', async () => {
+  const h = harness('run-now-budget')
+  try {
+    h.store.saveSchedule({ id: 'sch_run_now_budget', repoId: h.repoId, kind: 'interval', everyMs: 24 * HOUR, dailyRuns: 1 })
+    twoWorkItems(h, 'runs')
+    const repo = h.store.getRepo(h.repoId)!
+
+    const first = await h.jobs.runScheduleNow(repo, 'cmd-press-1')
+    assert.equal(first.ok, true, 'the first press fits the limit')
+    finishJobs(h)
+
+    const second = await h.jobs.runScheduleNow(repo, 'cmd-press-2')
+    const day = utcDayStart(Date.now())
+    assert.equal(second.ok, false, 'a spent layer refuses the press instead of spending past it')
+    assert.equal(second.code, 'budget-exceeded', 'the press answers with the code the tick already stores')
+    assert.equal(second.occurrence?.state, 'skipped')
+    assert.equal(second.occurrence?.reason, 'budget-exceeded')
+    assert.equal(h.store.countScheduleDispatchesBetween('sch_run_now_budget', day, day + DAY), 1, 'a refused press consumes nothing')
+
+    const replay = await h.jobs.runScheduleNow(repo, 'cmd-press-2')
+    assert.equal(replay.replayed, true, 'the refusal is settled on the command key, so the replay answers it')
+    assert.equal(replay.code, 'budget-exceeded')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('Run now presses cannot spend the tenant layer past its limit', async () => {
+  const h = harness('run-now-tenant')
+  try {
+    const other = h.store.createRepo({
+      id: 'repo_run_now_tenant_other', userId: h.userId, owner: 'o', name: 'run-now-tenant-other',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 1440,
+    })
+    h.store.saveSchedule({ id: 'sch_run_now_a', repoId: h.repoId, kind: 'interval', everyMs: 30 * DAY })
+    h.store.saveSchedule({ id: 'sch_run_now_b', repoId: other.id, kind: 'interval', everyMs: 30 * DAY })
+    anchorAt(h.store, h.repoId, Date.now())
+    anchorAt(h.store, other.id, Date.now())
+    for (const index of [1, 2, 3]) {
+      h.store.createWorkItem({ id: `work_tenant_${index}`, repoId: h.repoId, userId: h.userId, title: `fix ${index}`, issueUrl: `https://github.com/o/mt/issues/${index}`, state: 'triaged' })
+    }
+
+    const identity = h.store.projectForRepo(h.repoId)
+    assert.ok(identity !== undefined)
+    assert.equal(h.store.projectForRepo(other.id)?.tenant_id, identity.tenant_id, 'both repositories share the owner tenant')
+    h.store.saveScheduleBudget({ scope: 'tenant', scopeId: identity.tenant_id, dailyLimit: 2 })
+
+    const repo = h.store.getRepo(h.repoId)!
+    const presses: boolean[] = []
+    for (const key of ['cmd-tenant-1', 'cmd-tenant-2', 'cmd-tenant-3']) {
+      presses.push((await h.jobs.runScheduleNow(repo, key)).ok)
+      finishJobs(h)
+    }
+    const day = utcDayStart(Date.now())
+    assert.deepEqual(presses, [true, true, false], 'the third press is refused, not spent past the limit')
+    assert.equal(
+      h.store.countTenantScheduleDispatchesBetween(identity.tenant_id, day, day + DAY),
+      2,
+      'the tenant count is the limit, never one past it',
+    )
+    assert.equal(h.store.listJobsForRepo(h.repoId).length, 2, 'one job behind each allowed press')
+  } finally {
+    h.store.close()
+  }
+})
+
+test('without a limit a Run now press dispatches as it did before', async () => {
+  const h = harness('run-now-unbounded')
+  try {
+    h.store.saveSchedule({ id: 'sch_run_now_free', repoId: h.repoId, kind: 'interval', everyMs: 24 * HOUR, dailyRuns: null })
+    twoWorkItems(h, 'free')
+    const repo = h.store.getRepo(h.repoId)!
+
+    const first = await h.jobs.runScheduleNow(repo, 'cmd-free-1')
+    finishJobs(h)
+    const second = await h.jobs.runScheduleNow(repo, 'cmd-free-2')
+    assert.equal(first.ok, true)
+    assert.equal(second.ok, true, 'no limit means no refusal')
+    assert.equal(h.store.listJobsForRepo(h.repoId).length, 2)
+    assert.equal(h.store.listScheduleOccurrences(h.repoId, 20).filter((row) => row.state === 'dispatched').length, 2)
+  } finally {
+    h.store.close()
+  }
+})
+
 // -- the console, where a person reads and sets the limit --------------------
 
 test('the console states the limit, the runs used today, and what is left', () => {
