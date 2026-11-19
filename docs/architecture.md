@@ -1323,6 +1323,36 @@ through the audited `evolution.consent` command; consent is off by default.
 `--report` prints the baseline and the manifest's own split counts; the export
 does not write to the database.
 
+The held-out shadow harness (#372) answers what the ledger could not: how one
+playbook, model or router does on tasks the team has not seen, and whether a
+difference between two of them is larger than the noise of a small fixture set.
+`src/lib/evaluation.ts` scores a checked-in, redacted fixture set —
+`test/fixtures/shadow/holdout.json`, issues captured from this repository's own
+history — into one record per fixture and version: success, review score,
+evidence state (from the same `parseVerification` a job uses), cost, time and a
+failure category. A success rate carries a Wilson score interval, and a
+difference between two versions carries Newcombe's hybrid score interval, so a
+delta of two tasks reads as `not distinguishable` instead of as a better
+playbook; a task every version solves is labelled saturated rather than counted
+as progress. The loop arrives as a host whose declared capabilities say whether
+it can push, merge, read a live token or reach a live repository; a host that
+claims any of them is refused before the first fixture runs, as are a fixture
+naming a live repository, an unredacted set, an empty set and a run that merged.
+The operator records attempts on its own host, and `scripts/evolution-shadow.ts
+--shadow <fixtures> --attempts <recorded.json> --out <report.json>` scores them
+offline into the report artifact a human reads; a fixture with no recorded
+attempt is a refusal, because a missing run is not a failure. `--record
+<attempts.json>` is the bundled reference recorder: it runs the mock runner
+(`src/jobs/mock.ts`, wrapped by `src/jobs/shadow.ts`) over the fixtures and
+writes both the attempts record and the report, so the loop is exercised end to
+end without a bridge, a repository or a token, and the record can be replayed
+through `--attempts` months later. `--versions <id>[,<id>]` names the playbooks,
+models or routers to score; two or more are what a version comparison and a
+saturated-task label need, and the single `mock` default is a smoke run. Nothing in that
+path touches the FlyBot bridge, a user repository or a user token, and the
+report is an artifact rather than a PR comment: promotion stays a human
+decision.
+
 The ledger's shape is the table that already existed, extended rather than
 replaced: `artifact_versions` gains `kind`, `scope`, `repo_id`, `parent_id` (the
 lineage edge), `base_version`, `frozen` and `paths_json`, and one new table
