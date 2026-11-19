@@ -3464,6 +3464,23 @@ open actions; resolving one clears it from that list. The projection and its
 closed six-kind vocabulary live in `src/lib/actionsNeeded.ts` and are documented
 in [docs/notifications.md](notifications.md).
 
+## Every job records the skill bundles it loaded (#380)
+
+A job row carries `skill_bundle_hash`, `skill_bundle_json` and `skill_state`. The
+JSON is the record the dispatch wrote — the set hash, the decision and one entry
+per bundle (`name`, `source`, `version`, `contentHash`, `state`) — so the
+repository page and the merge gate read what the job actually loaded instead of
+recomputing it from today's rules. The inline and queued dispatch paths both
+attest before the bridge call, and a job whose set is not `accepted` is refused
+before a model token is minted. The page shows the set hash, each bundle with its
+source and content-hash prefix, and the state; a job that recorded no bundle says
+so rather than showing an empty list. `skill_state` is the only column that moves
+after creation: `skill-revoked` is set once when the merge gate finds a recorded
+source revoked, and the revocation is written to `audit_log` and the job events.
+The merge gate itself reads today's allowlist, so a revocation after the job
+started still stops an automatic merge; a maintainer's manual merge remains
+possible and is audited as an override.
+
 ## Run now is an occurrence, not a moved cursor (#544)
 
 A schedule names logical instants; the tick decides which of them run. "Run now"

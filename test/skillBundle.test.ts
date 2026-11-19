@@ -164,6 +164,10 @@ test('a source allowed at load and revoked later blocks the merge gate', () => {
       platformTokenHash: '',
       skillBundle: { hash: set.hash, json: JSON.stringify(record), state: set.state },
     })
+    // The gate fails closed on a source it cannot resolve, so the allowlist row
+    // the job ran with exists before the first check: this fixture is about the
+    // allowed -> revoked transition, not about an unlisted source.
+    store.ensureSkillBundleSource({ repoId: repo.id, source: REPO_SOURCE, updatedBy: 'owner' })
     assert.equal(skillBundleMergeBlock(parseSkillBundleRecord(job.skill_bundle_json), store.listSkillBundleSources(repo.id)), null, 'an allowed source does not block')
     store.setSkillBundleSource({ repoId: repo.id, source: REPO_SOURCE, state: 'revoked', updatedBy: 'owner' })
     const block = skillBundleMergeBlock(parseSkillBundleRecord(job.skill_bundle_json), store.listSkillBundleSources(repo.id))

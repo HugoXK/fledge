@@ -106,8 +106,12 @@ function normalizedGoal(goal: string): string {
   return goal.trim().slice(0, MAX_GOAL)
 }
 
+export function playbookBundleContent(goal = ''): string {
+  return `v${PLAYBOOK_VERSION}:${normalizedGoal(goal)}`
+}
+
 export function playbookFingerprint(goal = ''): string {
-  return sha256Hex(`v${PLAYBOOK_VERSION}:${normalizedGoal(goal)}`)
+  return sha256Hex(playbookBundleContent(goal))
 }
 
 export function playbookFor(role: TeamRole, teamLabel: string, goal = ''): string {
