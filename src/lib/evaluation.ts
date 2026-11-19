@@ -158,6 +158,26 @@ export type ShadowRefusal = { ok: false; code: ShadowRefusalCode; detail: string
 
 export type ShadowRunResult = { ok: true; report: ShadowReport } | ShadowRefusal
 
+/** One attempt as the recorder persists it: what ran, against which version. */
+export interface ShadowRecordedAttempt extends ShadowAttempt {
+  fixtureId: string
+  version: string
+}
+
+/** The operator host's recording, the input `--attempts` scores. */
+export interface ShadowRecord {
+  host: { name: string; signature: string }
+  attempts: ShadowRecordedAttempt[]
+}
+
+export interface ShadowRunOptions {
+  /**
+   * Called once per scored attempt. A recorder appends to a record; the harness
+   * never depends on it, so an in-memory run and a recorded run score the same.
+   */
+  onAttempt?: (event: { fixture: ShadowFixture; version: ShadowVersion; attempt: ShadowAttempt }) => void
+}
+
 export type ShadowHostVerdict = { ok: true } | ShadowRefusal
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -408,6 +428,7 @@ export async function runShadow(
   set: ShadowFixtureSet,
   versions: ShadowVersion[],
   host: ShadowHost,
+  options: ShadowRunOptions = {},
 ): Promise<ShadowRunResult> {
   if (set.redacted !== true) {
     return { ok: false, code: 'UNREDACTED_FIXTURES', detail: 'the fixture set is not marked redacted; a shadow run writes a file that may be attached anywhere' }
@@ -436,6 +457,7 @@ export async function runShadow(
       if (attempt.merged) {
         return { ok: false, code: 'MERGE_ATTEMPTED', detail: `host ${host.name} merged work for ${fixture.id} under ${version.id}; a shadow run may not merge` }
       }
+      options.onAttempt?.({ fixture, version, attempt })
       const { success, failure } = score(fixture, attempt)
       tasks.push({
         fixtureId: fixture.id,
@@ -496,6 +518,11 @@ export async function runShadow(
 /** The artifact a human reads. JSON so the AgentDescent exporter can consume it. */
 export function renderShadowReport(report: ShadowReport): string {
   return `${JSON.stringify(report, null, 2)}\n`
+}
+
+/** The attempts artifact `--attempts` scores; kept beside the report for replay. */
+export function renderShadowRecord(record: ShadowRecord): string {
+  return `${JSON.stringify(record, null, 2)}\n`
 }
 
 /** One line per version for a job summary or a terminal. */

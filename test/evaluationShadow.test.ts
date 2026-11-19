@@ -7,12 +7,15 @@ import {
   assertShadowHost,
   compareVersions,
   loadFixtureSet,
+  renderShadowRecord,
   runShadow,
   type ShadowAttempt,
   type ShadowFixture,
   type ShadowHost,
+  type ShadowRecordedAttempt,
   type ShadowVersion,
 } from '../src/lib/evaluation.js'
+import { createMockShadowHost } from '../src/jobs/shadow.js'
 
 // #372: the held-out harness. These tests pin the four properties the card asks
 // for — a fixture produces a shadow pull request that is never merged, a version
@@ -56,8 +59,16 @@ const VERSIONS: ShadowVersion[] = [
 test('a fixture produces a shadow pull request that is never merged', async () => {
   const set = fixtureSet()
   assert.ok(set.fixtures.length > 0)
-  const run = await runShadow(set, VERSIONS, scriptedHost({}))
+  const recorded: ShadowRecordedAttempt[] = []
+  const host = createMockShadowHost()
+  const run = await runShadow(set, VERSIONS, host, {
+    onAttempt: ({ fixture, version, attempt }) => {
+      recorded.push({ fixtureId: fixture.id, version: version.id, ...attempt })
+    },
+  })
   assert.equal(run.ok, true)
+  if (!run.ok) return
+  assert.equal(recorded.length, set.fixtures.length * VERSIONS.length)
   for (const task of run.report.tasks) {
     assert.equal(task.merged, false, 'the harness must record that no shadow pull request was merged')
     assert.match(String(task.pullRequest), /^https:\/\/github\.com\/HugoXK\/fledge\/pull\/\d+$/)
@@ -66,14 +77,25 @@ test('a fixture produces a shadow pull request that is never merged', async () =
     [...new Set(run.report.tasks.map((task) => task.fixtureId))].sort(),
     set.fixtures.map((fixture) => fixture.id).sort(),
   )
+  // The record the recorder writes is the record `--attempts` reads back.
+  const written = JSON.parse(renderShadowRecord({ host: { name: host.name, signature: host.signature }, attempts: recorded })) as {
+    host: { name: string; signature: string }
+    attempts: ShadowRecordedAttempt[]
+  }
+  assert.equal(written.host.signature, host.signature)
+  assert.match(written.host.signature, /^sha256:[0-9a-f]{64}$/)
+  assert.deepEqual(
+    written.attempts.map((attempt) => `${attempt.version}/${attempt.fixtureId}`).sort(),
+    run.report.tasks.map((task) => `${task.version}/${task.fixtureId}`).sort(),
+  )
 })
 
 test('a version comparison shows a difference and a confidence interval', async () => {
   const set = fixtureSet()
-  const [first, second, third] = set.fixtures
-  assert.ok(first !== undefined && second !== undefined && third !== undefined)
+  const [first, second] = set.fixtures
+  assert.ok(first !== undefined && second !== undefined)
   const host = scriptedHost({
-    // playbook-b fails two of the three; playbook-a fails none.
+    // playbook-b fails two of the four; playbook-a fails none.
     [`playbook-b/${first.id}`]: { pullRequest: null, reviewScore: null, verificationJson: null, costUsd: 0 },
     [`playbook-b/${second.id}`]: { pullRequest: null, reviewScore: null, verificationJson: null, costUsd: 0 },
   })
@@ -83,7 +105,7 @@ test('a version comparison shows a difference and a confidence interval', async 
   assert.ok(comparison !== undefined, 'the report compares the baseline with the candidate')
   assert.ok(comparison.delta > 0, 'the candidate is worse here, so the delta is not zero')
   assert.ok(comparison.interval[0] < comparison.delta && comparison.delta < comparison.interval[1])
-  assert.ok(comparison.interval[0] <= 0 && comparison.interval[1] >= 0, 'three tasks cannot establish a difference')
+  assert.ok(comparison.interval[0] <= 0 && comparison.interval[1] >= 0, 'four tasks cannot establish a difference')
   assert.equal(comparison.differs, false)
 })
 
@@ -174,4 +196,6 @@ test('compareVersions reports an interval that excludes zero when every shared t
   assert.equal(comparison.candidate, 'b')
   assert.equal(comparison.delta, 1)
   assert.equal(comparison.sharedTasks, 2)
+  assert.ok(comparison.interval[0] > 0 && comparison.interval[1] <= 1, 'the interval excludes zero')
+  assert.equal(comparison.differs, true)
 })

@@ -11,14 +11,17 @@ import { assertExportable, buildDataset, verifyDataset } from '../src/lib/evolut
 import { loadEvolutionRows } from '../src/lib/evolution/export.js'
 import {
   loadFixtureSet,
+  renderShadowRecord,
   renderShadowReport,
   runShadow,
   shadowSummaryLines,
   type ShadowAttempt,
   type ShadowFixtureSet,
   type ShadowHost,
+  type ShadowRecordedAttempt,
   type ShadowVersion,
 } from '../src/lib/evaluation.js'
+import { createMockShadowHost } from '../src/jobs/shadow.js'
 
 function arg(name: string, fallback = ''): string {
   const index = process.argv.indexOf(name)
@@ -58,12 +61,23 @@ if (verifyPath !== '') {
 // this mode scores those attempts into a report artifact. Recording and scoring
 // stay apart so the numbers can be checked without trusting the machine that
 // produced them, and this mode stays offline like the rest of the exporter.
+// `--record` is the bundled reference recorder: it runs the mock runner over the
+// fixtures and writes both the attempts record and the report in one command.
 const shadowFixtures = arg('--shadow', '')
 if (shadowFixtures !== '') {
   const attemptsPath = arg('--attempts', '')
+  const recordPath = arg('--record', '')
   const reportPath = arg('--out', '')
-  if (attemptsPath === '' || reportPath === '') {
-    console.error('shadow: --shadow needs --attempts <file> and --out <report.json>')
+  if (reportPath === '') {
+    console.error('shadow: --shadow needs --out <report.json>')
+    process.exit(2)
+  }
+  if (attemptsPath === '' && recordPath === '') {
+    console.error('shadow: --shadow needs --attempts <file> or --record <file>')
+    process.exit(2)
+  }
+  if (attemptsPath !== '' && recordPath !== '') {
+    console.error('shadow: --attempts scores a record and --record writes one; pass one of them')
     process.exit(2)
   }
   let fixtureSet: ShadowFixtureSet
@@ -72,6 +86,32 @@ if (shadowFixtures !== '') {
   } catch (error) {
     console.error(`shadow: ${error instanceof Error ? error.message : String(error)}`)
     process.exit(1)
+  }
+  if (recordPath !== '') {
+    const versionIds = arg('--versions', 'mock')
+      .split(',')
+      .map((id) => id.trim())
+    if (versionIds.some((id) => id === '')) {
+      console.error('shadow: MALFORMED_VERSIONS every --versions entry must be a non-empty id')
+      process.exit(2)
+    }
+    const versions: ShadowVersion[] = versionIds.map((id) => ({ id }))
+    const host = createMockShadowHost()
+    const recordedAttempts: ShadowRecordedAttempt[] = []
+    const result = await runShadow(fixtureSet, versions, host, {
+      onAttempt: ({ fixture, version, attempt }) => {
+        recordedAttempts.push({ fixtureId: fixture.id, version: version.id, ...attempt })
+      },
+    })
+    if (!result.ok) {
+      console.error(`shadow: ${result.code} ${result.detail}`)
+      process.exit(1)
+    }
+    writeFileSync(resolve(recordPath), renderShadowRecord({ host: { name: host.name, signature: host.signature }, attempts: recordedAttempts }))
+    writeFileSync(resolve(reportPath), renderShadowReport(result.report))
+    for (const line of shadowSummaryLines(result.report)) console.log(line)
+    console.error(`shadow: attempts ${resolve(recordPath)}; report ${resolve(reportPath)}`)
+    process.exit(0)
   }
   let recorded: { host?: { name?: unknown; signature?: unknown }; attempts?: unknown }
   try {

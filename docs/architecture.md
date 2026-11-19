@@ -1335,7 +1335,12 @@ naming a live repository, an unredacted set, an empty set and a run that merged.
 The operator records attempts on its own host, and `scripts/evolution-shadow.ts
 --shadow <fixtures> --attempts <recorded.json> --out <report.json>` scores them
 offline into the report artifact a human reads; a fixture with no recorded
-attempt is a refusal, because a missing run is not a failure. Nothing in that
+attempt is a refusal, because a missing run is not a failure. `--record
+<attempts.json>` is the bundled reference recorder: it runs the mock runner
+(`src/jobs/mock.ts`, wrapped by `src/jobs/shadow.ts`) over the fixtures and
+writes both the attempts record and the report, so the loop is exercised end to
+end without a bridge, a repository or a token, and the record can be replayed
+through `--attempts` months later. Nothing in that
 path touches the FlyBot bridge, a user repository or a user token, and the
 report is an artifact rather than a PR comment: promotion stays a human
 decision.
