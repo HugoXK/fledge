@@ -652,8 +652,16 @@ test('the maintainer rule override form saves with a revision, refuses a stale w
       headers,
       payload: formBody({ csrf, path: '.fledge/rules.md', content: '# Stale\n', expected_revision: '0' }),
     })
-    assert.equal(stale.statusCode, 302)
-    assert.match(String(stale.headers.location), /conflictRevision=1/)
+    // #983: a refused write re-renders the page with the submitted text and the
+    // submitted revision, so nothing typed is lost and a blind resubmit stays
+    // refused until the maintainer reloads.
+    assert.equal(stale.statusCode, 200)
+    assert.match(String(stale.headers['content-type']), /text\/html/)
+    assert.match(stale.body, /# Stale/)
+    assert.match(stale.body, /data-rules-override-conflict="\.fledge\/rules\.md"/)
+    const staleForm = stale.body.slice(stale.body.indexOf('data-rules-override-form=".fledge/rules.md"'))
+    assert.match(staleForm.slice(0, 400), /name="expected_revision" value="0"/)
+    assert.match(staleForm.slice(0, 2000), /# Stale/)
     assert.equal(store.getRepoRuleOverride(repo.id, '.fledge/rules.md')?.content, '# Console\n')
 
     const skills = await built.app.inject({
@@ -662,8 +670,10 @@ test('the maintainer rule override form saves with a revision, refuses a stale w
       headers,
       payload: formBody({ csrf, path: '.agents/skills', content: '# Nope\n', expected_revision: '0' }),
     })
-    assert.equal(skills.statusCode, 302)
-    assert.match(String(skills.headers.location), /refused=path_invalid/)
+    assert.equal(skills.statusCode, 200)
+    assert.match(skills.body, /data-rules-override-refused="path_invalid"/)
+    assert.match(skills.body, /data-rules-override-kept="\.agents\/skills"/)
+    assert.match(skills.body, /# Nope/)
 
     const cleared = await built.app.inject({
       method: 'POST',
@@ -683,6 +693,61 @@ test('the maintainer rule override form saves with a revision, refuses a stale w
     store.updateRepo(repo.id, { repo_role: 'developer' })
     const denied = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/rules`, headers: { cookie } })
     assert.equal(denied.statusCode, 403)
+  } finally {
+    await built.close()
+  }
+})
+
+test('a refused rule override keeps the submitted text and the submitted revision on the page', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'rules-keeper', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_rules_kept',
+      userId: user.id,
+      owner: 'o',
+      name: 'r',
+      defaultBranch: 'main',
+      tokenEnc: encryptSecret('token', config.tokenEncryptionKey),
+      permission: 'admin',
+      repoRole: 'maintainer',
+      goal: '',
+      autoIterate: false,
+      intervalMinutes: 1440,
+    })
+    const { cookie, csrf } = sessionFor(built, user)
+    const headers = { cookie, 'content-type': 'application/x-www-form-urlencoded' }
+    const post = (values: Record<string, string>) => built.app.inject({
+      method: 'POST',
+      url: `/repos/${repo.id}/rules`,
+      headers,
+      payload: formBody({ csrf, ...values }),
+    })
+
+    const empty = await post({ path: '.fledge/rules.md', content: '   ', expected_revision: '0' })
+    assert.equal(empty.statusCode, 200)
+    assert.match(empty.body, /data-rules-override-refused="content_empty"/)
+
+    const invalid = await post({ path: '.fledge/rules.md', content: '# Nul\n\0 tail\n', expected_revision: '0' })
+    assert.equal(invalid.statusCode, 200)
+    assert.match(invalid.body, /data-rules-override-refused="content_invalid"/)
+    assert.match(invalid.body, /data-rules-override-kept="\.fledge\/rules\.md"/)
+
+    const huge = `# Big\n${'x'.repeat(33 * 1024)}\n983-KEPT-TAIL`
+    const tooLarge = await post({ path: '.fledge/rules.md', content: huge, expected_revision: '0' })
+    assert.equal(tooLarge.statusCode, 200)
+    assert.match(tooLarge.body, /data-rules-override-refused="content_too_large"/)
+    assert.ok(tooLarge.body.includes(huge), 'the submitted 33 KiB body is rendered back')
+
+    const badRevision = await post({ path: '.fledge/rules.md', content: '# Revision\n', expected_revision: 'abc' })
+    assert.equal(badRevision.statusCode, 200)
+    assert.match(badRevision.body, /data-rules-override-refused="revision_invalid"/)
+    assert.match(badRevision.body, /# Revision/)
+    assert.match(badRevision.body, /name="expected_revision" value="abc"/)
+
+    assert.equal(store.getRepoRuleOverride(repo.id, '.fledge/rules.md'), undefined)
   } finally {
     await built.close()
   }

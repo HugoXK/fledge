@@ -3253,17 +3253,35 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo.repo_role !== 'maintainer') throw httpError(403, '只有 maintainer 可以编辑规则覆盖。', 'MAINTAINER_ONLY')
     const body = form(request)
     const path = body.path ?? ''
-    if (!isRulePath(path)) return reply.redirect(`/repos/${repo.id}/rules?refused=path_invalid`)
     const content = body.content ?? ''
-    if (content.trim() === '') return reply.redirect(`/repos/${repo.id}/rules?refused=content_empty`)
-    if (content.includes('\0')) return reply.redirect(`/repos/${repo.id}/rules?refused=content_invalid`)
-    if (Buffer.byteLength(content) > MAX_RULE_FILE_BYTES) return reply.redirect(`/repos/${repo.id}/rules?refused=content_too_large`)
+    // #983: a refused or conflicting write re-renders the page with the
+    // submission instead of a 302, because the follow-up GET re-read the stored
+    // row and threw the maintainer's text away. The status stays 200: the
+    // refusal is the banner, not an empty box.
+    const keptPage = (extra: { refused?: string; conflictPath?: string; conflictRevision?: number }) => reply
+      .code(200)
+      .type('text/html')
+      .send(rulesOverridesPage({
+        config,
+        locale: request.locale ?? 'zh',
+        viewer: viewOf(viewer),
+        repo,
+        overrides: store.listRepoRuleOverrides(repo.id),
+        draftPath: path,
+        draftContent: content,
+        draftRevision: body.expected_revision ?? '',
+        ...extra,
+      }))
+    if (!isRulePath(path)) return keptPage({ refused: 'path_invalid' })
+    if (content.trim() === '') return keptPage({ refused: 'content_empty' })
+    if (content.includes('\0')) return keptPage({ refused: 'content_invalid' })
+    if (Buffer.byteLength(content) > MAX_RULE_FILE_BYTES) return keptPage({ refused: 'content_too_large' })
     const expectedRevision = Number.parseInt(body.expected_revision ?? '', 10)
-    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return reply.redirect(`/repos/${repo.id}/rules?refused=revision_invalid`)
+    if (!Number.isInteger(expectedRevision) || expectedRevision < 0) return keptPage({ refused: 'revision_invalid' })
     const result = store.upsertRepoRuleOverride({ repoId: repo.id, path, content, updatedBy: viewer.user.id, expectedRevision })
     if (!result.ok) {
       store.audit(viewer.user.id, 'repo.rules_override_refused', `${path}: expected ${expectedRevision}, current ${result.revision}`)
-      return reply.redirect(`/repos/${repo.id}/rules?conflictPath=${encodeURIComponent(path)}&conflictRevision=${result.revision}`)
+      return keptPage({ conflictPath: path, conflictRevision: result.revision })
     }
     store.audit(viewer.user.id, 'repo.rules_override_saved', `${path}: revision ${result.row.revision}, ${Buffer.byteLength(content)} bytes`)
     return reply.redirect(`/repos/${repo.id}/rules?saved=${encodeURIComponent(path)}`)
