@@ -20,7 +20,7 @@ interface Fixture {
   close: () => Promise<void>
 }
 
-async function fixture(tag: string): Promise<Fixture> {
+async function fixture(tag: string, repoRole: string | null = 'maintainer'): Promise<Fixture> {
   const config = testConfig()
   const store = new Store(':memory:')
   const built = await buildApp({
@@ -39,7 +39,9 @@ async function fixture(tag: string): Promise<Fixture> {
     defaultBranch: 'main',
     tokenEnc: 'x',
     permission: 'admin',
-    repoRole: 'maintainer',
+    // #1113: a repository connected before any role was checked records NULL,
+    // and the caller decides whether this fixture is that shape.
+    repoRole,
     goal: '',
     autoIterate: false,
     intervalMinutes: 1440,
@@ -301,6 +303,30 @@ test('a related decision on a task that did run still writes the task and one re
     const relations = f.store.listTaskRelations(f.existedJobId)
     assert.equal(relations.length, 1)
     assert.equal(relations[0]?.kind, 'related')
+  } finally {
+    await f.close()
+  }
+})
+
+// #1113: a repository connected before any upstream role was recorded keeps
+// `repo_role` NULL, and the page already offers the decision there because the
+// page reads the actor's role (#1081). The route read the upstream column
+// instead, so the form the page drew could only come back as "choose your role
+// first". This case is the one that tells the two readers apart: no role on the
+// repository, an owner session, a finished verify job.
+test('a repository with no recorded upstream role takes the decision the page offers', async () => {
+  const f = await fixture('nullrole', null)
+  try {
+    const html = await page(f, f.verifyId)
+    assert.match(html, /action="\/repos\/[^"]+\/jobs\/[^"]+\/decision"/, 'the page offers the decision form')
+    assert.doesNotMatch(html, /data-decision-role-required/, 'the page does not tell the owner to pick a role')
+    const before = f.store.listWorkItems(f.repoId).length
+    const response = await post(f, 'en', { ...good, kind: 'new', title: 'fix the retry in the second call site' })
+    assert.equal(response.statusCode, 302)
+    assert.equal(response.flash?.error, undefined, 'the route does not refuse a decision the page offered')
+    assert.ok(response.flash?.notice)
+    assert.match(response.flash?.notice?.text ?? '', /Recorded as the next step/)
+    assert.equal(f.store.listWorkItems(f.repoId).length, before + 1)
   } finally {
     await f.close()
   }

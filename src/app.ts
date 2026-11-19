@@ -4154,14 +4154,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // standard and the repair to the service. A decision that needs no decision at
   // all is not a route: the framework default is what the page preselects.
   app.post('/repos/:id/jobs/:jobId/decision', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const back = `/repos/${repo.id}/jobs/${job.id}`
-    if (repo.repo_role !== 'maintainer' && repo.repo_role !== 'developer') {
-      return reply.redirect(`${back}?error=${encodeURIComponent('请先选择你的角色。')}`)
-    }
     const t = translator(request.locale ?? 'zh')
+    // #1113: who may decide is the actor's role, the same role the job page
+    // reads to draw this control (#1081), not `repo.repo_role`. That column is
+    // Fledge's upstream access and stays NULL on a repository connected before
+    // any role was checked, which made the page offer a form the route then
+    // refused — the page and the write have to answer the same question.
+    if (role !== 'maintainer' && role !== 'developer') {
+      return reply.redirect(`${back}?error=${encodeURIComponent(t('请先选择你的角色。', 'Choose your role first.'))}`)
+    }
     const body = form(request)
     const result = await jobs.decideNextTask({
       repoId: repo.id,
