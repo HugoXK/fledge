@@ -268,6 +268,14 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
   disagree with the sections below it.
+- **Decision queue** (`src/views/pages.ts`, `repoDecisionsFor`): the card above is
+  account-wide, so `/dashboard` also lists one row per repository (#655). A row
+  carries exactly one thing — an answer, the repository's most urgent alert, or
+  its newest failed job, ranked in that order — and a repository that needs
+  nothing says when the platform runs there next and what it last produced
+  instead of showing an empty widget. The route reads each repository's own
+  newest jobs for this (`store.listJobsForRepo`), because the paged job table
+  would make a failure in the eleventh repository invisible.
 - **Work-loop rail** (`src/views/pages.ts`, `loopStage`): the same header draws the
   five steps Connect → Goal → Work → Review → Merge and marks one of them current.
   Only a real position can be marked: an open question or a failed job is Work, an

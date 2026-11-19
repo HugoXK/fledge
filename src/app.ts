@@ -1593,6 +1593,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         ...(scheduleRow === undefined || repo.enabled !== 1 ? {} : { scheduledNext: scheduledNextFor(scheduleRow) }),
       }
     })
+    // #655: the home answers "what needs me now?" once per repository, so it
+    // reads each repository's own newest runs instead of the paged table slice;
+    // a failure in the eleventh repository is still the first thing to fix.
+    const decisionJobs = allRepos.flatMap((repo) => store.listJobsForRepo(repo.id, 5))
     return reply.type('text/html').send(
       dashboardPage({
         config,
@@ -1610,6 +1614,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         repoOptions: allRepos.map((repo) => ({ id: repo.id, label: `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}` })),
         allRepos,
         nextRunFacts,
+        decisionJobs,
         queued: store.listQueuedJobs(),
         questions,
         personal,
