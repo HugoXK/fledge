@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
+import { formBody, makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
 // #677: the page and the JSON preview read the same query, so the form has to
 // submit at most one value per name the request reads. All four clock panels
@@ -141,4 +141,55 @@ test('the page it renders after the submit shows the picked schedule', async () 
 test('the documented single-time API call still builds the schedule', async () => {
   const preview = await previewOf('mode=daily&time=10:30&timezone=UTC')
   assert.equal(preview.expression, '30 10 * * *')
+})
+
+// #1053: the field's own sentence says the grace bound is an integer, but the
+// handler only range-checked a `Number()`, so `3.7` saved a rounded four
+// minutes and the form came back showing a number nobody typed. A value the
+// product calls illegal is refused, and a refusal writes nothing.
+test('a fractional grace is refused with the integer sentence and writes nothing', async () => {
+  const store = new Store(':memory:')
+  const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'grace-owner', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_grace', userId: user.id, owner: 'o', name: 'grace',
+      defaultBranch: 'main', tokenEnc: 'x', permission: 'admin',
+      repoRole: 'developer', goal: 'fix bugs', autoIterate: true, intervalMinutes: 1440,
+    })
+    const session = sessionFor(built, user)
+    const post = (values: Record<string, string>): Promise<{ statusCode: number; headers: Record<string, unknown> }> =>
+      built.app.inject({
+        method: 'POST',
+        url: `/repos/${repo.id}/schedule`,
+        // English, so the assertion pins the sentence this issue names rather
+        // than whichever translation the default locale happens to pick.
+        headers: { cookie: session.cookie, 'content-type': 'application/x-www-form-urlencoded', 'accept-language': 'en' },
+        payload: formBody({ csrf: session.csrf, every: '15m', ...values }),
+      })
+    const location = (response: { headers: Record<string, unknown> }): string => String(response.headers.location)
+    const refusedMessage = (response: { headers: Record<string, unknown> }): string => {
+      const raw = new URL(location(response), 'http://fledge.test').searchParams.get('refused')
+      assert.notEqual(raw, null, `the refusal is reported to the person: ${location(response)}`)
+      return String(raw)
+    }
+
+    // A legal bound first, so "unchanged" has something to stay equal to.
+    const saved = await post({ grace: '5' })
+    assert.equal(saved.statusCode, 302)
+    assert.match(location(saved), /saved=1/)
+    assert.equal(store.scheduleForRepo(repo.id)?.grace_ms, 300_000)
+
+    const refused = await post({ grace: '3.7' })
+    assert.equal(refused.statusCode, 302)
+    assert.doesNotMatch(location(refused), /saved=1/, 'a fractional grace is not saved')
+    assert.equal(refusedMessage(refused), 'The grace bound must be an integer between 0 and 10080 minutes.')
+    assert.equal(store.scheduleForRepo(repo.id)?.grace_ms, 300_000, 'the stored bound is untouched, not rounded to four minutes')
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/schedule`, headers: { cookie: session.cookie, 'accept-language': 'en' } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /name="grace"[^>]*value="5"/, 'the form still shows the bound the person saved, not a rounded one')
+  } finally {
+    await built.close()
+  }
 })

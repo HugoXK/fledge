@@ -689,7 +689,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   after the window instead of re-deciding it and two workers cannot both write a
   catch-up. A null `grace_ms` means no bound, which is exactly the behaviour every
   schedule had before the column existed, and the console form carries both
-  fields so a maintainer sets the policy rather than a migration.
+  fields so a maintainer sets the policy rather than a migration. The form takes
+  whole minutes only (#1053): a fractional `grace` is refused with the sentence
+  beside the field instead of being rounded, so a save never rewrites the bound
+  the person typed.
   Reviews keep their own cadence (`review_interval_minutes`): this switches the work loop
   only.
 - **The console reads the planner** (#544, the console slice): `/repos/:id/schedule`
