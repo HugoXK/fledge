@@ -13,6 +13,7 @@ import { quotaMoney } from '../src/views/layout.js'
 import { localizeMessage } from '../src/i18n.js'
 import { WORK_ITEM_STATES } from '../src/lib/workItems.js'
 import { encryptSecret } from '../src/lib/secrets.js'
+import { planPacketHash } from '../src/lib/planDecision.js'
 
 test('healthz reports the package version', async () => {
   const config = testConfig()
@@ -832,6 +833,52 @@ test('a plan must be approved by a maintainer before execution', async () => {
     assert.equal(contexts.length, 1)
     assert.match(contexts[0]!.goal, /Allowed paths: src\//)
     assert.match(contexts[0]!.goal, /Forbidden paths: \.github\//)
+  } finally {
+    await built.close()
+  }
+})
+
+test('a plan card pins the packet hash and offers only the decisions its state allows', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'plan-card-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_plan_card', userId: user.id, owner: 'o', name: 'pc', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', planRequired: true, goal: 'ship it', autoIterate: false, intervalMinutes: 1440 })
+    const evidence = JSON.stringify({ scope: 'src/parser.ts', acceptance: 'the plan runs', testPlan: 'read the page', testRed: 'the card offered approve only', testGreen: 'the card offers reject and revise', tests: 'node:test', checks: 'npm run check', files: 1, risk: 'low', rollback: 'revert the commit' })
+    const ready = store.createJob({ id: 'job_plan_card_ready', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-ready', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
+    store.updateJob(ready.id, { status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString(), evidence_json: evidence })
+    const blind = store.createJob({ id: 'job_plan_card_blind', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-blind', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
+    store.updateJob(blind.id, { status: 'succeeded', summary: 'Plan: no evidence', finished_at: new Date().toISOString() })
+    const { cookie } = sessionFor(built, user)
+
+    // The hash is the one the page rendered, computed from the same three values
+    // the page shows, because that is what both decision doors compare.
+    const packetHash = (jobId: string): string => {
+      const job = store.getJob(jobId)!
+      return planPacketHash({ summary: job.summary, evidenceJson: job.evidence_json, baseSha: job.base_sha })
+    }
+    const hiddenHash = (body: string): string | undefined => body.match(/<input type="hidden" name="planHash" value="([0-9a-f]{64})"/)?.[1]
+    const primaryButton = (body: string): string => body.match(/<button[^>]*data-plan-primary[^>]*>/)?.[0] ?? ''
+
+    const page = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${ready.id}`, headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-plan-decision="pending"/)
+    assert.equal(hiddenHash(page.body), packetHash(ready.id), 'the form posts the hash of the packet the page showed')
+    assert.doesNotMatch(primaryButton(page.body), /disabled/, 'a complete plan can be approved')
+    assert.match(page.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${ready.id}/reject-plan"`))
+    assert.match(page.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${ready.id}/revise-plan"`))
+
+    const blindPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${blind.id}`, headers: { cookie } })
+    assert.equal(blindPage.statusCode, 200)
+    assert.match(blindPage.body, /data-plan-decision="incomplete"/)
+    assert.equal(hiddenHash(blindPage.body), packetHash(blind.id), 'a refusal still names the packet it read')
+    assert.match(primaryButton(blindPage.body), /disabled/, 'a plan without evidence cannot be approved')
+    // #634: the incomplete card disabled the approval and with it the decision —
+    // no reject, no revise. A plan nobody can evaluate is exactly the plan a
+    // maintainer has to be able to send back.
+    assert.match(blindPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${blind.id}/reject-plan"`), 'reject stays available without evidence')
+    assert.match(blindPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${blind.id}/revise-plan"`), 'a revision stays available without evidence')
   } finally {
     await built.close()
   }

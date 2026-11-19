@@ -3647,8 +3647,19 @@ export function jobPage(input: {
     : planState === 'pending'
       ? `<p class="fine">${escapeHtml(t('等待 maintainer 决定这个计划。', 'Waiting for a maintainer to decide this plan.'))}</p>`
       : planState === 'incomplete'
-        ? `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved.'))}</p>
-           <button class="btn" type="button" data-plan-primary disabled aria-describedby="plan-incomplete-reason">${escapeHtml(t('批准并运行', 'Approve and run'))}</button>`
+        // Missing evidence disables the approval only. Rejecting the plan and
+        // asking for a revised one are the two decisions that still make sense on
+        // a packet nobody can evaluate, and the legacy pending card offered both,
+        // so they stay: "cannot approve" is not a reason to strand a maintainer
+        // with one greyed-out button. Both still post the hash they read.
+        ? repo.repo_role === 'maintainer'
+          ? `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准；仍然可以拒绝，或要求一份完整的计划。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved; you can still reject it or ask for a complete plan.'))}</p>
+        <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}<input type="hidden" name="planHash" value="${escapeHtml(planHash)}" />
+        <label class="grow">${escapeHtml(t('理由（拒绝或要求修改计划时必填）', 'Reason (required to reject or ask for a revision)'))} <textarea name="reason" rows="2" maxlength="500"></textarea></label>
+        <div class="row"><button class="btn" type="button" data-plan-primary disabled aria-describedby="plan-incomplete-reason">${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/revise-plan">${escapeHtml(t('要求修改计划', 'Ask for a revised plan'))}</button></div>
+      </form>`
+          : `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved.'))}</p>
+           <p class="fine">${escapeHtml(t('等待 maintainer 拒绝这个计划或要求一份完整的计划。', 'Waiting for a maintainer to reject this plan or ask for a complete one.'))}</p>`
         : planRecord
   const planBadge = planState === 'approved'
     ? `<span class="badge good">${escapeHtml(t('已批准', 'Approved'))}</span>`

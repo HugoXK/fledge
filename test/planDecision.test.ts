@@ -267,3 +267,35 @@ test('the plan page leads with one decision, disables it without evidence and cl
     await incomplete.close()
   }
 })
+
+test('a revision is queued before the plan is rejected, so a queue refusal can be retried', async () => {
+  const h = await harness()
+  try {
+    // A live job is the queue's own admission refusal (`JOB_ACTIVE`), the same
+    // one the console already shows. It is what makes the write order observable:
+    // with the rejection first, this press leaves a rejected plan and nothing
+    // queued, and the retry below is refused `PLAN_ALREADY_DECIDED`.
+    const busy = h.store.createJob({
+      id: 'job_revise_busy', repoId: h.repo.id, userId: h.user.id, trigger: 'manual', goal: 'a run in flight',
+      callbackHash: 'cb-busy', platformTokenHash: '', kind: 'iterate', baseBranch: 'main',
+    })
+    const refused = await h.post('revise-plan', { planHash: hashOf(h.job), reason: 'the scope is too wide' })
+    assert.equal(refused.statusCode, 302)
+    assert.match(flashOf(refused)?.error?.text ?? '', /JOB_ACTIVE|已有任务在运行/, 'the refusal is the queue\'s own')
+    assert.equal(h.store.getJob(h.job.id)!.plan_rejected_at, null, 'a refused queue attempt decides nothing')
+    assert.equal(h.store.listJobsForRepo(h.repo.id).filter((job) => job.kind === 'plan').length, 1, 'no revision was queued')
+
+    h.store.updateJob(busy.id, { status: 'succeeded', finished_at: new Date().toISOString() })
+    const retried = await h.post('revise-plan', { planHash: hashOf(h.job), reason: 'the scope is too wide' })
+    assert.equal(retried.statusCode, 302)
+    assert.equal(flashOf(retried)?.error, undefined, 'the retry is not refused by a decision the first press never wrote')
+    const row = h.store.getJob(h.job.id)!
+    assert.notEqual(row.plan_rejected_at, null)
+    assert.equal(row.plan_reject_reason, 'the scope is too wide')
+    const revisions = h.store.listJobsForRepo(h.repo.id).filter((job) => job.kind === 'plan' && job.id !== h.job.id)
+    assert.equal(revisions.length, 1, 'the revision is queued once')
+    assert.equal(revisions[0]?.work_item_id, h.item.id, 'on the same work item')
+  } finally {
+    await h.close()
+  }
+})

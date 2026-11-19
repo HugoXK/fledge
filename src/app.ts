@@ -128,7 +128,7 @@ import { withDensity } from './views/layout.js'
 import type { PullTip } from './views/reviewMerge.js'
 import { gatePage } from './views/gate.js'
 import { planHash, validateGatePlan, type GatePlan } from './gates/plan.js'
-import { decidePlan, type PlanDecisionJob } from './lib/planDecision.js'
+import { decidePlan, planDecisionOutcome, type PlanDecisionJob, type PlanDecisionOutcome } from './lib/planDecision.js'
 import { applyGatePlan } from './gates/apply.js'
 import { memoryMissingPage, memoryPage } from './views/memory.js'
 import { rulesOverridesPage } from './views/rules.js'
@@ -4074,23 +4074,39 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('只有 maintainer 可以要求修改计划。')}`)
     if (job.work_item_id === null) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent('这个计划没有关联工作项，无法排队新计划；请用 /fledge plan 生成。')}`)
     const body = form(request)
-    const outcome = decidePlan(store, {
+    const reason = (body.reason ?? '').trim().slice(0, 500)
+    const decision = {
       job: planDecisionJob(job),
-      decision: 'reject',
+      decision: 'reject' as const,
       actor: viewer.user.id,
       at: nowIso(),
       shownHash: planShownHash(body.planHash),
       latestBaseSha: store.latestFinishedBaseSha(repo.id),
-      door: 'web form',
-      reason: body.reason ?? '',
+      door: 'web form' as const,
+      reason,
       workItemId: job.work_item_id,
-    })
-    if (!outcome.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(translator(request.locale ?? 'zh')(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
-    const reason = (body.reason ?? '').trim().slice(0, 500)
-    const goal = `${job.goal}\n\nA maintainer rejected the previous plan and asked for a revision: ${reason}\nProduce one concrete revised plan only; do not write code, create a branch or open a PR.`
+    }
     const t = translator(request.locale ?? 'zh')
+    const refused = (outcome: Extract<PlanDecisionOutcome, { ok: false }>): ReturnType<typeof reply.redirect> => reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(t(outcome.reason.zh, outcome.reason.en))}&code=${outcome.refusal}`)
+    // #634: this route is two writes — the rejection and the queued revision —
+    // and they cannot share a transaction, because queueing runs through the
+    // async management envelope. Only one of the two possible halves is
+    // recoverable: a rejected plan with nothing queued is a dead end, since every
+    // retry is refused `PLAN_ALREADY_DECIDED`, while a queued revision whose
+    // rejection then lost a race still leaves a plan the maintainer can decide.
+    // So the queue attempt goes first and the rejection is written only after it
+    // succeeded, and the refusals that cost no queue work (already decided, stale
+    // hash, stale base, missing reason) are still answered before it.
+    const preview = planDecisionOutcome(decision)
+    if (!preview.ok) return refused(preview)
+    const goal = `${job.goal}\n\nA maintainer rejected the previous plan and asked for a revision: ${reason}\nProduce one concrete revised plan only; do not write code, create a branch or open a PR.`
     const queued = await runCreate(request, viewer, repo, { kind: 'plan', goal, workItemId: job.work_item_id, priority: job.priority })
+    // A queue refusal (quota, JOB_ACTIVE, a disabled repository) leaves the plan
+    // undecided on purpose: the press did not happen, so the maintainer must be
+    // able to try again once the queue has room.
     if (!queued.ok) return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?error=${encodeURIComponent(managementFailure(t, queued, t('新计划没有排队。', 'The revised plan was not queued.')))}&code=${queued.code}`)
+    const outcome = decidePlan(store, decision)
+    if (!outcome.ok) return refused(outcome)
     return reply.redirect(`/repos/${repo.id}/jobs/${job.id}?notice=${encodeURIComponent('计划已拒绝；修改后的计划已排队。')}`)
   })
 
