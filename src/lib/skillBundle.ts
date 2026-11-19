@@ -84,8 +84,11 @@ function isRole(value: unknown): value is TeamRole {
 }
 
 function isUnsigned(value: unknown): value is UnsignedSkillBundle {
-  if (typeof value !== 'object' || !value) return false
-  const row = value as Record<string, unknown>
+  // The null check sits on a nullable local so it is a real comparison: CodeQL
+  // reads `typeof value === 'object'` as non-null, which made `!value` and
+  // `value === null` both look vacuous or inconvertible.
+  const row: Record<string, unknown> | null = typeof value === 'object' ? (value as Record<string, unknown> | null) : null
+  if (row === null) return false
   return typeof row.name === 'string'
     && row.name !== ''
     && typeof row.version === 'number'
