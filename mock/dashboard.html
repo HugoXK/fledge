@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>仓库 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=f1ada170f538" />
+  <link rel="stylesheet" href="assets/app.css?v=7acb8024b563" />
 </head>
 <body>
   <a class="skip-link" href="#main">跳到主要内容</a>
@@ -65,6 +65,26 @@
     <p class="muted">这是唯一需要你处理的事项。</p>
     <a class="btn" href="https://github.com/HugoXK/fledge/pull/742">打开 PR</a>
   </section>
+  <section class="card" id="decisions" aria-labelledby="decisions-title">
+    <div class="eyebrow">下一步</div>
+    <h2 id="decisions-title">每个仓库，一件事</h2>
+    <p class="muted">按影响排序：先回答问题，再看失败的任务，最后是现在不需要你的仓库。</p>
+    <ol class="decision-list"><li class="decision-row" data-decision="alert" data-decision-repo="repo_fledge">
+        <div class="decision-main">
+          <a class="decision-repo" href="repository.html">HugoXK/fledge</a>
+          <p class="decision-title">PR 已打开 48 小时</p>
+          <p class="muted">这个 PR 在等你处理。</p>
+        </div>
+        <a class="link" data-decision-action href="https://github.com/HugoXK/fledge/pull/742">打开 PR</a>
+      </li><li class="decision-row" data-decision="growing" data-decision-repo="repo_demo">
+        <div class="decision-main">
+          <a class="decision-repo" href="repository-demo.html">HugoXK/demo-app</a>
+          <p class="decision-title">这个仓库现在不需要你。</p>
+          <p class="muted">下次自动运行：自动工作已关闭 还没有运行过。</p>
+        </div>
+        
+      </li></ol>
+  </section>
   <details class="secondary" data-secondary>
     <summary>更多：仓库、交付与任务</summary>
     <div class="secondary-body">
@@ -98,6 +118,7 @@
     <div class="inbox-list"><p class="muted">没有待回答的问题。</p></div>
     <p class="fine" data-inbox-status role="status" aria-live="polite"></p>
   </section>
+  
   <section class="card" id="attention">
     <div class="row between"><h2>需要处理</h2><span class="fine">只显示你自己的仓库和任务。</span></div>
     <div class="table-scroll"><table><thead><tr><th>级别</th><th>类型</th><th>详情</th><th></th></tr></thead><tbody><tr><td><span class="badge busy">警告</span></td><td>pr_stale</td><td>HugoXK/fledge · PR 已打开 48 小时</td><td><a class="link" href="https://github.com/HugoXK/fledge/pull/742" target="_blank" rel="noreferrer">PR</a></td></tr></tbody></table></div>
@@ -175,7 +196,7 @@
           <a href="job.html"><code>job_mock_failed</code></a> <span class="badge kind">迭代</span>
           <small class="job-meta">定时 · 2026-11-15 11:05:00 UTC</small>
         </td>
-        <td data-job-status data-label="状态"><span class="badge bad">失败</span><br /><small class="muted">FlyBot 实例不可用</small></td>
+        <td data-job-status data-label="状态"><span class="badge bad">失败</span><br /><small class="muted">仓库工作区不可用</small></td>
         <td class="job-links" data-label="PR / Issue">—</td>
         <td data-job-summary class="job-summary" data-priority="low" data-label="摘要"><span data-job-summary-text title="bridge refused the run: FlyBot instance is still starting">bridge refused the run: FlyBot instance is still starting</span></td>
       </tr><tr data-job-id="job_mock_success">
@@ -199,8 +220,8 @@
     
     <div class="add-choice"><h3>方式一（推荐）：GitHub App</h3><p class="muted">安装 App 并选择仓库，不需要创建 PAT；Fledge 使用短时 installation token。</p><p><a class="btn" href="#">通过 GitHub App 接入</a> <a class="link" href="add-repository.html">选择已安装的仓库</a></p></div><details class="add-manual"><summary>方式二：手动提供 fine-grained token</summary>      <form method="post" action="#" class="form" data-mock-inert onsubmit="return false;">
         <input type="hidden" name="csrf" value="mock-csrf" />
-        <label>上游仓库<button type="button" class="info-tip" aria-label="Fledge 会在需要时创建 fork（上游就是你自己的仓库则直接用），开发分支推到 fork，issue 和 PR 提到上游。" aria-expanded="false" data-tip="Fledge 会在需要时创建 fork（上游就是你自己的仓库则直接用），开发分支推到 fork，issue 和 PR 提到上游。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
-        <label>GitHub token<button type="button" class="info-tip" aria-label="token 需要能读上游、写 fork，加密保存且不回显。" aria-expanded="false" data-tip="token 需要能读上游、写 fork，加密保存且不回显。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
+        <label>上游仓库<button type="button" class="info-tip" data-inline-target aria-label="Fledge 会在需要时创建 fork（上游就是你自己的仓库则直接用），开发分支推到 fork，issue 和 PR 提到上游。" aria-expanded="false" data-tip="Fledge 会在需要时创建 fork（上游就是你自己的仓库则直接用），开发分支推到 fork，issue 和 PR 提到上游。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <input name="repo" placeholder="owner/name" required autocomplete="off" /></label>
+        <label>GitHub token<button type="button" class="info-tip" data-inline-target aria-label="token 需要能读上游、写 fork，加密保存且不回显。" aria-expanded="false" data-tip="token 需要能读上游、写 fork，加密保存且不回显。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <input name="token" type="password" placeholder="github_pat_… 或 ghp_…" required autocomplete="off" /></label>
         <label>任务模板
     <select data-goal-template data-goal-target="goal-new">
       <option value="">选择一个模板…</option>
@@ -210,13 +231,13 @@
       <option value="deps" data-text="Check one dependency for a real security or compatibility issue. Make the smallest safe upgrade, run the existing tests, record pass/fail, and open one PR. Do not upgrade unrelated packages.">处理一个依赖问题</option>
     </select>
   </label>
-        <label>迭代目标（可选）<button type="button" class="info-tip" aria-label="目标越具体，产出越稳定，模板会填入一个可执行的目标。" aria-expanded="false" data-tip="目标越具体，产出越稳定，模板会填入一个可执行的目标。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <textarea id="goal-new" name="goal" rows="3" placeholder="例如：持续修复 issue 里的可复现 bug，只改最小范围。"></textarea></label>
+        <label>迭代目标（可选）<button type="button" class="info-tip" data-inline-target aria-label="目标越具体，产出越稳定，模板会填入一个可执行的目标。" aria-expanded="false" data-tip="目标越具体，产出越稳定，模板会填入一个可执行的目标。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <textarea id="goal-new" name="goal" rows="3" placeholder="例如：持续修复 issue 里的可复现 bug，只改最小范围。"></textarea></label>
         <div class="row" data-auto-group>
           <label class="check"><input type="checkbox" name="auto" value="1" /> 自动迭代</label>
-          <label>发现间隔<button type="button" class="info-tip" aria-label="没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。" aria-expanded="false" data-tip="没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <select name="interval"><option value="60">每小时</option><option value="120">每 2 小时</option><option value="180">每 3 小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
+          <label>发现间隔<button type="button" class="info-tip" data-inline-target aria-label="没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。" aria-expanded="false" data-tip="没有工作项时按此间隔做一次发现（最少 60 分钟、最多开一个 issue），有工作项时按全局最短间隔推进。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button> <select name="interval"><option value="60">每小时</option><option value="120">每 2 小时</option><option value="180">每 3 小时</option><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
         </div>
         <div class="row" data-review-group>
-          <label class="check"><input type="checkbox" name="review" value="1" /> 启用 PR 审核角色<button type="button" class="info-tip" aria-label="只有 maintainer 角色且 GitHub admin/maintain 权限时可启用，审核任务独立于迭代。" aria-expanded="false" data-tip="只有 maintainer 角色且 GitHub admin/maintain 权限时可启用，审核任务独立于迭代。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button></label>
+          <label class="check"><input type="checkbox" name="review" value="1" /> 启用 PR 审核角色<button type="button" class="info-tip" data-inline-target aria-label="只有 maintainer 角色且 GitHub admin/maintain 权限时可启用，审核任务独立于迭代。" aria-expanded="false" data-tip="只有 maintainer 角色且 GitHub admin/maintain 权限时可启用，审核任务独立于迭代。"><svg class="icon icon-info" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9" /><path d="M12 11v5.5" /><path d="M12 7.4h.01" /></svg></button></label>
           <label>审核间隔 <select name="reviewInterval"><option value="360">每 6 小时</option><option value="720">每 12 小时</option><option value="1440" selected>每天</option><option value="2880">每 2 天</option><option value="4320">每 3 天</option><option value="10080">每周</option><option value="20160">每 2 周</option><option value="43200">每 30 天</option></select></label>
         </div>
         <p class="fine">添加后请选择你的角色；未选择前不会启动任务。</p>
