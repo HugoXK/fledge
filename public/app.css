@@ -881,6 +881,30 @@ textarea { resize: vertical; min-height: 70px; }
 #next-action h2 { margin-bottom: var(--space-2); }
 #next-action .muted { margin: 0 0 var(--space-4); max-width: 62ch; }
 #next-action .btn { min-height: var(--touch); display: inline-flex; align-items: center; }
+/* Issue 655: the home answers "what needs me now?" once per repository, so the
+   first screen is a short queue of decisions rather than a wall of equal cards.
+   Each row carries one action; the calm row has no button and no accent, because
+   a disabled control would read as an action a reader cannot take. */
+#decisions h2 { margin-bottom: var(--space-2); }
+#decisions > .muted { margin: 0 0 var(--space-3); max-width: 62ch; }
+.decision-list { list-style: none; margin: 0; padding: 0; }
+.decision-row {
+  display: flex; flex-wrap: wrap; align-items: flex-start; justify-content: space-between;
+  gap: var(--space-2) var(--space-4);
+  padding: var(--space-3) 0; border-top: 1px solid var(--line);
+}
+.decision-row:first-child { border-top: 0; padding-top: 0; }
+.decision-main { flex: 1 1 18rem; min-width: 0; }
+.decision-repo { font-weight: 600; text-decoration: none; }
+.decision-title { margin: 2px 0 0; font-weight: 600; }
+.decision-main .muted { margin: 2px 0 0; overflow-wrap: anywhere; }
+.decision-row [data-decision-action] { min-height: var(--touch); display: inline-flex; align-items: center; }
+.decision-row[data-decision="growing"] .decision-title { color: var(--muted); font-weight: 500; }
+/* The row wraps on its own: the text block has a basis, so a narrow screen drops
+   the action under it instead of squeezing the sentence to one word per line. */
+@media (max-width: 900px) {
+  .decision-row { flex-direction: column; align-items: stretch; }
+}
 .secondary {
   margin: var(--space-2) 0 var(--space-6);
   border: 1px solid var(--line);

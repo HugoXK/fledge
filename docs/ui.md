@@ -450,6 +450,15 @@ and the accessibility contract are fixed:
   `/settings`, `/dashboard` and the shell and fails on any control whose whole
   visible content is one of those characters, so the next component does not
   type one again.
+- The dashboard's decision queue (`#decisions`, `src/views/pages.ts`) is one row
+  per repository, and a row carries at most one action: an answer, the
+  repository's most urgent alert, or its newest failed job, ranked in that order
+  and never stacked into two buttons. A repository that needs nothing is a calm
+  row — no button, a muted title, the next automatic run and what it last
+  produced — because a control a reader cannot use reads as a broken one. The
+  account-level card above the queue keeps the page's only primary button, so the
+  queue never competes with it; each row's action is a link with a 44px target,
+  and rows stack rather than scroll at 360 px.
 - The empty state's action comes from the page that renders it: a repository
   page offers that repository's own `Run now`, the dashboard offers
   `Add repository`, Settings offers `Add provider`. No page inherits another

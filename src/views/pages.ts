@@ -1098,6 +1098,186 @@ function nextActionSection(action: NextActionView, t: Translate): string {
   </section>`
 }
 
+// #655: the home answers "what needs me now?" once per repository. The single
+// card above names one action for the whole account, so a second repository with
+// a pending question waited behind whichever repository happened to sort first.
+// Each row here carries exactly one action — the signals below are ranked, never
+// stacked into a second button — and a repository that needs nothing shows the
+// calm state instead of an empty widget.
+export type RepoDecisionKind = 'question' | 'alert' | 'job' | 'growing'
+
+export interface RepoDecisionView {
+  repoId: string
+  // The repository's own name, so two repositories of the same upstream are told
+  // apart by the row a reader is looking at.
+  repoLabel: string
+  kind: RepoDecisionKind
+  title: string
+  body: string
+  href: string
+  // Empty for the calm state: a row with nothing to do has no button to press.
+  actionLabel: string
+  // Higher is more urgent. The page orders rows by it and never by the order the
+  // repositories were created, which is what made the old card miss a question.
+  rank: number
+}
+
+// One repository's newest runs, newest first, as the route reads them (#655).
+// The paged table slice cannot answer for every repository, so the route passes
+// a small per-repository read instead.
+function repoDecisionFor(input: {
+  t: Translate
+  locale: Locale
+  repo: RepoRow
+  questions: InboxQuestion[]
+  alerts: AlertView[]
+  jobs: JobRow[]
+  nextRunFact: NextRunFact | undefined
+  config: Config
+}): RepoDecisionView {
+  const { t, locale, repo, questions, alerts, jobs, nextRunFact, config } = input
+  const repoLabel = `${repo.upstream_owner || repo.owner}/${repo.upstream_name || repo.name}`
+  const waiting = questions.filter((question) => question.repoId === repo.id)
+  if (waiting.length > 0) {
+    const first = waiting[0]!
+    return {
+      repoId: repo.id,
+      repoLabel,
+      kind: 'question',
+      rank: 40,
+      title: waiting.length === 1
+        ? t('这个仓库在等你回答 1 个问题。', 'This repository is waiting on 1 answer.')
+        : t(`这个仓库在等你回答 ${waiting.length} 个问题。`, `This repository is waiting on ${waiting.length} answers.`),
+      body: first.question.trim().slice(0, 160),
+      href: '#inbox',
+      actionLabel: t('去回答', 'Answer'),
+    }
+  }
+  // A critical alert outranks a warning and an informational one, so one row can
+  // carry the repository's worst open signal without a second button beside it.
+  const own = alerts.filter((alert) => alert.repoId === repo.id)
+  const alert = own.find((entry) => entry.level === 'critical') ?? own.find((entry) => entry.level === 'warning') ?? own[0]
+  if (alert !== undefined) {
+    const href = alert.prUrl ?? alertHref(alert)
+    return {
+      repoId: repo.id,
+      repoLabel,
+      kind: 'alert',
+      rank: alert.level === 'critical' ? 30 : alert.level === 'warning' ? 29 : 28,
+      title: alertText(t, alert),
+      body: alert.prUrl === undefined
+        ? t('这条提醒属于这个仓库。', 'This alert belongs to this repository.')
+        : t('这个 PR 在等你处理。', 'This pull request is waiting for you.'),
+      href: href === '' ? `/repos/${repo.id}` : href,
+      actionLabel: alert.prUrl === undefined ? t('打开', 'Open') : t('打开 PR', 'Open pull request'),
+    }
+  }
+  // #655 rework: the row says "the latest job ... failed", so it must only
+  // exist when the newest run is the failure. `jobs` is newest first (the route
+  // reads listJobsForRepo, created_at DESC); an older failure behind a success
+  // stays on the attention table and does not headline this queue. This is the
+  // same rule the account card applies above.
+  const newest = jobs[0]
+  const failed = newest?.status === 'failed' ? newest : undefined
+  if (failed !== undefined) {
+    const reason = (failed.error ?? '').trim()
+    const localized = (localizeMessage(locale, reason) ?? '').trim()
+    const failure = classifyFailure(failed)
+    // The same rule the headline card applies: a Chinese-only sentence never
+    // becomes an English headline, and the failure class exists in both languages.
+    const body = reason === ''
+      ? t('打开任务看失败原因，修好后重跑。', 'Open the job for the reason, fix it and run again.')
+      : localized !== '' && (locale !== 'en' || !CJK_TEXT.test(localized))
+        ? localized.slice(0, 160)
+        : t(`${failure?.label[0] ?? '任务失败'}，打开任务查看原因。`, `${failure?.label[1] ?? 'Job failed'}; open the job for the detail.`)
+    return {
+      repoId: repo.id,
+      repoLabel,
+      kind: 'job',
+      rank: 20,
+      title: t(`这个仓库最近一次任务失败：${failed.id}`, `The latest job in this repository failed: ${failed.id}`),
+      body,
+      href: `/repos/${repo.id}/jobs/${failed.id}`,
+      actionLabel: t('查看任务', 'Open job'),
+    }
+  }
+  // Nothing is waiting on a person. The calm state names when the platform runs
+  // here on its own and what it last produced, because an empty widget tells a
+  // reader nothing about whether the repository is alive.
+  const scheduled = nextRunFact?.scheduledNext
+  const nextLine = scheduled === undefined
+    ? nextRunLine(nextRun({
+        lastRunAt: repo.last_run_at,
+        intervalMinutes: repo.interval_minutes,
+        workCooldownMinutes: config.runner.workCooldownMinutes,
+        autoIterate: repo.auto_iterate === 1,
+        hasOpenWork: nextRunFact === undefined ? true : nextRunFact.openWork,
+        hasActiveJob: nextRunFact?.activeJob ?? false,
+        repoEnabled: repo.enabled === 1,
+        instanceReady: config.flybot.instanceImage !== '' && nextRunFact !== undefined ? nextRunFact.instanceReady : true,
+      }), t)
+    : plannedNextLine(scheduled, t)
+  const lastGood = jobs.find((job) => job.pr_url !== null && job.pr_state === 'merged')
+  const produced = lastGood !== undefined
+    ? t(`最近合并的 PR：${lastGood.pr_url ?? ''}。`, `Last merged pull request: ${lastGood.pr_url ?? ''}.`)
+    : repo.last_run_at === null
+      ? t('还没有运行过。', 'Nothing has run yet.')
+      : t(`最近一次运行：${humanTimeShort(repo.last_run_at)}。`, `Last run: ${humanTimeShort(repo.last_run_at)}.`)
+  return {
+    repoId: repo.id,
+    repoLabel,
+    kind: 'growing',
+    rank: 0,
+    title: t('这个仓库现在不需要你。', 'Nothing needs you in this repository.'),
+    body: t(`下次自动运行：${nextLine} ${produced}`, `Next automatic run: ${nextLine} ${produced}`),
+    href: `/repos/${repo.id}`,
+    actionLabel: '',
+  }
+}
+
+function repoDecisionsFor(input: {
+  t: Translate
+  locale: Locale
+  repos: RepoRow[]
+  questions: InboxQuestion[]
+  alerts: AlertView[]
+  decisionJobs: JobRow[]
+  nextRunFacts: NextRunFact[]
+  config: Config
+}): RepoDecisionView[] {
+  const decisions = input.repos.map((repo) => repoDecisionFor({
+    t: input.t,
+    locale: input.locale,
+    repo,
+    questions: input.questions,
+    alerts: input.alerts,
+    // `decisionJobs` is every repository's own runs; the table slice would make a
+    // failure in the eleventh repository invisible.
+    jobs: input.decisionJobs.filter((job) => job.repo_id === repo.id),
+    nextRunFact: input.nextRunFacts.find((fact) => fact.repoId === repo.id),
+    config: input.config,
+  }))
+  return decisions.sort((a, b) => (b.rank === a.rank ? a.repoLabel.localeCompare(b.repoLabel) : b.rank - a.rank))
+}
+
+function repoDecisionsSection(decisions: RepoDecisionView[], t: Translate): string {
+  if (decisions.length === 0) return ''
+  const rows = decisions.map((decision) => `<li class="decision-row" data-decision="${decision.kind}" data-decision-repo="${escapeHtml(decision.repoId)}">
+        <div class="decision-main">
+          <a class="decision-repo" href="/repos/${escapeHtml(decision.repoId)}">${escapeHtml(decision.repoLabel)}</a>
+          <p class="decision-title">${escapeHtml(decision.title)}</p>
+          <p class="muted">${escapeHtml(decision.body)}</p>
+        </div>
+        ${decision.actionLabel === '' ? '' : `<a class="link" data-decision-action href="${escapeHtml(decision.href)}">${escapeHtml(decision.actionLabel)}</a>`}
+      </li>`).join('')
+  return `<section class="card" id="decisions" aria-labelledby="decisions-title">
+    <div class="eyebrow">${escapeHtml(t('下一步', 'Next action'))}</div>
+    <h2 id="decisions-title">${escapeHtml(t('每个仓库，一件事', 'One thing per repository'))}</h2>
+    <p class="muted">${escapeHtml(t('按影响排序：先回答问题，再看失败的任务，最后是现在不需要你的仓库。', 'Ordered by impact: an answer first, then a failed job, and last the repositories that need nothing.'))}</p>
+    <ol class="decision-list">${rows}</ol>
+  </section>`
+}
+
 export function dashboardPage(input: {
   config: Config
   locale: Locale
@@ -1140,6 +1320,10 @@ export function dashboardPage(input: {
   // they live outside RepoRow, so the route reads them for every repository. A
   // caller that omits them still gets the shared formula, not a second one.
   nextRunFacts?: NextRunFact[]
+  // #655: every repository's own newest runs, read per repository by the route.
+  // The paged table slice would make a failure in the eleventh repository
+  // invisible to the queue that is supposed to answer for all of them.
+  decisionJobs?: JobRow[]
   // #565: the instance queue is wider than the visible table slice, so a queued
   // row's position and total come from the route's queue read, not the page. A
   // caller that omits the queue renders the list exactly as before.
@@ -1185,6 +1369,16 @@ export function dashboardPage(input: {
     nextRunFacts: input.nextRunFacts ?? [],
     config,
   })
+  const decisions = repoDecisionsFor({
+    t,
+    locale,
+    repos: loopRepos,
+    questions,
+    alerts,
+    decisionJobs: input.decisionJobs ?? jobs,
+    nextRunFacts: input.nextRunFacts ?? [],
+    config,
+  })
   // The add-repository form, the inbox, the attention table and the job table
   // all live inside the disclosure. A browser does not open <details> for an
   // in-page anchor, so the disclosure must already be open or a link that points
@@ -1192,7 +1386,7 @@ export function dashboardPage(input: {
   // other two ways in: both target `#jobs`, so a page loaded on page two or with
   // an active filter is a page whose table must be visible.
   const jobTableDeepLinked = jobsPage > 1 || jobFilterIsActive(jobFilter)
-  const secondaryOpen = jobTableDeepLinked || reposPage > 1 || ['#repositories', '#add-repo', '#inbox', '#attention'].includes(nextAction.href)
+  const secondaryOpen = jobTableDeepLinked || reposPage > 1 || ['#repositories', '#add-repo', '#inbox', '#attention'].includes(nextAction.href) || decisions.some((decision) => decision.href === '#inbox' || decision.href === '#attention')
   const repoRows = repos.length === 0
     ? stateCell(5, { kind: 'empty', title: t('还没有仓库。', 'No repositories yet.'), body: t('添加第一个仓库并选择你的角色，任务才会开始。', 'Add your first repository and choose your role before any job can start.'), action: { href: '#add-repo', label: t('添加仓库', 'Add repository') } })
     : repos
@@ -1256,6 +1450,7 @@ export function dashboardPage(input: {
   </section>
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}
+  ${repoDecisionsSection(decisions, t)}
   <details class="secondary" data-secondary${secondaryOpen ? ' open' : ''}>
     <summary>${escapeHtml(t('更多：仓库、交付与任务', 'More: repositories, delivery and jobs'))}</summary>
     <div class="secondary-body">
