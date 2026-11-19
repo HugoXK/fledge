@@ -1,5 +1,5 @@
 import { createRequire } from 'node:module'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
@@ -10,7 +10,7 @@ import { canonicalSections, strategyHash } from './strategy/bundle.js'
 import { currentStrategySections } from './strategy/sources.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
-import { loopMetrics } from './metrics/product.js'
+import { loopFunnel, loopMetrics, PRODUCT_EVENT_NAMES, rescueSummary, returningRepositories, spanMetrics, type ProductLoopSnapshot, type StageRow } from './metrics/product.js'
 import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
 import { followUpLinks, type DeliveryOutcomeRow } from './lib/deliveryOutcome.js'
@@ -1764,6 +1764,22 @@ CREATE TABLE IF NOT EXISTS events (
 );
 CREATE INDEX IF NOT EXISTS events_name_at_idx ON events(name, at DESC);
 CREATE INDEX IF NOT EXISTS events_user_at_idx ON events(user_id, at DESC);
+
+-- #635: the loop events, and the privacy boundary is the table itself. There is
+-- no user column and no free-text column, so a record cannot name the account,
+-- the prompt, the code or a URL even by mistake. The repository reaches the row
+-- only as a salted digest, the primary key is a digest as well, and the salt is
+-- one settings row: a backup carries it, and rotating it is an explicit
+-- operator write that changes every digest at once.
+CREATE TABLE IF NOT EXISTS product_events (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  at TEXT NOT NULL,
+  repo_hash TEXT,
+  duration_ms INTEGER
+);
+CREATE INDEX IF NOT EXISTS product_events_at_idx ON product_events(at DESC);
+CREATE INDEX IF NOT EXISTS product_events_name_at_idx ON product_events(name, at DESC);
 
 CREATE TABLE IF NOT EXISTS github_installations (
   installation_id INTEGER PRIMARY KEY,
@@ -5212,6 +5228,141 @@ export class Store {
     }
   }
 
+  // ---- #635: the loop event model ---------------------------------------
+  //
+  // Two guards are the contract rather than decoration. With `product.analytics`
+  // set to `off` nothing is written at all, and `name` must come from the closed
+  // set in `src/metrics/product.ts`, so a URL, an address or a sentence is
+  // refused instead of stored. Neither guard is the only defence: the table has
+  // nowhere to put content and no column for a user.
+
+  productAnalyticsEnabled(): boolean {
+    return this.getSetting('product.analytics') !== 'off'
+  }
+
+  /** The installation salt, generated once. A backup carries it; rotating it changes every digest. */
+  productSalt(): string {
+    const existing = this.getSetting('product.salt')
+    if (existing !== undefined && existing.length >= 32) return existing
+    const salt = randomBytes(32).toString('hex')
+    this.setSetting('product.salt', salt)
+    return salt
+  }
+
+  rotateProductSalt(): string {
+    const salt = randomBytes(32).toString('hex')
+    this.setSetting('product.salt', salt)
+    return salt
+  }
+
+  /** The only shape a repository takes in the stored record. */
+  productRepoHash(repoId: string): string {
+    return this.productDigest(`repo:${this.productSalt()}:${repoId}`)
+  }
+
+  private productDigest(value: string): string {
+    return createHash('sha256').update(value).digest('hex').slice(0, 32)
+  }
+
+  /**
+   * Records one loop event and answers whether a row was written.
+   *
+   * `subject` is the dedupe subject (a repository or job id). It is hashed with
+   * the same salt and never stored: the row keeps `repo_hash` for the funnel and
+   * the digest as its primary key, which is what makes a duplicate event a
+   * no-op rather than a second count.
+   */
+  recordProductEvent(input: { name: string; repoId?: string | null; subject?: string | null; durationMs?: number | null; at?: string }): boolean {
+    if (!this.productAnalyticsEnabled()) return false
+    if (!PRODUCT_EVENT_NAMES.has(input.name)) return false
+    const duration = input.durationMs ?? null
+    if (duration !== null && (!Number.isFinite(duration) || duration < 0)) return false
+    const salt = this.productSalt()
+    const repoHash = input.repoId === null || input.repoId === undefined ? null : this.productDigest(`repo:${salt}:${input.repoId}`)
+    const subject = input.subject ?? input.repoId ?? ''
+    const id = this.productDigest(`${salt}:${input.name}:${subject}`)
+    const insert = this.db.prepare('INSERT OR IGNORE INTO product_events (id, name, at, repo_hash, duration_ms) VALUES (?, ?, ?, ?, ?)')
+    return insert.run(...clean([id, input.name, input.at ?? nowIso(), repoHash, duration === null ? null : Math.round(duration)])).changes > 0
+  }
+
+  /**
+   * The loop read model. Every stage is a `MIN(at)` per digested repository, so
+   * the funnel is computed from the recorded events and never from a UI guess;
+   * a window with no events answers `null` medians and zero counts, which the
+   * page renders as `n/a` rather than as a confident zero.
+   */
+  productLoopMetrics(sinceIso: string): ProductLoopSnapshot {
+    const rows = this.all<{ name: string; at: string; repo_hash: string | null }>(
+      'SELECT name, at, repo_hash FROM product_events WHERE at >= ?',
+      sinceIso,
+    )
+    const stages = new Map<string, { connectedAt: string | null; firstJobAt: string | null; firstPrAt: string | null; mergedAt: string | null }>()
+    const stageOf: Record<string, 'connectedAt' | 'firstJobAt' | 'firstPrAt' | 'mergedAt'> = {
+      repo_connected: 'connectedAt',
+      first_job_started: 'firstJobAt',
+      first_pr_opened: 'firstPrAt',
+      pr_merged: 'mergedAt',
+    }
+    const earlier = (left: string, right: string): boolean => Date.parse(left) < Date.parse(right)
+    for (const row of rows) {
+      if (row.repo_hash === null) continue
+      const key = stageOf[row.name]
+      if (key === undefined) continue
+      const current = stages.get(row.repo_hash) ?? { connectedAt: null, firstJobAt: null, firstPrAt: null, mergedAt: null }
+      const value = current[key]
+      if (value === null || earlier(row.at, value)) current[key] = row.at
+      stages.set(row.repo_hash, current)
+    }
+    const stageRows: StageRow[] = [...stages.values()].map((row) => ({ ...row }))
+    const humanMix = new Map<string, number>()
+    let failed = 0
+    for (const row of rows) {
+      if (row.name === 'job_failed') failed += 1
+      if (!row.name.startsWith('human_action_')) continue
+      const action = row.name.slice('human_action_'.length)
+      humanMix.set(action, (humanMix.get(action) ?? 0) + 1)
+    }
+    const priorRows = this.all<{ repo_hash: string; prior_at: string }>(
+      `SELECT p.repo_hash AS repo_hash, MAX(p.at) AS prior_at
+         FROM product_events p
+        WHERE p.at < ? AND p.repo_hash IS NOT NULL
+        GROUP BY p.repo_hash`,
+      sinceIso,
+    )
+    const prior = new Map(priorRows.map((row) => [row.repo_hash, row.prior_at]))
+    const returning = returningRepositories(
+      [...stages.entries()].flatMap(([repoHash, row]) => {
+        const first = [row.connectedAt, row.firstJobAt, row.firstPrAt, row.mergedAt].filter((value): value is string => value !== null).sort()[0]
+        return first === undefined ? [] : [{ firstInWindowAt: first, priorAt: prior.get(repoHash) ?? null }]
+      }),
+    )
+    const count = (sql: string, ...params: Array<string | number>): number => Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0)
+    const succeeded = count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'succeeded' AND created_at >= ?", sinceIso)
+    const completed = count("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('succeeded', 'failed') AND created_at >= ?", sinceIso)
+    const withPr = count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'succeeded' AND pr_url IS NOT NULL AND created_at >= ?", sinceIso)
+    const withCost = count("SELECT COUNT(*) AS n FROM jobs WHERE status = 'succeeded' AND cost_usd > 0 AND created_at >= ?", sinceIso)
+    const unknownCost = count("SELECT COUNT(*) AS n FROM jobs WHERE status IN ('succeeded', 'failed') AND cost_usd <= 0 AND created_at >= ?", sinceIso)
+    return {
+      windowEvents: rows.length,
+      funnel: loopFunnel(stageRows),
+      toFirstJob: spanMetrics(stageRows.map((row) => ({ from: row.connectedAt, to: row.firstJobAt }))),
+      toFirstPr: spanMetrics(stageRows.map((row) => ({ from: row.connectedAt, to: row.firstPrAt }))),
+      toMerge: spanMetrics(stageRows.map((row) => ({ from: row.connectedAt, to: row.mergedAt }))),
+      rescue: rescueSummary(failed, [...humanMix.entries()].map(([action, n]) => ({ action, n }))),
+      returning,
+      evidence: {
+        succeeded,
+        withPr,
+        withCost,
+        completeRate: succeeded === 0 ? null : Math.round((Math.min(withPr, withCost) / succeeded) * 1000) / 10,
+        completed,
+        unknownCost,
+        unknownCostRate: completed === 0 ? null : Math.round((unknownCost / completed) * 1000) / 10,
+      },
+      analyticsEnabled: this.productAnalyticsEnabled(),
+    }
+  }
+
   deliveryMetrics(sinceIso: string): {
     jobs: number
     succeeded: number
@@ -6092,6 +6243,10 @@ export class Store {
 
   deleteRepo(id: string): void {
     this.run('DELETE FROM repos WHERE id = ?', id)
+    // #635: the loop store keeps only a salted digest, so the cascade has to be
+    // computed from the id while the id is still known. Without this, a deleted
+    // repository stayed in every funnel the digest appeared in.
+    this.run('DELETE FROM product_events WHERE repo_hash = ?', this.productRepoHash(id))
     // #697: the repository cap is keyed by the repository id and no cascade
     // reaches it, so deleting the repository has to take its scope row with it.
     this.run("DELETE FROM budget_scopes WHERE kind = 'repository' AND id = ?", id)
