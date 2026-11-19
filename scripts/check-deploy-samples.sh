@@ -3,7 +3,7 @@
 #
 #   bash scripts/check-deploy-samples.sh
 #
-# Six checks, and the summary says which kind each one is:
+# Eight checks, and the summary says which kind each one is:
 #
 # 1. real: a real `nginx -t` parses deploy/nginx.conf.example;
 # 2. real negative proof: the same invocation rejects a copy of the sample with a
@@ -15,7 +15,12 @@
 # 5. static: the nginx check asserts the four security headers on the rendered
 #    sample (#1009);
 # 6. static negative proof for it: a copy missing one header, and a copy whose
-#    HSTS line lost `always`, are both rejected and the header is named.
+#    HSTS line lost `always`, are both rejected and the header is named;
+# 7. static negative proof for the location trap: a copy that declares a header
+#    inside `location /` is rejected and the location is named, because nginx
+#    stops inheriting the server set on that path (#1097);
+# 8. control for it: a location that repeats all four headers with `always` is
+#    still accepted, so the rule cannot pass by refusing every location.
 #
 # Exit 1 on the first check that does not hold. No branch of this script records a
 # gap and exits 0: `deploy-check` installs nginx, and the parser is plain node.
@@ -98,5 +103,49 @@ if ! printf '%s\n' "$output" | grep -q 'Strict-Transport-Security'; then
   exit 1
 fi
 echo 'security headers: negative proof — a copy whose HSTS lost `always` was rejected'
+
+# 7/8. The trap the sample documents at deploy/nginx.conf.example:19-21 (#1097):
+# a location that declares any `add_header` stops inheriting the server set, so
+# the four headers disappear from every response that location serves. Neither
+# negative copy above can see that — one deletes a server header, the other
+# strips `always` — so this pair is what proves the gate reads deeper than the
+# server level.
+awk '
+  { print }
+  /^  location \/ \{/ && !inserted {
+    print "    add_header Cache-Control \"no-store\" always;"
+    inserted = 1
+  }
+' deploy/nginx.conf.example > "$work/location-header.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-header.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED a location that declares its own add_header — nginx would drop all four headers there (#1097)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of a location-level header did not name the location block (#1097)'
+  exit 1
+fi
+echo 'security headers: negative proof — a location that declares its own add_header was rejected'
+
+# The control: the same location is legal once it repeats the whole set, so the
+# rule above cannot be satisfied by refusing every location.
+awk '
+  { print }
+  /^  location \/ \{/ && !inserted {
+    print "    add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always;"
+    print "    add_header X-Content-Type-Options \"nosniff\" always;"
+    print "    add_header Referrer-Policy \"strict-origin-when-cross-origin\" always;"
+    print "    add_header X-Frame-Options \"DENY\" always;"
+    inserted = 1
+  }
+' deploy/nginx.conf.example > "$work/location-repeat.conf"
+if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-repeat.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: REJECTED a location that repeats all four headers with always — the location rule is not a gate (#1097)'
+  exit 1
+fi
+echo 'security headers: control — a location that repeats all four headers with always was accepted'
 
 echo 'deploy-check: every sample check above is real or static; none is recorded as a gap.'

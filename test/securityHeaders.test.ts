@@ -133,6 +133,64 @@ test('a header without always is refused, because 4xx/5xx would drop it', () => 
   }
 })
 
+/** The shipped values, reused inside a location that has to repeat the set. */
+const HEADER_VALUES: Record<string, string> = {
+  'Strict-Transport-Security': '"max-age=31536000; includeSubDomains"',
+  'X-Content-Type-Options': '"nosniff"',
+  'Referrer-Policy': '"strict-origin-when-cross-origin"',
+  'X-Frame-Options': '"DENY"',
+}
+
+test('a location that declares its own header is refused and the location is named', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // #1097: nginx stops inheriting the server-level set on a location the
+    // moment that location declares any `add_header`, so this copy serves every
+    // response from `/` without the four headers — and used to pass the gate.
+    const path = editedSample(dir, (text) =>
+      text.replace(/^( {2}location \/ \{)$/m, '$1\n    add_header Cache-Control "no-store" always;'),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 1, 'a location that declares its own add_header must not pass the check')
+    assert.match(run.stdout, /location block opened at line \d+/, 'the failure must name the location block')
+    for (const name of ['Strict-Transport-Security', 'X-Frame-Options']) {
+      assert.match(run.stdout, new RegExp(name), `the failure must name a header the location stopped inheriting: ${name}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a location that repeats all four headers with always is accepted', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    const repeat = HEADERS.map((name) => `    add_header ${name} ${HEADER_VALUES[name] ?? '""'} always;`).join('\n')
+    const path = editedSample(dir, (text) => text.replace(/^( {2}location \/ \{)$/m, `$1\n${repeat}`))
+    const run = runCheck(path)
+    assert.equal(
+      run.status,
+      0,
+      `a location that repeats the set with always must pass; stdout: ${run.stdout} stderr: ${run.stderr}`,
+    )
+    assert.match(run.stdout, /nginx: .* parsed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a location that repeats the set without always is refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    const repeat = HEADERS.map((name) => `    add_header ${name} ${HEADER_VALUES[name] ?? '""'};`).join('\n')
+    const path = editedSample(dir, (text) => text.replace(/^( {2}location \/ \{)$/m, `$1\n${repeat}`))
+    const run = runCheck(path)
+    assert.equal(run.status, 1, 'a location-level set without `always` is dropped on 4xx/5xx and must be refused')
+    assert.match(run.stdout, /location block opened at line \d+/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 const STUB_REJECTS_MARKED = `#!/usr/bin/env bash
 set -euo pipefail
 config=""
@@ -166,6 +224,10 @@ test('the deploy-check contract proves the header check can fail', () => {
     assert.equal(result.status, 0, `the sample contract must pass; stdout: ${stdout} stderr: ${result.stderr ?? ''}`)
     assert.match(stdout, /security headers: negative proof — a copy missing X-Frame-Options was rejected/)
     assert.match(stdout, /security headers: negative proof — a copy whose HSTS lost `always` was rejected/)
+    // #1097: the location trap needs its own proof, because neither copy above
+    // can show that a header one brace deeper drops the whole set.
+    assert.match(stdout, /security headers: negative proof — a location that declares its own add_header was rejected/)
+    assert.match(stdout, /security headers: control — a location that repeats all four headers with always was accepted/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

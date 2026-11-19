@@ -1012,6 +1012,18 @@ with the header named. That half is static on purpose: a proxied 2xx probe is
 green today because the app already sends three of the four, so it could not be
 the assertion.
 
+The assertion also reads one level deeper (#1097). nginx does not merge header
+sets: a `location` that declares any `add_header` of its own stops inheriting the
+server-level set, so that path serves none of the four — including the
+nginx-generated 4xx/5xx that `always` exists for. The sample states this trap at
+`deploy/nginx.conf.example:19-21` but declares no such header, so nothing proved
+the gate could see one. Now a `location` that declares a header anywhere in its
+body must repeat all four with `always` at its own level, and the check fails
+naming the location's opening line when it does not. The contract drives both
+copies: one with a `Cache-Control` inside `location /` (refused, location named)
+and one where that location repeats the four (accepted, so the rule cannot pass
+by refusing every location).
+
 The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
 chosen over `systemd-analyze verify` because that binary is absent on a GitHub
 runner and its output names the runner's unrelated units. It reads the sections,

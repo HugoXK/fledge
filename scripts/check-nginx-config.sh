@@ -82,6 +82,14 @@ sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#"
 # server level, and `always` is what keeps them on nginx's own 4xx/5xx (a 502
 # while the app is down). This is static on purpose — a live 2xx probe passes
 # today because the app itself already sends three of the four.
+#
+# #1097: the same rule at the level that can silently undo it. nginx does not
+# merge header sets — a `location` that declares any `add_header` of its own
+# stops inheriting the whole server set, so every response from that location
+# (including the nginx-generated 4xx/5xx `always` exists for) would carry none of
+# the four. The rule below reads a `location` body of any nesting depth: if it
+# declares a header anywhere, it must repeat all four with `always` at its own
+# level. The shipped sample declares none, so it stays as it is.
 if ! header_errors="$(awk \
   -v names="Strict-Transport-Security X-Content-Type-Options Referrer-Policy X-Frame-Options" \
   -v label="$label" '
@@ -93,7 +101,18 @@ if ! header_errors="$(awk \
       }
     }
   }
-  BEGIN { n = split(names, want, " ") }
+  function close_location(   i) {
+    if (loc_any[loc_top] == 1) {
+      for (i = 1; i <= n; i++) {
+        if (loc_seen[loc_top, want[i]] != 1) {
+          bad++
+          printf "nginx: %s security headers: location block opened at line %d declares its own `add_header`, which stops nginx inheriting the server-level set, so that block must repeat `add_header %s ... always;`\n", label, loc_start[loc_top], want[i]
+        }
+      }
+    }
+    loc_top--
+  }
+  BEGIN { n = split(names, want, " "); loc_top = 0 }
   /^server[ \t]*\{/ {
     if (open) {
       bad++
@@ -102,12 +121,31 @@ if ! header_errors="$(awk \
     open = 1
     depth = 1
     start = NR
+    loc_top = 0
     split("", seen)
     next
   }
   open {
     line = $0
-    depth += gsub(/\{/, "{", line) - gsub(/\}/, "}", line)
+    if (line ~ /^[ \t]*location([ \t]|\{)/ && line ~ /\{/) {
+      loc_top++
+      loc_start[loc_top] = NR
+      loc_depth[loc_top] = depth + 1
+      loc_any[loc_top] = 0
+      for (i = 1; i <= n; i++) delete loc_seen[loc_top, want[i]]
+    }
+    opens = gsub(/\{/, "{", line)
+    closes = gsub(/\}/, "}", line)
+    depth += opens - closes
+    if (loc_top > 0 && $0 ~ /^[ \t]*add_header[ \t]/ && depth >= loc_depth[loc_top]) {
+      loc_any[loc_top] = 1
+      if (depth == loc_depth[loc_top]) {
+        for (i = 1; i <= n; i++) {
+          if ($0 ~ ("^[ \t]*add_header[ \t]+" want[i] "[ \t]") && $0 ~ /[ \t]always;[ \t]*$/) loc_seen[loc_top, want[i]] = 1
+        }
+      }
+    }
+    if (loc_top > 0 && depth < loc_depth[loc_top]) close_location()
     if (depth == 1) {
       for (i = 1; i <= n; i++) {
         if (index($0, "  add_header " want[i] " ") == 1 && $0 ~ /[ \t]always;[ \t]*$/) seen[want[i]] = 1
@@ -119,6 +157,7 @@ if ! header_errors="$(awk \
     }
   }
   END {
+    while (loc_top > 0) close_location()
     if (open) close_block()
     exit bad > 0 ? 1 : 0
   }
