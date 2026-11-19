@@ -3,7 +3,7 @@
 #
 #   bash scripts/check-deploy-samples.sh
 #
-# Four checks, and the summary says which kind each one is:
+# Six checks, and the summary says which kind each one is:
 #
 # 1. real: a real `nginx -t` parses deploy/nginx.conf.example;
 # 2. real negative proof: the same invocation rejects a copy of the sample with a
@@ -11,7 +11,11 @@
 #    fails here, so "the sample parsed" means something;
 # 3. static: scripts/check-systemd-unit.mjs parses deploy/fledge.service;
 # 4. static negative proof: the same parser rejects a copy with its ExecStart
-#    removed.
+#    removed;
+# 5. static: the nginx check asserts the four security headers on the rendered
+#    sample (#1009);
+# 6. static negative proof for it: a copy missing one header, and a copy whose
+#    HSTS line lost `always`, are both rejected and the header is named.
 #
 # Exit 1 on the first check that does not hold. No branch of this script records a
 # gap and exits 0: `deploy-check` installs nginx, and the parser is plain node.
@@ -64,5 +68,35 @@ if node scripts/check-systemd-unit.mjs "$work/broken-fledge.service" >/dev/null 
   exit 1
 fi
 echo 'systemd: negative proof — a unit with no ExecStart was rejected'
+
+# 5/6. Security headers on the rendered sample (#1009). The trap is that a
+# plain `add_header` is skipped on 4xx/5xx and a location that declares its own
+# stops inheriting the server set, so the two negative copies below are what
+# make the positive assertion mean something.
+grep -v '^  add_header X-Frame-Options ' deploy/nginx.conf.example > "$work/no-frame-options.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/no-frame-options.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED a copy without X-Frame-Options — the header check is not a gate (#1009)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'X-Frame-Options'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of a copy without X-Frame-Options did not name the header (#1009)'
+  exit 1
+fi
+echo 'security headers: negative proof — a copy missing X-Frame-Options was rejected'
+
+sed 's/^\(  add_header Strict-Transport-Security .*\) always;$/\1;/' deploy/nginx.conf.example > "$work/no-always.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/no-always.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED an HSTS line without `always` — nginx would drop it on its own 4xx/5xx (#1009)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'Strict-Transport-Security'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of an HSTS line without `always` did not name the header (#1009)'
+  exit 1
+fi
+echo 'security headers: negative proof — a copy whose HSTS lost `always` was rejected'
 
 echo 'deploy-check: every sample check above is real or static; none is recorded as a gap.'
