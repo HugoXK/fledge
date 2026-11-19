@@ -44,6 +44,21 @@ export interface ReleaseDispatchOptions {
 
 const VERSION = /^v(\d+)\.(\d+)\.(\d+)$/
 
+// #984: the dispatch names a ref, and GitHub runs the workflow file as it exists
+// at that ref — with that run's secrets and write scopes. The preview already
+// reads `main` and nothing else, so `main` is the only ref this action can mean;
+// anything else is a configuration error, refused before the first request
+// rather than run with the repository's privileges.
+const DEFAULT_BRANCH = 'main'
+const REPOSITORY = /^[A-Za-z0-9-]+\/[A-Za-z0-9._-]+$/
+const WORKFLOW_FILE = /^[A-Za-z0-9._-]+\.yml$/
+
+function assertDispatchSettings(options: ReleaseDispatchOptions): void {
+  if (!REPOSITORY.test(options.repo)) throw new Error(`RELEASE_DISPATCH_REPO is not owner/name: ${options.repo}`)
+  if (!WORKFLOW_FILE.test(options.workflow)) throw new Error(`RELEASE_DISPATCH_WORKFLOW is not a workflow file: ${options.workflow}`)
+  if (options.ref !== DEFAULT_BRANCH) throw new Error(`RELEASE_DISPATCH_REF is not the default branch: ${options.ref}`)
+}
+
 function compareVersions(left: string, right: string): number {
   const a = VERSION.exec(left)
   const b = VERSION.exec(right)
@@ -140,6 +155,7 @@ function decodePackage(content: { content?: string; encoding?: string }): string
 }
 
 export async function previewRelease(options: ReleaseDispatchOptions): Promise<ReleaseDispatchPreview> {
+  assertDispatchSettings(options)
   const repo = options.repo
   const main = await json<{ sha: string; commit: { committer: { date: string } } }>(options, `/repos/${repo}/commits/main`)
   const mainSha = main.sha

@@ -23,6 +23,7 @@ import { icon } from './icons.js'
 import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } from './checklist.js'
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
+import { parseSkillBundleRecord, type SkillBundleSourceRow } from '../lib/skillBundle.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -1344,6 +1345,7 @@ export function dashboardPage(input: {
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const questions = input.questions ?? []
   const personal = input.personal
+  const openWorkItems = personal?.openWorkItems ?? 0
   const windowDays = input.windowDays ?? 7
   const alerts = input.alerts ?? []
   const reposPage = input.reposPage ?? 1
@@ -1452,7 +1454,7 @@ export function dashboardPage(input: {
     <div class="masthead-copy">
       <h1>${escapeHtml(t('仓库', 'Repositories'))}</h1>
       <p class="lede">${escapeHtml(t('接入仓库、写下一个目标；团队每次只交回一个 PR，由你审核并合并。', 'Connect a repository and state one goal; the team returns one pull request for you to review and merge.'))}</p>
-      <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', 'repositories'))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', 'jobs'))}</span><span><b>${personal?.openWorkItems ?? 0}</b> ${escapeHtml(t('个未完成工作项', 'open work items'))}</span></div>
+      <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', `repositor${reposTotal === 1 ? 'y' : 'ies'}`))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', `job${jobsTotal === 1 ? '' : 's'}`))}</span><span><b>${openWorkItems}</b> ${escapeHtml(t('个未完成工作项', `open work item${openWorkItems === 1 ? '' : 's'}`))}</span></div>
     </div>
     ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
   </section>
@@ -1555,7 +1557,7 @@ export interface BudgetScopeView {
   unknownCount: number
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; errorField?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[] }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; errorField?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[]; skillSources?: SkillBundleSourceRow[]; canMaintain?: boolean }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -2077,6 +2079,31 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
     <p class="muted">${escapeHtml(t('仓库文件优先；没有仓库文件时，可以用控制台覆盖三个规则文件。', 'A repository file wins; when there is none, a console override can supply the three rule files.'))}</p>
     <p><a class="link" href="/repos/${escapeHtml(repo.id)}/rules">${escapeHtml(t('打开规则覆盖', 'Open rule overrides'))}</a></p>
   </section>`
+  // #380: the record a job actually ran with, read from the job row rather than
+  // recomputed here, so the page shows the attested set instead of today's.
+  const skillStateLabel = (state: string): string => {
+    const labels: Record<string, [string, string]> = {
+      accepted: ['已认证', 'accepted'],
+      held: ['待批准', 'held'],
+      refused: ['已拒绝', 'refused'],
+      revoked: ['已撤销', 'revoked'],
+    }
+    const entry = labels[state] ?? ['未知', 'unknown']
+    return t(entry[0], entry[1])
+  }
+  const skillJob = jobs.find((job) => job.skill_bundle_json !== null && job.skill_bundle_json !== '')
+  const skillRecord = skillJob === undefined ? null : parseSkillBundleRecord(skillJob.skill_bundle_json ?? null)
+  const skillsCard = `<section class="card" id="repo-skill-bundles">
+    <h2>${escapeHtml(t('技能包', 'Skill bundles'))}</h2>
+    <p class="muted">${escapeHtml(t('任务启动前由本实例签名并核对来源白名单；来源被撤销后，已加载它的任务不能自动合并。', 'Signed by this instance before a job starts and checked against the source allowlist; once a source is revoked, a job that loaded it cannot auto-merge.'))}</p>
+    ${skillRecord === null
+      ? `<p class="muted">${escapeHtml(t('没有已认证的技能包。', 'No attested bundles: the latest job recorded none.'))}</p>`
+      : `<p class="fine">${escapeHtml(t('集合哈希', 'Set hash'))}: <code>${escapeHtml(skillRecord.hash.slice(0, 12))}</code> · ${escapeHtml(skillStateLabel(skillRecord.decision))}${skillJob?.skill_state === 'skill-revoked' ? ` · <strong>${escapeHtml(t('技能已撤销', 'skill-revoked'))}</strong>` : ''}</p>
+      <ul class="list">${skillRecord.bundles.map((bundle) => `<li><code>${escapeHtml(bundle.name)}</code> · ${escapeHtml(bundle.source)} · <code>${escapeHtml(bundle.contentHash.slice(0, 12))}</code> · ${escapeHtml(skillStateLabel(bundle.state))}</li>`).join('')}</ul>`}
+    ${input.skillSources === undefined || input.skillSources.length === 0 || input.canMaintain !== true ? '' : `<h3>${escapeHtml(t('来源白名单', 'Source allowlist'))}</h3>
+    <p class="muted">${escapeHtml(t('撤销一个来源会立即阻止它已加载的任务自动合并；允许回去只对之后的任务生效。', 'Revoking a source immediately stops its loaded jobs from auto-merging; allowing it again applies to later jobs.'))}</p>
+    <ul class="list">${input.skillSources.map((source) => `<li class="row between"><span><code>${escapeHtml(source.source)}</code> · ${escapeHtml(skillStateLabel(source.state === 'allowed' ? 'accepted' : 'revoked'))}</span><form method="post" action="/repos/${escapeHtml(repo.id)}/skill-source" class="inline">${csrf(viewer)}<input type="hidden" name="source" value="${escapeHtml(source.source)}" /><input type="hidden" name="state" value="${source.state === 'allowed' ? 'revoked' : 'allowed'}" /><button class="btn ${source.state === 'allowed' ? 'btn-danger' : 'btn-ghost'}" type="submit">${escapeHtml(source.state === 'allowed' ? t('撤销这个来源', 'Revoke this source') : t('重新允许', 'Allow again'))}</button></form></li>`).join('')}</ul>`}
+  </section>`
   // #234: the page was one long column of sixteen cards, so the things a user
   // acts on sat under configuration. The six sections below are a regroup of
   // cards that already render here - nothing new is computed - and #overview is
@@ -2278,7 +2305,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}${organised}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
     }).join('')}</ul>`}
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${skillsCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error, notifications: pageMessages })
 }
 
@@ -2667,6 +2694,11 @@ export function settingsPage(input: {
       <label class="check"><input type="checkbox" name="jobUpdates" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
       <label class="check"><input type="checkbox" name="dailyDigest" value="1" ${user.email_daily_digest === 1 ? 'checked' : ''} /> ${escapeHtml(t('每天发送一封今日摘要', 'Send a daily summary email'))}</label>
       <label class="check"><input type="checkbox" name="jobSuccess" value="1" ${user.email_job_success === 1 ? 'checked' : ''} /> ${escapeHtml(t('计划任务成功时也单独发邮件（默认关闭，成功会汇总进每日摘要）', 'Also email me when a scheduled job succeeds (off by default; successes are summarized in the daily summary)'))}</label>
+      <div class="row">
+        <label>${escapeHtml(t('安静时段开始', 'Quiet hours start'))} <input type="time" name="quietStart" value="${escapeHtml(user.quiet_hours_start ?? '')}" /></label>
+        <label>${escapeHtml(t('安静时段结束', 'Quiet hours end'))} <input type="time" name="quietEnd" value="${escapeHtml(user.quiet_hours_end ?? '')}" /></label>
+      </div>
+      <p class="fine">${escapeHtml(t(`安静时段按 ${config.digest.timeZone} 计算，只延迟计划任务的邮件：窗口内完成的计划任务会等到窗口结束再发一封，手动运行的任务从不延迟。两端都留空表示不启用。`, `Quiet hours are read in ${config.digest.timeZone} and hold only scheduled job mail: a run that finishes inside the window queues one mail for the window's end, and a run you started by hand is never held. Leave both blank to turn the window off.`))}</p>
       <p class="fine">${escapeHtml(t(`计划任务成功不再单独发邮件，而是汇总进每日摘要；失败按仓库合并，同一仓库 ${config.mail.jobEmailCooldownMinutes} 分钟内最多一封。你手动运行的任务，结果总是发邮件。`, `A scheduled success is summarized in the daily summary instead of its own mail; failures are coalesced so one repository sends at most one mail per ${config.mail.jobEmailCooldownMinutes} minutes. A run you started by hand always mails its result.`))}</p>
       <div class="row">
         <button class="btn" name="action" value="save" type="submit">${escapeHtml(t('保存通知设置', 'Save notification settings'))}</button>

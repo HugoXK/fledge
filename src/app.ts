@@ -1837,6 +1837,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // recorded can be shown against what the repository says now.
       repo,
       occurrences: store.listScheduleOccurrences(repo.id, 20),
+      // #1055: the success is read at any age, not searched for in the window
+      // above — a schedule skipped twenty times after a good run still has one.
+      lastSucceeded: store.newestSucceededDispatch(repo.id),
       now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
       // #544: the delivery fact is the state of the notification the newest run's
@@ -1960,9 +1963,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const t = translator(request.locale ?? 'zh')
     const result = await jobs.runScheduleNow(repo, form(request).command_key, role)
     if (!result.ok) {
+      // #1047: the refusal travels as its code and parameter, so the banner
+      // builds the sentence in the console's language instead of echoing the
+      // Chinese-only sentence the job service wrote.
       const message = result.code === 'schedule_missing'
         ? t('这个仓库还没有排期。', 'This repository has no schedule yet.')
-        : (result.message ?? t('这次运行没有开始。', 'The run did not start.'))
+        : refusalValue({ code: result.code, detail: result.detail, error: result.message }, t('这次运行没有开始。', 'The run did not start.'))
       return reply.redirect(`${back}?refused=${encodeURIComponent(message)}`)
     }
     return reply.redirect(`${back}?ran=${encodeURIComponent(result.jobId ?? '')}`)
@@ -2360,7 +2366,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/repos/:id', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id))
+    // #380 review finding: the page and the revoke route must read the same
+    // actor role. The connection's `repo_role` is a declaration about the
+    // upstream, not about who is looking, so it cannot decide either side.
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id))
     const jobsTotal = store.countJobsForRepo(repo.id)
     const jobsPage = Math.min(Math.max(1, Math.floor(Number(queryText(request, 'jobsPage')) || 1)), Math.max(1, Math.ceil(jobsTotal / 10)))
     const questions = (await inboxForUser(viewer.user.id, store.listRepos(viewer.user.id))).filter((question) => question.repoId === repo.id)
@@ -2443,6 +2452,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         viewer: viewOf(viewer),
         recentAuthAt: viewer.recentAuthAt,
         repo,
+        canMaintain: role === 'maintainer',
         releases: store.listReleasesForRepo(repo.id),
         instance,
         usage: {
@@ -2458,6 +2468,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         // #379: the repository page lists every state the ledger can hold. These
         // are the ids jobs reported, not GitHub's alert store.
         securityFindings: store.listSecurityFindings(repo.id),
+        // #380: the owner path for revoking a recorded source; the page renders
+        // it only for a maintainer.
+        skillSources: store.listSkillBundleSources(repo.id),
         commands,
         // #359: the page names the deadline and the way out, so an ignored plan
         // is a visible decision with a date rather than a silent wait.
@@ -3287,6 +3300,27 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }
     store.audit(viewer.user.id, 'repo.rules_override_saved', `${path}: revision ${result.row.revision}, ${Buffer.byteLength(content)} bytes`)
     return reply.redirect(`/repos/${repo.id}/rules?saved=${encodeURIComponent(path)}`)
+  })
+
+  // #380: the allowlist had no owner path, so a revocation could never happen in
+  // production. This route only flips a source the instance already recorded —
+  // it cannot invent one — and the next automatic merge reads it.
+  app.post('/repos/:id/skill-source', { config: { rateLimit: destructiveLimit } }, async (request, reply) => {
+    if (!limits.take('destructive', `skill-source:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    // #380 review finding: the actor's role, not the connection declaration. A
+    // repository connected without a recorded role still has an owner, and a
+    // developer member of a declared-maintainer repository is still a developer.
+    if (role !== 'maintainer') throw httpError(403, '只有 maintainer 可以修改技能包来源。', 'MAINTAINER_ONLY')
+    const body = form(request)
+    const source = (body.source ?? '').slice(0, 200)
+    const state = body.state === 'revoked' ? 'revoked' : body.state === 'allowed' ? 'allowed' : null
+    if (source === '' || state === null || store.skillBundleSource(repo.id, source) === undefined) {
+      return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('未知的技能包来源。')}#repo-skill-bundles`)
+    }
+    store.setSkillBundleSource({ repoId: repo.id, source, state, updatedBy: viewer.user.id })
+    store.audit(viewer.user.id, 'repo.skill_source', `${repo.id}: ${state} ${source}`.slice(0, 300))
+    return reply.redirect(`/repos/${repo.id}?notice=${encodeURIComponent(state === 'revoked' ? '来源已撤销，已加载它的任务不能自动合并。' : '来源已允许，对之后的任务生效。')}#repo-skill-bundles`)
   })
 
   app.post('/repos/:id/rules/delete', async (request, reply) => {
@@ -5110,13 +5144,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const jobUpdates = body.jobUpdates === '1'
     const dailyDigest = body.dailyDigest === '1'
     const jobSuccess = body.jobSuccess === '1'
+    // #1069: the window is two `HH:MM` values in the digest timezone. A lone
+    // time, an equal pair or a malformed value is refused rather than saved as
+    // a silent full-day mute.
+    const quietStart = (body.quietStart ?? '').trim()
+    const quietEnd = (body.quietEnd ?? '').trim()
+    const quietTime = /^([01][0-9]|2[0-3]):[0-5][0-9]$/
+    if ((quietStart === '') !== (quietEnd === '')) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('安静时段需要同时填写开始和结束，或都留空。')}`)
+    }
+    if (quietStart !== '' && (!quietTime.test(quietStart) || !quietTime.test(quietEnd))) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('安静时段的时间格式不正确。')}`)
+    }
+    if (quietStart !== '' && quietStart === quietEnd) {
+      return reply.redirect(`/settings?error=${encodeURIComponent('安静时段的开始和结束不能相同。')}`)
+    }
     if (clear) store.setNotifyEmail(viewer.user.id, null)
     else if (rawEmail !== '') store.setNotifyEmail(viewer.user.id, rawEmail)
     store.setEmailJobUpdates(viewer.user.id, jobUpdates)
     store.setEmailDailyDigest(viewer.user.id, dailyDigest)
     store.setEmailJobSuccess(viewer.user.id, jobSuccess)
+    store.setUserQuietHours(viewer.user.id, quietStart === '' ? null : quietStart, quietEnd === '' ? null : quietEnd)
     const saved = store.userById(viewer.user.id)
-    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'} success=${jobSuccess ? 'on' : 'off'}`)
+    store.audit(viewer.user.id, 'settings.email', `email=${saved?.notify_email === null || saved?.notify_email === undefined ? 'github' : 'custom'} jobs=${jobUpdates ? 'on' : 'off'} digest=${dailyDigest ? 'on' : 'off'} success=${jobSuccess ? 'on' : 'off'} quiet=${quietStart === '' ? 'off' : `${quietStart}-${quietEnd}`}`)
     if (body.action === 'test') {
       const updated = saved
       const to = updated === undefined ? '' : notifyEmail(updated)

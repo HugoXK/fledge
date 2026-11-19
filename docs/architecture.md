@@ -713,8 +713,12 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   neither the schedule nor the lease above could be felt. It shows the stored
   schedule, the next run from `nextTime`, the newest decided instant with its
   state, reason, `missed` and `attempts`, whether a live lease holds it, and the
-  last instant whose job succeeded. A value nobody recorded prints `unknown`: a
-  schedule with no occurrence row has not run, so it is not a zero. The delivery
+  last instant whose job succeeded, read at any age rather than searched for in
+  the twenty-instant window the page lists (#1055): `newestSucceededDispatch` asks
+  the store for the newest `dispatched` occurrence whose job ended `succeeded`, so
+  a schedule that was skipped twenty times after a good run still names that run
+  instead of denying it. A value nobody recorded prints `unknown`: a schedule
+  with no occurrence row has not run, so it is not a zero. The delivery
   fact is read from the outbox (`notification_outbox.job_id`, below) for the job
   the newest decided instant dispatched: a job that queued a send reports that
   send's state, and a finished job that queued none prints `none` — a run with
@@ -791,9 +795,13 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   row instead of a call whose failure lived only in a log line — the digests,
   question mails, ops alerts and per-job/PR webhooks are queued with an
   idempotency key, so a replayed callback or a second tick
-  keeps one row rather than sending twice. Per-job success/failure mail and the
-  transactional approval, quota, trial and feedback mail still send inline in
-  this slice; they are not queued rows yet. A tick pass sweeps lapsed `sending`
+  keeps one row rather than sending twice. Per-job success/failure mail sends
+  inline, except inside the user's quiet-hours window (#1069): it is then queued
+  as a durable row whose `next_attempt_at` is the window's end, read in the
+  digest timezone from `users.quiet_hours_start`/`_end`, and delivered once by
+  the same outbox; a run the user started is never held. The transactional
+  approval, quota, trial and feedback mail still send inline; they are not
+  queued rows. A tick pass sweeps lapsed `sending`
   leases into `unknown`, then attempts the due `pending`/`retry` rows one at a
   time.
   The states are deliberately not interchangeable: a 429/5xx webhook or a 4xx
@@ -1522,8 +1530,12 @@ A green test check is not proof on its own while the same test has been changing
 its mind. Every completed test-named check run is written to the `test_runs`
 ledger (one row per job, head sha and name — re-checking a job at the same tip
 adds nothing, while the push that re-verifies it at a new tip adds a run — with
-the newest twelve runs kept per repository and name), and `quarantineTests` in
-`src/lib/verification.ts` counts the flips:
+the newest twelve runs kept per repository and name). A ledger written before the
+head sha joined that key is not recognised by `PRAGMA user_version`, which reads
+48 on both shapes: on open, a `test_runs` table without a `head_sha` column is
+dropped and recreated from the statement that also creates it on a fresh database,
+because the ledger is derived data that the next run repopulates. `quarantineTests`
+in `src/lib/verification.ts` counts the flips:
 a test that alternated at least twice inside at least three recorded runs is
 quarantined. A single failure, or a first failure that has not alternated, is not
 a quarantine, because the rule is the alternation and not the red. The evidence
@@ -3470,6 +3482,23 @@ rows read before it redirects to the object. The dashboard lists the account's
 open actions; resolving one clears it from that list. The projection and its
 closed six-kind vocabulary live in `src/lib/actionsNeeded.ts` and are documented
 in [docs/notifications.md](notifications.md).
+
+## Every job records the skill bundles it loaded (#380)
+
+A job row carries `skill_bundle_hash`, `skill_bundle_json` and `skill_state`. The
+JSON is the record the dispatch wrote — the set hash, the decision and one entry
+per bundle (`name`, `source`, `version`, `contentHash`, `state`) — so the
+repository page and the merge gate read what the job actually loaded instead of
+recomputing it from today's rules. The inline and queued dispatch paths both
+attest before the bridge call, and a job whose set is not `accepted` is refused
+before a model token is minted. The page shows the set hash, each bundle with its
+source and content-hash prefix, and the state; a job that recorded no bundle says
+so rather than showing an empty list. `skill_state` is the only column that moves
+after creation: `skill-revoked` is set once when the merge gate finds a recorded
+source revoked, and the revocation is written to `audit_log` and the job events.
+The merge gate itself reads today's allowlist, so a revocation after the job
+started still stops an automatic merge; a maintainer's manual merge remains
+possible and is audited as an override.
 
 ## Run now is an occurrence, not a moved cursor (#544)
 

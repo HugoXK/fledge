@@ -31,6 +31,10 @@ interface BridgePayload {
   rulesText?: string
   contextUrl?: string
   skills?: Array<{ name: string; path: string; description: string; bytes: number; sha256: string }>
+  // #380: only bundles the dispatch attested. The bridge prints the set hash and
+  // one line per bundle instead of trusting the rules list on its own.
+  skillBundleHash?: string
+  skillBundles?: Array<{ name: string; source: string; version: number; contentHash: string; state: string }>
 }
 
 function iterateInstructions(context: RunnerContext): string[] {
@@ -204,6 +208,16 @@ export class FlyBotRunner implements Runner {
           description: skill.description,
           bytes: skill.bytes,
           sha256: skill.sha256,
+        })),
+      }),
+      ...(context.skillBundles === undefined ? {} : {
+        skillBundleHash: context.skillBundles.hash,
+        skillBundles: context.skillBundles.bundles.map((bundle) => ({
+          name: bundle.name,
+          source: bundle.source,
+          version: bundle.version,
+          contentHash: bundle.contentHash,
+          state: bundle.state,
         })),
       }),
       instructions: [

@@ -320,3 +320,77 @@ test('a stranger cannot write the schedule and a bad CSRF token writes nothing',
     assert.equal(row?.timezone, 'Asia/Shanghai')
   } finally { await f.close() }
 })
+
+// #1055: the success has to be found at any age. `listScheduleOccurrences` is a
+// twenty-row window over *all* instants and the console searched only that
+// window, so a schedule paused (or budget-refused) for twenty decided instants
+// after a good run came back reading "Last success unknown" while the store
+// could still name the run.
+test('the console names a success older than the newest twenty instants', () => {
+  const { store, repoId, userId } = harness('console-success-age')
+  try {
+    const row = cronRow(store, repoId)
+    const succeededAt = Date.parse('2026-11-01T01:00:00Z')
+    const job = store.createJob({ id: 'job_age_ok', repoId, userId, trigger: 'schedule', goal: 'g', callbackHash: 'cb_age', platformTokenHash: '' })
+    store.updateJob(job.id, { status: 'succeeded', finished_at: '2026-11-01T02:00:00Z' })
+    const claim = (id: string, logicalTime: number) => store.claimScheduleOccurrence({
+      id, scheduleId: row.id, repoId, logicalTime, timingRevision: row.timing_revision,
+      leaseToken: `tok_${id}`, leaseMs: HOUR, now: NOW,
+    })
+    claim('occ_age_ok', succeededAt)
+    store.settleScheduleOccurrence({ scheduleId: row.id, logicalTime: succeededAt, timingRevision: row.timing_revision, leaseToken: 'tok_occ_age_ok', state: 'dispatched', jobId: job.id, dispatchedAt: succeededAt, lagMs: 0, now: NOW })
+
+    // Twenty newer instants that never became a run: the window is now full of
+    // skips, which is exactly the state a paused schedule comes back in.
+    for (let index = 1; index <= 20; index += 1) {
+      const at = succeededAt + index * HOUR
+      claim(`occ_skip_${index}`, at)
+      store.settleScheduleOccurrence({ scheduleId: row.id, logicalTime: at, timingRevision: row.timing_revision, leaseToken: `tok_occ_skip_${index}`, state: 'skipped', reason: 'paused', missed: 0, now: NOW })
+    }
+
+    const window = store.listScheduleOccurrences(repoId)
+    assert.equal(window.length, 20)
+    assert.equal(window.some((occurrence) => occurrence.job_id === job.id), false, 'the succeeded dispatch is outside the twenty-instant window')
+
+    const read = store.newestSucceededDispatch(repoId)
+    assert.equal(read?.job_id, job.id, 'the store can still name the newest succeeded dispatch, whatever its age')
+    assert.equal(read?.logical_time, succeededAt)
+
+    const jobStatus = (jobId: string) => store.getJob(jobId)?.status ?? null
+    const wired = scheduleConsole({ repoId, row, occurrences: window, now: NOW, jobStatus, lastSucceeded: read })
+    assert.equal(wired.lastSuccess?.logicalTime, succeededAt, 'the console names the success instead of denying it')
+
+    const windowOnly = scheduleConsole({ repoId, row, occurrences: window, now: NOW, jobStatus })
+    assert.equal(windowOnly.lastSuccess, null, 'a caller that read only the window keeps the window answer rather than a guess')
+  } finally { store.close() }
+})
+
+// The same defect on the page a maintainer reads: the row said unknown, and a
+// value the console owns being denied is what makes a paused schedule look like
+// it never ran.
+test('the console page prints a success older than the twenty-instant window', async () => {
+  const f = await fixture('console-page-success-age')
+  try {
+    const row = cronRow(f.built.store, f.repoId)
+    const succeededAt = Date.parse('2026-11-01T01:00:00Z')
+    const job = f.built.store.createJob({ id: 'job_page_ok', repoId: f.repoId, userId: f.user.id, trigger: 'schedule', goal: 'g', callbackHash: 'cb_page', platformTokenHash: '' })
+    f.built.store.updateJob(job.id, { status: 'succeeded', finished_at: '2026-11-01T02:00:00Z' })
+    const claim = (id: string, logicalTime: number) => f.built.store.claimScheduleOccurrence({
+      id, scheduleId: row.id, repoId: f.repoId, logicalTime, timingRevision: row.timing_revision,
+      leaseToken: `tok_${id}`, leaseMs: HOUR, now: NOW,
+    })
+    claim('occ_page_ok', succeededAt)
+    f.built.store.settleScheduleOccurrence({ scheduleId: row.id, logicalTime: succeededAt, timingRevision: row.timing_revision, leaseToken: 'tok_occ_page_ok', state: 'dispatched', jobId: job.id, dispatchedAt: succeededAt, lagMs: 0, now: NOW })
+    for (let index = 1; index <= 20; index += 1) {
+      const at = succeededAt + index * HOUR
+      claim(`occ_page_skip_${index}`, at)
+      f.built.store.settleScheduleOccurrence({ scheduleId: row.id, logicalTime: at, timingRevision: row.timing_revision, leaseToken: `tok_occ_page_skip_${index}`, state: 'skipped', reason: 'paused', missed: 0, now: NOW })
+    }
+
+    const session = sessionFor(f.built, f.user)
+    const page = await f.built.app.inject({ method: 'GET', url: `/repos/${f.repoId}/schedule`, headers: { cookie: session.cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-last-success="2026-11-01T01:00:00\.000Z"/, 'the page names the run that succeeded, even though it is older than the window')
+    assert.doesNotMatch(page.body, /data-last-success="unknown"/, 'a recorded success is never printed as unknown')
+  } finally { await f.close() }
+})

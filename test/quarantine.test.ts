@@ -1,5 +1,9 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import { DatabaseSync } from 'node:sqlite'
 import { TEST_RUN_HISTORY, Store } from '../src/db.js'
 import { quarantineTests } from '../src/lib/verification.js'
 
@@ -82,5 +86,46 @@ test('a re-check at a new head sha is a second run of the same job', () => {
     assert.equal(store.testRunHistory('repo_ledger').length, 4, 'another job at the same tip is its own run')
   } finally {
     store.close()
+  }
+})
+
+// #1026: a ledger written before the head sha joined the key keeps the old two
+// column key, because `CREATE TABLE IF NOT EXISTS` is a no-op on a database that
+// already has the table and `PRAGMA user_version` reads 48 on both shapes. The
+// first write after the upgrade then threw `table test_runs has no column named
+// head_sha`, which `verifyPullRequest` and `tryMerge` turn into a refusal.
+test('an old-shape test_runs ledger is migrated on open', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-test-runs-'))
+  const path = join(dir, 'old-shape.db')
+  try {
+    const old = new DatabaseSync(path)
+    old.exec(`
+      CREATE TABLE test_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        repo_id TEXT NOT NULL,
+        job_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        passed INTEGER NOT NULL,
+        recorded_at TEXT NOT NULL,
+        UNIQUE(job_id, name)
+      )
+    `)
+    old.exec('PRAGMA user_version = 48')
+    old.close()
+
+    const store = new Store(path)
+    try {
+      store.recordTestRuns('repo_old', 'job_old', 'a'.repeat(40), [{ name: 'test (22)', passed: true }])
+      store.recordTestRuns('repo_old', 'job_old', 'b'.repeat(40), [{ name: 'test (22)', passed: false }])
+      assert.deepEqual(store.testRunHistory('repo_old').map((entry) => entry.passed), [true, false], 'a run at each head sha is recorded on the migrated ledger')
+
+      const columns = (store.db.prepare('PRAGMA table_info(test_runs)').all() as Array<{ name: string }>)
+        .map((column) => column.name)
+      assert.deepEqual(columns, ['id', 'repo_id', 'job_id', 'head_sha', 'name', 'passed', 'recorded_at'], 'the old key is replaced by the head-sha shape')
+    } finally {
+      store.close()
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
   }
 })

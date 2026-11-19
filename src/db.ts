@@ -32,6 +32,7 @@ import { artifactKey, candidateRefusal, type CandidateRefusal } from './lib/evol
 import { BUDGET_SCOPE_ACTIONS, BUDGET_SCOPE_KINDS, isBudgetScopeAction, isBudgetScopeKind } from './lib/budgetScope.js'
 import { capabilitiesForRole, deriveRepoRole, identityPrincipalId, legacyTenantId } from './identity/authorization.js'
 import { RETENTION_CLASSES, countSettingsMarkers, retentionCountSql, retentionDefaultWindows, retentionDeleteSql, settingsMarkerExpired, SETTINGS_RETENTION, type RetentionAt, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
+import type { SkillBundleSourceRow } from './lib/skillBundle.js'
 
 // #355: one settings row marks the PAT expiry backfill as done, so a later
 // operator token (explicitly minted without an expiry) is never given one by a
@@ -233,6 +234,9 @@ export interface UserRow {
   email_daily_digest: number
   /** #353: also mail a success the schedule produced. Off by default. */
   email_job_success: number
+  /** #1069: `HH:MM` in the digest timezone; both null means no window. */
+  quiet_hours_start: string | null
+  quiet_hours_end: string | null
   notify_email: string | null
   github_token_enc: string | null
   github_token_scopes: string | null
@@ -659,6 +663,14 @@ export interface JobRow {
   lease_epoch: number
   callback_secret_enc: string | null
   platform_token_enc: string | null
+  // #380: the skill bundles the dispatch attested for this job. `hash` names the
+  // exact set, `json` carries the per-bundle record the page and the merge gate
+  // read, and `skill_state` is the terminal mark a later revocation writes
+  // (`skill-revoked`). A job written before the columns has no record and the
+  // merge gate treats it as predating the attestation rather than as empty.
+  skill_bundle_hash: string | null
+  skill_bundle_json: string | null
+  skill_state: string | null
   last_callback_at: string | null
   // #433 slice 2: the strategy the job was created under. The section map is
   // stored beside the hash because a job can run a strategy that was never
@@ -1354,6 +1366,24 @@ export type MemoryWriteResult =
   | { ok: true; created: boolean; noop: boolean; row: ProjectMemoryRow }
   | { ok: false; code: 'memory_revision_conflict' | 'memory_not_found'; current: ProjectMemoryRow | null; revision: number }
 
+// #1026: the ledger's shape is written once and used twice — `SCHEMA` creates it
+// on a fresh database, and the migration replaces an old-shape table with this
+// same statement — so the two cannot drift. It is a whole table rather than a
+// set of columns because SQLite cannot widen a UNIQUE constraint in place.
+const TEST_RUNS_SCHEMA = `
+CREATE TABLE IF NOT EXISTS test_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  repo_id TEXT NOT NULL,
+  job_id TEXT NOT NULL,
+  head_sha TEXT NOT NULL,
+  name TEXT NOT NULL,
+  passed INTEGER NOT NULL,
+  recorded_at TEXT NOT NULL,
+  UNIQUE(job_id, head_sha, name)
+);
+CREATE INDEX IF NOT EXISTS test_runs_repo_name_idx ON test_runs(repo_id, name, id DESC);
+`
+
 const SCHEMA = `
 CREATE TABLE IF NOT EXISTS users (
   id TEXT PRIMARY KEY,
@@ -1370,6 +1400,8 @@ CREATE TABLE IF NOT EXISTS users (
   email_job_updates INTEGER NOT NULL DEFAULT 1,
   email_daily_digest INTEGER NOT NULL DEFAULT 1,
   email_job_success INTEGER NOT NULL DEFAULT 0,
+  quiet_hours_start TEXT,
+  quiet_hours_end TEXT,
   notify_email TEXT,
   github_token_enc TEXT,
   github_token_scopes TEXT,
@@ -1575,6 +1607,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   lease_epoch INTEGER NOT NULL DEFAULT 0,
   callback_secret_enc TEXT,
   platform_token_enc TEXT,
+  skill_bundle_hash TEXT,
+  skill_bundle_json TEXT,
+  skill_state TEXT,
   strategy_hash TEXT,
   strategy_version INTEGER,
   strategy_json TEXT,
@@ -1803,18 +1838,7 @@ CREATE TABLE IF NOT EXISTS settings (
 -- the same job at a new tip: that second run has to reach the ledger, while a
 -- re-check of the same job at the same tip must not count twice. The ledger is
 -- bounded per (repo_id, name) when a run is recorded, not by a retention window.
-CREATE TABLE IF NOT EXISTS test_runs (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  repo_id TEXT NOT NULL,
-  job_id TEXT NOT NULL,
-  head_sha TEXT NOT NULL,
-  name TEXT NOT NULL,
-  passed INTEGER NOT NULL,
-  recorded_at TEXT NOT NULL,
-  UNIQUE(job_id, head_sha, name)
-);
-CREATE INDEX IF NOT EXISTS test_runs_repo_name_idx ON test_runs(repo_id, name, id DESC);
-
+${TEST_RUNS_SCHEMA}
 CREATE TABLE IF NOT EXISTS job_events (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   at TEXT NOT NULL,
@@ -2774,6 +2798,7 @@ export class Store {
     this.migrateNotificationJobColumns()
     this.migratePrincipalColumns()
     this.migrateReleaseColumns()
+    this.migrateTestRunsShape()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -2850,6 +2875,20 @@ export class Store {
     for (const [name, type] of additions) {
       if (!columns.has(name)) this.run(`ALTER TABLE schedule_occurrences ADD COLUMN ${name} ${type}`)
     }
+  }
+
+  // #1026: `CREATE TABLE IF NOT EXISTS` is a no-op on a database that already has
+  // `test_runs`, and `PRAGMA user_version` reads 48 on both shapes, so nothing
+  // noticed a ledger created before the head sha joined the key — the first write
+  // after the upgrade threw `table test_runs has no column named head_sha`. The
+  // ledger is derived data: nothing references it and a run can be recorded
+  // again, so an old-shape table is replaced from the same statement instead of
+  // being copied row by row.
+  private migrateTestRunsShape(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(test_runs)').map((row) => row.name))
+    if (columns.size === 0 || columns.has('head_sha')) return
+    this.db.exec('DROP TABLE test_runs')
+    this.db.exec(TEST_RUNS_SCHEMA)
   }
 
   migrateIndexes(): void {
@@ -3066,6 +3105,8 @@ export class Store {
       ['email_job_updates', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_daily_digest', 'INTEGER NOT NULL DEFAULT 1'],
       ['email_job_success', 'INTEGER NOT NULL DEFAULT 0'],
+      ['quiet_hours_start', 'TEXT'],
+      ['quiet_hours_end', 'TEXT'],
       ['notify_email', 'TEXT'],
       ['allow_private_models', 'INTEGER NOT NULL DEFAULT 0'],
       ['github_token_scopes', 'TEXT'],
@@ -3194,6 +3235,12 @@ export class Store {
     if (!jobColumns.has('lease_epoch')) this.run('ALTER TABLE jobs ADD COLUMN lease_epoch INTEGER NOT NULL DEFAULT 0')
     if (!jobColumns.has('callback_secret_enc')) this.run('ALTER TABLE jobs ADD COLUMN callback_secret_enc TEXT')
     if (!jobColumns.has('platform_token_enc')) this.run('ALTER TABLE jobs ADD COLUMN platform_token_enc TEXT')
+    // #380: additive. A row that predates the attestation reads back as "no
+    // record", and the merge gate treats that as a job that could not have known
+    // about a bundle source rather than as an empty allowlist.
+    if (!jobColumns.has('skill_bundle_hash')) this.run('ALTER TABLE jobs ADD COLUMN skill_bundle_hash TEXT')
+    if (!jobColumns.has('skill_bundle_json')) this.run('ALTER TABLE jobs ADD COLUMN skill_bundle_json TEXT')
+    if (!jobColumns.has('skill_state')) this.run('ALTER TABLE jobs ADD COLUMN skill_state TEXT')
     if (!jobColumns.has('error_code')) this.run('ALTER TABLE jobs ADD COLUMN error_code TEXT')
     // #433 slice 2: additive on purpose. Every row that predates the strategy
     // bundle reads back as "no strategy recorded", which is true, and the job
@@ -3794,6 +3841,15 @@ export class Store {
 
   setEmailJobSuccess(id: string, enabled: boolean): void {
     this.run('UPDATE users SET email_job_success = ? WHERE id = ?', enabled ? 1 : 0, id)
+  }
+
+  // #1069: both nil/empty is the off state, and a half window never persists.
+  setUserQuietHours(id: string, start: string | null, end: string | null): void {
+    const isOff = start === null || start === '' || end === null || end === ''
+    this.run(
+      'UPDATE users SET quiet_hours_start = ?, quiet_hours_end = ? WHERE id = ?',
+      isOff ? null : start, isOff ? null : end, id,
+    )
   }
 
   setNotifyEmail(id: string, email: string | null): void {
@@ -6133,6 +6189,23 @@ export class Store {
     )
   }
 
+  // #1055: the newest instant whose dispatched run succeeded, at any age. The
+  // console's `occurrences` list is a twenty-row window over *every* decided
+  // instant, so once a schedule had been skipped twenty times after a good run
+  // the success fell out of the window and the page denied it. This answers the
+  // question the console actually asks, from the job's terminal state, instead of
+  // searching a window the success may have left.
+  newestSucceededDispatch(repoId: string): ScheduleOccurrenceRow | undefined {
+    return this.get<ScheduleOccurrenceRow>(
+      `SELECT occurrence.* FROM schedule_occurrences AS occurrence
+         JOIN jobs AS job ON job.id = occurrence.job_id
+        WHERE occurrence.repo_id = ? AND occurrence.state = 'dispatched' AND job.status = 'succeeded'
+        ORDER BY occurrence.logical_time DESC, occurrence.decided_at DESC
+        LIMIT 1`,
+      repoId,
+    )
+  }
+
   // #544 slice 6: how much of a schedule's daily budget a logical day has
   // already spent. Only `dispatched` rows count — a skipped instant did not run,
   // and a claimed one has not dispatched yet — and the window is half-open, so
@@ -6368,8 +6441,15 @@ export class Store {
     payload: unknown
     idempotencyKey: string
     now?: number
+    /**
+     * #1069: when the row may first be claimed. Omitted or past-due means now,
+     * so every existing caller keeps today's behaviour. A future instant is how
+     * a quiet-hours window holds a job mail.
+     */
+    dueAtMs?: number
   }): { row: NotificationOutboxRow; created: boolean } {
     const now = input.now ?? Date.now()
+    const dueAt = input.dueAtMs ?? now
     const result = this.db.prepare(
       `INSERT INTO notification_outbox
          (id, transport, destination, user_id, job_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
@@ -6383,7 +6463,7 @@ export class Store {
       input.jobId ?? null,
       JSON.stringify(input.payload),
       input.idempotencyKey.slice(0, 300),
-      now,
+      dueAt,
       new Date(now).toISOString(),
       new Date(now).toISOString(),
     ]))
@@ -6612,7 +6692,7 @@ export class Store {
     this.run('DELETE FROM repo_instances WHERE repo_id = ?', repoId)
   }
 
-  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string; principalId?: string | null }): JobRow {
+  createJob(input: { id: string; repoId: string; userId: string; trigger: string; goal: string; callbackHash: string; platformTokenHash: string; kind?: string; workType?: string; baseBranch?: string | null; workItemId?: string | null; priority?: number; baseSha?: string | null; retryAttempt?: number; retryOf?: string | null; ownerStarted?: boolean; createdAt?: string; principalId?: string | null; skillBundle?: { hash: string; json: string; state?: string } }): JobRow {
     // #433 slice 2: the job records the strategy it was created under, from the
     // same sources the strategy page reads, so the page a maintainer opens and
     // the strategy a job names cannot disagree. An unfrozen strategy keeps its
@@ -6635,8 +6715,8 @@ export class Store {
     // The ticket is taken inside the insert, so two jobs created at the same
     // instant cannot be handed the same one (#545).
     this.run(
-      `INSERT INTO jobs (id, repo_id, user_id, principal_id, principal_revision, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
-       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
+      `INSERT INTO jobs (id, repo_id, user_id, principal_id, principal_revision, status, trigger, goal, callback_hash, platform_token_hash, strategy_hash, strategy_version, strategy_json, skill_bundle_hash, skill_bundle_json, skill_state, kind, work_type, base_branch, work_item_id, priority, queue_seq, base_sha, retry_attempt, retry_of, owner_started, created_at)
+       VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, (SELECT COALESCE(MAX(queue_seq), 0) + 1 FROM jobs), ?, ?, ?, ?, ?)`,
       input.id,
       input.repoId,
       input.userId,
@@ -6649,6 +6729,9 @@ export class Store {
       strategy?.hash ?? null,
       strategyVersion,
       strategy === null ? null : JSON.stringify(strategy.sections),
+      input.skillBundle?.hash ?? null,
+      input.skillBundle?.json ?? null,
+      input.skillBundle?.state ?? null,
       input.kind ?? 'iterate',
       input.workType ?? 'iterate',
       input.baseBranch ?? null,
@@ -7276,7 +7359,7 @@ export class Store {
     })
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc' | 'skill_bundle_hash' | 'skill_bundle_json' | 'skill_state'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []
@@ -8191,6 +8274,68 @@ export class Store {
       'SELECT name, passed FROM test_runs AS t WHERE repo_id = ? AND (SELECT COUNT(*) FROM test_runs AS x WHERE x.repo_id = t.repo_id AND x.name = t.name AND x.id > t.id) < ? ORDER BY id ASC',
       repoId, TEST_RUN_HISTORY,
     ).map((row) => ({ name: row.name, passed: row.passed === 1 }))
+  }
+
+  // #380: the skill-bundle allowlist is instance configuration, not repository
+  // content, so it lives in the settings store with one row per source. The
+  // source is base64url-encoded in the key so a `:` or `/` inside it cannot make
+  // one repository's key look like another's. Revocation rewrites the same row;
+  // the next job start and the merge gate read the state, so no restart is
+  // needed. These keys are not in SETTINGS_RETENTION: an allowlist entry is a
+  // decision, not a marker, and pruning it would silently revoke a source.
+  private skillBundleSourceKey(repoId: string, source: string): string {
+    return `skill_bundle_source:${repoId}:${Buffer.from(source, 'utf8').toString('base64url')}`
+  }
+
+  listSkillBundleSources(repoId: string): SkillBundleSourceRow[] {
+    const prefix = `skill_bundle_source:${repoId}:`
+    const rows: SkillBundleSourceRow[] = []
+    for (const entry of this.listSettings(prefix)) {
+      // `LIKE` treats `_` in the repository id as a wildcard, so the exact prefix
+      // is checked again rather than trusted to the SQL pattern.
+      if (!entry.key.startsWith(prefix)) continue
+      let source: string
+      try {
+        source = Buffer.from(entry.key.slice(prefix.length), 'base64url').toString('utf8')
+      } catch {
+        continue
+      }
+      if (source === '') continue
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(entry.value)
+      } catch {
+        continue
+      }
+      if (typeof parsed !== 'object' || parsed === null) continue
+      const row = parsed as Record<string, unknown>
+      if (row.state !== 'allowed' && row.state !== 'revoked') continue
+      if (typeof row.updatedBy !== 'string' || typeof row.updatedAt !== 'string') continue
+      rows.push({ source, state: row.state, updatedBy: row.updatedBy, updatedAt: row.updatedAt })
+    }
+    return rows
+  }
+
+  skillBundleSource(repoId: string, source: string): SkillBundleSourceRow | undefined {
+    return this.listSkillBundleSources(repoId).find((row) => row.source === source)
+  }
+
+  setSkillBundleSource(input: { repoId: string; source: string; state: 'allowed' | 'revoked'; updatedBy: string; updatedAt?: string }): void {
+    this.setSetting(this.skillBundleSourceKey(input.repoId, input.source), JSON.stringify({
+      state: input.state,
+      updatedBy: input.updatedBy,
+      updatedAt: input.updatedAt ?? nowIso(),
+    }))
+  }
+
+  // Trust on first load: the owner connecting the repository is the decision to
+  // trust its own `.agents/skills`, so the source is allowed once and then
+  // pinned. A source this instance has never seen is held, which is the state a
+  // third-party source starts in.
+  ensureSkillBundleSource(input: { repoId: string; source: string; updatedBy: string }): boolean {
+    if (this.skillBundleSource(input.repoId, input.source) !== undefined) return false
+    this.setSkillBundleSource({ repoId: input.repoId, source: input.source, state: 'allowed', updatedBy: input.updatedBy })
+    return true
   }
 }
 

@@ -290,3 +290,77 @@ test('the gate skips a control a closed disclosure keeps out of the rendering', 
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
   assert.match(script, /checkVisibility/, 'a control inside a closed <details> keeps a non-zero rect in Chromium; the walk has to ask whether it renders')
 })
+
+// #1025: the doc quotes one failure message as its example, so the checker has
+// to be able to print exactly that one. The classification of the control comes
+// from the markup the walk reads — the two documented opt-ins live on the
+// element — never from the example sentence.
+test('the doc quotes a failure message the checker really emits', () => {
+  const doc = readFileSync(new URL('../docs/ui.md', import.meta.url), 'utf8')
+  const start = doc.indexOf('Since #870 the job also runs a measured gate')
+  const end = doc.indexOf('## Owner search (#362)')
+  assert.ok(start >= 0 && end > start, 'the measured-gate section has to exist between the sweep paragraph and the owner-search section')
+  // The doc is wrapped prose, so its line breaks are joined before the example
+  // is read: the message the checker prints is one line, and the example has to
+  // be that line, not a sentence that only reads like one after reflowing.
+  const section = doc.slice(start, end).replace(/\s+/g, ' ')
+  const quoted = /`(en width=\d+ scheme=(?:light|dark) [^`]+)`/.exec(section)
+  assert.ok(quoted !== null, 'the measured-gate section has to quote one real failure message')
+  const line = (quoted[1] ?? '').trim()
+  const message = line.slice(line.indexOf(': ') + 2)
+  const sample = /^(\S+) is (\d+)x(\d+)px, under the (\d+)px (.+)$/.exec(message)
+  assert.ok(sample !== null, `the quoted line has to keep the shape the checker prints, not ${JSON.stringify(message)}`)
+  const name = sample[1] ?? ''
+  const layout = readFileSync(new URL('../src/views/layout.ts', import.meta.url), 'utf8')
+  const pages = readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8')
+  const compact = layout.includes('data-compact-target') && name.includes('banner-dismiss')
+  const inline = pages.includes('data-inline-target') && name.includes('info-tip')
+  const failures = gate.touchFailures?.([{ name, width: Number(sample[2]), height: Number(sample[3]), compact, inline }]) ?? []
+  assert.deepEqual(failures, [message], 'the quoted example has to be a message this checker emits for that control; an example that passes teaches a reader a sentence no run prints')
+})
+
+// #1025: half a pixel of slack passed a 43.5px control against a floor the doc
+// calls 44px. The tolerance is browser sub-pixel rounding, nothing more.
+test('the touch floor tolerance absorbs rounding and nothing more', () => {
+  assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker')
+  assert.equal(
+    (gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 23.5, height: 23.5, compact: true }]) ?? []).length,
+    1,
+    'a compact control at 23.5px is under the 24px floor; half a pixel of slack must not pass it',
+  )
+  assert.equal(
+    (gate.touchFailures?.([{ name: 'summary', width: 572, height: 43.5 }]) ?? []).length,
+    1,
+    'a 43.5px control is half a pixel under the 44px floor the doc states',
+  )
+  assert.equal(
+    (gate.touchFailures?.([{ name: 'summary', width: 572, height: 43.99 }]) ?? []).length,
+    0,
+    'a browser rounding a 44px box down to 43.99px is exactly what the tolerance is for',
+  )
+})
+
+// #1025: the doc said both opt-ins were counted once. The inline count existed;
+// the compact one did not, so pin it the same way.
+test('the compact exemption is pinned once, like the inline one', () => {
+  const layout = readFileSync(new URL('../src/views/layout.ts', import.meta.url), 'utf8')
+  assert.match(layout, /class="banner-dismiss" data-dismiss data-compact-target/, 'the banner dismiss has to carry the documented compact opt-out')
+  assert.equal((layout.match(/data-compact-target/g) ?? []).length, 1, 'one compact control, one opt-out; a second one needs its own reason')
+})
+
+// #1025: coverage honesty is a claim like any other, so the limits the gate does
+// not close are asserted instead of trusted to survive the next edit.
+test('the doc names each limit the gate does not close', () => {
+  const doc = readFileSync(new URL('../docs/ui.md', import.meta.url), 'utf8')
+  const start = doc.indexOf('Since #870 the job also runs a measured gate')
+  const end = doc.indexOf('## Owner search (#362)')
+  const section = doc.slice(start, end)
+  for (const [needle, why] of [
+    ['`<dialog>`', 'the walk never opens a dialog, so the controls inside one are unmeasured'],
+    ['`<details>`', 'a closed disclosure keeps its controls out of the rendering the walk collects'],
+    ['outside `.section-nav`', 'the selector omits every other link on the page'],
+    ['bounded budget', 'the tab walk stops after a bounded number of presses'],
+  ] as const) {
+    assert.ok(section.includes(needle), `the measured-gate section has to name the limit: ${why}`)
+  }
+})
