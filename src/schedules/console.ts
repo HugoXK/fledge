@@ -250,7 +250,10 @@ export function scheduleConsole(input: {
     timingRevision: row === undefined ? null : row.timing_revision,
     misfire: row === undefined ? null : row.misfire,
     graceMs: row === undefined ? null : row.grace_ms,
-    nextAt: schedule === null ? null : nextTime(schedule, now),
+    // #1051: a paused schedule will not run, so it has no next instant to name.
+    // The console used to print the planner's next time for a paused row, which
+    // reads as a promise nothing will keep; Resume computes its own instant.
+    nextAt: schedule === null || row?.status === 'paused' ? null : nextTime(schedule, now),
     last: occurrences[0] ?? null,
     lastSuccess,
     delivery: deliveryOf(input.occurrences[0], input.jobStatus, input.jobDeliveries),
