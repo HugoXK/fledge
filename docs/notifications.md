@@ -56,7 +56,7 @@ routes are owner-checked: an action belongs to the user who recorded it.
 
 `Store.notify` stores what the caller passes, so the caller must pass a sentence
 a person can read. `sanitizeActionSentence` removes tokens (`ghp_…`,
-`github_pat_…`, `Bearer …`), email addresses, absolute and repository-relative
+`github_pat_…`, `Bearer …`), email addresses, absolute paths and repository-relative file
 paths, stack frames, `…Error:` prefixes and internal codes
 (`BRIDGE_ERROR`, `SKILL_BUNDLE_HELD`, `ENOENT`). A message that is only those
 parts becomes a fixed fallback sentence rather than an empty notice. The failure

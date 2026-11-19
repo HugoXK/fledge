@@ -144,6 +144,14 @@ export function sanitizeActionSentence(text: string): string {
   clean = clean.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, ' ')
   clean = clean.replace(/\b(?:\/[\w.-]+){2,}\/?/g, ' ')
   clean = clean.replace(/\b(?:src|lib|test|data|node_modules)\/[\w./-]+/g, ' ')
+  // A repository-relative path has no leading slash, so the absolute-path arm
+  // never saw `deploy/nginx.conf`, `bridge/agent.js` or `config/secrets.json`.
+  // The final segment must carry an extension, which leaves prose such as
+  // `read/write` and `24/7` alone.
+  clean = clean.replace(/\b(?:[\w.@-]+\/)+[\w.@-]+\.\w{1,10}\b/g, ' ')
+  // A Windows absolute path is a drive letter and backslashes, which none of the
+  // arms above match.
+  clean = clean.replace(/\b[A-Za-z]:[\\/][^\s]+/g, ' ')
   clean = clean.replace(/\b[A-Za-z]*Error\b:?/g, ' ')
   clean = clean.replace(/\bE[A-Z]{4,}\b/g, ' ')
   clean = clean.replace(/\b[A-Z][A-Z0-9]*(?:_[A-Z0-9]+)+\b/g, ' ')

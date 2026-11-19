@@ -144,6 +144,8 @@ test('the dashboard renders the open action with the id the mail uses, in Englis
     assert.ok(html.includes(`/actions/${action.id}/resolve`), 'the row offers the resolve form')
     assert.match(html, /The job failed; you can retry it\./, 'the stored sentence is localized on an English page')
     assert.doesNotMatch(html, /任务失败，可以重跑/, 'the Chinese sentence is not shown on an English page')
+    assert.match(html, />Retry</, 'the action label is localized on an English page')
+    assert.doesNotMatch(html, />重跑</, 'the Chinese label is not shown on an English page')
   } finally {
     store.close()
   }

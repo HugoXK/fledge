@@ -52,6 +52,16 @@ test('an action id is deterministic, kind-scoped and URL-safe', () => {
   assert.match(actionIdFor('question', 'repo_1', 'q_1'), /^act_[0-9a-f]{12}$/)
 })
 
+test('a sentence cannot carry a repository file path outside the bundled source dirs', () => {
+  // The doc promises repository-relative paths are removed. The whitelist first
+  // covered only src/lib/test/data/node_modules, so deploy/nginx.conf,
+  // bridge/agent.js and config/secrets.json survived it (Test, 2026-11-19).
+  const dirty = 'failed reading deploy/nginx.conf and bridge/agent.js while opening config/secrets.json from C:\\srv\\fledge\\data\\fledge.db'
+  const clean = sanitizeActionSentence(dirty)
+  assert.doesNotMatch(clean, /deploy\/nginx\.conf|bridge\/agent\.js|config\/secrets\.json|C:\\srv/)
+  assert.ok(clean.trim().length > 0, 'the redaction leaves a sentence a person can read')
+})
+
 test('a sentence cannot carry a token, an address, a file path or an internal code', () => {
   const dirty = `失败：ghp_${'a'.repeat(36)} owner@example.com at handler (src/jobs/service.ts:12:3) ENOENT BRIDGE_ERROR TypeError: boom`
   const clean = sanitizeActionSentence(dirty)
