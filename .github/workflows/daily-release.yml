@@ -356,9 +356,10 @@ jobs:
           echo "ready=true" >> "$GITHUB_OUTPUT"
 
       - name: Check the UI mock snapshot
-        # #777: the mock is a release artifact, not a per-PR gate. The nightly
-        # refuses to plan a release whose views moved without the snapshot; the
-        # release routine regenerates it in a docs pull request.
+        # #973: pull requests now run the same check as the required `mock-check`
+        # job, so staleness is caught at the tip that introduces it. This guard
+        # stays because the drive must still refuse to plan from a stale tree;
+        # the release routine regenerates it in a docs pull request.
         if: ${{ inputs.dry_run != true && steps.opener.outputs.ready == 'true' }}
         run: |
           set -euo pipefail
