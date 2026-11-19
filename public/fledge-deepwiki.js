@@ -41,13 +41,13 @@
       ['怎么连接一个仓库？', 'GitHub 登录、token、fork、目标'],
       ['GitHub token 需要什么权限？', '写权限、最小权限、审批'],
       ['PR 打开前会发生什么？', 'plan、review、测试、创建 PR'],
-      ['常见报错（登录 / 权限 / 额度）怎么处理？', '把症状贴出来，DeepWiki 会定位'],
+      ['常见报错（登录 / 权限）怎么处理？', '把症状贴出来，DeepWiki 会定位'],
     ] : [
       ['What does Fledge do?', 'Hosted repositories that grow themselves'],
       ['How do I connect a repository?', 'GitHub login, token, fork, goal'],
       ['What permissions does the GitHub token need?', 'Write access, least privilege, approval'],
       ['What happens before a pull request?', 'Plan, review, tests, one PR'],
-      ['How do I fix login, permission or quota errors?', 'Describe the symptom and ask'],
+      ['How do I fix login or permission errors?', 'Describe the symptom and ask'],
     ];
     var list = zh ? [
       ['模型 / API Key 在哪里配置？', 'Settings \u2192 Model / 自有模型回退'],
