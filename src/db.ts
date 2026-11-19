@@ -12,6 +12,7 @@ import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
 import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
+import { actionIdFor, type ActionKind } from './lib/actionsNeeded.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import type { CostReport } from './metrics/cost.js'
@@ -800,8 +801,27 @@ export interface NotificationRow {
   kind: string
   message: string
   code: string | null
+  action_id: string | null
   created_at: string
   read_at: string | null
+}
+
+// #633: one row per decision a maintainer has to make. The id is derived from
+// the kind and the object (see `actionIdFor`), so the same decision is one row
+// across repeated events; the in-app notice and the mail carry that id.
+export interface ActionRow {
+  id: string
+  user_id: string
+  repo_id: string
+  kind: string
+  reason: string
+  href: string
+  label: string
+  urgent: number
+  state: string
+  created_at: string
+  updated_at: string
+  resolved_at: string | null
 }
 
 export interface AuditRow {
@@ -1616,10 +1636,31 @@ CREATE TABLE IF NOT EXISTS notifications (
   kind TEXT NOT NULL,
   message TEXT NOT NULL,
   code TEXT,
+  action_id TEXT,
   created_at TEXT NOT NULL,
   read_at TEXT
 );
 CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id, created_at DESC);
+
+-- #633: the action a person has to take, one row per decision. State is
+-- open or resolved; a repeated event for the same id updates nothing, and a
+-- resolved row reopens when the decision comes back.
+CREATE TABLE IF NOT EXISTS actions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  href TEXT NOT NULL,
+  label TEXT NOT NULL,
+  urgent INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS actions_user_state_idx ON actions(user_id, state, created_at DESC);
+CREATE INDEX IF NOT EXISTS actions_repo_state_idx ON actions(repo_id, state);
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -3171,6 +3212,9 @@ export class Store {
     if (!workflowFailureColumns.has('log_error')) this.run('ALTER TABLE workflow_failures ADD COLUMN log_error TEXT')
     const notificationColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(notifications)').map((row) => row.name))
     if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
+    // #633: a notice written before this column is not about a recorded action,
+    // which is exactly what NULL says; nothing is backfilled.
+    if (!notificationColumns.has('action_id')) this.run('ALTER TABLE notifications ADD COLUMN action_id TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
     // #355: the column is additive with a default, so existing rows are
@@ -7673,8 +7717,54 @@ export class Store {
     return Number(row?.total ?? 0)
   }
 
-  notify(userId: string, kind: string, message: string, code: string | null = null): void {
-    this.run('INSERT INTO notifications (id, user_id, kind, message, code, created_at) VALUES (?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, nowIso())
+  notify(userId: string, kind: string, message: string, code: string | null = null, actionId: string | null = null): void {
+    this.run('INSERT INTO notifications (id, user_id, kind, message, code, action_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, actionId, nowIso())
+  }
+
+  // #633: record the decision once. A repeated event for the same id returns the
+  // row with `created: false`, so the caller sends no second notice; a resolved
+  // decision reopens when it comes back, because it is news again.
+  recordAction(input: { userId: string; repoId: string; kind: ActionKind; objectId: string; reason: string; href: string; label: string; urgent: boolean; at?: string }): { action: ActionRow; created: boolean } {
+    const id = actionIdFor(input.kind, input.repoId, input.objectId)
+    const at = input.at ?? nowIso()
+    // A duplicate callback can reach this at the same time as the first one, so
+    // the insert is the dedupe: the second writer does nothing and reads the row
+    // the first one wrote, instead of racing a SELECT and throwing on the key.
+    const inserted = this.runChanges(
+      "INSERT INTO actions (id, user_id, repo_id, kind, reason, href, label, urgent, state, created_at, updated_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL) ON CONFLICT(id) DO NOTHING",
+      id, input.userId, input.repoId, input.kind, input.reason, input.href, input.label, input.urgent ? 1 : 0, at, at,
+    ) === 1
+    if (inserted) return { action: this.getAction(id)!, created: true }
+    const existing = this.getAction(id)!
+    if (existing.state === 'open') return { action: existing, created: false }
+    this.run(
+      "UPDATE actions SET reason = ?, href = ?, label = ?, urgent = ?, state = 'open', updated_at = ?, resolved_at = NULL WHERE id = ? AND state = 'resolved'",
+      input.reason, input.href, input.label, input.urgent ? 1 : 0, at, id,
+    )
+    return { action: this.getAction(id)!, created: true }
+  }
+
+  getAction(id: string): ActionRow | undefined {
+    return this.get<ActionRow>('SELECT * FROM actions WHERE id = ?', id)
+  }
+
+  listActions(userId: string, limit = 20): ActionRow[] {
+    return this.all<ActionRow>("SELECT * FROM actions WHERE user_id = ? AND state = 'open' ORDER BY urgent DESC, created_at DESC, rowid DESC LIMIT ?", userId, Math.max(1, Math.min(100, limit)))
+  }
+
+  resolveAction(id: string): void {
+    const at = nowIso()
+    this.run("UPDATE actions SET state = 'resolved', updated_at = ?, resolved_at = ? WHERE id = ? AND state = 'open'", at, at, id)
+  }
+
+  notificationsForAction(actionId: string): NotificationRow[] {
+    return this.all<NotificationRow>('SELECT * FROM notifications WHERE action_id = ? ORDER BY created_at DESC, rowid DESC', actionId)
+  }
+
+  // Opening the mail link and opening the in-app row are the same action, so
+  // both read the rows that carry the id.
+  markActionRead(actionId: string): void {
+    this.run('UPDATE notifications SET read_at = ? WHERE action_id = ? AND read_at IS NULL', nowIso(), actionId)
   }
 
   createFeedback(input: { id: string; userId: string; kind: string; message: string; page: string; createdAt?: string }): FeedbackRow {

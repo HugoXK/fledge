@@ -3377,6 +3377,19 @@ than reported as "no change". The older job keeps its own hash and its own page;
 a bundle change is a diff between two jobs, never a rewrite of the earlier one. A
 job whose row predates the columns renders "no strategy was recorded" rather than
 an empty strategy.
+## One decision, one action id (#633)
+
+The `actions` table holds one row per decision a maintainer has to make, keyed by
+an id derived from the kind and the object (`sha256(kind, repoId, objectId)`,
+twelve hex characters). A repeated event for the same decision returns the open
+row and sends no second notice; a resolved row reopens when the decision comes
+back. Notifications carry that id in `notifications.action_id`, so the in-app row
+and the failure mail name the same decision, and `GET /actions/:id` marks the
+rows read before it redirects to the object. The dashboard lists the account's
+open actions; resolving one clears it from that list. The projection and its
+closed six-kind vocabulary live in `src/lib/actionsNeeded.ts` and are documented
+in [docs/notifications.md](notifications.md).
+
 ## Run now is an occurrence, not a moved cursor (#544)
 
 A schedule names logical instants; the tick decides which of them run. "Run now"

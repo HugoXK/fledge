@@ -1,6 +1,6 @@
 import type { Config } from '../config.js'
 import type { CostReport } from '../metrics/cost.js'
-import type { AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationOutboxRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SecurityFindingRow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
+import type { ActionRow, AlertView, AuditRow, DeploymentRollbackRow, DeploymentRow, FeedbackTriageRow, JobEventRow, JobRow, ModelProviderRow, NotificationOutboxRow, NotificationRow, OwnedSearch, PostmortemRecurrenceRow, PostmortemRow, ProviderModelRow, ReleaseRow, RepoInstanceRow, RepoRow, ReviewTrendWindow, SecurityFindingRow, SessionRow, UserRow, ApiTokenRow, WorkflowFailureRow, WorkItemRow, TaskRelationRow } from '../db.js'
 import { isVerifiedFixed } from '../lib/securityFindings.js'
 import { assetUrl } from '../lib/assetVersion.js'
 import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type ReleaseSnapshot } from '../lib/deployments.js'
@@ -1108,6 +1108,8 @@ export function dashboardPage(input: {
   // reads separately from the paged and filtered table slice.
   latestJob?: JobRow
   notifications: NotificationRow[]
+  // #633: the open decisions for this account, one row per action id.
+  actions?: ActionRow[]
   questions?: InboxQuestion[]
   personal?: {
     repos: number
@@ -1267,6 +1269,10 @@ export function dashboardPage(input: {
     <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
   ${inboxSection(locale, viewer, questions, '/dashboard')}
+  ${(input.actions ?? []).length === 0 ? '' : `<section class="card" id="actions-needed">
+    <div class="row between"><h2>${escapeHtml(t('需要你决定', 'Needs your decision'))}</h2><span class="fine">${escapeHtml(t('每条只有一个处理动作；处理完会自动消失。', 'One action per item; it clears when you handle it.'))}</span></div>
+    <ul class="list">${(input.actions ?? []).map((action) => `<li class="list-row"><div class="list-main"><span class="badge">${escapeHtml(action.kind)}</span> <strong>${escapeHtml(localizeMessage(locale, action.reason) ?? action.reason)}</strong><small>${escapeHtml(action.id)}</small></div><div class="row"><a class="btn" href="/actions/${escapeHtml(action.id)}">${escapeHtml(localizeMessage(locale, action.label) ?? action.label)}</a><form method="post" action="/actions/${escapeHtml(action.id)}/resolve" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('已处理', 'Done'))}</button></form></div></li>`).join('')}</ul>
+  </section>`}
   ${alerts.length === 0 ? '' : `<section class="card" id="attention">
     <div class="row between"><h2>${escapeHtml(t('需要处理', 'Needs attention'))}</h2><span class="fine">${escapeHtml(t('只显示你自己的仓库和任务。', 'Only your repositories and jobs.'))}</span></div>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('级别', 'Level'))}</th><th>${escapeHtml(t('类型', 'Kind'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th><th></th></tr></thead><tbody>${alertRows(t, alerts)}</tbody></table></div>

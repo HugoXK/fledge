@@ -1268,3 +1268,14 @@ cannot be advanced by this write. A strategy that names a frozen section — the
 evaluator, evidence, CI, merge gate, auth, gateway or capability checks — is
 refused before anything is written, which keeps the parts that judge a job out of
 the parts a strategy may evolve.
+
+## Notification sentences are redacted before delivery (`#633`)
+
+An action's reason and a failure mail's cause are read by a person, so the
+machine's raw error never reaches either. `sanitizeActionSentence` removes
+tokens, email addresses, absolute and repository-relative paths, stack frames,
+`…Error:` prefixes and internal codes before the sentence is stored, and a
+message that is only those parts becomes a fixed fallback. `jobFailedEmail` runs
+the same sanitizer over `error` before it reaches the subject and both bodies.
+The action id itself is derived (`act_` plus twelve hex characters of
+`sha256(kind, repoId, objectId)`), so it carries no address, path or secret.

@@ -165,6 +165,9 @@ const ORDINARY_ROUTE_LIST = [
   'POST /repos/:id/jobs/:jobId/ack-rule-change',
   'POST /settings/notifications',
   'POST /notifications/read',
+  // #633: resolving an action is the decision the action asked for; it changes
+  // one row the caller owns and nothing else.
+  'POST /actions/:id/resolve',
   'POST /approve/:token',
   'POST /api/jobs/:id/callback',
   'POST /api/github/webhook',

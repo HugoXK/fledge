@@ -1637,6 +1637,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         windowDays,
         alerts,
         notifications: store.listNotifications(viewer.user.id),
+        actions: store.listActions(viewer.user.id),
         notice: request.flash?.notice?.text,
         error: request.flash?.error?.text,
       }),
@@ -5255,6 +5256,29 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/notifications/read', async (request, reply) => {
     const viewer = approvedCsrfGuard(request)
     store.markNotificationsRead(viewer.user.id)
+    return reply.redirect('/dashboard')
+  })
+
+  // #633: the in-app row and the mail link resolve the same action id. Opening
+  // either one reads the rows that carry it; the page the action points at is
+  // where the decision itself is made.
+  app.get('/actions/:id', async (request, reply) => {
+    const viewer = requireApproved(request)
+    const id = (request.params as { id?: string }).id ?? ''
+    const action = store.getAction(id)
+    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '找不到', '这一步不存在，或不属于你。', request.locale))
+    store.markActionRead(action.id)
+    store.audit(viewer.user.id, 'action.opened', action.id)
+    return reply.redirect(action.href)
+  })
+
+  app.post('/actions/:id/resolve', async (request, reply) => {
+    const viewer = approvedCsrfGuard(request)
+    const id = (request.params as { id?: string }).id ?? ''
+    const action = store.getAction(id)
+    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '找不到', '这一步不存在，或不属于你。', request.locale))
+    store.resolveAction(action.id)
+    store.audit(viewer.user.id, 'action.resolved', action.id)
     return reply.redirect('/dashboard')
   })
 

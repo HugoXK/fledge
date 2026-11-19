@@ -23,6 +23,7 @@ import { classifyFailure, providerRefusalCode, type EnqueueRefusalCode, type Fai
 import { parseModelRun } from '../lib/modelRun.js'
 import { retryDecision, reviewRetryDecision } from '../lib/retry.js'
 import { jobEmailDecision } from '../lib/emailPolicy.js'
+import { actionIdFor, projectJobAction } from '../lib/actionsNeeded.js'
 import { nextRunFor, type NextRunFor } from '../lib/nextRunFor.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
@@ -658,6 +659,9 @@ export class Jobs {
     // refusal has to travel with it rather than being flattened to one string.
     if (!result.ok || result.job === undefined) return { ok: false, error: result.error ?? '重试失败。', code: result.code, detail: result.detail }
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: actorUserId, kind: 'job.retry_started', step: kind, meta: result.job.id })
+    // #633: retrying is the decision the action asked for, so the action clears
+    // here instead of staying open beside the run it started.
+    this.store.resolveAction(actionIdFor('failed', job.repo_id, jobId))
     return { ok: true, job: result.job }
   }
 
@@ -1765,7 +1769,18 @@ export class Jobs {
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: eventMeta === null ? null : redact(eventMeta) })
     if (result.status === 'failed') this.notePostmortem(jobId)
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
-    if (result.status === 'failed') this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${redact(result.error ?? job.error ?? '未知原因')}`, this.store.getJob(jobId)?.error_code ?? null)
+    if (result.status === 'failed') {
+      // #633: a failure is one action, not one notice per event. The action id is
+      // derived from the job, so a duplicate callback finds the same row and gets
+      // no second in-app message; the mail carries that same id.
+      const failed = projectJobAction({ id: jobId, repoId: job.repo_id, kind: job.kind, status: 'failed', prUrl: null })
+      if (failed === null) {
+        this.store.notify(job.user_id, 'job', `${job.kind === 'review' ? '审核' : '任务'} ${jobId} 失败：${redact(result.error ?? job.error ?? '未知原因')}`, this.store.getJob(jobId)?.error_code ?? null)
+      } else {
+        const recorded = this.store.recordAction({ userId: job.user_id, kind: failed.kind, repoId: failed.repoId, objectId: failed.objectId, reason: failed.reason, href: failed.href, label: failed.label, urgent: failed.urgent })
+        if (recorded.created) this.store.notify(job.user_id, 'job', `任务 ${jobId} 失败：${failed.reason}`, this.store.getJob(jobId)?.error_code ?? null, recorded.action.id)
+      }
+    }
     if (result.status === 'succeeded' || result.status === 'failed') {
       // #353: a success has no retry behind it, so its mail is decided here; a
       // failure waits for the retry decision below.
@@ -3176,6 +3191,14 @@ export class Jobs {
       summary: redact(result.summary ?? job.summary ?? ''),
       error: redact(result.error ?? job.error ?? ''),
       reviewScore: result.reviewScore ?? job.review_score,
+      // #633: the failed mail and the in-app row name the same decision, so the
+      // id and the page that resolves it ride the mail as well.
+      ...(result.status === 'failed'
+        ? (() => {
+            const id = actionIdFor('failed', repo.id, job.id)
+            return { actionId: id, actionUrl: `${this.config.baseUrl}/actions/${id}` }
+          })()
+        : {}),
     }
     try {
       const template = decision.template === 'success' ? jobSucceededEmail(user, context) : jobFailedEmail(user, context)
