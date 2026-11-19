@@ -18,10 +18,11 @@ export function productPage(input: {
   loop: ProductLoopSnapshot
   windowDays: number
   since: string
+  webhook: { configured: boolean; lastPushAt: string | null }
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, loop, windowDays, since, notice, error } = input
+  const { config, locale, viewer, loop, windowDays, since, webhook, notice, error } = input
   const t = translator(locale)
   const sample = (metric: { samples: number; medianMs: number | null }): string =>
     metric.samples === 0 ? t('n/a（还没有样本）', 'n/a (no samples yet)') : `${durationText(metric.medianMs)} · ${t(`${metric.samples} 个样本`, `${metric.samples} samples`)}`
@@ -54,6 +55,7 @@ export function productPage(input: {
       <a class="btn ${windowDays === 7 ? '' : 'btn-ghost'}" href="/admin/product?window=7">${escapeHtml(t('7 天', '7 days'))}</a>
       <a class="btn ${windowDays === 30 ? '' : 'btn-ghost'}" href="/admin/product?window=30">${escapeHtml(t('30 天', '30 days'))}</a>
       <a class="btn btn-ghost" href="/admin/metrics">${escapeHtml(t('原有指标', 'Existing metrics'))}</a>
+      ${loop.analyticsEnabled ? `<a class="btn btn-ghost" href="/admin/product.csv?window=${windowDays}">${escapeHtml(t('导出 CSV', 'Export CSV'))}</a>` : ''}
       <a class="btn btn-ghost" href="/admin">${escapeHtml(t('返回管理', 'Back to admin'))}</a>
     </div>
   </section>
@@ -62,6 +64,13 @@ export function productPage(input: {
     ${loop.analyticsEnabled
       ? `<p>${escapeHtml(t('这里记的是事件名、发生时刻、时长，以及用本安装一次性盐做过哈希的仓库指纹——没有任何用户、账号、邮箱、提示词、代码、令牌或完整 URL。两个不同用户的同一件事，落库后无法区分是谁做的；盐保存在本机 settings 里，换掉它就换掉全部指纹。', 'Each row is an event name, the instant it happened, a duration, and a repository fingerprint hashed with a per-installation salt — never a user, an account, an e-mail, a prompt, code, a token or a full URL. The same event from two different people is indistinguishable in the store, and the salt lives in this install\'s settings, so rotating it changes every fingerprint.'))}</p>`
       : `<p class="muted" data-loop-off>${escapeHtml(t('回路统计已关闭：此刻不写任何事件、也不生成盐。打开后只记录从上表那几类事件，已经写的记录不会被改写。', 'Loop analytics is off: nothing is written and no salt is minted. When it is on, only the event kinds above are recorded, and existing rows are never rewritten.'))}</p>`}
+  </section>
+  <section class="card" data-loop-receiver>
+    <h2>${escapeHtml(t('外部接收方（可选）', 'Optional receiver'))}</h2>
+    ${webhook.configured
+      ? `<p>${escapeHtml(t('已配置一个接收地址：每天最多推送一次，内容就是上面这几张表的数字，没有仓库指纹、没有账号、没有自由文本。', 'One receiver is configured: at most one push a day, carrying the numbers on this page and nothing else — no repository fingerprint, no account, no free text.'))}</p>
+    <p class="muted">${escapeHtml(webhook.lastPushAt === null ? t('还没推送过。', 'Nothing has been pushed yet.') : t(`最近一次推送：${webhook.lastPushAt}`, `Last push: ${webhook.lastPushAt}`))}</p>`
+      : `<p class="muted" data-loop-receiver-off>${escapeHtml(t('未配置接收地址：不向任何第三方发送数据。运营方设置 PRODUCT_LOOP_WEBHOOK_URL 才会开启。', 'No receiver is configured: nothing is sent anywhere. An operator enables it by setting PRODUCT_LOOP_WEBHOOK_URL.'))}</p>`}
   </section>
   <section class="card">
     <h2>${escapeHtml(t('漏斗', 'Funnel'))}</h2>

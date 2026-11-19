@@ -134,6 +134,19 @@ export const RETENTION_CLASSES = [
     where: ({ cutoff }) => ({ sql: 'merged_at < ?', params: [cutoff] }),
   },
   {
+    // #635: two years, because the loop store is a funnel history rather than a
+    // receipt table: a week-over-week comparison needs the week before the
+    // window as well as the window. The row carries a salted digest and no
+    // account, so age is the only thing that can make it identifying.
+    id: 'productEvents',
+    key: 'product_events',
+    table: 'product_events',
+    env: 'RETENTION_PRODUCT_EVENTS_DAYS',
+    defaultDays: 730,
+    label: ['产品回路事件', 'Product-loop events'],
+    where: ({ cutoff }) => ({ sql: 'at < ?', params: [cutoff] }),
+  },
+  {
     id: 'auditLog',
     key: 'audit_log',
     table: 'audit_log',
@@ -177,6 +190,7 @@ export const SETTINGS_RETENTION = [
   // A plan marker is read only while its job is unapproved, which ends at the
   // plan deadline; the job row itself is kept for 365 days, so the marker gets
   // the same window from the moment it was written.
+  { prefix: 'product_push:', days: 30, label: ['回路推送标记', 'Product-push markers'] },
   { prefix: 'plan_reminded:', days: 365, label: ['计划提醒标记', 'Plan-reminded markers'] },
   { prefix: 'plan_expired:', days: 365, label: ['计划过期标记', 'Plan-expired markers'] },
 ]

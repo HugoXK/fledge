@@ -229,6 +229,10 @@ export interface Config {
   // Exact webhook hosts the operator trusts for self-hosted targets. Empty means
   // only public https targets are allowed; a listed host may be private or http.
   notifyWebhookAllowedHosts: string[]
+  // #635: the optional aggregate-only loop receiver. Empty means the feature is
+  // off: no other switch and no default endpoint, so enabling it is one explicit
+  // operator edit.
+  productWebhookUrl: string
   allowTokenLoginOnly: boolean
   devLogin: {
     login: string
@@ -636,6 +640,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     notifyWebhookUrl: text('NOTIFY_WEBHOOK_URL'),
     notifyWebhookSecret: text('NOTIFY_WEBHOOK_SECRET'),
     notifyWebhookAllowedHosts: parseHostAllowlist(text('NOTIFY_WEBHOOK_ALLOWED_HOSTS')),
+    productWebhookUrl: text('PRODUCT_LOOP_WEBHOOK_URL'),
     allowTokenLoginOnly: bool('ALLOW_TOKEN_LOGIN_ONLY', false),
     devLogin: {
       login: text('DEV_LOGIN_LOGIN'),
@@ -714,6 +719,11 @@ export function assertProductionConfig(config: Config): void {
   if (config.metrics.token === '') missing.push('METRICS_TOKEN')
   if (config.notifyWebhookUrl !== '' && !isAbsoluteHttpsUrl(config.notifyWebhookUrl)) {
     missing.push('NOTIFY_WEBHOOK_URL (must be an absolute https: URL)')
+  }
+  // #635: the loop receiver leaves the process with aggregate counts, so it gets
+  // the same transport rule as the alert webhook rather than a weaker one.
+  if (config.productWebhookUrl !== '' && !isAbsoluteHttpsUrl(config.productWebhookUrl)) {
+    missing.push('PRODUCT_LOOP_WEBHOOK_URL (must be an absolute https: URL)')
   }
   if (missing.length > 0) throw new Error(`Fledge cannot start in production. Missing: ${missing.join(', ')}`)
 }

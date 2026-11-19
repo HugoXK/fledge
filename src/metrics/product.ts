@@ -187,3 +187,43 @@ export interface ProductLoopSnapshot {
   }
   analyticsEnabled: boolean
 }
+
+/**
+ * The CSV of the read model, one metric per line. It is the same snapshot the
+ * page renders, not a query of its own, so the export cannot disagree with the
+ * page; there is no event row in it, and a metric with no sample is `unknown`
+ * rather than a zero that reads as measured.
+ */
+export function loopCsv(snapshot: ProductLoopSnapshot, windowDays: number, since: string): string {
+  const row = (section: string, key: string, value: string | number | null): string =>
+    `${section},${key},${value === null ? 'unknown' : String(value)}`
+  const lines = [
+    'section,metric,value',
+    row('window', 'days', windowDays),
+    row('window', 'since', since),
+    row('funnel', 'connected', snapshot.funnel.connected),
+    row('funnel', 'first_job', snapshot.funnel.firstJob),
+    row('funnel', 'first_pr', snapshot.funnel.firstPr),
+    row('funnel', 'merged', snapshot.funnel.merged),
+    row('duration_ms', 'connected_to_first_job', snapshot.toFirstJob.medianMs),
+    row('duration_ms', 'connected_to_first_pr', snapshot.toFirstPr.medianMs),
+    row('duration_ms', 'connected_to_merge', snapshot.toMerge.medianMs),
+    row('samples', 'to_first_job', snapshot.toFirstJob.samples),
+    row('samples', 'to_first_pr', snapshot.toFirstPr.samples),
+    row('samples', 'to_merge', snapshot.toMerge.samples),
+    row('rescue', 'failed', snapshot.rescue.failed),
+    row('rescue', 'actions', snapshot.rescue.actions),
+    row('rescue', 'rate', snapshot.rescue.rate),
+    ...snapshot.rescue.mix.map((entry) => row('rescue_mix', entry.action, entry.n)),
+    row('returning', 'repositories', snapshot.returning.repositories),
+    row('returning', 'returned', snapshot.returning.returned),
+    row('evidence', 'succeeded', snapshot.evidence.succeeded),
+    row('evidence', 'with_pr', snapshot.evidence.withPr),
+    row('evidence', 'with_cost', snapshot.evidence.withCost),
+    row('evidence', 'complete_rate', snapshot.evidence.completeRate),
+    row('evidence', 'completed', snapshot.evidence.completed),
+    row('evidence', 'unknown_cost', snapshot.evidence.unknownCost),
+    row('evidence', 'unknown_cost_rate', snapshot.evidence.unknownCostRate),
+  ]
+  return `${lines.join('\n')}\n`
+}

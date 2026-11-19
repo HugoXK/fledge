@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { encryptSecret } from '../src/lib/secrets.js'
+import { RETENTION_CLASSES, SETTINGS_RETENTION } from '../scripts/lib/retention.mjs'
 import { makeUser, testConfig } from './helpers.js'
 
 // #635: the boundary is the shape of the stored record, so these cases read the
@@ -207,6 +208,120 @@ test('the page says analytics is off instead of showing an empty table as zero',
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /data-loop-off/)
     assert.equal(page.body.includes('data-loop-terms'), true)
+  } finally {
+    await built.app.close()
+  }
+})
+
+// ---------------------------------------------------------------------------
+// #635 slice 2: the export. It is one of the two ways the loop numbers leave the
+// page, so it is tested at the boundary rather than only for its happy path: it
+// must not answer while analytics is off, and what it does answer carries no
+// digest and no account. The optional push has its own file, productWebhook.
+// ---------------------------------------------------------------------------
+
+test('the CSV export is not reachable while analytics is off', async () => {
+  const { buildApp } = await import('../src/app.js')
+  const { MockRunner } = await import('../src/jobs/mock.js')
+  const { MemoryMailer, sessionFor } = await import('./helpers.js')
+  const store = memoryStore()
+  const owner = makeUser(store, { login: 'csv-off-owner' })
+  const repoId = repoFor(store, owner.id, 'repo-csv-off')
+  store.recordProductEvent({ name: 'repo_connected', repoId, subject: repoId })
+  store.setSetting('product.analytics', 'off')
+  const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'csv-off-admin', superadmin: true, status: 'approved' })
+    const { cookie } = sessionFor(built, admin)
+    const csv = await built.app.inject({ method: 'GET', url: '/admin/product.csv', headers: { cookie } })
+    assert.equal(csv.statusCode, 404, 'a switched-off loop answers no export')
+    assert.equal(csv.body.includes('section,metric,value'), false, 'no CSV body leaks through the 404')
+    const page = await built.app.inject({ method: 'GET', url: '/admin/product', headers: { cookie } })
+    assert.equal(page.body.includes('/admin/product.csv'), false, 'the page offers no link it cannot honour')
+  } finally {
+    await built.app.close()
+  }
+})
+
+test('the CSV export is the page snapshot and carries no digest or account', async () => {
+  const { buildApp } = await import('../src/app.js')
+  const { MockRunner } = await import('../src/jobs/mock.js')
+  const { MemoryMailer, sessionFor } = await import('./helpers.js')
+  const store = memoryStore()
+  const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'csv-admin', superadmin: true, status: 'approved' })
+    const repoId = repoFor(store, admin.id, 'repo-csv')
+    store.recordProductEvent({ name: 'repo_connected', repoId, subject: repoId })
+    store.recordProductEvent({ name: 'first_job_started', repoId, subject: repoId })
+    const { cookie } = sessionFor(built, admin)
+    const csv = await built.app.inject({ method: 'GET', url: '/admin/product.csv?window=30', headers: { cookie } })
+    assert.equal(csv.statusCode, 200)
+    assert.match(String(csv.headers['content-type']), /text\/csv/)
+    const lines = csv.body.trim().split('\n')
+    assert.equal(lines[0], 'section,metric,value')
+    assert.ok(lines.includes('funnel,connected,1'), 'the export counts what the store recorded')
+    assert.ok(lines.includes('funnel,first_job,1'))
+    assert.ok(lines.includes('window,days,30'))
+    assert.equal(csv.body.includes(store.productRepoHash(repoId)), false, 'no repository digest in the export')
+    assert.equal(csv.body.includes(admin.id), false, 'no account id in the export')
+    assert.equal(csv.body.includes(admin.login), false, 'no login in the export')
+    // The page and the export read the same snapshot, so the numbers agree.
+    const page = await built.app.inject({ method: 'GET', url: '/admin/product?window=30', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /接入仓库<\/td><td>1<\/td>/)
+    assert.match(page.body, /href="\/admin\/product\.csv\?window=30"/)
+  } finally {
+    await built.app.close()
+  }
+})
+
+test('loop events age out on their own window and the preview counts them', () => {
+  const store = memoryStore()
+  try {
+    const user = makeUser(store)
+    const repoId = repoFor(store, user.id, 'repo-retention')
+    const stale = store.recordProductEvent({ name: 'repo_connected', repoId, subject: repoId, at: new Date(Date.now() - 731 * 86_400_000).toISOString() })
+    const fresh = store.recordProductEvent({ name: 'first_job_started', repoId, subject: repoId, at: new Date(Date.now() - 2 * 86_400_000).toISOString() })
+    assert.equal(stale, true)
+    assert.equal(fresh, true)
+    const cls = RETENTION_CLASSES.find((entry: { id: string }) => entry.id === 'productEvents') as { defaultDays?: number; where: (input: { cutoff: string; now: string }) => { sql: string } } | undefined
+    assert.ok(cls, 'the loop table is a retention class, not an unmanaged table')
+    assert.equal(cls.defaultDays, 730, 'two years, so a year-over-year comparison still has its window')
+    const row = store.retentionCounts().find((entry) => entry.id === 'productEvents')
+    assert.equal(row?.count, 1, 'only the row past the window is counted')
+    store.pruneOldData()
+    const remaining = store.all<{ name: string }>('SELECT name FROM product_events')
+    assert.deepEqual(remaining.map((entry) => entry.name), ['first_job_started'], 'the pass removes the stale row and keeps the fresh one')
+    // The push marker is a settings family with its own window, so it is counted
+    // by the pass that empties settings rather than by a second list.
+    const family = SETTINGS_RETENTION.find((entry: { prefix: string }) => entry.prefix === 'product_push:')
+    assert.ok(family)
+    assert.equal(family.days, 30)
+  } finally {
+    store.close()
+  }
+})
+
+test('the page names the receiver state it was handed', async () => {
+  const { buildApp } = await import('../src/app.js')
+  const { MockRunner } = await import('../src/jobs/mock.js')
+  const { MemoryMailer, sessionFor } = await import('./helpers.js')
+  const store = memoryStore()
+  const config = testConfig({ productWebhookUrl: 'https://receiver.example.com/hook' })
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'receiver-admin', superadmin: true, status: 'approved' })
+    const { cookie } = sessionFor(built, admin)
+    store.setSetting('product_push:last', '2026-11-19T12:00:00.000Z')
+    const page = await built.app.inject({ method: 'GET', url: '/admin/product', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-loop-receiver/)
+    assert.match(page.body, /Last push: 2026-11-19T12:00:00\.000Z|最近一次推送：2026-11-19T12:00:00\.000Z/)
+    store.setSetting('product.analytics', 'off')
+    const off = await built.app.inject({ method: 'GET', url: '/admin/product', headers: { cookie } })
+    assert.match(off.body, /data-loop-off/)
+    assert.equal(off.body.includes('/admin/product.csv'), false)
   } finally {
     await built.app.close()
   }

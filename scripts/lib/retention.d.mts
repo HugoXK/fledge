@@ -10,6 +10,7 @@ export type RetentionId =
   | 'outboxDead'
   | 'outboxUnknown'
   | 'jobs'
+  | 'productEvents'
   | 'auditLog'
   | 'quotaLedger'
 

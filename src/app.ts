@@ -127,6 +127,8 @@ import {
   type ScheduledNext,
 } from './views/pages.js'
 import { productPage } from './views/product.js'
+import { loopCsv } from './metrics/product.js'
+import { PRODUCT_PUSH_KEY, pushProductLoopWebhook } from './metrics/productWebhook.js'
 import { withDensity } from './views/layout.js'
 import type { PullTip } from './views/reviewMerge.js'
 import { gatePage } from './views/gate.js'
@@ -5670,9 +5672,30 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       loop: store.productLoopMetrics(since),
       windowDays,
       since,
+      // #635: the receiver card reads the same two facts the push itself checks —
+      // the configured URL and the day marker the last successful push wrote.
+      webhook: { configured: config.productWebhookUrl !== '', lastPushAt: store.getSetting(PRODUCT_PUSH_KEY) ?? null },
       notice: queryText(request, 'notice'),
       error: queryText(request, 'error'),
     }))
+  })
+
+  // #635: the export is the page's own snapshot, not a second query, so it cannot
+  // disagree with what the operator just read. It is not reachable while analytics
+  // is off: the operator who switched the record off has also said these counts do
+  // not exist, and a link that still answers would contradict the page.
+  app.get('/admin/product.csv', async (request, reply) => {
+    const viewer = requireSuperAdmin(request)
+    if (viewer.preview === true) return reply.redirect('/console')
+    if (!store.productAnalyticsEnabled()) {
+      return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '页面不存在', '回路统计已关闭，没有可导出的记录。', request.locale))
+    }
+    const windowDays = queryText(request, 'window') === '7' ? 7 : 30
+    const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString()
+    return reply
+      .type('text/csv; charset=utf-8')
+      .header('content-disposition', `attachment; filename="product-loop-${windowDays}d.csv"`)
+      .send(loopCsv(store.productLoopMetrics(since), windowDays, since))
   })
 
   app.get('/admin/metrics', async (request, reply) => {
@@ -7346,11 +7369,32 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale, undefined, report))
   })
 
+  // #635: the optional receiver is pushed at most once a UTC day, and its day
+  // marker is written only after a 2xx, so a failed day retries. The memory
+  // backoff keeps an endpoint that is refusing from being asked every minute of
+  // that day; `productPushDue` still decides the day itself from the marker.
+  let pushingProduct = false
+  let productPushRetryAt = 0
   let retryingLead = false
   const sweeper = setInterval(() => {
     limits.sweep()
     apiLimiter.sweep()
     store.deleteExpiredSessions()
+    if (options.startScheduler !== false && !pushingProduct && Date.now() >= productPushRetryAt && config.productWebhookUrl !== '') {
+      pushingProduct = true
+      void pushProductLoopWebhook({ store, config })
+        .then((outcome) => {
+          if (outcome.state === 'retry' || outcome.state === 'blocked' || outcome.state === 'unknown') {
+            productPushRetryAt = Date.now() + 15 * 60_000
+            log.warn('product loop push not delivered', { state: outcome.state })
+          }
+        })
+        .catch((error) => {
+          productPushRetryAt = Date.now() + 15 * 60_000
+          log.warn('product loop push failed', { error: redact(String(error)) })
+        })
+        .finally(() => { pushingProduct = false })
+    }
     if (options.startScheduler === false || retryingLead) return
     retryingLead = true
     void retryPendingLeadDeliveries({ store, config, instances })

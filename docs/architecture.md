@@ -3686,6 +3686,50 @@ The merge gate itself reads today's allowlist, so a revocation after the job
 started still stops an automatic merge; a maintainer's manual merge remains
 possible and is audited as an override.
 
+## The product loop is an aggregate, not a record of people (#635)
+
+`product_events` exists to answer product questions — how far a connected
+repository gets (connected, first job, first PR, merge), how long each stage
+takes, which stage loses repositories, how often a human rescued a failed run,
+and whether a finished job carries its evidence. It answers them from the record
+rather than from a UI guess, and the record is shaped so it cannot answer a
+question about a person.
+
+Every row is `(id, name, at, repo_hash, duration_ms)`. There is no column for a
+user, an account, an e-mail, a prompt, code, a token or a URL, so no later
+migration or query can leak one: the boundary is the schema, not a filter.
+`name` comes from the closed set in `src/metrics/product.ts` and
+`recordProductEvent` refuses anything else, which is why a caller cannot store a
+sentence or an address in the one text column. `repo_hash` is
+`sha256('repo:' + salt + ':' + repoId)` truncated to 32 hex characters, and the
+salt is one `settings` row for the installation; the same event from two
+different accounts therefore produces rows that differ only in that digest, and
+`deleteRepo` recomputes it to remove the repository's rows.
+
+`id` is `sha256(salt + ':' + name + ':' + subject)` truncated, and the insert is
+`INSERT OR IGNORE`, so an event replayed by a retry is one row rather than a
+second count. `repo_returned` is not stored: the read model derives it by
+comparing each repository's first event in the window with its last event before
+the window, which is why the funnel needs the prior window as well as the current
+one. The rescue rate may exceed 100% by design — one failure answered twice is
+two rescues — and the page states that instead of clamping it.
+
+The read model is one function, `Store.productLoopMetrics(since)`: the page
+(`src/views/product.ts`), the CSV (`GET /admin/product.csv`) and the optional
+daily push (`src/metrics/productWebhook.ts`) all render its result, so a number
+the operator exports is the number they read. A metric with no sample is `null`
+and prints `n/a`, never a confident zero.
+
+Two switches, one direction each. `settings.product.analytics = 'off'` stops the
+record before it is written: no row and no salt, and the page prints the off
+sentence while the CSV answers 404 and is not linked. `PRODUCT_LOOP_WEBHOOK_URL`
+is the only switch for the outbound push; unset means no request, and when set
+the scheduler pushes at most once per UTC day — `product_push:last` is written
+only after a 2xx, so a failed day retries — with the aggregate read model and
+nothing else. `product_events` is a retention class of its own (730 days by
+default), and the push marker ages out with the other 30-day settings families,
+so neither survives the operator's window.
+
 ## Run now is an occurrence, not a moved cursor (#544)
 
 A schedule names logical instants; the tick decides which of them run. "Run now"
