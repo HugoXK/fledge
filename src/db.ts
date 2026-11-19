@@ -4199,6 +4199,16 @@ export class Store {
     )
   }
 
+  // #638 slice 1: the per-run bound is counted from the rows themselves, so a
+  // second callback for the same job cannot reset it by asking again.
+  countAgentNotesForJob(jobId: string): number {
+    const row = this.get<{ n: number }>(
+      "SELECT COUNT(*) AS n FROM project_memories WHERE source_job_id = ? AND owner_type = 'agent'",
+      jobId,
+    )
+    return row?.n ?? 0
+  }
+
   getMemory(repoId: string, key: string): ProjectMemoryRow | undefined {
     return this.get<ProjectMemoryRow>('SELECT * FROM project_memories WHERE repo_id = ? AND key = ?', repoId, key)
   }
