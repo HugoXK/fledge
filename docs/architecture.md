@@ -855,7 +855,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   `PLAN_HASH_MISMATCH`; a base sha the platform has since measured differently is
   `PLAN_BASE_MOVED` and names both shas; a rejection needs a reason, and "ask for
   a revised plan" queues a new plan job on the same work item instead of editing
-  the decided one. An answerless plan does not wait forever: one reminder is sent
+  the decided one. A plan row with no work item (written before that link
+  existed) has nothing to queue a revision on, so its card offers reject only and
+  says why, and the route refuses the same case. An answerless plan does not
+  wait forever: one reminder is sent
   `PLAN_REMINDER_DAYS` before the deadline, and at `PLAN_EXPIRY_DAYS` (default 7)
   the tick closes the work item into the existing `closed` state with
   `closed_reason = 'plan_expired'` and an audit row. No state or transition was

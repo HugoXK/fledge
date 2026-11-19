@@ -3633,6 +3633,17 @@ export function jobPage(input: {
     ? ''
     : planPacketHash({ summary: job.summary, evidenceJson: job.evidence_json, baseSha: job.base_sha })
   const planWhen = (value: string | null): string => value === null ? '—' : humanTimeShort(value)
+  // #634: a revision is a rejection plus a new plan queued on the same work item
+  // (see the revise-plan route), so a plan row with no work item — every row
+  // written before the link existed — cannot carry that control: the press only
+  // redirects with an error and decides nothing. Rejecting still applies to the
+  // row itself, so that button stays.
+  const reviseButton = job.work_item_id === null
+    ? ''
+    : `<button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/revise-plan">${escapeHtml(t('要求修改计划', 'Ask for a revised plan'))}</button>`
+  const reviseMissingNote = job.work_item_id === null
+    ? `<p class="fine" id="plan-revise-unavailable">${escapeHtml(t('这个计划没有关联工作项，无法要求修改；请用 /fledge plan 生成一份新计划。', 'This plan is not linked to a work item, so it cannot be revised; generate a new plan with /fledge plan.'))}</p>`
+    : ''
   const planRecord = planState === 'approved'
     ? `<p class="fine" data-plan-record>${escapeHtml(t('决策人', 'Decided by'))} ${escapeHtml(job.plan_approved_by ?? '—')} · ${escapeHtml(planWhen(job.plan_approved_at))} · ${escapeHtml(t('计划指纹', 'Plan hash'))} <code>${escapeHtml(planHash.slice(0, 12))}</code> · ${escapeHtml(t('允许路径', 'Allowed'))} ${escapeHtml(job.plan_allow_paths ?? '—')} · ${escapeHtml(t('禁止路径', 'Forbidden'))} ${escapeHtml(job.plan_deny_paths ?? '—')}</p>`
     : planState === 'rejected'
@@ -3642,7 +3653,7 @@ export function jobPage(input: {
     ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}<input type="hidden" name="planHash" value="${escapeHtml(planHash)}" />
         <div class="row"><label class="grow">${escapeHtml(t('允许修改路径', 'Allowed paths'))} <input name="allowPaths" value="${escapeHtml(job.plan_allow_paths ?? repo.allow_paths)}" placeholder="src/, docs/" /></label><label class="grow">${escapeHtml(t('禁止修改路径', 'Forbidden paths'))} <input name="denyPaths" value="${escapeHtml(job.plan_deny_paths ?? repo.deny_paths)}" placeholder=".github/, deploy/" /></label></div>
         <label class="grow">${escapeHtml(t('理由（拒绝或要求修改计划时必填）', 'Reason (required to reject or ask for a revision)'))} <textarea name="reason" rows="2" maxlength="500"></textarea></label>
-        <div class="row"><button class="btn" type="submit" data-plan-primary>${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/revise-plan">${escapeHtml(t('要求修改计划', 'Ask for a revised plan'))}</button></div>
+        <div class="row"><button class="btn" type="submit" data-plan-primary>${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button>${reviseButton}</div>${reviseMissingNote}
       </form>`
     : planState === 'pending'
       ? `<p class="fine">${escapeHtml(t('等待 maintainer 决定这个计划。', 'Waiting for a maintainer to decide this plan.'))}</p>`
@@ -3651,12 +3662,13 @@ export function jobPage(input: {
         // asking for a revised one are the two decisions that still make sense on
         // a packet nobody can evaluate, and the legacy pending card offered both,
         // so they stay: "cannot approve" is not a reason to strand a maintainer
-        // with one greyed-out button. Both still post the hash they read.
+        // with one greyed-out button. Both still post the hash they read; a row
+        // with no work item keeps reject and says why it cannot revise.
         ? repo.repo_role === 'maintainer'
           ? `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准；仍然可以拒绝，或要求一份完整的计划。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved; you can still reject it or ask for a complete plan.'))}</p>
         <form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/approve-plan" class="form">${csrf(viewer)}<input type="hidden" name="planHash" value="${escapeHtml(planHash)}" />
         <label class="grow">${escapeHtml(t('理由（拒绝或要求修改计划时必填）', 'Reason (required to reject or ask for a revision)'))} <textarea name="reason" rows="2" maxlength="500"></textarea></label>
-        <div class="row"><button class="btn" type="button" data-plan-primary disabled aria-describedby="plan-incomplete-reason">${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/revise-plan">${escapeHtml(t('要求修改计划', 'Ask for a revised plan'))}</button></div>
+        <div class="row"><button class="btn" type="button" data-plan-primary disabled aria-describedby="plan-incomplete-reason">${escapeHtml(t('批准并运行', 'Approve and run'))}</button><button class="btn btn-ghost" type="submit" formaction="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/reject-plan">${escapeHtml(t('说明理由后拒绝', 'Reject with a reason'))}</button>${reviseButton}</div>${reviseMissingNote}
       </form>`
           : `<p class="muted" id="plan-incomplete-reason">${escapeHtml(t('这个计划没有结构化证据（范围、验收、测试计划、回滚），不能批准。', 'This plan carries no structured evidence (scope, acceptance, test plan, rollback), so it cannot be approved.'))}</p>
            <p class="fine">${escapeHtml(t('等待 maintainer 拒绝这个计划或要求一份完整的计划。', 'Waiting for a maintainer to reject this plan or ask for a complete one.'))}</p>`

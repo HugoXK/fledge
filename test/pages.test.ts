@@ -846,10 +846,16 @@ test('a plan card pins the packet hash and offers only the decisions its state a
     const user = makeUser(store, { login: 'plan-card-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_plan_card', userId: user.id, owner: 'o', name: 'pc', defaultBranch: 'main', targetBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', planRequired: true, goal: 'ship it', autoIterate: false, intervalMinutes: 1440 })
     const evidence = JSON.stringify({ scope: 'src/parser.ts', acceptance: 'the plan runs', testPlan: 'read the page', testRed: 'the card offered approve only', testGreen: 'the card offers reject and revise', tests: 'node:test', checks: 'npm run check', files: 1, risk: 'low', rollback: 'revert the commit' })
-    const ready = store.createJob({ id: 'job_plan_card_ready', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-ready', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
+    const item = store.createWorkItem({ id: 'wi_plan_card', repoId: repo.id, userId: user.id, title: 'plan card work' })
+    const ready = store.createJob({ id: 'job_plan_card_ready', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-ready', platformTokenHash: '', kind: 'plan', baseBranch: 'main', workItemId: item.id })
     store.updateJob(ready.id, { status: 'succeeded', summary: 'Plan: change src/parser.ts', finished_at: new Date().toISOString(), evidence_json: evidence })
-    const blind = store.createJob({ id: 'job_plan_card_blind', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-blind', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
+    const blind = store.createJob({ id: 'job_plan_card_blind', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-blind', platformTokenHash: '', kind: 'plan', baseBranch: 'main', workItemId: item.id })
     store.updateJob(blind.id, { status: 'succeeded', summary: 'Plan: no evidence', finished_at: new Date().toISOString() })
+    // #634: plan rows written before the work-item link existed carry no work
+    // item, so there is nothing a revision could be queued on. The card must not
+    // offer a control whose press only redirects with an error.
+    const legacy = store.createJob({ id: 'job_plan_card_legacy', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'plan goal', callbackHash: 'cb-legacy', platformTokenHash: '', kind: 'plan', baseBranch: 'main' })
+    store.updateJob(legacy.id, { status: 'succeeded', summary: 'Plan: legacy row', finished_at: new Date().toISOString() })
     const { cookie } = sessionFor(built, user)
 
     // The hash is the one the page rendered, computed from the same three values
@@ -879,6 +885,16 @@ test('a plan card pins the packet hash and offers only the decisions its state a
     // maintainer has to be able to send back.
     assert.match(blindPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${blind.id}/reject-plan"`), 'reject stays available without evidence')
     assert.match(blindPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${blind.id}/revise-plan"`), 'a revision stays available without evidence')
+
+    // A row from before the work-item link: reject still applies to the row, but
+    // a revision would have to queue a new plan on a work item that is not there.
+    const legacyPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${legacy.id}`, headers: { cookie } })
+    assert.equal(legacyPage.statusCode, 200)
+    assert.match(legacyPage.body, /data-plan-decision="incomplete"/)
+    assert.equal(store.getJob(legacy.id)?.work_item_id, null)
+    assert.match(legacyPage.body, new RegExp(`formaction="/repos/${repo.id}/jobs/${legacy.id}/reject-plan"`), 'reject still applies to a plan with no work item')
+    assert.doesNotMatch(legacyPage.body, new RegExp(`/repos/${repo.id}/jobs/${legacy.id}/revise-plan`), 'a plan with no work item offers no revision it cannot queue')
+    assert.match(legacyPage.body, /id="plan-revise-unavailable"/, 'the card says why it cannot revise')
   } finally {
     await built.close()
   }

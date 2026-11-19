@@ -488,7 +488,10 @@ above the evidence, and the card is the only place the decision is offered:
 - **incomplete** — the plan carries no structured evidence, so the same primary
   is rendered `disabled` with `aria-describedby` pointing at the sentence that
   says why. A plan nobody can evaluate is not approvable by pressing the button
-  anyway.
+  anyway. Reject stays on the card, and so does **要求修改计划 / Ask for a revised
+  plan** when the row has a work item to queue one on; a plan row with no work
+  item (written before that link existed) shows reject only, with a sentence
+  saying why the revision is unavailable.
 - **approved / rejected** — the card becomes the record: who decided, when, the
   first 12 characters of the plan fingerprint, and either the paths or the
   reason. No decision button is left on a decided plan.
