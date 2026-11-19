@@ -93,72 +93,76 @@ sed -e "s#/etc/letsencrypt/live/fledge.example.com/fullchain.pem#$tmp/cert.pem#"
 if ! header_errors="$(awk \
   -v names="Strict-Transport-Security X-Content-Type-Options Referrer-Policy X-Frame-Options" \
   -v label="$label" '
-  function close_block() {
-    for (i = 1; i <= n; i++) {
-      if (!(want[i] in seen)) {
-        bad++
-        printf "nginx: %s security headers: server block opened at line %d has no `add_header %s ... always;`\n", label, start, want[i]
-      }
-    }
+  function trim(s) { sub(/^[ \t]+/, "", s); sub(/[ \t]+$/, "", s); return s }
+  function push_block(header, at_line,   i, kind) {
+    depth++
+    kind = "other"
+    # #1097 review: the block is recognised from its header text, not from where
+    # its `{` sits, so `location x\n{` and a one-liner read the same.
+    if (header ~ /^server([ \t]|$)/) kind = "server"
+    else if (header ~ /^location[ \t]/) kind = "location"
+    kind_at[depth] = kind
+    line_at[depth] = at_line
+    any_at[depth] = 0
+    for (i = 1; i <= n; i++) delete seen_at[depth, want[i]]
   }
-  function close_location(   i) {
-    if (loc_any[loc_top] == 1) {
+  function close_block(   i, kind) {
+    if (depth <= 0) return
+    kind = kind_at[depth]
+    if (kind == "server") {
       for (i = 1; i <= n; i++) {
-        if (loc_seen[loc_top, want[i]] != 1) {
+        if (seen_at[depth, want[i]] != 1) {
           bad++
-          printf "nginx: %s security headers: location block opened at line %d declares its own `add_header`, which stops nginx inheriting the server-level set, so that block must repeat `add_header %s ... always;`\n", label, loc_start[loc_top], want[i]
+          printf "nginx: %s security headers: server block opened at line %d has no `add_header %s ... always;`\n", label, line_at[depth], want[i]
         }
       }
-    }
-    loc_top--
-  }
-  BEGIN { n = split(names, want, " "); loc_top = 0 }
-  /^server[ \t]*\{/ {
-    if (open) {
-      bad++
-      printf "nginx: %s security headers: unterminated server block opened at line %d\n", label, start
-    }
-    open = 1
-    depth = 1
-    start = NR
-    loc_top = 0
-    split("", seen)
-    next
-  }
-  open {
-    line = $0
-    if (line ~ /^[ \t]*location([ \t]|\{)/ && line ~ /\{/) {
-      loc_top++
-      loc_start[loc_top] = NR
-      loc_depth[loc_top] = depth + 1
-      loc_any[loc_top] = 0
-      for (i = 1; i <= n; i++) delete loc_seen[loc_top, want[i]]
-    }
-    opens = gsub(/\{/, "{", line)
-    closes = gsub(/\}/, "}", line)
-    depth += opens - closes
-    if (loc_top > 0 && $0 ~ /^[ \t]*add_header[ \t]/ && depth >= loc_depth[loc_top]) {
-      loc_any[loc_top] = 1
-      if (depth == loc_depth[loc_top]) {
-        for (i = 1; i <= n; i++) {
-          if ($0 ~ ("^[ \t]*add_header[ \t]+" want[i] "[ \t]") && $0 ~ /[ \t]always;[ \t]*$/) loc_seen[loc_top, want[i]] = 1
-        }
-      }
-    }
-    if (loc_top > 0 && depth < loc_depth[loc_top]) close_location()
-    if (depth == 1) {
+    } else if (kind == "location" && any_at[depth] == 1) {
       for (i = 1; i <= n; i++) {
-        if (index($0, "  add_header " want[i] " ") == 1 && $0 ~ /[ \t]always;[ \t]*$/) seen[want[i]] = 1
+        if (seen_at[depth, want[i]] != 1) {
+          bad++
+          printf "nginx: %s security headers: location block opened at line %d declares its own `add_header`, which stops nginx inheriting the server-level set, so that block must repeat `add_header %s ... always;`\n", label, line_at[depth], want[i]
+        }
       }
     }
-    if (depth <= 0) {
-      close_block()
-      open = 0
+    depth--
+  }
+  function directive(text,   i) {
+    if (depth == 0 || text !~ /^add_header[ \t]/) return
+    any_at[depth] = 1
+    if (text !~ /[ \t]always$/) return
+    for (i = 1; i <= n; i++) {
+      if (text ~ ("^add_header[ \t]+" want[i] "[ \t]")) seen_at[depth, want[i]] = 1
     }
+  }
+  BEGIN { n = split(names, want, " "); depth = 0; bad = 0; buf = ""; quote = ""; esc = 0; sq = sprintf("%c", 39) }
+  {
+    line = $0
+    # #1097 review: a CRLF copy used to fail with "has no add_header" although
+    # every header was there; the `\r` sat between the value and `always`.
+    gsub(/\r/, "", line)
+    for (c = 1; c <= length(line); c++) {
+      ch = substr(line, c, 1)
+      if (quote != "") {
+        buf = buf ch
+        if (esc) { esc = 0; continue }
+        if (ch == "\\") { esc = 1; continue }
+        if (ch == quote) quote = ""
+        continue
+      }
+      if (ch == "#") break
+      if (ch == "\"" || ch == sq) { quote = ch; buf = buf ch; continue }
+      # #1097 review: a directive is read as a token stream, so `{`, `}` and `;`
+      # may share a line with the header and the body.
+      if (ch == "{") { push_block(trim(buf), NR); buf = ""; continue }
+      if (ch == "}") { close_block(); buf = ""; continue }
+      if (ch == ";") { directive(trim(buf)); buf = ""; continue }
+      buf = buf ch
+    }
+    if (quote != "") { quote = ""; esc = 0 }
+    buf = buf " "
   }
   END {
-    while (loc_top > 0) close_location()
-    if (open) close_block()
+    while (depth > 0) close_block()
     exit bad > 0 ? 1 : 0
   }
 ' "$tmp/site.conf")"; then

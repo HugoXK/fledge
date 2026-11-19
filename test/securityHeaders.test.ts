@@ -191,6 +191,85 @@ test('a location that repeats the set without always is refused', () => {
   }
 })
 
+test('a one-liner location that declares its own header is refused and named', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // #1097 review: the first rule saw a location only when its line carried
+    // `{` and a header only when the header line started with the directive, so
+    // this legal one-liner shadowed the whole server set and passed.
+    const path = editedSample(dir, (text) =>
+      text.replace(
+        /^( {2}location \/ \{)$/m,
+        '  location = /health { add_header Cache-Control "no-store" always; }\n$1',
+      ),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 1, 'a one-liner location that declares its own add_header must not pass the check')
+    assert.match(run.stdout, /location block opened at line \d+/, 'the failure must name the location block')
+    for (const name of ['Strict-Transport-Security', 'X-Frame-Options']) {
+      assert.match(run.stdout, new RegExp(name), `the failure must name a header the one-liner stopped inheriting: ${name}`)
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('the one-liner shape is accepted once it repeats the set with always', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    const repeat = HEADERS.map((name) => `add_header ${name} ${HEADER_VALUES[name] ?? '""'} always;`).join(' ')
+    const path = editedSample(dir, (text) =>
+      text.replace(/^( {2}location \/ \{)$/m, `  location = /health { ${repeat} }\n$1`),
+    )
+    const run = runCheck(path)
+    assert.equal(
+      run.status,
+      0,
+      `a one-liner that repeats the set with always must pass; stdout: ${run.stdout} stderr: ${run.stderr}`,
+    )
+    assert.match(run.stdout, /nginx: .* parsed/)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a location whose brace is on the next line is still read and refused', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // #1097 review: the rule depended on the `{` sharing the location's line, so
+    // this shape was invisible to it.
+    const path = editedSample(dir, (text) =>
+      text.replace(
+        /^( {2}location \/ \{)$/m,
+        '  location /next\n  {\n    add_header Cache-Control "no-store" always;\n  }\n$1',
+      ),
+    )
+    const run = runCheck(path)
+    assert.equal(run.status, 1, 'a location whose brace is on the next line must still be checked')
+    assert.match(run.stdout, /location block opened at line \d+/, 'the failure must name the location block')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a CRLF copy of the shipped sample passes instead of naming missing headers', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'security-headers-'))
+  try {
+    // #1097 review: the `\r` between the value and `always` made every header
+    // look missing on a CRLF copy; the safe direction was right, the message was
+    // not, and the contract now proves the copy parses.
+    const path = editedSample(dir, (text) => text.replace(/\n/g, '\r\n'))
+    const run = runCheck(path)
+    assert.equal(
+      run.status,
+      0,
+      `a CRLF copy must pass the header check; stdout: ${run.stdout} stderr: ${run.stderr}`,
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 const STUB_REJECTS_MARKED = `#!/usr/bin/env bash
 set -euo pipefail
 config=""
@@ -228,6 +307,11 @@ test('the deploy-check contract proves the header check can fail', () => {
     // can show that a header one brace deeper drops the whole set.
     assert.match(stdout, /security headers: negative proof — a location that declares its own add_header was rejected/)
     assert.match(stdout, /security headers: control — a location that repeats all four headers with always was accepted/)
+    // #1097 review: the shape checks are part of the contract, so a rule that
+    // reads only an indented header on its own line cannot come back.
+    assert.match(stdout, /security headers: negative proof — a one-liner location that declares its own add_header was rejected/)
+    assert.match(stdout, /security headers: control — a one-liner location that repeats all four headers with always was accepted/)
+    assert.match(stdout, /security headers: negative proof — a location whose `\{` sits on the next line was rejected/)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

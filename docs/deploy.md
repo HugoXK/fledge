@@ -1019,10 +1019,15 @@ nginx-generated 4xx/5xx that `always` exists for. The sample states this trap at
 `deploy/nginx.conf.example:19-21` but declares no such header, so nothing proved
 the gate could see one. Now a `location` that declares a header anywhere in its
 body must repeat all four with `always` at its own level, and the check fails
-naming the location's opening line when it does not. The contract drives both
-copies: one with a `Cache-Control` inside `location /` (refused, location named)
-and one where that location repeats the four (accepted, so the rule cannot pass
-by refusing every location).
+naming the location's opening line when it does not. The rule reads directives as
+a token stream, so the shape does not matter: a one-liner
+(`location = /health { add_header …; }`), a location whose `{` sits on the next
+line, and a CRLF copy all read the same as the sample's indented form (the CRLF
+copy used to fail with a missing-header message although every header was
+present). The contract drives the shapes: a `Cache-Control` inside `location /`
+(refused, location named), that location repeating the four (accepted, so the
+rule cannot pass by refusing every location), and the one-liner in both forms
+plus the brace-on-the-next-line copy.
 
 The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
 chosen over `systemd-analyze verify` because that binary is absent on a GitHub

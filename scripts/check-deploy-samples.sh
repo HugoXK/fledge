@@ -3,7 +3,7 @@
 #
 #   bash scripts/check-deploy-samples.sh
 #
-# Eight checks, and the summary says which kind each one is:
+# Eleven checks, and the summary says which kind each one is:
 #
 # 1. real: a real `nginx -t` parses deploy/nginx.conf.example;
 # 2. real negative proof: the same invocation rejects a copy of the sample with a
@@ -20,7 +20,13 @@
 #    inside `location /` is rejected and the location is named, because nginx
 #    stops inheriting the server set on that path (#1097);
 # 8. control for it: a location that repeats all four headers with `always` is
-#    still accepted, so the rule cannot pass by refusing every location.
+#    still accepted, so the rule cannot pass by refusing every location;
+# 9. static negative proof for the one-liner shape: `location = /health {
+#    add_header ...; }` on one line is rejected and the location is named;
+# 10. control for it: the same one-liner that repeats all four with `always` is
+#    accepted, so the rule refuses the shadowing and not the shape;
+# 11. static negative proof for the brace position: a location whose `{` sits on
+#    the next line is still read and rejected.
 #
 # Exit 1 on the first check that does not hold. No branch of this script records a
 # gap and exits 0: `deploy-check` installs nginx, and the parser is plain node.
@@ -147,5 +153,59 @@ if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-repea
   exit 1
 fi
 echo 'security headers: control — a location that repeats all four headers with always was accepted'
+
+# 9/10/11. The same trap in the shapes the first location rule could not read
+# (#1097 review): a one-liner in which the `{`, the directive and the `}` share a
+# line, a location whose `{` sits on the next line, and the one-liner that repeats
+# the full set. A rule that only reads a header at the start of a line, or only a
+# `{` on the location's own line, passes the first two and hides the risk.
+awk '
+  /^  location \/ \{/ && !inserted { print "  location = /health { add_header Cache-Control \"no-store\" always; }"; inserted = 1 }
+  { print }
+' deploy/nginx.conf.example > "$work/location-one-liner.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-one-liner.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED a one-liner location that declares its own add_header — a shadowed header set would serve no security header (#1097)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of the one-liner location did not name the location block (#1097)'
+  exit 1
+fi
+echo 'security headers: negative proof — a one-liner location that declares its own add_header was rejected'
+
+awk '
+  /^  location \/ \{/ && !inserted { print "  location = /health { add_header Strict-Transport-Security \"max-age=31536000; includeSubDomains\" always; add_header X-Content-Type-Options \"nosniff\" always; add_header Referrer-Policy \"strict-origin-when-cross-origin\" always; add_header X-Frame-Options \"DENY\" always; }"; inserted = 1 }
+  { print }
+' deploy/nginx.conf.example > "$work/location-one-liner-repeat.conf"
+if ! output="$(bash scripts/check-nginx-config.sh --sample "$work/location-one-liner-repeat.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: REJECTED a one-liner location that repeats all four headers with always — the rule refuses the shape, not the shadowing (#1097)'
+  exit 1
+fi
+echo 'security headers: control — a one-liner location that repeats all four headers with always was accepted'
+
+awk '
+  /^  location \/ \{/ && !inserted {
+    print "  location /next"
+    print "  {"
+    print "    add_header Cache-Control \"no-store\" always;"
+    print "  }"
+    inserted = 1
+  }
+  { print }
+' deploy/nginx.conf.example > "$work/location-brace-next-line.conf"
+if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-brace-next-line.conf" 2>&1)"; then
+  printf '%s\n' "$output"
+  echo 'security headers: ACCEPTED a location whose `{` is on the next line and declares its own add_header — the rule depends on where the brace sits (#1097)'
+  exit 1
+fi
+if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+  printf '%s\n' "$output"
+  echo 'security headers: the rejection of the brace-on-the-next-line location did not name the location block (#1097)'
+  exit 1
+fi
+echo 'security headers: negative proof — a location whose `{` sits on the next line was rejected'
 
 echo 'deploy-check: every sample check above is real or static; none is recorded as a gap.'
