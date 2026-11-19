@@ -2145,6 +2145,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         error = cause instanceof Error ? cause.message : String(cause)
       }
     }
+    // #1099: the picker has to tell a repository this workspace already holds
+    // from a fresh one; the set lives here, so the view is told rather than left
+    // to re-read the store.
+    const connected = new Map(store.listRepos(viewer.user.id).map((repo) => [`${repo.owner}/${repo.name}`.toLowerCase(), repo.id]))
     return reply.type('text/html').send(appReposPage({
       config,
       locale: request.locale ?? 'zh',
@@ -2152,6 +2156,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       installations,
       installationId,
       repos,
+      connected,
       notice: request.flash?.notice?.text,
       error,
     }))
@@ -2261,7 +2266,19 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('github app repo add failed', { repo: repoInfo.fullName, error: String(error) })
       }
     }
-    if (added.length === 0) return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('没有新增仓库；可能已经添加过，或 App 权限不足。')}`)
+    if (added.length === 0) {
+      // #1099: "already connected" and "the App cannot reach it" are different
+      // answers. The first is a successful selection of known repositories, so it
+      // names them (the picker above links each one) instead of blaming the App.
+      const alreadyConnected = chosen.filter((fullName) => {
+        const info = byName.get(fullName)
+        return info !== undefined && store.getRepoByOwnerName(viewer.user.id, info.owner, info.name) !== undefined
+      })
+      if (alreadyConnected.length === chosen.length) {
+        return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent(`已经接入：${alreadyConnected.join('、')}。`)}`)
+      }
+      return reply.redirect(`/repos/new?installation=${installationId}&error=${encodeURIComponent('没有新增仓库；App 权限不足或仓库无法访问。')}`)
+    }
     return reply.redirect(`/dashboard?notice=${encodeURIComponent(`已接入 ${added.length} 个仓库。`)}`)
   })
 

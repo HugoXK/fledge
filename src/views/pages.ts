@@ -4499,10 +4499,12 @@ export function appReposPage(input: {
   installations: Array<{ installation_id: number; account_login: string; account_type: string }>
   installationId?: number
   repos?: InstallationRepo[]
+  /** #1099: repository key (`owner/name`, lower case) to its id, for the rows this workspace already holds. */
+  connected?: Map<string, string>
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, installations, installationId, repos, notice, error } = input
+  const { config, locale, viewer, installations, installationId, repos, connected, notice, error } = input
   const t = translator(locale)
   const installUrl = config.githubApp.slug === '' ? '' : `https://github.com/apps/${encodeURIComponent(config.githubApp.slug)}/installations/new`
   const installationList = installations.length === 0
@@ -4522,11 +4524,20 @@ export function appReposPage(input: {
       </div>
       <p class="fine">${escapeHtml(t('添加后请为每个仓库选择 maintainer 或 developer；角色来自你的 GitHub 权限，Fledge 不会自动选择。', 'After adding, choose maintainer or developer for each repository. The role comes from your GitHub permission; Fledge will not choose it for you.'))}</p>
     </div>`
-  const repoRows = (repos ?? []).map((repo) => `<tr>
-    <td><label class="check"><input type="checkbox" name="repo" value="${escapeHtml(repo.fullName)}" /> <strong>${escapeHtml(repo.fullName)}</strong></label></td>
+  const repoRows = (repos ?? []).map((repo) => {
+    const connectedId = connected?.get(repo.fullName.toLowerCase())
+    const control = connectedId === undefined
+      ? `<input type="checkbox" name="repo" value="${escapeHtml(repo.fullName)}" />`
+      : `<input type="checkbox" name="repo" value="${escapeHtml(repo.fullName)}" disabled />`
+    const state = connectedId === undefined
+      ? ''
+      : ` <span class="badge">${escapeHtml(t('已接入', 'Already connected'))}</span> <a class="link" href="/repos/${escapeHtml(connectedId)}">${escapeHtml(t('打开', 'Open'))}</a>`
+    return `<tr>
+    <td><label class="check">${control} <strong>${escapeHtml(repo.fullName)}</strong></label>${state}</td>
     <td>${repo.private ? escapeHtml(t('私有', 'Private')) : escapeHtml(t('公开', 'Public'))}</td>
     <td><code>${escapeHtml(repo.defaultBranch)}</code></td>
-  </tr>`).join('')
+  </tr>`
+  }).join('')
   const picker = installationId === undefined
     ? ''
     : `<section class="card">
