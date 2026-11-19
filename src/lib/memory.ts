@@ -15,11 +15,15 @@ import type { RepoRole } from './repoRole.js'
 
 export const MEMORY_KINDS = ['goal', 'decision', 'convention', 'implementation', 'experience', 'hypothesis'] as const
 export const MEMORY_STATUSES = ['active', 'needs_review', 'conflict', 'archived', 'revoked'] as const
+// The values a person may pick in the write form. `document` is deliberately not
+// one of them: #1070 gives it to a proof the route reads from GitHub, so a form
+// post that names it is refused like any other unknown value.
 export const MEMORY_VERIFICATIONS = ['human_asserted', 'observed', 'unverified'] as const
+export const MEMORY_DOCUMENT_VERIFICATION = 'document'
 
 export type MemoryKind = (typeof MEMORY_KINDS)[number]
 export type MemoryStatus = (typeof MEMORY_STATUSES)[number]
-export type MemoryVerification = (typeof MEMORY_VERIFICATIONS)[number]
+export type MemoryVerification = (typeof MEMORY_VERIFICATIONS)[number] | typeof MEMORY_DOCUMENT_VERIFICATION
 
 // Keys are stable identifiers a person types in a prompt or a citation, so they
 // are lowercase, short and free of whitespace. A key is unique inside one repo.
@@ -131,7 +135,9 @@ export function parseMemoryInput(
   if (body.length > MEMORY_BODY_MAX) return { ok: false, refused: 'body_too_long' }
   if (!MEMORY_KINDS.includes(kind)) return { ok: false, refused: 'kind_invalid' }
   if (!MEMORY_STATUSES.includes(status)) return { ok: false, refused: 'status_invalid' }
-  if (!MEMORY_VERIFICATIONS.includes(verification)) return { ok: false, refused: 'verification_invalid' }
+  // `document` is not a value a form may set: only the merge/blob proof in the
+  // route writes it, so a typed one is refused like any other unknown value.
+  if (!(MEMORY_VERIFICATIONS as readonly string[]).includes(verification)) return { ok: false, refused: 'verification_invalid' }
   if (!isMemoryAudience(audience)) return { ok: false, refused: 'audience_invalid' }
   // A writer may not author an entry for a role it cannot act as. Without this a
   // developer-role reader could plant a maintainer-scoped "decision" that only
@@ -227,6 +233,9 @@ export function memoryVerificationLabel(t: Translate, verification: string): str
     case 'human_asserted': return t('人已确认', 'Human asserted')
     case 'observed': return t('观察所得', 'Observed')
     case 'unverified': return t('未验证', 'Unverified')
+    // #1070: the entry is owned by a merged repository document, so the label
+    // says where the authority came from rather than who typed it.
+    case MEMORY_DOCUMENT_VERIFICATION: return t('仓库文档', 'Repository document')
     default: return verification
   }
 }

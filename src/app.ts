@@ -137,7 +137,8 @@ import { rulesOverridesPage } from './views/rules.js'
 import { ciGatePage } from './views/ciGate.js'
 import { reportCiGate } from './lib/ciGate.js'
 import { isRulePath, MAX_RULE_FILE_BYTES } from './rules.js'
-import { audienceVisible, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
+import { audienceVisible, MEMORY_DOCUMENT_VERIFICATION, memoryDigest, parseMemoryInput, searchMemories, visibleMemories } from './lib/memory.js'
+import { documentRefusal, isAncestorStatus, isDocumentPath, type DocumentProof } from './lib/memoryDocument.js'
 import { DENSITY_COOKIE, isDensity, resolveDensity } from './views/density.js'
 import { THEME_COOKIE, isTheme, resolveTheme, withTheme } from './views/theme.js'
 import { GithubClient, GithubError, parseRepoInput, prepareRepo, prepareRepoWithInstallation, repoPermissionWithToken } from './repos/github.js'
@@ -2979,11 +2980,71 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/memory', async (request, reply) => {
     const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const role = parseRepoRole(repo.repo_role)
-    const parsed = parseMemoryInput(form(request), { role, allowedRoles: allowedRepoRoles(repo.permission) })
+    const values = form(request)
+    const parsed = parseMemoryInput(values, { role, allowedRoles: allowedRepoRoles(repo.permission) })
     if (!parsed.ok) {
       return reply.redirect(`/repos/${repo.id}/memory?refused=${encodeURIComponent(parsed.refused)}`)
     }
     const input = parsed.value
+    // #1070: a write may ask to be owned by a repository document. The proof is
+    // read here, from GitHub, and only a complete one reaches the store: the PR
+    // merged, onto the default branch, its merge commit on the live default
+    // branch, and the same blob at the path in both places. The refusal names the
+    // one fact that failed, and a refused write changes nothing.
+    const documentPathRaw = typeof values.document_path === 'string' ? values.document_path.trim() : ''
+    const documentPrRaw = typeof values.document_pr === 'string' ? values.document_pr.trim() : ''
+    const wantsDocument = documentPathRaw !== '' || documentPrRaw !== ''
+    let documentPath: string | null = null
+    let documentPr: number | null = null
+    if (wantsDocument) {
+      if (!isDocumentPath(documentPathRaw)) {
+        return reply.redirect(`/repos/${repo.id}/memory?refused=document_path_invalid`)
+      }
+      const prNumber = Number(documentPrRaw)
+      if (documentPrRaw === '' || !Number.isInteger(prNumber) || prNumber <= 0) {
+        return reply.redirect(`/repos/${repo.id}/memory?refused=document_pr_invalid`)
+      }
+      const token = await repoGithubToken(repo, config, githubApp, store)
+      if (token === '') return reply.redirect(`/repos/${repo.id}/memory?refused=document_unavailable`)
+      let proof: DocumentProof
+      try {
+        const client = new GithubClient(token, config.github.apiBase)
+        const pull = await client.getPullRequest(repo.owner, repo.name, prNumber)
+        const mergeCommitSha = pull.merged ? pull.mergeCommitSha ?? '' : ''
+        const ancestor = mergeCommitSha === ''
+          ? false
+          : isAncestorStatus((await client.compareCommits(repo.owner, repo.name, mergeCommitSha, repo.default_branch)).status)
+        const mergeBlob = mergeCommitSha === ''
+          ? null
+          : await client.getContentAtRef(repo.owner, repo.name, documentPathRaw, mergeCommitSha)
+        const liveBlob = await client.getContentAtRef(repo.owner, repo.name, documentPathRaw, repo.default_branch)
+        proof = {
+          path: documentPathRaw,
+          pr: prNumber,
+          merged: pull.merged,
+          base: pull.base,
+          defaultBranch: repo.default_branch,
+          mergeCommitSha,
+          ancestor,
+          mergeBlobSha: mergeBlob === null ? null : mergeBlob.sha,
+          liveBlobSha: liveBlob === null ? null : liveBlob.sha,
+        }
+      } catch (error) {
+        // A PR that does not exist (or that this token cannot read) is the same
+        // answer as a bad number; anything else is the API being unavailable, and
+        // neither is a promotion.
+        if (error instanceof GithubError && error.status === 404) {
+          return reply.redirect(`/repos/${repo.id}/memory?refused=document_pr_invalid`)
+        }
+        return reply.redirect(`/repos/${repo.id}/memory?refused=document_unavailable`)
+      }
+      const refused = documentRefusal(proof)
+      if (refused !== null) {
+        return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&refused=${refused}`)
+      }
+      documentPath = documentPathRaw
+      documentPr = prNumber
+    }
     // An entry outside the actor's audience is not a write target. Refuse it
     // before the revision fence so a hidden key is not a revision oracle, and use
     // the same refusal an update to a missing entry gives.
@@ -2996,7 +3057,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       key: input.key,
       kind: input.kind,
       status: input.status,
-      verification: input.verification,
+      verification: documentPath === null ? input.verification : MEMORY_DOCUMENT_VERIFICATION,
       audience: input.audience,
       scope: input.scope,
       body: input.body,
@@ -3005,6 +3066,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       actorType: 'human',
       actorId: viewer.user.id,
       sourceJobId: null,
+      documentPath,
+      documentPr,
       reason: input.reason,
       expectedRevision: input.expectedRevision,
     })
@@ -3012,6 +3075,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // A write aimed at a revision that no longer exists has no key to show, so
       // it names the refusal instead of landing on a page for an entry that is gone.
       if (result.code === 'memory_not_found') return reply.redirect(`/repos/${repo.id}/memory?refused=memory_not_found`)
+      if (result.code === 'memory_document_locked') {
+        return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&refused=memory_document_locked`)
+      }
       return reply.redirect(`/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}&conflict=${result.revision}`)
     }
     const base = `/repos/${repo.id}/memory?key=${encodeURIComponent(input.key)}`
