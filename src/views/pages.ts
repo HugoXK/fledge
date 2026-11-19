@@ -4550,11 +4550,25 @@ export function appReposPage(input: {
     <td><code>${escapeHtml(repo.defaultBranch)}</code></td>
   </tr>`
   }).join('')
+  // #1102: "not read" and "read and empty" are two answers, and the page used to
+  // print the empty one for both. A failed listing keeps GitHub's reason and
+  // offers the same URL again, since nothing was selected yet. A genuinely empty
+  // installation keeps its sentence and gains the manage-installation link, which
+  // is only drawn when the App has a slug to point at.
+  const retryUrl = `/repos/new?installation=${installationId ?? ''}`
+  const pickerBody = repos === undefined
+    ? `<p class="muted">${escapeHtml(t('无法读取这个安装的仓库列表。', "This installation's repository list could not be read."))}</p>
+        ${error === undefined || error === '' ? '' : `<p class="muted">${escapeHtml(error)}</p>`}
+        <p><a class="btn btn-ghost" href="${escapeHtml(retryUrl)}">${escapeHtml(t('重试', 'Retry'))}</a></p>`
+    : repoRows === ''
+      ? `<p class="muted">${escapeHtml(t('这个安装没有可访问的仓库。', 'This installation has no accessible repositories.'))}</p>
+        ${installUrl === '' ? '' : `<p><a class="btn" href="${escapeHtml(installUrl)}" target="_blank" rel="noreferrer">${escapeHtml(t('授权更多仓库', 'Grant more repositories'))}</a></p>`}`
+      : `<form method="post" action="/repos/app" class="form">${csrf(viewer)}<input type="hidden" name="installation" value="${installationId}" /><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('可见性', 'Visibility'))}</th><th>${escapeHtml(t('默认分支', 'Default branch'))}</th></tr></thead><tbody>${repoRows}</tbody></table></div>${commonFields}<button class="btn" type="submit">${escapeHtml(t('接入选中的仓库', 'Connect selected repositories'))}</button></form>`
   const picker = installationId === undefined
     ? ''
     : `<section class="card">
         <h2>${escapeHtml(t('选择要接入的仓库', 'Choose repositories'))}</h2>
-        ${repoRows === '' ? `<p class="muted">${escapeHtml(t('这个安装没有可访问的仓库。', 'This installation has no accessible repositories.'))}</p>` : `<form method="post" action="/repos/app" class="form">${csrf(viewer)}<input type="hidden" name="installation" value="${installationId}" /><div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('可见性', 'Visibility'))}</th><th>${escapeHtml(t('默认分支', 'Default branch'))}</th></tr></thead><tbody>${repoRows}</tbody></table></div>${commonFields}<button class="btn" type="submit">${escapeHtml(t('接入选中的仓库', 'Connect selected repositories'))}</button></form>`}
+        ${pickerBody}
       </section>`
   const body = `<section class="card">
     <div class="row between">
