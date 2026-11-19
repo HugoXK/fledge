@@ -147,6 +147,22 @@ test('the footer links, the ghost buttons and the checkbox rows reach the floor'
   assert.equal(lastValue('label.check', 'min-height', 360), 'var(--touch)')
 })
 
+test('a text field carries the 44px floor the select beside it already has', () => {
+  // The measured gate (#870) failed `/settings` at 768 and 1280 with
+  // `input is 736x44px, under the 44px touch floor`: the personal-token purpose
+  // field renders 43.69px, because `padding: 10px 12px` plus the 14px line box
+  // lands 0.31px short. A field inside a `.form label` is measured through its
+  // label, so only the bare field in the token `.row` failed, but the field
+  // itself is what is short. `select` already carries the floor; the fields that
+  // share its rule carry it too. The checkbox and radio glyphs keep their glyph
+  // size: `label.check` is the 44px box that wraps them.
+  const field = 'input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"])'
+  assert.equal(lastValue(field, 'min-height', 768), 'var(--touch)', 'a desktop text field carries the 44px floor')
+  assert.equal(lastValue(field, 'min-height', 1280), 'var(--touch)', 'a desktop text field carries the 44px floor')
+  assert.equal(lastValue('select', 'min-height', 768), 'var(--touch)', 'the select beside it keeps the floor it had')
+  assert.equal(lastValue('input[type="checkbox"]', 'min-height', 768), null, 'the checkbox glyph keeps its size; its label is the target')
+})
+
 test('a field focused on a phone no longer zooms the page', () => {
   for (const selector of ['input, textarea, select', 'input', 'select', 'textarea']) {
     // The base rule groups them; the phone block must set the same value for the

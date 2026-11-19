@@ -751,7 +751,14 @@ input, textarea, select {
 }
 input:focus, textarea:focus, select:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-a16); }
 /* The visual gate (issue 870): four selects rendered 40-43px tall because their
-   own rule never carried the --touch floor, while every other field kept it. */
+   own rule never carried the --touch floor.
+   A text field never carried it either. `padding: 10px 12px` plus the
+   14px line box is 43.69px, three tenths under the floor, and a field inside a
+   `.form label` hides that because the gate measures the label. The token form's
+   field sits bare in a `.row`, so it was the one that failed at 768 and 1280.
+   The floor belongs on the field, not on the wrapper: the checkbox and radio
+   glyphs are excluded because `label.check` is their 44px box. */
+input:not([type="checkbox"]):not([type="radio"]):not([type="hidden"]),
 select { min-height: var(--touch); }
 /* A disclosure row is a control like any other: the card holds every control in
    the gate's list to 44px, so the row carries the --touch floor instead of the
