@@ -1320,6 +1320,11 @@ export interface ProjectMemoryRow {
   owner_type: string
   owner_id: string | null
   source_job_id: string | null
+  // #1070: set only by the document proof — the repository path whose merged
+  // blob this entry restates, and the PR that merged it. A row that carries a
+  // path has a `document` verification and a body the store refuses to rewrite.
+  document_path: string | null
+  document_pr: number | null
   revision: number
   created_at: string
   updated_at: string
@@ -1356,6 +1361,8 @@ export interface MemoryWriteInput {
   actorType: string
   actorId: string | null
   sourceJobId: string | null
+  documentPath?: string | null
+  documentPr?: number | null
   reason: string
   // The revision the writer believed it was replacing. `0` means "create only":
   // an existing entry at the same key refuses the write instead of adopting it.
@@ -1365,6 +1372,9 @@ export interface MemoryWriteInput {
 export type MemoryWriteResult =
   | { ok: true; created: boolean; noop: boolean; row: ProjectMemoryRow }
   | { ok: false; code: 'memory_revision_conflict' | 'memory_not_found'; current: ProjectMemoryRow | null; revision: number }
+  // #1070: the entry is owned by a merged document, so its body and its proof
+  // are not a person's to rewrite. The refusal names the document.
+  | { ok: false; code: 'memory_document_locked'; current: ProjectMemoryRow; revision: number; documentPath: string; documentPr: number | null }
 
 // #1026: the ledger's shape is written once and used twice — `SCHEMA` creates it
 // on a fresh database, and the migration replaces an old-shape table with this
@@ -2220,6 +2230,8 @@ CREATE TABLE IF NOT EXISTS project_memories (
   owner_type TEXT NOT NULL,
   owner_id TEXT,
   source_job_id TEXT,
+  document_path TEXT,
+  document_pr INTEGER,
   revision INTEGER NOT NULL,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
@@ -2799,6 +2811,7 @@ export class Store {
     this.migratePrincipalColumns()
     this.migrateReleaseColumns()
     this.migrateTestRunsShape()
+    this.migrateProjectMemoryColumns()
     this.migrateIndexes()
     this.backfillTokenRepoIds()
     this.migrateModelsV2()
@@ -3057,6 +3070,19 @@ export class Store {
   // #546 slice 3: tracking columns are added to the row the tag write already
   // created. `status` existed at slice 1, so the tracker reuses it rather than
   // adding a second state column; a fresh schema carries these from the start.
+  // #1070: the document proof lives on the entry row. Both columns are nullable,
+  // so every existing entry keeps its meaning and the old build ignores them.
+  private migrateProjectMemoryColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(project_memories)').map((row) => row.name))
+    const additions: Array<[string, string]> = [
+      ['document_path', 'TEXT'],
+      ['document_pr', 'INTEGER'],
+    ]
+    for (const [name, type] of additions) {
+      if (!columns.has(name)) this.run(`ALTER TABLE project_memories ADD COLUMN ${name} ${type}`)
+    }
+  }
+
   private migrateReleaseColumns(): void {
     const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(repo_releases)').map((row) => row.name))
     const additions: Array<[string, string]> = [
@@ -4240,8 +4266,8 @@ export class Store {
         this.run(
           `INSERT INTO project_memories
             (id, repo_id, key, kind, status, verification, audience, scope, body, digest, sources_json,
-             owner_type, owner_id, source_job_id, revision, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
+             owner_type, owner_id, source_job_id, document_path, document_pr, revision, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, ?)`,
           id,
           input.repoId,
           input.key,
@@ -4256,6 +4282,8 @@ export class Store {
           input.actorType,
           input.actorId,
           input.sourceJobId,
+          input.documentPath ?? null,
+          input.documentPr ?? null,
           at,
           at,
         )
@@ -4265,8 +4293,30 @@ export class Store {
         return { ok: true, created: true, noop: false, row }
       }
       // A stale writer is refused by name and the current entry is untouched.
+      // This comes first: a writer working from an old revision has to see the
+      // fresh entry before it can be told the body is not its to change.
       if (current.revision !== input.expectedRevision) {
         return { ok: false, code: 'memory_revision_conflict', current, revision: current.revision }
+      }
+      const documentPath = current.document_path
+      if (documentPath !== null) {
+        // #1070: a merged document owns the body. The fence sits in the store,
+        // not only in the route, so a second caller cannot rewrite it either.
+        const moved =
+          current.body !== input.body ||
+          current.verification !== input.verification ||
+          documentPath !== (input.documentPath ?? null) ||
+          current.document_pr !== (input.documentPr ?? null)
+        if (moved) {
+          return {
+            ok: false,
+            code: 'memory_document_locked',
+            current,
+            revision: current.revision,
+            documentPath,
+            documentPr: current.document_pr,
+          }
+        }
       }
       const unchanged =
         current.kind === input.kind &&
@@ -4275,13 +4325,15 @@ export class Store {
         current.audience === input.audience &&
         current.scope === input.scope &&
         current.body === input.body &&
-        current.sources_json === input.sourcesJson
+        current.sources_json === input.sourcesJson &&
+        current.document_path === (input.documentPath ?? null) &&
+        current.document_pr === (input.documentPr ?? null)
       if (unchanged) return { ok: true, created: false, noop: true, row: current }
       const next = current.revision + 1
       this.run(
         `UPDATE project_memories
             SET kind = ?, status = ?, verification = ?, audience = ?, scope = ?, body = ?, digest = ?,
-                sources_json = ?, revision = ?, updated_at = ?
+                sources_json = ?, document_path = ?, document_pr = ?, revision = ?, updated_at = ?
           WHERE id = ? AND revision = ?`,
         input.kind,
         input.status,
@@ -4291,6 +4343,8 @@ export class Store {
         input.body,
         input.digest,
         input.sourcesJson,
+        input.documentPath ?? null,
+        input.documentPr ?? null,
         next,
         at,
         current.id,

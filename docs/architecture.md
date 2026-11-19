@@ -3102,10 +3102,27 @@ never updated in place). `src/lib/memory.ts` holds the rules that are not SQL.
   cannot lengthen the list. There is no ranking and no embedding, so the same
   store always answers the same way.
 
+- **A merged document can own an entry (`#1070`).** A write may carry
+  `document_path` and `document_pr`. The route reads four facts from GitHub and
+  `src/lib/memoryDocument.ts` decides: the PR is merged, its base is the
+  repository's default branch, its merge commit is an ancestor of the live
+  default branch (`compareCommits` answers `ahead` or `identical`), and the blob
+  SHA at that path is the same at the merge commit and on the default branch
+  today. Only a file has a blob: a directory, a submodule and a symlink each
+  answer a `sha` of their own, so the route reads their type and a non-file is
+  refused as `document_blob_missing` rather than locking the entry to a tree. Each failing fact is its own refusal (`document_not_merged`,
+  `document_base_not_default`, `document_not_on_default`, `document_blob_missing`,
+  `document_blob_moved`), and a refused link writes nothing. A complete proof
+  stores the path and PR on the row and sets the verification to `document`; from
+  then on `writeMemory` refuses a changed body or proof with
+  `memory_document_locked` and names the document, and the page shows the path,
+  the PR and a read-only body. `document` is not a value the write form offers, so
+  a typed one is refused as `verification_invalid`.
+
 The slice is the repository page (`/repos/:id/memory`, `src/views/memory.ts`).
 Not built yet: the bounded index handed to a job prompt and the agent read tool
-(`src/jobs/service.ts`), repository-document promotion with merge/blob proof,
-review scheduling and export.
+(`src/jobs/service.ts`), the read-time `source_changed`/`source_unavailable` re-check of a
+promoted document, review scheduling and export.
 
 ### The agent may propose, a human decides (`#638` slice 1)
 

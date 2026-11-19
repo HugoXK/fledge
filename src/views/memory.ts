@@ -65,6 +65,17 @@ function refusalText(t: (zh: string, en: string) => string, code: string): strin
     case 'source_invalid': return t('来源必须是一个最多 20 条的 JSON 字符串数组。', 'Sources must be a JSON array of at most 20 strings.')
     case 'memory_not_found': return t('你要修改的这条记忆已经不存在了；请作为新条目重新写入。', 'The entry you tried to update no longer exists; write it again as a new entry.')
     case 'query_too_long': return t(`搜索词最多 ${MEMORY_QUERY_MAX} 个字符。`, `A search term is limited to ${MEMORY_QUERY_MAX} characters.`)
+    // #1070: one line per proof that failed, because each one asks the maintainer
+    // to fix something different before the link can be made.
+    case 'document_pr_invalid': return t('请填写一个存在的、这个仓库里的 PR 编号。', 'Name a pull request number that exists in this repository.')
+    case 'document_path_invalid': return t('文档路径必须是仓库里的相对路径，例如 docs/decisions/x.md。', 'A document path is a repository-relative path such as docs/decisions/x.md.')
+    case 'document_not_merged': return t('这个 PR 还没有合并，所以它不能证明任何事。', 'That pull request is not merged, so it proves nothing.')
+    case 'document_base_not_default': return t('这个 PR 的目标不是仓库的默认分支，所以它的内容不在默认分支上。', 'That pull request targets another branch, so its content is not on the default branch.')
+    case 'document_not_on_default': return t('这个 PR 的合并提交不在当前的默认分支上；它可能被回滚或从未落地。', 'The merge commit of that pull request is not on the current default branch; it may have been reverted or never landed.')
+    case 'document_blob_missing': return t('这个路径在合并提交或默认分支上不存在，所以没有可对照的文档。', 'That path is missing at the merge commit or on the default branch, so there is no document to match.')
+    case 'document_blob_moved': return t('这个文档在合并之后又改过了，所以它已经不能证明这条记忆。', 'The document changed after the merge, so it no longer proves this entry.')
+    case 'document_unavailable': return t('现在读不到这个仓库的 GitHub 数据，请稍后再试。', 'This repository’s GitHub data could not be read just now; try again.')
+    case 'memory_document_locked': return t('这条记忆由一份合并过的仓库文档拥有，正文不能再改写；要改就改那份文档并重新建立关联。', 'This entry is owned by a merged repository document, so its body is no longer editable; change the document and link the entry again.')
     default: return t('这次写入没有被接受。', 'The write was not accepted.')
   }
 }
@@ -99,6 +110,20 @@ export function memoryPage(input: MemoryPageInput): string {
     banners.push(`<p class="banner bad" data-memory-refused="${escapeHtml(search.refused)}">${escapeHtml(refusalText(t, search.refused))}</p>`)
   }
 
+  const repoBase = `https://github.com/${repo.owner}/${repo.name}`
+  const defaultBranch = repo.default_branch === '' ? 'main' : repo.default_branch
+  const blobHref = (path: string): string =>
+    `${repoBase}/blob/${encodeURIComponent(defaultBranch)}/${path.split('/').map(encodeURIComponent).join('/')}`
+  // #1070: a promoted row names the document and the pull request that merged
+  // it, so the verification label is never a claim without a place to check.
+  const documentCell = (row: ProjectMemoryRow): string => {
+    if (row.document_path === null) return ''
+    const pr = row.document_pr === null
+      ? ''
+      : ` · <a class="link" href="${escapeHtml(`${repoBase}/pull/${row.document_pr}`)}" target="_blank" rel="noreferrer">#${row.document_pr}</a>`
+    return ` <span class="badge good" data-memory-document-path="${escapeHtml(row.document_path)}" data-memory-document-pr="${row.document_pr === null ? '' : String(row.document_pr)}"><a class="link" href="${escapeHtml(blobHref(row.document_path))}" target="_blank" rel="noreferrer"><code>${escapeHtml(row.document_path)}</code></a>${pr}</span>`
+  }
+
   const rows = search.matches
     .map((row) => {
       const href = `/repos/${escapeHtml(repo.id)}/memory?key=${encodeURIComponent(row.key)}`
@@ -106,7 +131,7 @@ export function memoryPage(input: MemoryPageInput): string {
         <td><a href="${href}"><code>${escapeHtml(row.key)}</code></a>${isAgentProposal(row) ? ` <span class="badge busy" data-memory-proposal="agent">${escapeHtml(t('助手提议，待确认', 'agent proposal, needs a human'))}</span>` : ''}</td>
         <td>${escapeHtml(memoryKindLabel(t, row.kind))}</td>
         <td>${escapeHtml(memoryStatusLabel(t, row.status))}</td>
-        <td>${escapeHtml(memoryVerificationLabel(t, row.verification))}</td>
+        <td>${escapeHtml(memoryVerificationLabel(t, row.verification))}${documentCell(row)}</td>
         <td>${escapeHtml(memoryAudienceLabel(t, row.audience))}</td>
         <td>${row.revision}</td>
         <td>${escapeHtml(humanTimeShort(row.updated_at))}</td>
@@ -128,7 +153,6 @@ export function memoryPage(input: MemoryPageInput): string {
   // lists them beside the revision they belong to. A reference Fledge can turn
   // into a GitHub URL is a link; anything else is shown as recorded and marked
   // unrecognised rather than looking resolved when it is not.
-  const repoBase = `https://github.com/${repo.owner}/${repo.name}`
   const sourceHref = (source: string): string | null => {
     const pullRequest = /^pr#(\d{1,6})$/.exec(source)
     if (pullRequest !== null) return `${repoBase}/pull/${pullRequest[1]}`
@@ -161,6 +185,7 @@ export function memoryPage(input: MemoryPageInput): string {
           ${escapeHtml(t('版本', 'Revision'))} ${detail.version.revision} · ${escapeHtml(memoryKindLabel(t, entry.kind))} · ${escapeHtml(memoryStatusLabel(t, entry.status))} · ${escapeHtml(memoryVerificationLabel(t, entry.verification))} · ${escapeHtml(memoryAudienceLabel(t, entry.audience))}
           ${entry.scope === '' ? '' : ` · <code>${escapeHtml(entry.scope)}</code>`}
         </p>
+        ${entry.document_path === null ? '' : `<p class="muted" data-memory-document-owner="${escapeHtml(entry.document_path)}">${escapeHtml(t(`这条记忆由仓库文档 ${entry.document_path}${entry.document_pr === null ? '' : `（PR #${entry.document_pr}）`} 拥有，正文只读。`, `This entry is owned by the repository document ${entry.document_path}${entry.document_pr === null ? '' : ` (PR #${entry.document_pr})`}, so its body is read-only.`))}</p>`}
         <p class="muted">${escapeHtml(t('正文摘要', 'Body digest'))}: <code>${escapeHtml(detail.version.digest)}</code> · ${escapeHtml(t('写入', 'Written'))} ${escapeHtml(humanTimeShort(detail.version.created_at))}${detail.version.reason === '' ? '' : ` · ${escapeHtml(t('原因', 'Reason'))}: ${escapeHtml(detail.version.reason)}`}</p>
         <pre class="memory-body">${escapeHtml(detail.version.body)}</pre>
         ${canDecideProposal(entry, role) ? `<div class="memory-decision" data-memory-proposal="${escapeHtml(entry.key)}">
@@ -191,12 +216,21 @@ export function memoryPage(input: MemoryPageInput): string {
         ${entry === undefined ? '' : `<p class="fine" id="memory-key-rule">${escapeHtml(t('键是条目的身份：写入新版本不能改名。要用别的键，请作为新条目重新写入。', 'The key is the entry identity: a new revision cannot rename it. Write a new entry to use a different key.'))}</p>`}
         <label for="memory-kind">${escapeHtml(t('类型', 'Kind'))}${select('kind', MEMORY_KINDS, entry?.kind ?? 'decision', (value) => memoryKindLabel(t, value), t)}</label>
         <label for="memory-status">${escapeHtml(t('状态', 'Status'))}${select('status', MEMORY_STATUSES, entry?.status ?? 'active', (value) => memoryStatusLabel(t, value), t)}</label>
-        <label for="memory-verification">${escapeHtml(t('验证', 'Verification'))}${select('verification', MEMORY_VERIFICATIONS, entry?.verification ?? 'human_asserted', (value) => memoryVerificationLabel(t, value), t)}</label>
+        ${entry?.document_path == null
+      ? `<label for="memory-verification">${escapeHtml(t('验证', 'Verification'))}${select('verification', MEMORY_VERIFICATIONS, entry?.verification ?? 'human_asserted', (value) => memoryVerificationLabel(t, value), t)}</label>`
+      : `<input type="hidden" name="verification" value="${escapeHtml(entry.verification)}" />
+        <p class="fine" data-memory-document-fixed="${escapeHtml(entry.document_path)}">${escapeHtml(t('验证方式由仓库文档决定，不能在这里改。', 'The verification is decided by the repository document and cannot be changed here.'))}</p>`}
         <label for="memory-audience">${escapeHtml(t('可见范围', 'Audience'))}${select('audience', audiences, entry?.audience ?? 'project', (value) => memoryAudienceLabel(t, value), t)}</label>
         <label for="memory-scope">${escapeHtml(t('范围（模块或路径）', 'Scope (module or path)'))}<input id="memory-scope" name="scope" value="${escapeHtml(entry?.scope ?? '')}" /></label>
       <p class="fine">${escapeHtml(t(`当前仓库角色：${role === null ? '未选择' : role}。角色条目只有该角色能读到；即使是管理员，切到别的角色也读不到。`, `Current repository role: ${role === null ? 'not chosen' : role}. A role entry is readable only by that role, and an administrator acting as another role cannot read it either.`))}</p>
-      <label for="memory-body">${escapeHtml(t('正文', 'Body'))}<textarea id="memory-body" name="body" rows="4" required>${escapeHtml(entry?.body ?? '')}</textarea></label>
+      <label for="memory-body">${escapeHtml(t('正文', 'Body'))}<textarea id="memory-body" name="body" rows="4" required${entry?.document_path == null ? '' : ' readonly'}>${escapeHtml(entry?.body ?? '')}</textarea></label>
       <label for="memory-reason">${escapeHtml(t('修改原因（可选）', 'Reason (optional)'))}<input id="memory-reason" name="reason" maxlength="200" /></label>
+      ${entry?.document_path == null ? `<fieldset class="memory-document">
+        <legend>${escapeHtml(t('由仓库文档拥有（可选）', 'Owned by a repository document (optional)'))}</legend>
+        <p class="fine">${escapeHtml(t('填一个已合并的 PR 和它合并的路径；只有 PR 已合并、基于默认分支、合并提交在默认分支上、并且路径的 blob 今天仍然一致时，关联才会被接受。', 'Name a merged pull request and the path it merged; the link is accepted only when the pull request is merged, based on the default branch, its merge commit is on the default branch, and the blob at the path still matches today.'))}</p>
+        <label for="memory-document-path">${escapeHtml(t('文档路径', 'Document path'))}<input id="memory-document-path" name="document_path" placeholder="docs/decisions/x.md" /></label>
+        <label for="memory-document-pr">${escapeHtml(t('PR 编号', 'Pull request'))}<input id="memory-document-pr" name="document_pr" inputmode="numeric" placeholder="12" /></label>
+      </fieldset>` : ''}
       <button class="btn" type="submit">${escapeHtml(entry === undefined ? t('写入版本 1', 'Write revision 1') : t('写入新版本', 'Write new revision'))}</button>
     </form>
   </section>`
