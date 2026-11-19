@@ -901,6 +901,12 @@ server {
 
   client_max_body_size 25m;
 
+  # #1009: inherited by both locations; `always` covers nginx's own 4xx/5xx.
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header X-Frame-Options "DENY" always;
+
   location / {
     proxy_pass http://127.0.0.1:8080;
     proxy_http_version 1.1;
@@ -921,7 +927,29 @@ server {
     proxy_read_timeout 30m;
   }
 }
+
+server {
+  listen 80;
+  server_name fledge.example.com;
+
+  add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+  add_header X-Content-Type-Options "nosniff" always;
+  add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+  add_header X-Frame-Options "DENY" always;
+
+  return 301 https://$host$request_uri;
+}
 ```
+
+The sample sets those four headers at server level, each with `always`, because
+the app itself sends HSTS only when `BASE_URL` is `https` (`src/app.ts`) and the
+responses nginx generates on its own — the 80→443 redirect and a 502 while the
+app is down — never reach the app at all. Three rules keep that true: `always`
+is required or nginx skips the header on 4xx/5xx; a `location` that declares
+any `add_header` of its own stops inheriting the server set and must repeat all
+four; and the sample must not rely on `BASE_URL` alone, because its documented
+default is `http://localhost:8080`. A reverse proxy in front of this nginx keeps
+its own copy of the set.
 
 CI syntax-checks the example on every diff that touches `deploy/`: `deploy-check`
 installs nginx, then runs `scripts/check-deploy-samples.sh`, which renders the
@@ -940,6 +968,14 @@ job summary says each check was real (`nginx: real`, `nginx: real negative
 proof`). Locally, `bash scripts/check-deploy-samples.sh` runs the whole contract
 and prints one line per check; `bash scripts/check-nginx-config.sh` is the nginx
 half on its own.
+
+The same half also asserts the four security headers statically on the rendered
+sample — every top-level server block, each header with `always` (#1009) — and
+the contract drives two negative copies through it: one with the framing header
+deleted and one whose HSTS line lost `always`, both of which must be rejected
+with the header named. That half is static on purpose: a proxied 2xx probe is
+green today because the app already sends three of the four, so it could not be
+the assertion.
 
 The systemd sample is gated by a static parse, `scripts/check-systemd-unit.mjs`,
 chosen over `systemd-analyze verify` because that binary is absent on a GitHub
