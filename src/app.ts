@@ -1837,6 +1837,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       // recorded can be shown against what the repository says now.
       repo,
       occurrences: store.listScheduleOccurrences(repo.id, 20),
+      // #1055: the success is read at any age, not searched for in the window
+      // above — a schedule skipped twenty times after a good run still has one.
+      lastSucceeded: store.newestSucceededDispatch(repo.id),
       now,
       jobStatus: (jobId) => store.getJob(jobId)?.status ?? null,
       // #544: the delivery fact is the state of the notification the newest run's
