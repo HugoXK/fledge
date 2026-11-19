@@ -268,6 +268,14 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   run is not a known time and never shadows one), or says that no repository runs
   automatically. Every source is one the route already loads, so the block cannot
   disagree with the sections below it.
+- **Decision queue** (`src/views/pages.ts`, `repoDecisionsFor`): the card above is
+  account-wide, so `/dashboard` also lists one row per repository (#655). A row
+  carries exactly one thing — an answer, the repository's most urgent alert, or
+  its newest failed job, ranked in that order — and a repository that needs
+  nothing says when the platform runs there next and what it last produced
+  instead of showing an empty widget. The route reads each repository's own
+  newest jobs for this (`store.listJobsForRepo`), because the paged job table
+  would make a failure in the eleventh repository invisible.
 - **Work-loop rail** (`src/views/pages.ts`, `loopStage`): the same header draws the
   five steps Connect → Goal → Work → Review → Merge and marks one of them current.
   Only a real position can be marked: an open question or a failed job is Work, an
@@ -608,7 +616,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   the schedule's zone, and mark a local time the spring-forward gap removed as
   skipped rather than shifting it. Because the interval form has no timezone, an
   interval that arrives with one is refused by name instead of being accepted and
-  shown as if a zone applied. A preview stores nothing and creates no job. Each
+  shown as if a zone applied. The interval the summary line prints is the stored
+  value echoed exactly through `intervalFieldText`, the same helper the console
+  uses, so a 90-second cadence never reads as two minutes above rows 90 seconds
+  apart (#1054); a whole number of minutes keeps its day/hour/minute label because
+  that label is exact. A preview stores nothing and creates no job. Each
   refusal is authored in both Chinese and English where the planner raises it,
   The console page leads with a human mode picker (#675): every N
   minutes/hours, every day at a time, weekdays at a time, weekly on a weekday,
@@ -619,9 +631,9 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   select and defaults to `Asia/Shanghai` when omitted. The start/end/from window
   is optional and lives under an advanced disclosure, so a reader who only wants
   "weekdays at 09:30" never types cron or an ISO offset.
-  Layered budgets beyond a schedule's own daily run limit and event
-  subscriptions are not built yet (the misfire policy and the notification
-  outbox are, see the slices below).
+  Event subscriptions and the report/development and model/cost split are not
+  built yet (the misfire policy and the notification outbox are, see the slices
+  below); the project and tenant layers of the run budget are added there.
 - **The tick consumes the planner** (#544, third slice): a `schedules` row — at
   most one per repository — makes `nextTime` the only rule for when a work run is
   due, and `repos.interval_minutes` stops deciding for that repository. A
@@ -689,7 +701,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   after the window instead of re-deciding it and two workers cannot both write a
   catch-up. A null `grace_ms` means no bound, which is exactly the behaviour every
   schedule had before the column existed, and the console form carries both
-  fields so a maintainer sets the policy rather than a migration.
+  fields so a maintainer sets the policy rather than a migration. The form takes
+  whole minutes only (#1053): a fractional `grace` is refused with the sentence
+  beside the field instead of being rounded, so a save never rewrites the bound
+  the person typed.
   Reviews keep their own cadence (`review_interval_minutes`): this switches the work loop
   only.
 - **The console reads the planner** (#544, the console slice): `/repos/:id/schedule`
@@ -722,6 +737,12 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   rule restates the worker's formula is gone with the citation it rested on.
   Saving is audited as `schedule.saved` and deleting the row as
   `schedule.removed`, each naming the repository and what changed.
+  **The controls follow the role** (#1052): the console renders only the buttons
+  `ownedRepo` will accept — a viewer reads the schedule and is told that saving
+  needs a developer or maintainer; a developer gets Save and Delete; Pause and
+  Resume need a maintainer and are replaced by the sentence that says so. Run now
+  already followed this rule (#903). The page and the routes now state one rule
+  instead of two, so a rendered button always names an action that answers.
 - **The schedule run budget** (#544, slice 6): a `schedules` row may carry
   `daily_runs`, the most instants it may dispatch in one logical UTC day. The
   window is the day of the **instant being decided** (`src/schedules/budget.ts`,
@@ -738,7 +759,25 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   not run is deleted or its window closed. This is the run-count layer only: the
   cost layer stays where it is — `repos.monthly_budget_cny` / `job_budget_cny`
   for a repository and the account quota for a user — so the two are counted
-  separately. The console prints the limit, today's used count and what is left,
+  separately.
+  Slice 10 adds the project and tenant run layers: `schedule_budgets` carries a
+  `runs` daily limit for a project (the #541 `projects` row, one per repository)
+  and a tenant (the `tenants` row, one per owner). The tick checks the layers in
+  schedule -> project -> tenant order and stops at the first layer whose logical
+  day is already spent (`runBudgetStop`); the project and tenant counts join
+  `schedule_occurrences` to `projects` on the repository, so a tenant limit
+  covers every repository the owner runs in the same UTC day and adding a
+  repository cannot bypass it. The counts are still charged to the instant's
+  logical day, so a retry keeps the original bucket. A missing row is unbounded;
+  `category` is reserved for the later report/development and model/cost split.
+  `Run now` spends the same three layers, because it settles a `dispatched`
+  occurrence, so the press runs the same `runBudgetStop` check before it
+  dispatches, over the window of the occurrence's own logical time; a press
+  refused there settles `skipped` with `budget-exceeded`, starts no job and is
+  not charged, and a replay of its command key answers the same row (#1027).
+  The console still reads the schedule layer; the project and tenant values are
+  set through the store until a form exists. The console prints the limit,
+  today's used count and what is left,
   and a value nobody read prints `unknown` rather than zero. One process ticks, so
   the count and the claim are sequential in one pass and the claim's own
   transaction still makes the instant single-dispatch; a distributed worker
@@ -828,7 +867,24 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   priority, and an `agent-ready` label moves a proposed item to triaged. A
   repository can require a plan before code; a maintainer approves or
   rejects it with allowed/forbidden path constraints, and execution is blocked
-  until approval. An answerless plan does not wait forever: one reminder is sent
+  until approval. #634: the decision is one record on the job row —
+  `plan_hash` (the packet hash of the plan text, its evidence and its base sha,
+  taken by the same canonical JSON the gate session hashes), `plan_approved_by`
+  as the actor of whichever decision stands, `plan_rejected_at` /
+  `plan_reject_reason` for a rejection, and the allow/deny paths. Both doors,
+  the job page form and `/fledge approve`, call `decidePlan`
+  (`src/lib/planDecision.ts`), so the columns, the audit action
+  (`job.plan_approved` / `job.plan_rejected`) and the actor are the same
+  whichever door decided. A second decision is refused rather than written: the
+  first decision's actor and time stand and one audit row exists per plan. The
+  form posts the hash it rendered, so an edit between the page and the POST is
+  `PLAN_HASH_MISMATCH`; a base sha the platform has since measured differently is
+  `PLAN_BASE_MOVED` and names both shas; a rejection needs a reason, and "ask for
+  a revised plan" queues a new plan job on the same work item instead of editing
+  the decided one. A plan row with no work item (written before that link
+  existed) has nothing to queue a revision on, so its card offers reject only and
+  says why, and the route refuses the same case. An answerless plan does not
+  wait forever: one reminder is sent
   `PLAN_REMINDER_DAYS` before the deadline, and at `PLAN_EXPIRY_DAYS` (default 7)
   the tick closes the work item into the existing `closed` state with
   `closed_reason = 'plan_expired'` and an audit row. No state or transition was
@@ -928,7 +984,7 @@ real endpoint and key out of git and out of public documentation.
 
 ### Repository rules and skills
 
-A repository can add `.fledge/rules.md`, `.fledge/review.md`, `.fledge/develop.md` and text skills under `.agents/skills/`. Fledge reads them from the default branch at the job's fixed commit, records the commit and file hashes in `job_contexts`/`job_context_files`, and injects the effective rule text into the bridge prompt. For the three rule files the effective layer is repository file first, then a maintainer-owned console override in `repo_rule_overrides`, then the implicit built-in behaviour; each job records that layer per path in its context. The full text of a skill is read on demand with the job callback secret from `GET /api/jobs/:id/context?path=...`; the endpoint only serves files recorded for that job and only while it is queued or running. A PR that changes a rule or skill file blocks auto-merge until a maintainer acknowledges that head SHA. The set is bounded before it can reach a prompt: 32 KiB per rule file, 32 KiB per skill file, 32 skills, 256 KiB for the whole set, and 16000 bytes for the assembled rule text the bridge prompt carries. A set that crosses any ceiling is refused as a whole rather than truncated, because a job that ran on half its rules would silently lose the other half; the refusal names the file that crossed the limit and the byte count it reached, and the prompt is sent whole or not at all. Details and limits: [rules.md](rules.md).
+A repository can add `.fledge/rules.md`, `.fledge/review.md`, `.fledge/develop.md` and text skills under `.agents/skills/`. Fledge reads them from the default branch at the job's fixed commit, records the commit and file hashes in `job_contexts`/`job_context_files`, and injects the effective rule text into the bridge prompt. For the three rule files the effective layer is repository file first, then a maintainer-owned console override in `repo_rule_overrides`, then the implicit built-in behaviour; each job records that layer per path in its context. A console write carries the revision the form rendered; a write that is refused (a path outside the three files, empty content, a NUL byte, more than 32 KiB, an invalid revision) or that loses the revision race re-renders the override page at `200` with the submitted text and the submitted revision still in the form, instead of redirecting to a page rebuilt from the stored row, so a maintainer never retypes a rejected submission and a resubmit stays refused until the page is reloaded. The full text of a skill is read on demand with the job callback secret from `GET /api/jobs/:id/context?path=...`; the endpoint only serves files recorded for that job and only while it is queued or running. A PR that changes a rule or skill file blocks auto-merge until a maintainer acknowledges that head SHA. The set is bounded before it can reach a prompt: 32 KiB per rule file, 32 KiB per skill file, 32 skills, 256 KiB for the whole set, and 16000 bytes for the assembled rule text the bridge prompt carries. A set that crosses any ceiling is refused as a whole rather than truncated, because a job that ran on half its rules would silently lose the other half; the refusal names the file that crossed the limit and the byte count it reached, and the prompt is sent whole or not at all. Details and limits: [rules.md](rules.md).
 
 ### Per-repository FlyBot instances
 
@@ -1037,7 +1093,10 @@ nobody can trust; the JWT signs only in `ok` and otherwise raises
 `CLOCK_SKEW_EXCEEDED` (`fail`) or `CLOCK_SKEW_UNVERIFIED` (`unknown`) instead of
 signing from a stale or zero correction. A failed measurement reports `null` and
 no series rather than a zero that would read as aligned, and it never replaces
-the last reading that really was measured.
+the last reading that really was measured. The scheduler tick re-measures any
+state that is not `ok`, so a deployment whose App JWT is never minted still gets
+a reading, and a configured App that has never measured one after 15 minutes of
+uptime answers `503` from `/readyz` with the honest `unknown` state (#1028).
 
 ### Inbound email replies
 
@@ -1412,9 +1471,18 @@ environment or network error, a timeout, a skipped test and any unrecognised
 shape are `unverified`, and a run that exits 0 at the base is `passed`. The
 record keeps the command, the base SHA, the exit code, the signature and the
 sha256 of the output, and a second run of the same command at the same base that
-disagrees makes it `unverified` and flaky. Nothing enforces it yet: the base run
-has no producer, so requiring the record would block every pull request rather
-than prove one.
+disagrees makes it `unverified` and flaky. The record has a producer now: an implement callback may carry
+`evidence.baseRun` (and a `repeat`) inside its evidence, the callback classifies
+it and stores the result as `redTest` in `evidence_json` — no migration — and a
+run whose `baseSha` is not the job's `base_sha` is `unverified` with the
+`base-mismatch` signature, because it says nothing about this diff. A job that
+reports no base run stores no record and the page keeps the agent's sentence.
+The job page shows the verdict, the signature, the reason and a digest beside
+that sentence, and a maintainer answers the claim there: confirm, or challenge
+with a reason of at least eight characters. The answer is stored beside the
+record as `redTestDecision` (decision, note, who, when) and the page reads it
+back. Nothing enforces it yet: requiring the record would block every job until
+the fleet reports the field, so the gate follows once it is populated.
 A claimed green test with a failing test check is contradicted and
 blocks the merge. The job
 page and the delivery list show `ready`, `blocked` or `not verified`, and
@@ -1799,7 +1867,9 @@ server-side and injects it, strips `Set-Cookie`/CSP headers and CSP meta tags/`X
 the document title/base, injects `workspace-brand.js`/`.css`, and proxies
 WebSocket upgrades with the same cookie. The browser sees only Fledge URLs and
 the Fledge brand ("powered by FlyBot"); the raw DSH token never leaves the
-server. A wildcard subdomain remains a future option if a certificate covers it.
+server. The script hides the vendor wordmark in the top-left region — a plain
+text node, or one inside a brand/logo container — and never a link or button, so
+a repository or workspace called `FlyBot` keeps its own label. A wildcard subdomain remains a future option if a certificate covers it.
 
 ### PR follow-up
 
@@ -1889,7 +1959,9 @@ on the issue with the work-item/job/PR state. `plan` and `fix` reach the job
 through `ManagementService` (`task.create` on the `chat` channel), so the
 receipt, the revision fence and the refusal codes are the console's, not a
 second copy. `/fledge approve` is maintainer-only
-and approves the latest completed plan. The issue title and body are external, so
+and approves the latest completed plan through the same `decidePlan`
+(`src/lib/planDecision.ts`) the job page form calls, recording the person who
+wrote the command as the deciding actor rather than the repository owner. The issue title and body are external, so
 `plan` and `fix` build their goal with `untrustedIssueGoal()`
 (`src/lib/untrusted.ts`): the text is fenced as `UNTRUSTED ISSUE TEXT`, a forged
 fence is escaped, and the job audit records the label and a hash, never the body.
@@ -2145,7 +2217,14 @@ or a review job without a Reviewer and a score. Enforced jobs never auto-merge.
 Admins get a read-only `/admin/metrics` funnel:
 users, approved, repos, users with jobs/PRs, success rate, job cost, attributed
 vs unattributed cost, scope/verify/iterate/review counts, Lead-only and grounded
-attribution events, and recent events. `/admin/search` filters jobs and audit entries by the same user
+attribution events, and recent events. The page also answers two ordering
+questions the counts cannot: the median time from a repository being connected
+to its first merged work item, and the median wait from a pull request being
+ready (the job that opened it finished) to a human merging it. Both are computed
+from timestamp pairs in `repos`, `work_items` and `jobs` by
+`src/metrics/product.ts` and returned by `store.productMetrics`, with the sample
+count beside each median so an empty window renders `n/a` rather than `0s`
+(decision: [0009](decisions/0009-product-loop-metrics.md)). `/admin/search` filters jobs and audit entries by the same user
 visibility as the admin page, pages each section twenty rows at a time with a pager that carries the
 active filters and the other section's page number, and can export the current result as CSV. An export whose filter matches more than 5000 rows is refused with the matched count and the cap instead of being truncated, and the refusal is audited; a filter at the cap still gets the whole file.
 
@@ -2882,6 +2961,45 @@ pull request on the user's repository: proposing the four lanes and opening one
 gate pull request after a human confirms is a later slice of #543, and it keeps
 the human-confirmed shape.
 
+## The visual and accessibility gate (#870)
+
+`npm run visual:matrix` (`.github/workflows/ci.yml`, the `visual` job) runs two
+passes over the throwaway instance. The first is the screenshot sweep it always
+had: six paths at nine widths in both locales, failing on document or element
+overflow and on the `/settings#tokens` anchor. The second is the measured gate:
+the same six paths at `GATE_WIDTHS` (360, 768, 1280) in `GATE_SCHEMES` (light and
+dark) in both locales, three widths by two schemes because a scheme the host
+happened to carry is not a decision the matrix made. `src/lib/visualMatrix.ts`
+holds the constants and four pure checkers, so each rule can be pinned with a
+broken fixture without a browser: `touchFailures` holds every control the product
+styles as one (`button`, `.btn`, `input`, `select`, `textarea`, `summary`,
+`.section-nav a`) to the `--touch` 44px floor; `focusFailures` requires one of
+outline width/style, box-shadow, border colour or background colour to change
+when the control is focused; `nameFailures` requires an icon-only `button` or `a`
+to carry `aria-label` or `title`; `leftoverFailures` scans the rendered document
+for `{infoTip(`, `class="undefined"`, `[object Object]` and an unrendered `${`.
+A failure names all four coordinates and the control
+(`en width=768 scheme=dark /settings: select is 292x43px, under the 44px touch
+floor`), so a red job points at one row instead of a screenshot.
+
+The runner measures focus by tabbing: a programmatic `focus()` does not match
+`:focus-visible` in Chromium, so the resting style would read as unchanged for
+every control. It skips a control a closed `<details>` keeps out of the rendering
+(`checkVisibility()` is false while the rect is not), and it measures a checkbox
+through its `<label>`, the box a pointer hits. Two shapes are exempt by an
+attribute on the control itself, never by a selector list: a 24px banner dismiss
+carries `data-compact-target` and is held to 24px, not less; a 15px info marker
+carries `data-inline-target` (WCAG 2.5.8's inline exception) and is skipped by
+the size check but still needs its accessible name. A control is never exempt by
+belonging to a category: a full-width `summary` disclosure row is held to the
+44px floor like every other control in the list, and `public/app.css` raises the
+row to `var(--touch)` on the element selector rather than waiving it. One pass
+per width saves the dark theme
+while the host prefers light and reads the rendered `data-theme` and
+`color-scheme` meta back, so the explicit choice is measured rather than assumed.
+There is no pixel comparison and no baseline file: screenshots stay CI artifacts,
+and the gate is computed style and geometry plus a text scan.
+
 ## Trust boundaries
 
 | Boundary | Control |
@@ -3221,6 +3339,33 @@ disagree about what the release contains. A stored value that is missing or
 malformed renders no sources rather than an error — the draft Release is the
 record of what shipped, the column is its explanation.
 
+## The release notes may follow the repository's skill (#546 slice 5)
+
+When the repository carries `.agents/skills/release-notes/SKILL.md`, the draft body
+is organised by that skill instead of the plain list. The skill is read through the
+one loader `src/rules.ts` exports, at the commit the release row already pinned —
+`repo_releases.target_sha`, the commit the tag's workflow shipped. A pull request
+head and the default-branch head are never the pin: a release body has to be
+reproducible against what shipped, which is why two rows on the same repository may
+legitimately produce two different bodies. No column was added for the pin; the row
+already carried it.
+
+The prompt carries the skill text and the collected sources, and nothing else: no
+history crawl, no other repository file, no earlier release. The model goes through
+Fledge's own metered gateway with a short-lived repository token minted for the one
+call and revoked in the same request, so the spend is counted by the quota code that
+counts job work rather than by a second, unmetered provider call. The model may
+reorder, group and reword the sources; it may not introduce one. Every URL,
+`#number` and commit sha in the answer must already exist in the collected set, and
+an answer that names anything else is refused whole.
+
+An absent skill, a refused skill, a refused gateway call, and a rejected answer all
+keep the built-in body byte-for-byte — one renderer, not two that agree today — and
+the page says which path produced the body, naming the skill path and the pinned
+commit when the skill was used. The provenance rides in the existing
+`notes_source_json` column; a row written before this slice reads as the built-in
+list.
+
 ## The failed run analysis is read-only (#546 slice 4)
 
 `POST /repos/:id/releases/:releaseId/analyze` reads the failed jobs of the run the
@@ -3310,6 +3455,19 @@ than reported as "no change". The older job keeps its own hash and its own page;
 a bundle change is a diff between two jobs, never a rewrite of the earlier one. A
 job whose row predates the columns renders "no strategy was recorded" rather than
 an empty strategy.
+## One decision, one action id (#633)
+
+The `actions` table holds one row per decision a maintainer has to make, keyed by
+an id derived from the kind and the object (`sha256(kind, repoId, objectId)`,
+twelve hex characters). A repeated event for the same decision returns the open
+row and sends no second notice; a resolved row reopens when the decision comes
+back. Notifications carry that id in `notifications.action_id`, so the in-app row
+and the failure mail name the same decision, and `GET /actions/:id` marks the
+rows read before it redirects to the object. The dashboard lists the account's
+open actions; resolving one clears it from that list. The projection and its
+closed six-kind vocabulary live in `src/lib/actionsNeeded.ts` and are documented
+in [docs/notifications.md](notifications.md).
+
 ## Run now is an occurrence, not a moved cursor (#544)
 
 A schedule names logical instants; the tick decides which of them run. "Run now"

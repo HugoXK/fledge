@@ -10,8 +10,10 @@ import { canonicalSections, strategyHash } from './strategy/bundle.js'
 import { currentStrategySections } from './strategy/sources.js'
 import { parseModelRun } from './lib/modelRun.js'
 import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/modelUrl.js'
+import { loopMetrics } from './metrics/product.js'
 import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
+import { actionIdFor, type ActionKind } from './lib/actionsNeeded.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { buildPostmortem, isPreventiveActionKind, type PreventiveActionKind } from './lib/postmortem.js'
 import type { CostReport } from './metrics/cost.js'
@@ -622,6 +624,8 @@ export interface JobRow {
   plan_approved_at: string | null
   plan_approved_by: string | null
   plan_rejected_at: string | null
+  plan_hash: string | null
+  plan_reject_reason: string | null
   plan_allow_paths: string | null
   plan_deny_paths: string | null
   base_sha: string | null
@@ -798,8 +802,27 @@ export interface NotificationRow {
   kind: string
   message: string
   code: string | null
+  action_id: string | null
   created_at: string
   read_at: string | null
+}
+
+// #633: one row per decision a maintainer has to make. The id is derived from
+// the kind and the object (see `actionIdFor`), so the same decision is one row
+// across repeated events; the in-app notice and the mail carry that id.
+export interface ActionRow {
+  id: string
+  user_id: string
+  repo_id: string
+  kind: string
+  reason: string
+  href: string
+  label: string
+  urgent: number
+  state: string
+  created_at: string
+  updated_at: string
+  resolved_at: string | null
 }
 
 export interface AuditRow {
@@ -1540,6 +1563,11 @@ CREATE TABLE IF NOT EXISTS jobs (
   plan_approved_at TEXT,
   plan_approved_by TEXT,
   plan_rejected_at TEXT,
+  -- #634: the plan the person decided about, and the reason a rejection gave.
+  -- plan_hash is the packet hash taken when the decision was recorded, so an
+  -- edit between the page and the POST is a refusal instead of a silent yes.
+  plan_hash TEXT,
+  plan_reject_reason TEXT,
   plan_allow_paths TEXT,
   plan_deny_paths TEXT,
   base_sha TEXT,
@@ -1627,10 +1655,31 @@ CREATE TABLE IF NOT EXISTS notifications (
   kind TEXT NOT NULL,
   message TEXT NOT NULL,
   code TEXT,
+  action_id TEXT,
   created_at TEXT NOT NULL,
   read_at TEXT
 );
 CREATE INDEX IF NOT EXISTS notifications_user_idx ON notifications(user_id, created_at DESC);
+
+-- #633: the action a person has to take, one row per decision. State is
+-- open or resolved; a repeated event for the same id updates nothing, and a
+-- resolved row reopens when the decision comes back.
+CREATE TABLE IF NOT EXISTS actions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  repo_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  reason TEXT NOT NULL,
+  href TEXT NOT NULL,
+  label TEXT NOT NULL,
+  urgent INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL DEFAULT 'open',
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  resolved_at TEXT
+);
+CREATE INDEX IF NOT EXISTS actions_user_state_idx ON actions(user_id, state, created_at DESC);
+CREATE INDEX IF NOT EXISTS actions_repo_state_idx ON actions(repo_id, state);
 
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -2308,6 +2357,22 @@ CREATE TABLE IF NOT EXISTS schedules (
   last_occurrence_at INTEGER,
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
+);
+
+-- #544 slice 10: the project and tenant layers of the run budget. The schedule
+-- layer stays schedules.daily_runs; this table carries the same per-logical-
+-- UTC-day run limit for the #541 project (one per repository) and tenant (one
+-- per owner). A missing row is unbounded, and the tick stops at the first layer
+-- whose day is already spent, in schedule -> project -> tenant order, so adding
+-- a repository cannot bypass a tenant limit. category is reserved for the later
+-- report/development and model/cost split; this slice writes runs.
+CREATE TABLE IF NOT EXISTS schedule_budgets (
+  scope TEXT NOT NULL,
+  scope_id TEXT NOT NULL,
+  category TEXT NOT NULL DEFAULT 'runs',
+  daily_limit INTEGER NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (scope, scope_id, category)
 );
 
 -- #544 slice 3B: one row per decided logical instant. Slice A recorded a
@@ -3117,6 +3182,8 @@ export class Store {
     if (!jobColumns.has('plan_approved_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_at TEXT')
     if (!jobColumns.has('plan_approved_by')) this.run('ALTER TABLE jobs ADD COLUMN plan_approved_by TEXT')
     if (!jobColumns.has('plan_rejected_at')) this.run('ALTER TABLE jobs ADD COLUMN plan_rejected_at TEXT')
+    if (!jobColumns.has('plan_hash')) this.run('ALTER TABLE jobs ADD COLUMN plan_hash TEXT')
+    if (!jobColumns.has('plan_reject_reason')) this.run('ALTER TABLE jobs ADD COLUMN plan_reject_reason TEXT')
     if (!jobColumns.has('plan_allow_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_allow_paths TEXT')
     if (!jobColumns.has('plan_deny_paths')) this.run('ALTER TABLE jobs ADD COLUMN plan_deny_paths TEXT')
     if (!jobColumns.has('base_sha')) this.run('ALTER TABLE jobs ADD COLUMN base_sha TEXT')
@@ -3168,6 +3235,9 @@ export class Store {
     if (!workflowFailureColumns.has('log_error')) this.run('ALTER TABLE workflow_failures ADD COLUMN log_error TEXT')
     const notificationColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(notifications)').map((row) => row.name))
     if (!notificationColumns.has('code')) this.run('ALTER TABLE notifications ADD COLUMN code TEXT')
+    // #633: a notice written before this column is not about a recorded action,
+    // which is exactly what NULL says; nothing is backfilled.
+    if (!notificationColumns.has('action_id')) this.run('ALTER TABLE notifications ADD COLUMN action_id TEXT')
     const tokenColumns = new Set(this.all<{ name: string }>('PRAGMA table_info(api_tokens)').map((row) => row.name))
     if (!tokenColumns.has('repo_id')) this.run('ALTER TABLE api_tokens ADD COLUMN repo_id TEXT')
     // #355: the column is additive with a default, so existing rows are
@@ -4898,8 +4968,29 @@ export class Store {
     usersWithPr: number
     costUsd: number
     events: Array<{ name: string; n: number }>
+    // #635 slice: the two durations the counts above cannot answer. Samples are
+    // reported beside each median so a `null` median is read as "nothing to
+    // measure yet", not as a confident zero.
+    firstMerge: { repositories: number; samples: number; medianMs: number | null }
+    readyWait: { samples: number; medianMs: number | null }
   } {
     const count = (sql: string, ...params: Array<string | number>): number => Number(this.get<{ n: number }>(sql, ...params)?.n ?? 0)
+    // Both inputs are timestamp pairs only; `src/metrics/product.ts` owns the
+    // medians so the page and any later caller compute them the same way.
+    const loop = loopMetrics({
+      repositories: this.all<{ created_at: string; first_merged_at: string | null }>(
+        `SELECT r.created_at AS created_at,
+                (SELECT MIN(w.merged_at) FROM work_items w WHERE w.repo_id = r.id AND w.merged_at IS NOT NULL) AS first_merged_at
+           FROM repos r WHERE r.created_at >= ?`,
+        sinceIso,
+      ).map((row) => ({ createdAt: row.created_at, firstMergedAt: row.first_merged_at })),
+      readyPrs: this.all<{ finished_at: string; merged_at: string }>(
+        `SELECT j.finished_at AS finished_at, w.merged_at AS merged_at
+           FROM work_items w JOIN jobs j ON j.id = w.job_id
+          WHERE w.merged_at IS NOT NULL AND w.merged_at >= ? AND j.finished_at IS NOT NULL`,
+        sinceIso,
+      ).map((row) => ({ readyAt: row.finished_at, mergedAt: row.merged_at })),
+    })
     return {
       users: count('SELECT COUNT(*) AS n FROM users WHERE created_at >= ?', sinceIso),
       approved: count("SELECT COUNT(*) AS n FROM users WHERE status = 'approved' AND created_at >= ?", sinceIso),
@@ -4911,6 +5002,8 @@ export class Store {
       usersWithPr: count("SELECT COUNT(DISTINCT user_id) AS n FROM jobs WHERE pr_url IS NOT NULL AND created_at >= ?", sinceIso),
       costUsd: Number(this.get<{ n: number | null }>("SELECT SUM(cost_usd) AS n FROM jobs WHERE created_at >= ?", sinceIso)?.n ?? 0),
       events: this.all<{ name: string; n: number }>('SELECT name, COUNT(*) AS n FROM events WHERE at >= ? GROUP BY name ORDER BY n DESC', sinceIso),
+      firstMerge: { repositories: loop.repositories, ...loop.firstMerge },
+      readyWait: loop.readyWait,
     }
   }
 
@@ -6077,6 +6170,67 @@ export class Store {
     return Number(row?.count ?? 0)
   }
 
+  // #544 slice 10: the project and tenant layers of the run budget. The #541
+  // identity rows map one project to each repository and one tenant to each
+  // owner, so a tenant limit covers every repository the owner runs in the same
+  // logical UTC day. Null means the layer is unbounded.
+  projectForRepo(repoId: string): { id: string; tenant_id: string } | undefined {
+    return this.get<{ id: string; tenant_id: string }>('SELECT id, tenant_id FROM projects WHERE repo_id = ?', repoId)
+  }
+
+  saveScheduleBudget(input: {
+    scope: 'project' | 'tenant'
+    scopeId: string
+    category?: string
+    dailyLimit: number | null
+  }): void {
+    const category = input.category ?? 'runs'
+    if (input.dailyLimit === null) {
+      this.run(
+        'DELETE FROM schedule_budgets WHERE scope = ? AND scope_id = ? AND category = ?',
+        input.scope, input.scopeId, category,
+      )
+      return
+    }
+    if (!Number.isSafeInteger(input.dailyLimit) || input.dailyLimit < 1) {
+      throw new Error('a schedule budget must be a positive integer or null')
+    }
+    this.run(
+      `INSERT INTO schedule_budgets (scope, scope_id, category, daily_limit, updated_at)
+       VALUES (?, ?, ?, ?, ?)
+       ON CONFLICT(scope, scope_id, category) DO UPDATE SET daily_limit = excluded.daily_limit, updated_at = excluded.updated_at`,
+      input.scope, input.scopeId, category, input.dailyLimit, nowIso(),
+    )
+  }
+
+  scheduleBudget(scope: 'project' | 'tenant', scopeId: string, category = 'runs'): number | null {
+    const row = this.get<{ daily_limit: number }>(
+      'SELECT daily_limit FROM schedule_budgets WHERE scope = ? AND scope_id = ? AND category = ?',
+      scope, scopeId, category,
+    )
+    return row?.daily_limit ?? null
+  }
+
+  countProjectScheduleDispatchesBetween(projectId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences o
+         JOIN projects p ON p.repo_id = o.repo_id
+        WHERE p.id = ? AND o.state = 'dispatched' AND o.logical_time >= ? AND o.logical_time < ?`,
+      projectId, from, to,
+    )
+    return Number(row?.count ?? 0)
+  }
+
+  countTenantScheduleDispatchesBetween(tenantId: string, from: number, to: number): number {
+    const row = this.get<{ count: number }>(
+      `SELECT COUNT(*) AS count FROM schedule_occurrences o
+         JOIN projects p ON p.repo_id = o.repo_id
+        WHERE p.tenant_id = ? AND o.state = 'dispatched' AND o.logical_time >= ? AND o.logical_time < ?`,
+      tenantId, from, to,
+    )
+    return Number(row?.count ?? 0)
+  }
+
   // #544 slice 3B-B2. Claiming is one transaction so two workers cannot both
   // win: the insert and the reclaim both read the row they are about to take.
   // A live lease is refused; a lapsed one is recovered under the same row, which
@@ -7144,7 +7298,7 @@ export class Store {
     })
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []
@@ -7609,8 +7763,54 @@ export class Store {
     return Number(row?.total ?? 0)
   }
 
-  notify(userId: string, kind: string, message: string, code: string | null = null): void {
-    this.run('INSERT INTO notifications (id, user_id, kind, message, code, created_at) VALUES (?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, nowIso())
+  notify(userId: string, kind: string, message: string, code: string | null = null, actionId: string | null = null): void {
+    this.run('INSERT INTO notifications (id, user_id, kind, message, code, action_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)', `ntf_${randomBytes(6).toString('hex')}`, userId, kind, message, code, actionId, nowIso())
+  }
+
+  // #633: record the decision once. A repeated event for the same id returns the
+  // row with `created: false`, so the caller sends no second notice; a resolved
+  // decision reopens when it comes back, because it is news again.
+  recordAction(input: { userId: string; repoId: string; kind: ActionKind; objectId: string; reason: string; href: string; label: string; urgent: boolean; at?: string }): { action: ActionRow; created: boolean } {
+    const id = actionIdFor(input.kind, input.repoId, input.objectId)
+    const at = input.at ?? nowIso()
+    // A duplicate callback can reach this at the same time as the first one, so
+    // the insert is the dedupe: the second writer does nothing and reads the row
+    // the first one wrote, instead of racing a SELECT and throwing on the key.
+    const inserted = this.runChanges(
+      "INSERT INTO actions (id, user_id, repo_id, kind, reason, href, label, urgent, state, created_at, updated_at, resolved_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, NULL) ON CONFLICT(id) DO NOTHING",
+      id, input.userId, input.repoId, input.kind, input.reason, input.href, input.label, input.urgent ? 1 : 0, at, at,
+    ) === 1
+    if (inserted) return { action: this.getAction(id)!, created: true }
+    const existing = this.getAction(id)!
+    if (existing.state === 'open') return { action: existing, created: false }
+    this.run(
+      "UPDATE actions SET reason = ?, href = ?, label = ?, urgent = ?, state = 'open', updated_at = ?, resolved_at = NULL WHERE id = ? AND state = 'resolved'",
+      input.reason, input.href, input.label, input.urgent ? 1 : 0, at, id,
+    )
+    return { action: this.getAction(id)!, created: true }
+  }
+
+  getAction(id: string): ActionRow | undefined {
+    return this.get<ActionRow>('SELECT * FROM actions WHERE id = ?', id)
+  }
+
+  listActions(userId: string, limit = 20): ActionRow[] {
+    return this.all<ActionRow>("SELECT * FROM actions WHERE user_id = ? AND state = 'open' ORDER BY urgent DESC, created_at DESC, rowid DESC LIMIT ?", userId, Math.max(1, Math.min(100, limit)))
+  }
+
+  resolveAction(id: string): void {
+    const at = nowIso()
+    this.run("UPDATE actions SET state = 'resolved', updated_at = ?, resolved_at = ? WHERE id = ? AND state = 'open'", at, at, id)
+  }
+
+  notificationsForAction(actionId: string): NotificationRow[] {
+    return this.all<NotificationRow>('SELECT * FROM notifications WHERE action_id = ? ORDER BY created_at DESC, rowid DESC', actionId)
+  }
+
+  // Opening the mail link and opening the in-app row are the same action, so
+  // both read the rows that carry the id.
+  markActionRead(actionId: string): void {
+    this.run('UPDATE notifications SET read_at = ? WHERE action_id = ? AND read_at IS NULL', nowIso(), actionId)
   }
 
   createFeedback(input: { id: string; userId: string; kind: string; message: string; page: string; createdAt?: string }): FeedbackRow {
