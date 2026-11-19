@@ -2,7 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { Store, type NotificationRow } from '../src/db.js'
 import { jobFailedEmail } from '../src/email/templates.js'
-import { makeUser } from './helpers.js'
+import { dashboardPage } from '../src/views/pages.js'
+import { makeUser, testConfig } from './helpers.js'
 
 // #633 first slice: one action id is shared by the in-app row and the mail, a
 // duplicate failure does not repeat the notice, resolving clears it, and the
@@ -92,7 +93,7 @@ test('the in-app row and the mail carry the same action id, and reading marks th
     const api = store as unknown as ActionApi
     const { action } = record(api, ids, '任务失败：可以重跑。')
     store.notify(ids.userId, 'job', action.id, null, action.id)
-    const user = store.getUser(ids.userId)!
+    const user = store.userById(ids.userId)!
     const actionUrl = `https://fledge.example/actions/${action.id}`
     const mail = jobFailedEmail(user, {
       repo: 'o/shared', jobId: ids.jobId, kind: 'iterate', teamUrl: 'https://fledge.example/jobs/x',
@@ -113,7 +114,7 @@ test('the failed-action mail does not carry an exception, address, path or token
   const store = new Store(':memory:')
   try {
     const ids = fixture(store, 'leak')
-    const user = store.getUser(ids.userId)!
+    const user = store.userById(ids.userId)!
     const error = `ENOENT: no such file, open '/srv/fledge/data/db.sqlite' at Object.<anonymous> (src/jobs/service.ts:12:3) token ghp_${'b'.repeat(36)} owner@example.com`
     const mail = jobFailedEmail(user, {
       repo: 'o/leak', jobId: ids.jobId, kind: 'iterate', teamUrl: 'https://fledge.example/jobs/x',
@@ -123,6 +124,26 @@ test('the failed-action mail does not carry an exception, address, path or token
     const combined = `${mail.subject}\n${mail.text}\n${mail.html}`
     assert.doesNotMatch(combined, /ENOENT|Object\.<anonymous>|src\/jobs|ghp_|owner@example\.com|srv\/fledge/)
     assert.match(mail.subject, /失败/, 'the subject stays a human sentence')
+  } finally {
+    store.close()
+  }
+})
+
+test('the dashboard renders the open action with the id the mail uses, in English', () => {
+  const store = new Store(':memory:')
+  try {
+    const ids = fixture(store, 'page')
+    const api = store as unknown as ActionApi
+    const { action } = record(api, ids)
+    const html = dashboardPage({
+      config: testConfig(), locale: 'en', viewer: { user: store.userById(ids.userId)!, csrfToken: 'csrf' },
+      repos: [], jobs: [], notifications: [], actions: store.listActions(ids.userId),
+    })
+    assert.match(html, /Needs your decision/)
+    assert.ok(html.includes(`/actions/${action.id}`), 'the row links the action by id')
+    assert.ok(html.includes(`/actions/${action.id}/resolve`), 'the row offers the resolve form')
+    assert.match(html, /The job failed; you can retry it\./, 'the stored sentence is localized on an English page')
+    assert.doesNotMatch(html, /任务失败，可以重跑/, 'the Chinese sentence is not shown on an English page')
   } finally {
     store.close()
   }

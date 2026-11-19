@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { ACTION_KINDS, actionIdFor, projectJobAction, projectLegacyNotice, sanitizeActionSentence } from '../src/lib/actionsNeeded.js'
+import { ACTION_KINDS, actionIdFor, projectJobAction, projectLegacyNotice, projectPlan, projectQuestion, projectQuota, projectRelease, sanitizeActionSentence } from '../src/lib/actionsNeeded.js'
 
 // #633 first slice: the projection is a pure mapping from a job's state or an
 // existing notice kind onto the six action kinds. It writes nothing, so the
@@ -57,4 +57,21 @@ test('a sentence cannot carry a token, an address, a file path or an internal co
   const clean = sanitizeActionSentence(dirty)
   assert.doesNotMatch(clean, /ghp_|owner@example\.com|src\/jobs|ENOENT|BRIDGE_ERROR|TypeError/)
   assert.ok(clean.trim().length > 0, 'the redaction leaves a sentence a person can read')
+})
+
+test('each of the six kinds has a projection onto the same shape', () => {
+  const projected = [
+    projectQuestion('repo_1', 'q_1'),
+    projectPlan('repo_1', 'plan_1'),
+    projectJobAction({ id: 'job_p', repoId: 'repo_1', kind: 'iterate', status: 'succeeded', prUrl: 'https://github.com/o/r/pull/7' }),
+    projectJobAction({ id: 'job_f', repoId: 'repo_1', kind: 'iterate', status: 'failed', prUrl: null }),
+    projectRelease('repo_1', 'v1.2.3'),
+    projectQuota('repo_1', 'user_1'),
+  ]
+  assert.deepEqual(projected.map((action) => action?.kind), [...ACTION_KINDS])
+  for (const action of projected) {
+    assert.ok(action !== null)
+    assert.match(action.id, /^act_[0-9a-f]{12}$/)
+    assert.ok(action.reason.length > 0 && action.href.length > 0 && action.label.length > 0)
+  }
 })
