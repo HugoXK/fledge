@@ -124,11 +124,11 @@ export function touchFailures(controls: readonly TouchSample[]): string[] {
     // on that control, and the accessible-name check still applies to it.
     if (control.inline === true) continue
     const floor = control.compact === true ? COMPACT_FLOOR : TOUCH_FLOOR
-    // A fractional layout box is compared with a tolerance far below one pixel,
-    // because that is what browser sub-pixel rounding actually costs: 43.99px is
-    // a 44px control the browser rounded down and still passes, while 43.5px is
-    // a control that lost its target and has to fail.
-    if (control.width + 0.05 >= floor && control.height + 0.05 >= floor) continue
+    // A fractional layout box is compared with a tolerance below one pixel,
+    // because that is what browser sub-pixel rounding actually costs: Chromium
+    // lays a 44px control out at 43.6875px at 1x, which is still a 44px target,
+    // while 43.5px is a control that lost half a pixel and has to fail.
+    if (control.width + 0.35 >= floor && control.height + 0.35 >= floor) continue
     const rounded = `${String(Math.round(control.width))}x${String(Math.round(control.height))}px`
     failures.push(
       control.compact === true

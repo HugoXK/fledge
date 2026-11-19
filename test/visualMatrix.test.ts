@@ -218,6 +218,20 @@ test('a compact control is still held to the 24px WCAG floor', () => {
   assert.equal((gate.touchFailures?.([{ name: 'button.banner-dismiss', width: 24, height: 24, compact: true }]) ?? []).length, 0)
 })
 
+test('a 44px control laid out at 43.6875px still passes the touch floor', () => {
+  assert.equal(typeof gate.touchFailures, 'function', 'the matrix needs a touch-target checker')
+  assert.equal(
+    (gate.touchFailures?.([{ name: 'input', width: 736, height: 43.6875 }]) ?? []).length,
+    0,
+    'Chromium lays a 44px control out below 44 at 1x; that is rounding, not a lost target',
+  )
+  assert.equal(
+    (gate.touchFailures?.([{ name: 'input', width: 736, height: 43.5 }]) ?? []).length,
+    1,
+    'a control that lost half a pixel is still below the floor',
+  )
+})
+
 test('the focus gate fails a control whose focused style is identical', () => {
   assert.equal(typeof gate.focusFailures, 'function', 'the matrix needs a focus-visibility checker; without one a removed ring ships unseen')
   const resting = {
