@@ -42,7 +42,7 @@ import { UNTRUSTED_EVENT_KIND } from '../lib/firewall.js'
 import { parseUntrustedMeta } from '../lib/untrusted.js'
 import { releaseSurface, type ReleaseSurface } from '../lib/releaseSurface.js'
 import type { ReleaseDispatchPreview } from '../lib/releaseDispatch.js'
-import { readReleaseNotesSources } from '../releases/notes.js'
+import { readReleaseNotesProvenance, readReleaseNotesSources } from '../releases/notes.js'
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
@@ -2245,6 +2245,15 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       // keeps them so a maintainer can check the release against what merged,
       // with the same links the body carries, without opening GitHub.
       const sources = readReleaseNotesSources(release.notes_source_json)
+      // #546 slice 5: which path produced the body, and the pinned commit the
+      // skill was read at. The row's own target_sha is the pin, so the line can
+      // always name it instead of pointing at a branch that has moved since.
+      const provenance = readReleaseNotesProvenance(release.notes_source_json)
+      const organised = provenance === null
+        ? ''
+        : provenance.kind === 'skill'
+          ? ` <span class="fine" data-release-notes-skill>${escapeHtml(t(`发布说明由 ${provenance.skillPath ?? '.agents/skills/release-notes/SKILL.md'} 在 ${(provenance.commit ?? release.target_sha).slice(0, 12)} 组织`, `notes organised by ${provenance.skillPath ?? '.agents/skills/release-notes/SKILL.md'} at ${(provenance.commit ?? release.target_sha).slice(0, 12)}`))}</span>`
+          : ` <span class="fine" data-release-notes-builtin>${escapeHtml(t('发布说明使用内置来源列表', 'notes built from the built-in source list'))}${provenance.reason === undefined || provenance.reason === 'no_skill' ? '' : ` (${escapeHtml(provenance.reason)})`}${provenance.detail === undefined ? '' : ` · ${escapeHtml(provenance.detail)}`}</span>`
       const sourceList = sources.length === 0
         ? ''
         : ` <details class="advanced-help"><summary>${escapeHtml(t(`发布说明来源 ${sources.length} 项`, `${sources.length} note source${sources.length === 1 ? '' : 's'}`))}</summary><ul class="list">${sources.map((source) => `<li><code>${escapeHtml(source.ref)}</code> <a class="link" href="${escapeHtml(source.url)}" target="_blank" rel="noreferrer">${escapeHtml(source.title)}</a></li>`).join('')}</ul></details>`
@@ -2258,7 +2267,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       const analyze = release.status !== 'run_failed' || release.run_id === null
         ? ''
         : ` <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/analyze" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('分析失败运行（只读）', 'Analyse failed run (read-only)'))}</button></form>`
-      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
+      return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}${organised}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
     }).join('')}</ul>`}
   </section>`
   const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
