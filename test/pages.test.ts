@@ -2872,6 +2872,37 @@ test('the exhausted-quota banner stays for a mixed account until no repository i
   }
 })
 
+test('an account with no repository and no own model still sees the exhausted-quota banner', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    // Before #1104 this account saw the banner; it is the state every account
+    // starts in, so the per-repository predicate must not turn "no repository is
+    // platform-funded" into "nothing can be paused" for it.
+    const user = makeUser(store, { login: 'quota-banner-empty', status: 'approved', quota: 0 })
+    assert.equal(store.listRepos(user.id).length, 0, 'the account has no repository at all')
+    const { cookie } = sessionFor(built, user)
+    const headers = { cookie, 'accept-language': 'en' }
+    const bannerRegion = (html: string): string => {
+      const start = html.indexOf('data-notification-stack')
+      if (start === -1) return ''
+      const end = html.indexOf('</section>', start)
+      assert.notEqual(end, -1, 'the banner stack closes')
+      return html.slice(start, end)
+    }
+
+    const dashboardBanner = bannerRegion((await built.app.inject({ method: 'GET', url: '/dashboard', headers })).body)
+    assert.match(dashboardBanner, /Platform quota is used up/, 'an empty account with no own model still reads the quota state on the dashboard')
+    assert.ok(dashboardBanner.includes('href="/settings#model-providers"'), 'the banner links the section that changes it')
+
+    const consoleBanner = bannerRegion((await built.app.inject({ method: 'GET', url: '/console', headers })).body)
+    assert.match(consoleBanner, /Platform quota is used up/, 'the console states the same fact for the same empty account')
+  } finally {
+    await built.close()
+  }
+})
+
 test('the next-step card offers its form only to a role the decision route accepts', () => {
   const config = testConfig()
   const store = new Store(':memory:')

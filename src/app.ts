@@ -210,6 +210,15 @@ function hasPlatformFundedRepo(store: Store, user: UserRow, repos: RepoRow[]): b
   return repos.some((repo) => store.platformFundedFor(user, repo.id))
 }
 
+// #1104 test regression: `repos.some(...)` alone answers "false" for an account
+// with no repository at all, which would hide the banner from the state every
+// account starts in. The per-repository answer only suppresses the notice when a
+// model of the account's own is configured; otherwise nothing has been chosen
+// yet, so a spent platform quota still has something to pause.
+function platformQuotaPausesSomething(store: Store, user: UserRow, repos: RepoRow[], ownModel: boolean): boolean {
+  return !ownModel || hasPlatformFundedRepo(store, user, repos)
+}
+
 function httpError(statusCode: number, message: string, code = 'REQUEST_FAILED'): Error {
   return Object.assign(new Error(message), { statusCode, code })
 }
@@ -1653,7 +1662,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobs,
         latestJob,
         setup,
-        platformFunded: hasPlatformFundedRepo(store, viewer.user, allRepos),
+        // #1104 test regression: with no repository and no own model the account is
+        // in its starting state, so the spent platform quota still has a banner.
+        platformFunded: platformQuotaPausesSomething(store, viewer.user, allRepos, setup.modelConfigured),
         reposPage,
         reposTotal,
         jobsPage,
@@ -1739,10 +1750,11 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         jobsTotal: store.countJobsForUser(viewer.user.id),
         activeJobs: store.listActiveJobsForUser(viewer.user.id).length,
         questions,
-        // #1104 review: the console reads the same per-repository fact the
-        // dashboard does, so its quota banner does not tell an own-model account
-        // that its jobs stopped and does not hide the pause from a mixed account.
-        platformFunded: hasPlatformFundedRepo(store, viewer.user, repos),
+        // #1104 review: the console reads the same rule the dashboard does, so
+        // its quota banner does not tell an own-model account that its jobs
+        // stopped, does not hide the pause from a mixed account, and keeps the
+        // notice for an account that has chosen no model and connected nothing.
+        platformFunded: platformQuotaPausesSomething(store, viewer.user, repos, ownModelConfigured(store, viewer.user, repos)),
         notice: request.flash?.notice?.text,
         error: request.flash?.error?.text,
       }),
