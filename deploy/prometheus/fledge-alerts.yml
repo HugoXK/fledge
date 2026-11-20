@@ -92,6 +92,34 @@ groups:
           summary: Fledge cannot read the model router health endpoint
           runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
 
+      - alert: FledgeBackupStale
+        # #693: the admin card was the only stale-backup alarm, and nobody is
+        # looking at it at 03:00. `fledge_backup_age_hours` is absent — not 0 —
+        # when no copy was ever written, so a fresh install does not page; the
+        # 26 matches BACKUP_EXPECTED_HOURS, and raising that variable means
+        # raising this threshold too.
+        expr: fledge_backup_age_hours > 26
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: Fledge has not written a backup copy in over 26 hours
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/deploy.md
+
+      - alert: FledgeRestoreDrillFailing
+        # #693: `fledge_restore_drill_ok` reads 0 for a failed drill and for a
+        # drill older than the expected interval, so this rule covers "the drill
+        # stopped running" as well as "the drill said no". A missing record reads
+        # 0 like a fresh install does; the ops alert, which only fires on a record
+        # that exists, is the one that separates the two.
+        expr: fledge_restore_drill_ok == 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: Fledge's restore drill failed or is older than the expected interval
+          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/deploy.md
+
       - alert: FledgeClockSkewHigh
         expr: abs(fledge_clock_skew_seconds) > 120
         for: 10m

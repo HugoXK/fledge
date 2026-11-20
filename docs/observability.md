@@ -51,6 +51,16 @@ Core series:
 - `fledge_github_requests_total{method,status}`,
   `fledge_github_request_seconds`
 - `fledge_bridge_requests_total{status}`, `fledge_bridge_request_seconds`
+- `fledge_backup_age_hours`, `fledge_backup_copies`,
+  `fledge_backup_encrypted_copies`, `fledge_restore_drill_age_hours` and
+  `fledge_restore_drill_ok` — published at scrape time from the two readers the
+  admin backup card already uses (`readBackupStatus`, `readRestoreDrill`), so the
+  scrape and the page can never disagree. The scrape reads names, counts and
+  ages only, so it never hashes a copy the way the card does once per render. A
+  platform with no copy publishes no
+  `fledge_backup_age_hours` series rather than a zero age; `fledge_backup_copies 0`
+  and `fledge_restore_drill_ok 0` are real observations, and the alert rules are
+  written so a fresh install still says nothing.
 - `fledge_clock_skew_seconds` — the last measured offset against GitHub's `Date`
   header, positive when the process clock is ahead. The series is **absent** when
   nothing has been measured, so an empty panel means "unknown", not "aligned"; a
@@ -159,7 +169,12 @@ fingerprint; `deleteRepo` removes the repository's rows with it.
 
 Prometheus alert rules live in [`deploy/prometheus/fledge-alerts.yml`](../deploy/prometheus/fledge-alerts.yml).
 They cover job success, p95 queue wait, p95 job duration, bridge failure rate,
-GitHub 429s, clock skew and open operational alerts, each with a runbook link.
+GitHub 429s, clock skew, backup staleness, the restore drill and open operational
+alerts, each with a runbook link. `FledgeBackupStale` pages at
+`fledge_backup_age_hours > 26` (the default `BACKUP_EXPECTED_HOURS`), and
+`FledgeRestoreDrillFailing` at `fledge_restore_drill_ok == 0`, which covers a
+failed drill and one that stopped running; both name `docs/deploy.md` as the
+runbook because the fix is a host command.
 `FledgeClockSkewHigh` pages at `abs(fledge_clock_skew_seconds) > 120` sustained
 for ten minutes; its runbook is [`docs/deploy.md`](deploy.md), because the action
 is on the host rather than in the application.
