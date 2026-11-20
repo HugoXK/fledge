@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import {
   INSTRUCTION_CONTRACT_VERSION,
   compileInstructionContract,
@@ -8,6 +9,7 @@ import {
   instructionContractHash,
 } from '../src/lib/instructions.js'
 import type { AdherenceObservation, InstructionContractInput } from '../src/lib/instructions.js'
+import { playbookFor } from '../src/flybot/playbook.js'
 
 // #364 slice 1: the instruction set a job runs under is prose today —the goal,
 // the playbook, AGENTS.md, the path rules and the carry-over are pasted into one
@@ -18,7 +20,7 @@ import type { AdherenceObservation, InstructionContractInput } from '../src/lib/
 const baseInput = (): InstructionContractInput => ({
   repo: { id: 'repo_1', fullName: 'o/r', defaultBranch: 'main' },
   goal: 'name the workspace in the console notices',
-  playbook: { version: 'v8', hash: 'a'.repeat(64) },
+  playbook: { version: 'v8', text: playbookFor('lead', 'Fledge Platform', '') },
   contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
   paths: { allow: ['src/**', 'test/**'], deny: ['deploy/**'] },
   branch: { base: 'main', name: 'dev4/364-adherence-contract' },
@@ -53,6 +55,25 @@ test('the contract is content-addressed over every instruction it carries', () =
   assert.notEqual(changed.hash, first.hash, 'a changed goal is a different contract')
   const denied = compileInstructionContract({ ...compiled(), paths: { allow: ['src/**', 'test/**'], deny: ['scripts/**'] } })
   assert.notEqual(denied.hash, first.hash, 'a changed path rule is a different contract')
+})
+
+test('the contract hashes the playbook text, so two v8 playbooks at one version differ', () => {
+  // #1118: the record has to name the text the job was told, not a caller-supplied
+  // fingerprint. `playbookFingerprint` is sha256('v8:' + goal), so every role in
+  // every repository with the same goal carries the same value; the text does not.
+  const text = playbookFor('lead', 'Fledge Platform', '')
+  const fledge = compileInstructionContract({ ...baseInput(), playbook: { version: 'v8', text } })
+  const expected = createHash('sha256').update(text, 'utf8').digest('hex')
+  assert.equal(fledge.contract.playbook.version, 'v8')
+  assert.equal(fledge.contract.playbook.hash, expected, "the recorded hash is the text's own SHA-256")
+  assert.equal('text' in fledge.contract.playbook, false, 'the contract records the hash of the text, not the whole protocol')
+
+  const otherLabel = compileInstructionContract({ ...baseInput(), playbook: { version: 'v8', text: playbookFor('lead', 'Another Team', '') } })
+  assert.notEqual(otherLabel.contract.playbook.hash, fledge.contract.playbook.hash, 'the team label is part of the playbook text')
+  assert.notEqual(otherLabel.hash, fledge.hash, 'and the contract hash covers the text hash')
+
+  const otherRole = compileInstructionContract({ ...baseInput(), playbook: { version: 'v8', text: playbookFor('dev1', 'Fledge Platform', '') } })
+  assert.notEqual(otherRole.contract.playbook.hash, fledge.contract.playbook.hash, 'the role text is part of the playbook text')
 })
 
 test('the same instruction set hashes the same under another locale and another input order', () => {

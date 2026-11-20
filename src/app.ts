@@ -150,6 +150,7 @@ import { revertMatchOf } from './lib/deliveryOutcome.js'
 import { checkWebhookSignature, GithubApp, webhookSecretSlot } from './repos/app.js'
 import { repoGithubToken } from './repos/token.js'
 import { InstanceManager } from './flybot/instances.js'
+import { playbookFor, playbookTextHash, teamLabelFor } from './flybot/playbook.js'
 import { dshCookie, proxyWorkspaceHttp, proxyWorkspaceUpgrade } from './flybot/workspace.js'
 import { managementActor } from './management/actor.js'
 import { ManagementService, type CommandOutcome, type ManagementCode } from './management/service.js'
@@ -2530,6 +2531,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         recentAuthAt: viewer.recentAuthAt,
         repo,
         canMaintain: role === 'maintainer',
+        // #1118: the text the Lead is sent for this repository, hashed, so the page
+        // names the record's value and not only its version.
+        playbookTextHash: playbookTextHash(playbookFor('lead', teamLabelFor(repo.upstream_name), repo.goal)),
         releases: store.listReleasesForRepo(repo.id),
         instance,
         usage: {

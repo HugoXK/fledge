@@ -174,7 +174,7 @@ function runningJobWithBundle(store: Store, repo: RepoRow, id: string, secret: s
   const { bundle, hash } = compileContextBundle({
     repo: { id: repo.id, fullName: `${repo.owner}/${repo.name}`, defaultBranch: repo.default_branch },
     goal: 'g',
-    playbook: { version: null, hash: 'a'.repeat(40) },
+    playbook: { version: null, text: 'a'.repeat(40) },
     contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
     paths: { allow: ['src/'], deny: ['deploy/'] },
     branch: { base: 'main', name: 'fledge/job' },
