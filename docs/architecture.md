@@ -1716,6 +1716,12 @@ concurrency is `PLATFORM_MAX_ACTIVE_JOBS` (default 2), not a hard-coded literal.
 
 `/metrics` exposes Prometheus counters, gauges and histograms for HTTP, jobs,
 retries, merges, path guard, evidence verification, GitHub and the bridge. The
+same scrape publishes the backup and restore-drill readings
+(`fledge_backup_age_hours`, `fledge_backup_copies`,
+`fledge_backup_encrypted_copies`, `fledge_restore_drill_age_hours`,
+`fledge_restore_drill_ok`) from the two readers `/admin` already uses, without
+hashing the newest copy, and the scheduler raises the matching `backup_stale`
+and `restore_drill` ops alerts under the existing cooldown. The
 token is read from `Authorization: Bearer <token>` only — never from the query
 string — and compared in constant time. A production process refuses to start
 without `METRICS_TOKEN`, and refuses a `NOTIFY_WEBHOOK_URL` that is not an
