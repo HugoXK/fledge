@@ -315,6 +315,41 @@ test('a target older than the newest tags still refuses a downgrade', async () =
   assert.equal((same as { code?: string }).code, 'no_new_commits')
 })
 
+// #946: a target older than every tag is not a first release. The repository
+// does have releases; none of them is an ancestor of this commit, so the walk
+// keeps no candidate, and the plan fell through to the first-release branch
+// where both version guards are skipped — any free name passed, a downgrade
+// wearing a new name included.
+function beforeEveryTagClient(tagNames: string[]) {
+  return {
+    async commitExists() { return true },
+    async listTags() { return tagNames.map((name) => ({ name, sha: 'b'.repeat(40) })) },
+    async compareCommits() {
+      // The target is an ancestor of the default branch, and every tag is newer
+      // than it, so no tag is reachable from it.
+      return { status: 'behind', aheadBy: 0 }
+    },
+    async getRepoFile() { return "on:\n  push:\n    tags: ['v*']\n" },
+    async getBranchProtection() { return { protected: true, requiredChecks: ['ci-ok'], requiredApprovals: 1 } },
+  }
+}
+
+test('a target older than every tag is refused instead of planned as a first release', async () => {
+  const tagNames = ['v1.0.0', 'v1.1.0', 'v1.20.0']
+  for (const requestedVersion of ['v0.5.0', 'v1.21.0']) {
+    const plan = await releasePreflight(beforeEveryTagClient(tagNames) as never, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion, targetSha: target })
+    assert.equal(plan.ok, false, `${requestedVersion} must not be planned for a commit that predates every release`)
+    assert.equal((plan as { code?: string }).code, 'target_before_releases')
+    assert.match((plan as { message: string }).message, /v1\.20\.0/, 'the refusal names a tag the target never reaches')
+  }
+})
+
+test('a repository with no tags at all is still a legal first release', async () => {
+  const plan = await releasePreflight(beforeEveryTagClient([]) as never, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v0.1.0', targetSha: target })
+  assert.equal(plan.ok, true, 'a repository with no releases has a genuine first release')
+  assert.equal((plan as { previousTag: string | null }).previousTag, null)
+})
+
 test('the version scan stops at the newest reachable tag', async () => {
   const { client, compares } = ancestryClient({ status: 'behind', tagStatus: 'ahead', tags: 25 })
   await releasePreflight(client, { owner: 'acme', name: 'widget', defaultBranch: 'main', requestedVersion: 'v2.0.0', targetSha: target })
