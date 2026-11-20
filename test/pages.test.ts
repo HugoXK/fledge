@@ -2934,3 +2934,49 @@ test('the next-step card offers its form only to a role the decision route accep
     store.close()
   }
 })
+
+// #1089: an in-page link is a promise that the target exists. The class, not
+// the single link, is what has to hold: a fragment that no page defines lands
+// the reader at the top of a long page with nothing marked.
+function fragmentLinks(html: string): { path: string | null; fragment: string }[] {
+  const found: { path: string | null; fragment: string }[] = []
+  for (const match of html.matchAll(/href="(\/[^"#]*)?#([A-Za-z][A-Za-z0-9_-]*)"/g)) {
+    const href = match[0]
+    if (/href="\/\//.test(href)) continue // protocol-relative, i.e. off this site
+    found.push({ path: match[1] === undefined ? null : match[1], fragment: match[2]! })
+  }
+  return found
+}
+
+test('every in-app fragment link lands on an element that exists', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'anchor-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_anchor', userId: user.id, owner: 'o', name: 'anchor', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie } = sessionFor(built, user)
+    const pages = ['/console', '/dashboard', `/repos/${repo.id}`]
+    const checked: string[] = []
+    for (const url of pages) {
+      const page = await built.app.inject({ method: 'GET', url, headers: { cookie } })
+      assert.equal(page.statusCode, 200, `${url} renders`)
+      const links = fragmentLinks(page.body)
+      assert.ok(links.length > 0, `${url} carries in-page links, so the scan is not vacuous`)
+      for (const link of links) {
+        const target = link.path ?? url
+        checked.push(`${url} -> ${target}#${link.fragment}`)
+        const destination = await built.app.inject({ method: 'GET', url: target, headers: { cookie } })
+        assert.equal(destination.statusCode, 200, `${url} -> ${target} renders`)
+        assert.match(
+          destination.body,
+          new RegExp(`id="${link.fragment}"`),
+          `${url} links ${target}#${link.fragment} and ${target} defines no id="${link.fragment}"`,
+        )
+      }
+    }
+    assert.ok(checked.length >= 4, `the scan covered ${checked.length} links: ${checked.join(', ')}`)
+  } finally {
+    await built.close()
+  }
+})
