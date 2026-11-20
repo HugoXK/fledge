@@ -1240,6 +1240,62 @@ test('the job page prints the trace token next to the timeline', () => {
   }
 })
 
+// #475: the job page led with everything at once. The first slice moves the cost
+// into the header line — the number a reader looks for without scrolling — and
+// folds the timeline behind a disclosure so the page stops opening with it, while
+// every event row still renders.
+function seededJobPage(locale: 'en' | 'zh'): { page: string; store: Store; cost: string } {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const user = makeUser(store, { login: `lead-page-${locale}`, status: 'approved' })
+  const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+  const repo = store.createRepo({ id: `repo_lead_page_${locale}`, userId: user.id, owner: 'o', name: 'lp', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+  const job = store.createJob({ id: `job_lead_page_${locale}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+  const at = new Date().toISOString()
+  store.updateJob(job.id, { status: 'succeeded', cost_usd: 0.5, finished_at: at, pr_url: 'https://github.com/o/lp/pull/12' })
+  const events = [
+    { id: 1, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.enqueued', role: null, step: 'iterate', meta: 'iterate:manual' },
+    { id: 2, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.running', role: null, step: 'iterate', meta: null },
+    { id: 3, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.succeeded', role: null, step: 'iterate', meta: null },
+  ]
+  const page = jobPage({ config, locale, viewer, repo, job: store.getJob(job.id)!, events })
+  return { page, store, cost: quotaMoney(0.5 * config.quota.usdCny) }
+}
+
+test('the job page prints the job cost in the header line', () => {
+  for (const locale of ['en', 'zh'] as const) {
+    const { page, store, cost } = seededJobPage(locale)
+    try {
+      assert.ok(page.includes(`<span data-header-cost>${cost}</span>`), `${locale}: the header line prints the cost as ${cost}`)
+      const header = page.slice(page.indexOf('<section class="card">'), page.indexOf('</section>'))
+      assert.match(header, locale === 'en' ? /Cost/ : /成本/, `${locale}: the header names what the number is`)
+    } finally {
+      store.close()
+    }
+  }
+})
+
+test('the timeline is a disclosure that still renders every event', () => {
+  const en = seededJobPage('en')
+  try {
+    const timeline = /<details[^>]*data-timeline[\s\S]*?<\/details>/.exec(en.page)?.[0] ?? ''
+    assert.notEqual(timeline, '', 'the timeline is a disclosure')
+    assert.match(timeline, /<summary>/, 'the disclosure has a summary')
+    assert.match(timeline, /<h2>Timeline<\/h2>/, 'the timeline heading sits inside the disclosure')
+    for (const kind of ['job.enqueued', 'job.running', 'job.succeeded']) assert.ok(timeline.includes(kind), `every event row still renders: ${kind}`)
+    assert.match(en.page, /id="timeline"/, 'the disclosure itself is linkable')
+    assert.match(en.page, /id="review-merge"/, 'the review anchor still resolves')
+  } finally {
+    en.store.close()
+  }
+  const zh = seededJobPage('zh')
+  try {
+    assert.match(zh.page, /<details[^>]*data-timeline[\s\S]*?<h2>时间线<\/h2>/, 'the Chinese timeline is the same disclosure')
+  } finally {
+    zh.store.close()
+  }
+})
+
 test('a failed job shows an actionable failure category and a recovery link', () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -2635,7 +2691,10 @@ test('the job page leads with one primary action and folds the rest (#865)', () 
     // 6. The four read-back cards still exist exactly once, unchanged inside a
     // collapsed wrapper named after the card.
     const detailPage = render({ status: 'succeeded', kind: 'plan', planApproved: true, postmortem: true, changeStory: true })
-    assert.equal((detailPage.match(/class="job-detail"/g) ?? []).length, 4, 'the four read-back cards are wrapped')
+    // #475 adds the timeline as a fifth disclosure; the four read-back cards stay
+    // exactly one wrapper each.
+    assert.equal((detailPage.match(/class="job-detail"/g) ?? []).length, 5, 'the four read-back cards and the timeline are wrapped')
+    assert.match(detailPage, /<details class="job-detail" data-timeline id="timeline">\s*<summary>Show timeline/, 'the timeline is the fifth disclosure')
     assert.match(detailPage, /<details class="job-detail"><summary>Work type<\/summary><section class="card" data-work-type="iterate">/, 'work type keeps its markup inside the wrapper')
     assert.match(detailPage, /<details class="job-detail"><summary>Why this change<\/summary><section class="card" data-change-story>/, 'the change story keeps its markup inside the wrapper')
     assert.match(detailPage, /<details class="job-detail"><summary>Postmortem<\/summary><section class="card" id="postmortem">/, 'the postmortem keeps its markup inside the wrapper')

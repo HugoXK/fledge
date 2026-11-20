@@ -4480,12 +4480,18 @@ function readAdherence(json: string | null): AdherenceRecord | null {
       <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('条款', 'Clause'))}</th><th>${escapeHtml(t('结论', 'Verdict'))}</th><th>${escapeHtml(t('依据', 'Detail'))}</th></tr></thead><tbody>${adherence.clauses.map((clause) => `<tr data-adherence-clause="${escapeHtml(clause.id)}"><td><code>${escapeHtml(clause.id)}</code></td><td>${escapeHtml(adherenceStatusLabel(clause.status))}</td><td>${escapeHtml(clause.detail)}</td></tr>`).join('')}</tbody></table></div>`}
   </section>`
 
+  // #475: the timeline is evidence, not the first thing a reader needs, so it
+  // sits behind one disclosure. The count is in the summary so a collapsed page
+  // still says whether anything was recorded.
+  const timelineCount = events.length === 0
+    ? t('暂无事件', 'no events yet')
+    : t(`${events.length} 条事件`, `${events.length} ${events.length === 1 ? 'event' : 'events'}`)
   const body = `<section class="card">
     <div class="row between">
       <div>
         <div class="eyebrow">${escapeHtml(t('任务', 'Job'))}</div>
         <h1><code>${escapeHtml(job.id)}</code></h1>
-        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`}${job.last_callback_at === null ? '' : ` · ${escapeHtml(t('最后心跳', 'Last heartbeat'))} ${escapeHtml(humanTimeShort(job.last_callback_at))}`}${temporalLine(job) === '' ? '' : ` · <span class="muted" data-temporal>${escapeHtml(temporalLine(job))}</span>`}</p>
+        <p class="muted">${escapeHtml(repo.upstream_owner || repo.owner)}/${escapeHtml(repo.upstream_name || repo.name)} · ${badge(t, job.status)} · ${escapeHtml(jobKindLabel(t, job))} · ${escapeHtml(triggerLabel(t, job.trigger))} · ${escapeHtml(t('目标分支', 'Base branch'))} <code>${escapeHtml(job.base_branch ?? (repo.target_branch !== '' ? repo.target_branch : (repo.upstream_default_branch || repo.default_branch)))}</code>${job.base_sha === null ? '' : ` · ${escapeHtml(t('基于', 'Based on'))} <code>${escapeHtml(job.base_sha.slice(0, 12))}</code>`} · ${escapeHtml(t('成本', 'Cost'))} <span data-header-cost>${escapeHtml(cost)}</span>${job.last_callback_at === null ? '' : ` · ${escapeHtml(t('最后心跳', 'Last heartbeat'))} ${escapeHtml(humanTimeShort(job.last_callback_at))}`}${temporalLine(job) === '' ? '' : ` · <span class="muted" data-temporal>${escapeHtml(temporalLine(job))}</span>`}</p>
       </div>
       <div class="row">
         <a class="btn btn-ghost" href="/repos/${escapeHtml(repo.id)}">${escapeHtml(t('返回仓库', 'Back to repository'))}</a>
@@ -4567,6 +4573,8 @@ function readAdherence(json: string | null): AdherenceRecord | null {
         ? (adversarial.promptHash === null ? '' : ` · ${escapeHtml(t('修订未记录', 'revision not recorded'))}`)
         : ` · <span data-adversarial-tip="${escapeHtml(adversarial.tipSha)}">${escapeHtml(t('修订', 'Revision'))} <code>${escapeHtml(adversarial.tipSha.slice(0, 12))}</code></span>`}</p>`}
   </section>`}
+  <details class="job-detail" data-timeline id="timeline">
+    <summary>${escapeHtml(t('展开时间线', 'Show timeline'))} <span class="muted">${escapeHtml(timelineCount)}</span></summary>
   <section class="card">
     <h2>${escapeHtml(t('时间线', 'Timeline'))}</h2>
     <p class="fine" data-trace-token="${escapeHtml(job.id)}">${escapeHtml(t('日志检索令牌', 'Log search token'))}: <code>${escapeHtml(job.id)}</code> — ${escapeHtml(t('这个任务的每条日志都用 trace 记着它；在日志里检索这个值，就能一次拿到整个任务的全部行。', 'every line this job writes carries it under trace; search the logs for it and the whole job comes back in one pass.'))}</p>
@@ -4574,6 +4582,7 @@ function readAdherence(json: string | null): AdherenceRecord | null {
       ? renderState({ kind: 'empty', title: t('还没有任务事件。', 'No job events yet.'), body: t('任务开始后，每一次状态变化都会记录在这里。', 'Every state change is recorded here once the job starts.'), action: job.status === 'failed' ? { formAction: `/repos/${repo.id}/jobs/${job.id}/retry`, label: t('重试这个任务', 'Retry this job'), csrf: csrf(viewer), fields: input.retry === undefined ? undefined : [{ name: 'expected_revision', value: String(input.retry.revision) }, { name: 'idempotency_key', value: input.retry.idempotencyKey }] } : { href: `/repos/${repo.id}`, label: t('返回仓库', 'Back to repository') } })
       : `<div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('角色/步骤', 'Role/step'))}</th><th>${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${events.map((entry) => `<tr><td>${escapeHtml(humanTimeShort(entry.at))}</td><td><code>${escapeHtml(entry.kind)}</code></td><td>${escapeHtml([entry.role, entry.step].filter((value) => value !== null && value !== '').join(' · ') || '—')}</td><td>${escapeHtml(jobEventDetail(t, entry))}</td></tr>`).join('')}</tbody></table></div>`}
   </section>
+  </details>
   ${advanced ? `<details class="job-detail"><summary>${escapeHtml(t('团队参与', 'Team participation'))}</summary><section class="card">
     <h2>${escapeHtml(t('团队参与', 'Team participation'))}</h2>
     ${teamRows}
