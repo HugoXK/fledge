@@ -925,8 +925,16 @@ textarea { resize: vertical; min-height: 70px; }
   cursor: pointer; list-style: none;
 }
 .secondary > summary::-webkit-details-marker { display: none; }
-.secondary > summary::before { content: '▸'; color: var(--accent); }
-.secondary[open] > summary::before { content: '▾'; }
+.secondary > summary::before {
+  content: ''; width: 0; height: 0;
+  border-left: 5px solid var(--accent);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+}
+.secondary[open] > summary::before {
+  content: ''; width: 0; height: 0;
+  border-top: 5px solid var(--accent);
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+}
 .secondary > summary:hover { color: var(--text); }
 .secondary-body { padding: 0 var(--space-4) var(--space-1); }
 .secondary-body > .card,
@@ -952,9 +960,17 @@ textarea { resize: vertical; min-height: 70px; }
 .job-more > summary::-webkit-details-marker,
 .job-detail > summary::-webkit-details-marker { display: none; }
 .job-more > summary::before,
-.job-detail > summary::before { content: '▸'; color: var(--accent); }
+.job-detail > summary::before {
+  content: ''; width: 0; height: 0;
+  border-left: 5px solid var(--accent);
+  border-top: 4px solid transparent; border-bottom: 4px solid transparent;
+}
 .job-more[open] > summary::before,
-.job-detail[open] > summary::before { content: '▾'; }
+.job-detail[open] > summary::before {
+  content: ''; width: 0; height: 0;
+  border-top: 5px solid var(--accent);
+  border-left: 4px solid transparent; border-right: 4px solid transparent;
+}
 .job-more > summary:hover,
 .job-detail > summary:hover { color: var(--text); }
 .job-more > .row { margin-top: var(--space-2); }
