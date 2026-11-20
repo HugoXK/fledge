@@ -60,6 +60,13 @@ export class RateLimiter {
     return true
   }
 
+  // #464: a 429 can say when the bucket refills without the map leaving this
+  // class. A take() that just refused necessarily found a live bucket, so this
+  // lookup is not a second admission decision.
+  resetAt(key: string): number | null {
+    return this.buckets.get(key)?.resetAt ?? null
+  }
+
   sweep(): void {
     const now = Date.now()
     for (const [key, bucket] of this.buckets) if (bucket.resetAt <= now) this.buckets.delete(key)

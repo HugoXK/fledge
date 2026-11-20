@@ -300,6 +300,25 @@ multicast, ULA and IPv4-mapped private addresses are refused consistently. The
 webhook check runs at send time and after every redirect; it does not change
 quota accounting, and a refused webhook spends no quota and calls no provider.
 
+## Gateway admission
+
+The gateway's only admission control is an in-process throttle: 240 requests per
+60 seconds per client address, in one bucket per route (`/v1/models` keys
+`gateway-ip:<address>`, `/v1/chat/completions` keys `gateway-chat:<address>`). It
+runs before authentication, so a refused request never reaches a provider, the
+quota ledger or a token's `last_used_at`. IPv6 is keyed on its /64 and anything
+that does not parse collapses onto one key.
+
+`GATEWAY_TENANT_METERING` (`off` by default) turns on per-tenant metering. With
+it **on**, each authenticated gateway request increments
+`fledge_gateway_requests_total{tenant}` once as `user:<user id>` and, for a
+repository token, once more as `repo:<repository id>`; the two 429s also carry
+`retryAt`, the epoch-millisecond time at which that address's bucket refills.
+With it **off** the key, the window, the 429 body and the number of requests
+admitted are exactly what they were before the switch existed. The switch does
+not split the bucket, cap a tenant or queue a request: per-tenant fairness is a
+later decision, and this slice only makes the tenant visible.
+
 ## Admin
 
 Admins can set `quota_cny` per user from `/admin` (0–10000), or tick
