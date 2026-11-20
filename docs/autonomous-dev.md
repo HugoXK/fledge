@@ -1002,7 +1002,10 @@ happens without a hand step on two triggers: the verdict itself
 (`pull_request_review` and `issue_comment`), and a `pr-lint` run that settled
 after the gate had finished — the `review-gate-retrigger` job, a `workflow_run` on
 `pr-lint` that resolves the pull request from the finished run's head SHA and hands
-it to the same repair, refused for a run from any other repository. A run above
+it to the same repair. The job's own condition carries the head-repository test, so
+a run from another repository skips it before it can use `actions: write`; whether
+the finished run came from a pull request at all is the entrypoint's first check,
+and it refuses before any read. A run above
 the attempt cap (attempt 3, after
 two automatic re-runs) is repainted once when the red it owns predates the newest
 verdict, and otherwise needs a new commit to move the tip; the step says which by

@@ -144,17 +144,27 @@ jobs:
   # repair script rather than carrying a second copy of the repair.
   #
   # A `workflow_run` fires for a fork's pull request too, and this job holds
-  # `actions: write`, so the head repository and the event are tested first: a
-  # fork's completion skips the job *before* the permission can be used, and no
-  # step, no checkout and no API write happens. The `if:` is the whole guard for
-  # that class, which is why it is one expression and not a step condition.
+  # `actions: write`, so the head repository is tested in the `if:`: a fork's
+  # completion skips the job *before* the permission can be used, and no step, no
+  # checkout and no API write happens. That test has to be here, in the job's own
+  # condition, because a script cannot un-start a job that already holds the scope.
+  #
+  # The second half of the guard — the finished run was started by a pull request,
+  # not by a push — is the first thing `scripts/retrigger.mjs` decides, and it
+  # refuses there before any API read. It is not repeated in this `if:` on purpose:
+  # the job that judges this file on its own pull request runs `action-pins` from
+  # the *base* tree, and that copy reads any quoted `'pull_request'` in a job's
+  # condition as "this job serves pull_request" and demands a pull_request
+  # association gate, which a `workflow_run` payload cannot satisfy (base job
+  # 136344245360 on PR #1176). One definition of "this completion is mine" is also
+  # the rule the rest of this file follows.
   #
   # It publishes no check. It is named `review-gate-retrigger`: a job named
   # `review-gate` would repaint the required context merely by being skipped, and
   # `scripts/lib/reserved-contexts.mjs` allows that name only once in this file.
   review-gate-retrigger:
     name: review-gate-retrigger
-    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

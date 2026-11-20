@@ -51,7 +51,6 @@ function declaredNames(text: string): string[] {
 
 const RETRIGGER = 'review-gate-retrigger'
 const HEAD_REPOSITORY_GUARD = 'github.event.workflow_run.head_repository.full_name == github.repository'
-const PULL_REQUEST_RUN = `github.event.workflow_run.event == 'pull_request'`
 
 function runPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -89,15 +88,33 @@ test('the retrigger job is skipped, not merely refused, for a run from another r
   // pull request too, and a job that reached `actions: write` would POST a re-run
   // against this repository on someone else's branch.
   assert.ok(condition.includes(HEAD_REPOSITORY_GUARD), 'the job must name the head repository')
-  assert.ok(condition.includes(PULL_REQUEST_RUN), 'the job must name the event that produced the run')
   assert.match(condition, /github\.event_name == 'workflow_run'/, 'the event test comes first, so no other event reaches the rest')
   assert.ok(
     condition.indexOf(`github.event_name == 'workflow_run'`) < condition.indexOf(HEAD_REPOSITORY_GUARD),
     'the head repository is tested only for a workflow_run event',
   )
+  // The other half of the guard — the run was started by a pull request, not a
+  // push — is `refusalFor`'s first check, so it refuses before any read. It is not
+  // repeated here because the required `action-pins` job that judges this file
+  // runs from the base tree, and that copy reads a quoted `'pull_request'` in a
+  // job's condition as "this job serves pull_request" and demands an association
+  // gate a `workflow_run` payload cannot satisfy (base job 136344245360).
+  assert.doesNotMatch(condition, /'pull_request'/, 'the origin test lives in the entrypoint, not in the job condition')
   assert.match(block, /actions: write/, 'the job is privileged, which is why the guard matters')
   const findings = checkActorGates(workflow, 'review-gate.yml')
   assert.deepEqual(findings.map((finding) => `${finding.job} ${finding.problem}`), [], 'the scan over the real file is clean')
+})
+
+test('the entrypoint refuses a completion that was not started by a pull request', async () => {
+  const record: string[] = []
+  const result = await execRetrigger({
+    eventName: 'workflow_run',
+    event: { workflow_run: runPayload({ event: 'push' }) },
+    repository: 'HugoXK/fledge',
+    api: recordingApi([], record),
+  })
+  assert.equal(result.number, null)
+  assert.deepEqual(record, [], 'the origin is decided before any API read')
 })
 
 test('a cancelled lint retriggers nothing and reads nothing', async () => {
