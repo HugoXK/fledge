@@ -101,6 +101,57 @@ test('rotate-github-token refuses a token from the environment and names the fil
   }
 })
 
+// #840: this script's whole job is handling a token, and GITHUB_API_URL is
+// inherited from the environment, so a hostile or stale value would carry the
+// fresh PAT to another origin. The check must run before the token file is
+// opened; the absent path makes that order observable — a refused origin must
+// never turn into a read error.
+test('rotate-github-token refuses a non-GitHub API origin before it opens the token file', async () => {
+  const secrets = secretsFile()
+  try {
+    const absent = join(secrets.dir, 'absent-token')
+    const result = await runRotate(['--token-file', absent], { SECRETS_PATH: secrets.path, GITHUB_API_URL: 'http://evil.example' })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /evil\.example/, 'the refusal names the origin it refused')
+    assert.match(result.stderr, /api\.github\.com/, 'and the one origin it accepts')
+    assert.match(result.stderr, /loopback/i, 'and the loopback exception the fake-server cases rely on')
+    assert.doesNotMatch(result.stderr, /cannot read|ENOENT/, 'the token file was never opened')
+    assert.equal(secrets.value(), 'old-token')
+  } finally {
+    secrets.cleanup()
+  }
+})
+
+// The documented base carries a trailing slash in the docs; refusing it would
+// break the happy path this file exists for, so the accept rule is proven by the
+// run moving on to the file rather than by a fetch to the real GitHub.
+test('rotate-github-token accepts https://api.github.com/ and moves on to the token file', async () => {
+  const secrets = secretsFile()
+  try {
+    const absent = join(secrets.dir, 'absent-token')
+    const result = await runRotate(['--token-file', absent], { SECRETS_PATH: secrets.path, GITHUB_API_URL: 'https://api.github.com/' })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /cannot read|ENOENT/, 'the documented base is accepted; the run reaches the file')
+    assert.doesNotMatch(result.stderr, /refused/i)
+  } finally {
+    secrets.cleanup()
+  }
+})
+
+test('rotate-github-token refuses an unparseable GITHUB_API_URL with the same message', async () => {
+  const secrets = secretsFile()
+  try {
+    const absent = join(secrets.dir, 'absent-token')
+    const result = await runRotate(['--token-file', absent], { SECRETS_PATH: secrets.path, GITHUB_API_URL: 'not a url' })
+    assert.equal(result.code, 1)
+    assert.match(result.stderr, /not a url/, 'the refusal quotes the value it could not parse')
+    assert.match(result.stderr, /api\.github\.com/)
+    assert.doesNotMatch(result.stderr, /cannot read|ENOENT/, 'the token file was never opened')
+  } finally {
+    secrets.cleanup()
+  }
+})
+
 // The file is opened once and checked and read through that one descriptor, so
 // there is no path lookup between the permission check and the read. A path that
 // is not a regular file is refused before anything is read from it.
