@@ -201,6 +201,7 @@ test('acceptance 5: a duplicated job, a duplicated key or an unreadable line is 
   const duplicateKey = mini((text) => text.replace('    runs-on: ubuntu-latest\n', '    runs-on: ubuntu-latest\n    runs-on: ubuntu-24.04\n'))
   const badIndent = mini((text) => text.replace('    name: build\n', '   name: build\n'))
   const noJobs = mini((text) => text.replace(/jobs:[\s\S]*$/, 'permissions:\n  contents: read\n'))
+  const emptyMapping = mini((text) => text.replace(/jobs:[\s\S]*$/, 'jobs:\n'))
   const empty = ''
 
   for (const [label, text, expected] of [
@@ -208,6 +209,7 @@ test('acceptance 5: a duplicated job, a duplicated key or an unreadable line is 
     ['duplicate key', duplicateKey, /declares `runs-on:` twice/],
     ['unreadable line', badIndent, /cannot read/],
     ['no jobs mapping', noJobs, /no top-level `jobs:` mapping/],
+    ['empty mapping', emptyMapping, /mapping is empty/],
     ['empty text', empty, /no top-level `jobs:` mapping/],
   ] as const) {
     const result = compareGate({ base: MINI, head: text, required: ['build'] })
@@ -257,6 +259,16 @@ test('the publisher runs the comparison for pull requests only, and reads both t
   assert.match(cli, /if \(run\.event === 'pull_request'\) \{/, 'only a pull request has a head and a base to compare')
   assert.match(cli, /gateComparison\(run\)/)
   assert.match(cli, /contents\/\$\{GATE_COMPARE_FILE\}/, 'both workflow texts come from the contents API')
-  assert.match(cli, /run\.repository\?\.default_branch/, 'the base text is read at the default branch the workflow_run trusts')
+  // The run object's `repository` is slim and carries no `default_branch`
+  // (verified against run 44670966564), so reading the branch there refuses
+  // every pull request. The repository endpoint answers with the branch.
+  assert.match(cli, /api\(`\/repos\/\$\{REPO\}`\)/, 'the base ref comes from the repository API')
+  assert.doesNotMatch(cli, /run\.repository\?\.default_branch|run\.head_repository\?\.default_branch/, 'the run object has no default_branch to read')
+  // The label is read from the pull request the run names (`pull-requests:
+  // read`), only after the comparison has refused, and a failed read keeps the
+  // unlabelled wording instead of turning the verdict green.
+  assert.match(cli, /api\(`\/repos\/\$\{REPO\}\/pulls\/\$\{String\(number\)\}`\)/, 'the label is read from the named pull request')
+  assert.match(cli, /if \(comparison\.ok\) return comparison/, 'the label is not read when the workflow already matches')
+  assert.match(cli, /labelled = false/, 'a failed label read is "not labelled", not a pass')
   assert.doesNotMatch(cli, /readFileSync/, 'no checkpoint text is read from a file, so a file byte cannot reach the request')
 })

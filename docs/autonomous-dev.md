@@ -445,8 +445,12 @@ A job that keeps its required name and changes what it does is a separate hole
 and make its body `run: true`, or add `continue-on-error: true` to the step so a
 failing job reports `success`. A pull request run is therefore also compared with
 the default branch's copy of `.github/workflows/ci.yml` — both texts read through
-the contents API, so the publisher still reads no file — and every key of every
-required job must match. `name:` and `timeout-minutes:` are allowlisted because
+the contents API, so the publisher still reads no file: the base at the default
+branch, resolved from the repository API because the run object's `repository`
+carries no `default_branch`, and the head at the run's head sha, never the
+publisher's own ref — and every key of every required job must match. The label
+below is read from the pull request through `pull-requests: read`; only the
+refusal wording depends on it. `name:` and `timeout-minutes:` are allowlisted because
 neither can flip a conclusion; everything else is a refusal, named by job and
 key. The `ci-ok` job's `needs` may grow but not shrink, and its step must still be
 exactly `node base/scripts/ci-ok.mjs` with the gate checked out under

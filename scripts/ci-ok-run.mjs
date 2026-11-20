@@ -26,6 +26,14 @@
 // up in the check-run body is the `js/file-access-to-http` shape alert 140
 // removed, and the checkouts stay data that nothing here reads.
 //
+// The default branch is read from the repository API, not from the run object:
+// the run's slim `repository` has no `default_branch` key (run 44670966564 is
+// the proof), so reading it there refuses every pull request. The
+// `ci-workflow-change` label is read from the pull request the run names, and
+// only after the comparison has already refused: the label chooses the wording
+// of a red verdict, never its conclusion, so a failed label read is "not
+// labelled" and never a pass.
+//
 // A push or a merge-queue entry is not compared: the queue head's tree already
 // contains the reviewed change and carries no label, and a push has no base range
 // at all.
@@ -185,31 +193,49 @@ async function workflowText(ref) {
   return Buffer.from(body.content, 'base64').toString('utf8')
 }
 
+// The branch the base workflow is read at. The run object's `repository` is a
+// slim shape with no `default_branch` (the key is absent from run 44670966564),
+// so the repository endpoint is the trusted answer; an unavailable one is a
+// refusal, not a fallback to the head's own tree.
+async function baseBranch() {
+  const repository = await api(`/repos/${REPO}`)
+  const branch = repository?.default_branch
+  if (typeof branch !== 'string' || branch === '') {
+    throw new Error('the repository API names no default branch, so the base workflow is unknown')
+  }
+  return branch
+}
+
 // The only label that can sanction a required-job rewrite. A run that names no
-// single pull request has no label, and that is the fail-closed reading.
+// single pull request has no label, and that is the fail-closed reading. The
+// label is only read once the comparison has refused, and a read that fails
+// keeps the unlabelled wording: it cannot turn a red verdict green.
 async function labelledWorkflowChange(run) {
   if (run.event !== 'pull_request') return false
   const pulls = Array.isArray(run.pull_requests) ? run.pull_requests : []
   const numbers = new Set(pulls.map((pull) => pull?.number).filter((number) => Number.isSafeInteger(number) && number > 0))
   if (numbers.size !== 1) return false
   const [number] = [...numbers]
-  const labels = await api(`/repos/${REPO}/issues/${String(number)}/labels?per_page=100`)
-  return Array.isArray(labels) && labels.some((label) => label?.name === WORKFLOW_CHANGE_LABEL)
+  const pull = await api(`/repos/${REPO}/pulls/${String(number)}`)
+  const labels = Array.isArray(pull?.labels) ? pull.labels : []
+  return labels.some((label) => label?.name === WORKFLOW_CHANGE_LABEL)
 }
 
 async function gateComparison(run) {
   const headSha = String(run.head_sha)
   if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error('the finished run names no 40-character head sha')
-  const defaultBranch = run.repository?.default_branch ?? run.head_repository?.default_branch
-  if (typeof defaultBranch !== 'string' || defaultBranch === '') {
-    throw new Error('the finished run names no default branch, so the base workflow is unknown')
+  const branch = await baseBranch()
+  const [base, head] = await Promise.all([workflowText(branch), workflowText(headSha)])
+  const comparison = compareGate({ base, head, required: REQUIRED_JOBS })
+  if (comparison.ok) return comparison
+  // Already red. The label changes only which door the refusal names.
+  let labelled = false
+  try {
+    labelled = await labelledWorkflowChange(run)
+  } catch (error) {
+    console.error(`ci-ok-run: could not read the ${WORKFLOW_CHANGE_LABEL} label (${error.message}); the refusal keeps the unlabelled wording`)
   }
-  const [base, head, labelled] = await Promise.all([
-    workflowText(defaultBranch),
-    workflowText(headSha),
-    labelledWorkflowChange(run),
-  ])
-  return compareGate({ base, head, required: REQUIRED_JOBS, labelled })
+  return labelled ? compareGate({ base, head, required: REQUIRED_JOBS, labelled: true }) : comparison
 }
 
 async function publish(payload) {

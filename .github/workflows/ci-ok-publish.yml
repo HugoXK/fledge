@@ -25,6 +25,10 @@ permissions:
   contents: read
   actions: read
   checks: write
+  # #1108: the comparator reads the pull request's `ci-workflow-change` label,
+  # and reading a pull request needs this scope. It is read-only, and only the
+  # refusal wording depends on it — never the verdict.
+  pull-requests: read
 
 concurrency:
   # One verdict per head, and a later run must not be cancelled by this one:
@@ -43,6 +47,7 @@ jobs:
       contents: read
       actions: read
       checks: write
+      pull-requests: read
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
