@@ -104,7 +104,7 @@ export async function assertSafeNotificationWebhook(
   })
 }
 
-async function postWebhook(
+export async function postWebhook(
   url: URL,
   body: string,
   headers: Record<string, string>,

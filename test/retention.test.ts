@@ -37,6 +37,9 @@ const DEFAULT_WINDOWS = {
   // #371: the post-merge ledger shares the jobs window, so one run removes a
   // delivery and the job that produced it.
   deliveryOutcomes: 365,
+  // #635: the loop funnel is a history, not a receipt: two years so a
+  // year-over-year comparison still has the year before its window.
+  productEvents: 730,
   auditLog: 365,
   quotaLedger: 730,
 }

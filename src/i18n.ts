@@ -26,6 +26,7 @@ const MESSAGES: Record<string, string> = {
   '仓库不存在。': 'Repository not found.',
   '页面不存在': 'Page not found',
   '你访问的页面不存在。': 'This page does not exist.',
+  '回路统计已关闭，没有可导出的记录。': 'Loop analytics is off, so there is nothing to export.',
   'Dev 登录没有开启。': 'Developer sign-in is disabled.',
   '请求过多': 'Too many requests',
   '任务失败，可以重跑。': 'The job failed; you can retry it.',

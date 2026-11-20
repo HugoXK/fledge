@@ -121,6 +121,40 @@ coverage that does not exist. The bridge and GitHub rows state the shipped rule
 exactly; raising either target means changing `deploy/prometheus/fledge-alerts.yml`
 in the same PR, which is an alerting change and not a documentation edit.
 
+## The product loop page (#635)
+
+`/admin/product` (superadmins only) answers the two questions the existing counts
+cannot: how long connected repositories take to reach their first job, PR and
+merge, and how often a human has to step in. It is server-rendered from one read
+model, `Store.productLoopMetrics`, so the page, the CSV and the optional push
+cannot disagree about a number.
+
+The record behind it is deliberately narrow. `product_events` has five columns —
+`id`, `name`, `at`, `repo_hash`, `duration_ms` — and no column for a user, an
+account, an e-mail, a prompt, code, a token or a URL. `name` is checked against a
+closed set in `src/metrics/product.ts`, so a caller cannot store free text, and
+`repo_hash` is a SHA-256 prefix of `repo:<installation salt>:<repository id>`, so
+two different accounts doing the same thing produce rows that differ only in that
+digest. The salt lives in a `settings` row and rotating it changes every
+fingerprint; `deleteRepo` removes the repository's rows with it.
+
+- **Off switch.** `settings.product.analytics = 'off'` stops the write before it
+  starts: no row, and no salt minted. The page then says so instead of drawing an
+  empty table that would read as zero activity, and `/admin/product.csv` answers
+  404 and is not linked.
+- **Export.** `GET /admin/product.csv` renders the same snapshot as a
+  `section,metric,value` table — counts, durations and rates, no digest and no
+  account. It is not reachable while analytics is off.
+- **Optional receiver.** `PRODUCT_LOOP_WEBHOOK_URL` is the only switch for the
+  outbound push; unset means nothing leaves the process. When set and analytics is
+  on, the scheduler pushes `product.loop` at most once per UTC day (the
+  `product_push:last` setting marks the day, and only after a 2xx). The payload is
+  the read model — funnel, durations, rescue counts and evidence rates — with no
+  repository fingerprint, account or free text.
+- **Retention.** `product_events` is a retention class of its own
+  (`RETENTION_PRODUCT_EVENTS_DAYS`, default 730) and `product_push:` markers age
+  out in 30 days, so a backup cannot carry the history past the operator's window.
+
 ## Alert rules and SLO report
 
 Prometheus alert rules live in [`deploy/prometheus/fledge-alerts.yml`](../deploy/prometheus/fledge-alerts.yml).

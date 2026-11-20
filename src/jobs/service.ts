@@ -1599,6 +1599,10 @@ export class Jobs {
     this.store.event('job_enqueued', { userId: user.id, repoId: repo.id, jobId: job.id, meta: `${kind}:${trigger}` })
     this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.enqueued', step: kind, meta: `${kind}:${trigger}` })
     if (priorJobs === 0) this.store.event('first_job_start', { userId: user.id, repoId: repo.id, jobId: job.id })
+    // #635: the funnel's first two stages. Both are deduped by the digested
+    // repository, so a second job or a second goal is not a second repository.
+    this.store.recordProductEvent({ name: 'goal_set', repoId: repo.id, subject: repo.id })
+    this.store.recordProductEvent({ name: 'first_job_started', repoId: repo.id, subject: repo.id })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'queued' })
     else if (kind === 'iterate') this.store.updateRepo(repo.id, { last_run_at: nowIso(), last_status: 'queued' })
     else this.store.updateRepo(repo.id, { last_status: 'queued' })
@@ -1910,6 +1914,16 @@ export class Jobs {
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: eventMeta === null ? null : redact(eventMeta) })
     if (result.status === 'failed') this.notePostmortem(jobId)
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
+    // #635 review: only a failed run is a failure. A succeeded run with no pull
+    // request (every review, and issue-output discover/iterate) records nothing
+    // here, because counting it as `job_failed` made the rescue rate divide by
+    // failures that never happened. A success with a PR is the funnel's first-PR
+    // stage; the first one wins, because the store keeps MIN(at) per digest.
+    if (result.status === 'failed') {
+      this.store.recordProductEvent({ name: 'job_failed', repoId: job.repo_id, subject: jobId })
+    } else if (prUrl !== null) {
+      this.store.recordProductEvent({ name: 'first_pr_opened', repoId: job.repo_id, subject: job.repo_id })
+    }
     if (result.status === 'failed') {
       // #633: a failure is one action, not one notice per event. The action id is
       // derived from the job, so a duplicate callback finds the same row and gets
@@ -2965,6 +2979,7 @@ export class Jobs {
     incCounter('fledge_merges_total', { result: 'merged' }, 1, 'Pull request merge results')
     this.store.audit(job.user_id, manual ? 'job.manually_merged' : 'job.auto_merged', `${job.id}: PR ${number} ${sha ?? ''}`)
     this.store.event('job_auto_merged', { userId: job.user_id, repoId: job.repo_id, jobId: job.id, meta: `pr=${number}` })
+    this.store.recordProductEvent({ name: 'pr_merged', repoId: job.repo_id, subject: job.repo_id })
     this.store.recordJobEvent({ jobId: job.id, repoId: job.repo_id, userId: job.user_id, kind: 'job.merged', step: `pr=${number}`, meta: sha ?? null })
   }
 
