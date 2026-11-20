@@ -675,15 +675,17 @@ identity to the ruleset bypass, then let the next run tag the merge.
 ### Automatic tag deployment and verification
 
 The release plan → release pull request → tag half lives in
-`.github/workflows/daily-release.yml` and `release.yml`. The last two steps are
-tracked here as host scripts under `deploy/`:
+`.github/workflows/daily-release.yml` and `release.yml`. The deployment half is
+run by `hugoxk-infra`, which installs the two scripts kept here under `deploy/`
+and schedules them from its own crontab (see [Who actually deploys
+production](#who-actually-deploys-production)):
 
 ```sh
 # Deploy a newer tag; never roll a newer main back.
-*/10 * * * * /opt/fledge/deploy/fledge-deploy-tag.sh
+*/10 * * * * /home/xuke/work/fledge-deploy-tag.sh
 
 # Refresh release-status.json for /admin.
-*/30 * * * * /opt/fledge/deploy/fledge-verify-release.sh
+*/30 * * * * /home/xuke/work/fledge-verify-release.sh
 ```
 
 `fledge-deploy-tag.sh` fetches tags, takes the newest `vX.Y.Z`, and deploys only
@@ -944,6 +946,8 @@ value containing a host path is refused.
 ## 6. Reverse proxy
 
 Ready-to-copy samples live in [`deploy/`](../deploy/): a systemd unit and an nginx
+(these are the source of what `hugoxk-infra` installs, not a claim that production
+boots from this exact unit — the infra host uses its own service wrapper)
 server block. The nginx example:
 
 ```nginx
@@ -1445,11 +1449,59 @@ Schema changes are additive and idempotent for `v0.1.x`; review the changelog
 before a major upgrade.
 
 A release tag is not a deploy. `release.yml` builds the image, publishes it to
-GHCR and creates the GitHub release against the tag; the running service changes
-only when someone follows the three commands above on the host. The tag itself is
-written by the daily release job through the Git data API
-(`POST /git/tags` + `POST /git/refs`) once the mechanical release pull request is
-merged, so a tag on `main` is evidence of a released version, not of a rollout.
+GHCR and creates the GitHub release against the tag; the tag itself is written by
+the daily release job through the Git data API (`POST /git/tags` +
+`POST /git/refs`) once the mechanical release pull request is merged, so a tag on
+`main` is evidence of a released version, not of a rollout.
+
+### Who actually deploys production
+
+Production execution is owned by the private **[`hugoxk-infra`]** repository, not
+by this one. The files under `deploy/` here are the source and the contract — the
+nginx sample, the systemd unit, the journald drop-in, the deploy scripts and the
+tests that gate them — and `hugoxk-infra` is where they are installed and run.
+Read that repository for the authoritative host layout; this page documents what
+it runs and what the tag deployer verifies.
+
+`hugoxk-infra/config/crontab.txt` drives two paths, and they deploy different
+things:
+
+```sh
+# Daily: update the service from main
+0 16 * * *  /home/xuke/work/service-update-all.sh
+
+# Every ten minutes: deploy the newest release tag
+*/10 * * * * /home/xuke/work/fledge-deploy-tag.sh
+
+# Every thirty minutes: refresh the release-chain verdict for /admin
+*/30 * * * * /home/xuke/work/fledge-verify-release.sh
+```
+
+- **The daily `main` update** — `service-update-all.sh` → `service-update-fledge.sh`
+  — fetches `origin/main`, merges it into the `server-deploy` branch on the host,
+  builds and restarts. It moves the host to whatever `main` holds, independent of
+  tags, so an unreleased fix can be running in production.
+- **The tag deploy** — `fledge-deploy-tag.sh` — deploys the newest `vX.Y.Z` only
+  when it is newer than the running `package.json`, from a detached tag worktree.
+
+**Which one wins:** when they disagree, the tag deploy does not roll
+`server-deploy` back and the daily update does not wait for a tag — the host ends
+up on whichever ran last, and the newest release tag remains the release of
+record. A host on `main` after a daily update can therefore be ahead of the newest
+tag, which is why `release-status.json` reports the release chain separately from
+the running commit; `/healthz`'s `commit` is the running artifact, not a release.
+
+The tag deployer's preflight, before it switches the service: the tag is
+**annotated**, it is an **ancestor of `origin/main`**, the whole published release
+chain verifies (`fledge-verify-release.sh` / `verify-release`), and dependencies
+are installed with **`npm ci --ignore-scripts`**. A missing or failed check leaves
+the host on the release it was running and the next tick retries the same tag.
+
+The three commands at the top of this section are the manual fallback for a host
+where those scripts are not installed. On the production host they are what the
+infra timers run; nobody has to follow them by hand.
+
+[`hugoxk-infra`]: https://github.com/HugoXK/hugoxk-infra
 
 ## 9. Monitoring
 
