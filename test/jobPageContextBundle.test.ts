@@ -125,3 +125,57 @@ test('the job page lists the previous-bundle changes in the contract order', () 
     store.close()
   }
 })
+
+test('the job page lists every clause with its own verdict, and unverifiable is not a pass', () => {
+  const store = new Store(':memory:')
+  try {
+    const f = fixture(store, 'adherence-page')
+    const recorded = bundleJob(store, f.repo.id, f.userId, 'job_page_adherence', instructions())
+    store.updateJob(recorded.id, { context_bundle_state: 'verified' })
+    const record = {
+      status: 'unverifiable',
+      hashVerified: true,
+      clauses: [
+        { id: 'contract.hash', status: 'pass', detail: `the callback echoed ${recorded.hash}` },
+        { id: 'paths.denied', status: 'pass', detail: 'no changed path matches deploy/' },
+        { id: 'actions.forbidden', status: 'unverifiable', detail: 'the actions were not observed' },
+      ],
+    }
+    store.updateJob(recorded.id, { adherence_status: 'unverifiable', adherence_json: JSON.stringify(record) })
+    const page = jobPage({
+      config: testConfig(), locale: 'en', viewer: f.viewer, repo: f.repo,
+      job: store.getJob(recorded.id)!,
+    })
+    assert.match(page, /data-adherence-status>unverifiable</)
+    assert.match(page, /Some clauses could not be checked, so this is not a pass\./)
+    assert.match(page, /data-adherence-clause="contract\.hash"/)
+    assert.match(page, /data-adherence-clause="actions\.forbidden"/)
+    assert.match(page, /the actions were not observed/)
+
+    // A violation says the merge request was blocked, and the row that records it
+    // is what the sentence reads.
+    store.updateJob(recorded.id, {
+      adherence_status: 'violation',
+      adherence_json: JSON.stringify({ status: 'violation', hashVerified: true, clauses: [{ id: 'paths.denied', status: 'violation', detail: 'changed a denied path: deploy/x.sh' }] }),
+    })
+    const violated = jobPage({
+      config: testConfig(), locale: 'zh', viewer: f.viewer, repo: f.repo,
+      job: store.getJob(recorded.id)!,
+    })
+    assert.match(violated, /data-adherence-violation/)
+    assert.match(violated, /合并请求已被阻止/)
+    assert.match(violated, /deploy\/x\.sh/)
+
+    // A job with no record says so rather than printing an empty table.
+    const g = fixture(store, 'adherence-page-plain')
+    const plain = bundleJob(store, g.repo.id, g.userId, 'job_page_adherence_plain', instructions())
+    const none = jobPage({
+      config: testConfig(), locale: 'en', viewer: g.viewer, repo: g.repo,
+      job: store.getJob(plain.id)!,
+    })
+    assert.match(none, /id="job-adherence"/)
+    assert.match(none, /no clause audit recorded yet/)
+  } finally {
+    store.close()
+  }
+})

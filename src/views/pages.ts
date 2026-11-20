@@ -27,6 +27,7 @@ import { parseSkillBundleRecord, type SkillBundleSourceRow } from '../lib/skillB
 // #369: the job page reads the bundle back from the row and re-hashes it, so the
 // page never prints "verified" for bytes that no longer match the hash.
 import { diffContextBundles, readContextBundle, verifyContextBundle } from '../lib/contextBundle.js'
+import type { AdherenceRecord, AdherenceStatus, ClauseResult } from '../lib/instructions.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -4236,6 +4237,33 @@ export function jobPage(input: {
         ...(input.merge === undefined ? {} : { merge: input.merge }),
       })
 
+// #364: the stored adherence record is read back through a shape check, not cast:
+// a clause list that is half-written must print as "not evaluated" instead of
+// rendering statuses that were never recorded.
+function readAdherence(json: string | null): AdherenceRecord | null {
+  if (json === null || json === '') return null
+  let value: unknown
+  try {
+    value = JSON.parse(json)
+  } catch {
+    return null
+  }
+  if (value === null || typeof value !== 'object') return null
+  const record = value as Partial<AdherenceRecord>
+  const statuses: AdherenceStatus[] = ['pass', 'violation', 'unverifiable']
+  if (record.status === undefined || !statuses.includes(record.status) || typeof record.hashVerified !== 'boolean') return null
+  if (!Array.isArray(record.clauses)) return null
+  const clauses: ClauseResult[] = []
+  for (const entry of record.clauses) {
+    if (entry === null || typeof entry !== 'object') return null
+    const clause = entry as Partial<ClauseResult>
+    if (typeof clause.id !== 'string' || typeof clause.detail !== 'string') return null
+    if (clause.status === undefined || !statuses.includes(clause.status)) return null
+    clauses.push({ id: clause.id, status: clause.status, detail: clause.detail })
+  }
+  return { status: record.status, hashVerified: record.hashVerified, clauses }
+}
+
   // #369: the bundle card is built from the stored bytes, never from the hash the
   // row reports. `verifyContextBundle` re-hashes what was stored, so a row whose
   // hash belongs to a different bundle prints as a mismatch instead of a badge.
@@ -4272,6 +4300,29 @@ export function jobPage(input: {
         <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('字段', 'Field'))}</th><th>${escapeHtml(t('之前', 'Before'))}</th><th>${escapeHtml(t('之后', 'After'))}</th></tr></thead><tbody>${contextBundleChanges.map((change) => `<tr><td><code>${escapeHtml(change.field)}</code></td><td>${escapeHtml(change.before)}</td><td>${escapeHtml(change.after)}</td></tr>`).join('')}</tbody></table></div>`}
   </section>`
 
+  // #364: the clause audit. The status word is the whole point: `unverifiable`
+  // is rendered as its own outcome so a clause nobody could check is never read
+  // as a pass, and a row with no record says so instead of showing an empty table.
+  const adherence = readAdherence(job.adherence_json)
+  const adherenceStatusLabel = (status: AdherenceStatus): string =>
+    status === 'pass'
+      ? t('通过', 'pass')
+      : status === 'violation'
+        ? t('违反', 'violation')
+        : t('无法核对', 'unverifiable')
+  const adherenceCard = `<section class="card" id="job-adherence">
+    <h2>${escapeHtml(t('指令契约审计', 'Instruction contract audit'))}</h2>
+    ${adherence === null
+      ? `<p class="muted">${escapeHtml(t('这个任务还没有记录条款审计：合并检查运行后才会写入，没有上下文包的任务也不会有记录。', 'This job has no clause audit recorded yet: it is written when the merge gate runs, and a job with no context bundle never gets one.'))}</p>`
+      : `${adherence.status === 'violation'
+        ? `<p class="fine" data-adherence-violation><strong>${escapeHtml(t('违反了它运行的指令契约，合并请求已被阻止。', 'It violated the instruction contract it ran under, so the merge request was blocked.'))}</strong></p>`
+        : adherence.status === 'unverifiable'
+          ? `<p class="fine">${escapeHtml(t('有些条款无法核对，不能当作通过。', 'Some clauses could not be checked, so this is not a pass.'))}</p>`
+          : `<p class="fine">${escapeHtml(t('所有可机检的条款都通过了。', 'Every machine-checkable clause passed.'))}</p>`}
+      <p class="fine">${escapeHtml(t('条款审计结论', 'Audit verdict'))}: <code data-adherence-status>${escapeHtml(adherence.status)}</code> · ${escapeHtml(t('回调哈希一致', 'callback hash matched'))}: <code>${adherence.hashVerified ? 'true' : 'false'}</code></p>
+      <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('条款', 'Clause'))}</th><th>${escapeHtml(t('结论', 'Verdict'))}</th><th>${escapeHtml(t('依据', 'Detail'))}</th></tr></thead><tbody>${adherence.clauses.map((clause) => `<tr data-adherence-clause="${escapeHtml(clause.id)}"><td><code>${escapeHtml(clause.id)}</code></td><td>${escapeHtml(adherenceStatusLabel(clause.status))}</td><td>${escapeHtml(clause.detail)}</td></tr>`).join('')}</tbody></table></div>`}
+  </section>`
+
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -4301,6 +4352,7 @@ export function jobPage(input: {
   ${supportMode ? '' : triageCard}
   ${changeStoryCard}
   ${contextBundleCard}
+  ${adherenceCard}
   ${input.strategy === undefined ? '' : jobStrategyBlock({ locale, repoId: repo.id, strategy: input.strategy })}
   ${jobSecurityFindingsCard(t, findings)}
   <section class="cols">

@@ -688,6 +688,12 @@ export interface JobRow {
   context_bundle_hash: string | null
   context_bundle_json: string | null
   context_bundle_state: string | null
+  // #364: the clause-level verdict of the contract above, recorded by the gate
+  // that reads the pull request. `adherence_status` is `pass`, `violation` or
+  // `unverifiable`; NULL means no gate has evaluated this job yet, so "not
+  // evaluated" never reads as a clean pass.
+  adherence_status: string | null
+  adherence_json: string | null
   created_at: string
   started_at: string | null
   finished_at: string | null
@@ -1635,6 +1641,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   context_bundle_hash TEXT,
   context_bundle_json TEXT,
   context_bundle_state TEXT,
+  adherence_status TEXT,
+  adherence_json TEXT,
   created_at TEXT NOT NULL,
   started_at TEXT,
   last_callback_at TEXT,
@@ -3333,6 +3341,11 @@ export class Store {
     if (!jobColumns.has('context_bundle_hash')) this.run('ALTER TABLE jobs ADD COLUMN context_bundle_hash TEXT')
     if (!jobColumns.has('context_bundle_json')) this.run('ALTER TABLE jobs ADD COLUMN context_bundle_json TEXT')
     if (!jobColumns.has('context_bundle_state')) this.run('ALTER TABLE jobs ADD COLUMN context_bundle_state TEXT')
+    // #364: additive on purpose. A row that predates the adherence record reads
+    // back as "not evaluated", which the page prints as such rather than as a
+    // clause list that happens to be empty.
+    if (!jobColumns.has('adherence_status')) this.run('ALTER TABLE jobs ADD COLUMN adherence_status TEXT')
+    if (!jobColumns.has('adherence_json')) this.run('ALTER TABLE jobs ADD COLUMN adherence_json TEXT')
     // #359: additive on purpose; every existing row backfills as NULL, which is
     // exactly "no recorded reason", so no close that happened earlier is read as
     // a plan expiry.
@@ -7711,7 +7724,7 @@ export class Store {
     })
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc' | 'skill_bundle_hash' | 'skill_bundle_json' | 'skill_state' | 'context_bundle_hash' | 'context_bundle_json' | 'context_bundle_state'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc' | 'skill_bundle_hash' | 'skill_bundle_json' | 'skill_state' | 'context_bundle_hash' | 'context_bundle_json' | 'context_bundle_state' | 'adherence_status' | 'adherence_json'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []
