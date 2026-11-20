@@ -21,13 +21,16 @@ export const DEFAULT_POLL_MS = 20 * 1000
 // the commit, which is a lookup and not a race against the repository's activity.
 export const CODEQL_WORKFLOW = 'codeql.yml'
 
-// `?head_sha=` answers every completed run of one commit, so one short page is
-// the whole answer; the cap only guards against a pathological re-run history.
+// `?head_sha=` answers this commit's runs, and a pull request's history is a
+// handful of re-runs, so one short page usually holds the whole answer; the cap
+// only guards against a pathological re-run history.
 export const PROBE_PER_PAGE = 10
 
-// The fallback scan exists for an API that ignores an unknown query parameter
-// and keeps answering the unfiltered list. It is bounded twice — by a page cap
-// and by the caller's deadline — because the window it walks is unbounded.
+// The page walk exists for two shapes the probe cannot settle in one page: a
+// commit with more runs than `PROBE_PER_PAGE`, and an API that ignores an unknown
+// query parameter and keeps answering the unfiltered list. It is bounded twice —
+// by a page cap and by the caller's deadline — because the second shape walks an
+// unbounded window.
 export const RUNS_PER_PAGE = 100
 export const MAX_FALLBACK_PAGES = 10
 
@@ -55,7 +58,13 @@ export function shaForEvent({ eventName, sha, payload }) {
   return sha ?? null
 }
 
-// Which completed analysis answers a commit (#422).
+// Which completed analysis answers a commit (#422, #1032).
+//
+// Completion is decided here, on the run itself, and not by asking the API to
+// filter: GitHub's status index has returned `total_count: 0` for a commit whose
+// completed run it returns without the parameter (measured on `main`), so a
+// filtered answer is not evidence that no analysis concluded. A run that is
+// still queued or in progress therefore yields no match, exactly as before.
 //
 // Only `head_sha` counts. `pull_requests[].head.sha` is filled from the pull
 // request's *current* head, not from the commit the run analysed, so every
@@ -71,19 +80,22 @@ export function shaForEvent({ eventName, sha, payload }) {
 // commit's conclusion.
 export function analysisFor(runs, sha) {
   const list = Array.isArray(runs) ? runs : []
-  const match = list.find((run) => run?.head_sha === sha)
+  const match = list.find((run) => run?.head_sha === sha && run?.status === 'completed')
   if (match === undefined) return null
   return { conclusion: String(match.conclusion ?? '') }
 }
 
 // The request that answers "did this commit's analysis conclude?": the commit is
 // named in the query, so the page is a lookup and not a window the commit can
-// fall out of (#585). `page` and `per_page` are explicit so the fallback scan
-// below reads the same collection the window used to.
+// fall out of (#585). `page` and `per_page` are explicit so the page walk below
+// reads the same collection the window used to.
+//
+// `status` is deliberately absent (#1032). Asking for `status=completed` made the
+// answer depend on an index that can omit a committed, concluded run, so the
+// request reads every run of the commit and `analysisFor` decides completion.
 export function runsPath({ repo, sha, page = 1, perPage = PROBE_PER_PAGE }) {
   const query = new URLSearchParams({
     head_sha: sha,
-    status: 'completed',
     per_page: String(perPage),
     page: String(page),
   })
@@ -107,6 +119,8 @@ export async function analysisFromApi(options) {
   const perPage = Number.isFinite(options.perPage) ? options.perPage : RUNS_PER_PAGE
   const maxPages = Number.isFinite(options.maxPages) ? options.maxPages : MAX_FALLBACK_PAGES
 
+  // The probe asks for every run of this commit, without a status filter: the
+  // answer must not depend on an index that can omit a concluded run (#1032).
   const probe = pageOf(await api(runsPath({ repo, sha, page: 1, perPage: PROBE_PER_PAGE })))
   const answer = analysisFor(probe.runs, sha)
   if (answer !== null) return answer
@@ -116,9 +130,10 @@ export async function analysisFromApi(options) {
   // repository's unrelated activity.
   if (probe.totalCount === 0 || probe.runs.length === 0) return null
 
-  // Runs came back and none of them analysed this commit, so the API answered
-  // unfiltered. Walk the same collection the old window read, stopping at the
-  // page cap and at the deadline.
+  // Runs came back and none has concluded: either this commit has more runs than
+  // the probe page holds, or the API ignored `head_sha=` and answered its own
+  // activity. Walk pages of the collection the probe named, stopping at the page
+  // cap and at the deadline.
   for (let page = 1; page <= maxPages; page += 1) {
     if (now() >= deadline) return null
     const window = pageOf(await api(runsPath({ repo, sha, page, perPage })))
