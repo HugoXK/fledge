@@ -32,7 +32,7 @@ import { fileURLToPath } from 'node:url'
 
 import { REQUIRED_JOBS } from './ci-ok.mjs'
 import { allGateChanges } from './lib/ciChanges.mjs'
-import { checkRunPayload, lostItsBase, mergedPullRequestOf, runIdFrom, skipReason, verdict } from './lib/ci-ok-run.mjs'
+import { checkRunPayload, lostItsBase, mergedPullRequestOf, runIdFrom, skipDetail, skipReason, verdict } from './lib/ci-ok-run.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -176,21 +176,9 @@ async function mergedHead(run) {
     return null
   }
   for (const pull of Array.isArray(pulls) ? pulls : []) {
-    const merged = mergedPullRequestOf(pull)
-    if (merged !== null) return merged
+    if (mergedPullRequestOf(pull) !== null) return pull
   }
   return null
-}
-
-function skipDetail(run, reason, merged) {
-  if (reason === 'superseded') {
-    return `concluded ${String(run.conclusion)}; a newer run for this head supersedes it`
-  }
-  if (reason === 'pull-request-merged') {
-    const number = merged?.number === null ? 'unknown number' : `#${String(merged.number)}`
-    return `pull request ${number} merged at ${String(merged.mergedAt)} while the run was in flight; no merge candidate is left to judge`
-  }
-  return 'the trigger is not a finished run'
 }
 
 async function main() {

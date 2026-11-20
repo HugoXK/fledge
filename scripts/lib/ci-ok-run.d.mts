@@ -57,6 +57,7 @@ export declare function baseShas(run: FinishedRun | null): string[]
 export declare function lostItsBase(run: FinishedRun | null): boolean
 export declare function mergedPullRequestOf(candidate: unknown): MergedPullRequest | null
 export declare function skipReason(run: FinishedRun | null, mergedCandidate?: unknown): string | null
+export declare function skipDetail(run: FinishedRun | null, reason: string | null, mergedCandidate?: unknown): string
 export declare function shouldPublish(run: FinishedRun | null, mergedCandidate?: unknown): boolean
 export declare function checkRunPayload(input: {
   headSha: string

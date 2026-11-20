@@ -194,6 +194,21 @@ test('a run that can still be ranged is judged, even when a merged pull request 
   assert.equal(runModule.shouldPublish({ conclusion: 'success', event: 'push' }, { number: 9, merged_at: '2026-11-19T14:39:27Z' }), true, 'a push run has no pull request to merge away')
 })
 
+test('the skip log names the merged pull request that removed the base', () => {
+  const run = { conclusion: 'success', event: 'pull_request', pull_requests: [] }
+  const merged = { number: 1115, merged_at: '2026-11-19T14:39:27Z' }
+  assert.equal(
+    runModule.skipDetail(run, 'pull-request-merged', merged),
+    'pull request #1115 merged at 2026-11-19T14:39:27Z while the run was in flight; no merge candidate is left to judge',
+  )
+  assert.match(
+    runModule.skipDetail(run, 'pull-request-merged', { number: 1115, mergedAt: '2026-11-19T14:39:27Z' }),
+    /unknown number/,
+    'a shape the API does not return is not evidence for the log either',
+  )
+  assert.match(runModule.skipDetail({ conclusion: 'cancelled' }, 'superseded'), /supersedes it/)
+})
+
 test('the publisher looks up the commit and logs which branch of the decision fired', () => {
   const cli = read('scripts/ci-ok-run.mjs')
   assert.match(cli, /lostItsBase\(run\)/, 'the lookup is made only for the run shape that lost its base')

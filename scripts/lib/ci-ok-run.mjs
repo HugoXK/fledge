@@ -181,6 +181,20 @@ export function skipReason(run, mergedCandidate = null) {
   return null
 }
 
+/** The log line's explanation, one branch per reason, so a reader can tell a
+ *  skip from a failure and which branch of the decision fired. */
+export function skipDetail(run, reason, mergedCandidate = null) {
+  if (reason === SKIP_REASONS.superseded) {
+    return `concluded ${String(run?.conclusion)}; a newer run for this head supersedes it`
+  }
+  if (reason === SKIP_REASONS.merged) {
+    const merged = mergedPullRequestOf(mergedCandidate)
+    const number = merged === null || merged.number === null ? 'unknown number' : `#${String(merged.number)}`
+    return `pull request ${number} merged at ${String(merged?.mergedAt)} while the run was in flight; no merge candidate is left to judge`
+  }
+  return 'the trigger is not a finished run'
+}
+
 /** Whether a finished run publishes a verdict at all: a superseded run is
  *  replaced by a newer one for the same head, and a pull request that merged
  *  mid-run has no candidate left to judge (#1117). Everything else is judged. */
