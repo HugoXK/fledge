@@ -21,6 +21,7 @@ predates this inventory — it is not a value.
 | Team GitHub PAT | git push, `gh`, and branch/PR writes for the maintenance Bots; those writes start workflows, unlike `GITHUB_TOKEN` | `~/.dsh/bot/secrets.json` (0600) | classic `repo`; revoke everything else | owner | pending (#59) | `node scripts/rotate-github-token.mjs --token-file <0600 file>` | old value `GET /user` → 401 and new value → 200 in the same run (see `docs/security.md`) | unknown |
 | `SESSION_SECRET` | signs session cookies | production `.env` | 32 random bytes, base64 | owner | unknown | `openssl rand -base64 32` then restart | sign in, then `curl -I` the console and confirm the session survives a restart | unknown |
 | `TOKEN_ENCRYPTION_KEY` | AES-256-GCM key for stored GitHub tokens and user model keys | production `.env`, backed up separately from the database | exactly 32 bytes, base64 | owner | unknown | `openssl rand -base64 32` then re-enter every stored token | `npm run dev` and load a page that reads a stored token | unknown |
+| `TOKEN_ENCRYPTION_KEYS_FILE` | optional named keys for `v2` ciphertext, by key id | a `0600` JSON file outside the repository; only its path is in `.env` | `{ "<id>": "<base64 32 bytes>" }`, every entry exactly 32 bytes | owner | n/a | no command is shipped (#388): the owner adds a key, re-encrypts values and retires the old id by hand | start the app and read a stored token whose payload names that id | unknown |
 | `GITHUB_CLIENT_SECRET` | GitHub OAuth app | production `.env` | OAuth app client secret | owner | unknown | mint a new client secret in the GitHub OAuth app, then replace and restart | complete one OAuth login | unknown |
 | `SMTP_PASS` | approval and digest mail | production `.env` | provider's send-only SMTP credential | owner | unknown | mint a new SMTP credential at the provider | `npm run mail:outbox` on a development box, or one approval mail | unknown |
 | `PLATFORM_LLM_KEY` | platform-funded model calls | production `.env` | one OpenAI-compatible key with a spend cap | owner | unknown | mint at the provider, then replace and restart | one platform-funded job reaches the gateway | unknown |
@@ -32,6 +33,25 @@ predates this inventory — it is not a value.
 | `METRICS_TOKEN` | `/metrics` outside loopback | production `.env` | random 32 bytes | owner | unknown | `openssl rand -hex 32` then restart | `curl -H "Authorization: Bearer …" /metrics` returns 200 | unknown |
 | `RELEASE_DISPATCH_TOKEN` | superadmin one-click release workflow dispatch | production `.env` | repo-scoped token with `Actions: write` (dispatch) and `Contents: read`, `Checks: read`, `Pull requests: read` (preview) on `HugoXK/fledge` only; fine-grained preferred, and no contents/PR write is needed | owner | unknown | mint a repo-scoped token, replace it in the server `.env`, restart Fledge | the release preview is `ready` and a `workflow_dispatch` run appears on `main` | unknown |
 | `NOTIFY_WEBHOOK_SECRET` | outbound notification webhook | production `.env` | random 32 bytes | owner | unknown | `openssl rand -hex 32` in both places | one event delivers with a valid signature | unknown |
+
+## Key ids
+
+A stored payload says which key encrypted it. `v1:<iv>:<tag>:<ciphertext>` is the
+default-key format and still uses `TOKEN_ENCRYPTION_KEY`; `v2:<key id>:<iv>:<tag>:<ciphertext>`
+names a key from `TOKEN_ENCRYPTION_KEYS_FILE`. A reader that does not know the id
+fails closed with `unknown key id <id>` — it never retries with the default key,
+because a payload that names a key is a claim about which key wrote it.
+
+The file is read at startup and every entry is checked with the same 32-byte
+rule as `TOKEN_ENCRYPTION_KEY`; an unreadable file, invalid JSON, or an entry
+that is not exactly 32 bytes refuses to boot with the path (and the id) in the
+message. `encryptSecret(plain, key)` with no id still writes `v1`, so the
+existing call sites are unchanged.
+
+This is the mechanism only. Nothing in Fledge re-encrypts an existing value,
+deletes a key, or performs a rotation: adding a key to the file does not change
+what is stored, and the owner decides when a value is rewritten under a new id.
+The audit-log hash chain is a separate card and shares no code with this path.
 
 ## What is deliberately not in this table
 
