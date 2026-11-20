@@ -253,3 +253,42 @@ test('grounding changes what the page says, never what may merge', async () => {
     }
   }
 })
+
+test('a row written before the ground column is read the way it is today', async () => {
+  // A row from before this column exists has no record to separate the halves.
+  // `captureTeamStats` used to write the observation over `attribution_json`, so
+  // a row carrying team stats holds the observed half there and reads unmarked
+  // exactly as it does today, while a row without team stats holds a claim
+  // nothing checked and now says so.
+  const config = testConfig({ flybot: { ...testConfig().flybot, instanceImage: '' } })
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'ground-legacy', status: 'approved' })
+    const viewer: Viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    const repo = store.createRepo({
+      id: 'repo_ground_legacy', userId: user.id, owner: 'o', name: 'legacy', defaultBranch: 'main',
+      tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440,
+    })
+    const observedRow = store.createJob({ id: 'job_ground_legacy_observed', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(observedRow.id, {
+      status: 'succeeded', finished_at: '2026-11-19T12:00:00.000Z', pr_url: 'https://github.com/o/legacy/pull/3',
+      attribution_json: JSON.stringify({ claimedBy: 'Lead', implementedBy: 'Dev-1' }),
+      team_stats_json: JSON.stringify([{ role: 'dev1', label: 'Dev-1', calls: 4, activity: 'working', tool: '', step: 'iterate', lastActivityAt: 1 }]),
+    })
+    const claimRow = store.createJob({ id: 'job_ground_legacy_claim', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
+    store.updateJob(claimRow.id, {
+      status: 'succeeded', finished_at: '2026-11-19T12:00:00.000Z', pr_url: 'https://github.com/o/legacy/pull/4',
+      attribution_json: JSON.stringify({ implementedBy: 'Dev-1', testedBy: 'Test' }),
+    })
+
+    const observed = jobPage({ config, locale: 'en', viewer, repo, job: store.getJob(observedRow.id)!, events: [] })
+    assert.match(observed, /Lead Claimed · Dev-1 Implemented/, 'a row that carries the observation still shows it')
+    assert.doesNotMatch(observed, /claimed, not observed|claimed, not verified/, 'a row the old capture observed gains no marker')
+
+    const claim = jobPage({ config, locale: 'en', viewer, repo, job: store.getJob(claimRow.id)!, events: [] })
+    assert.match(claim, /Test Tested · claimed, not verified/, 'a legacy row with no observation says its claim was never verified')
+    assert.match(jobPage({ config, locale: 'zh', viewer, repo, job: store.getJob(claimRow.id)!, events: [] }), /Test 测试 · 声称，未核实/, 'and says it in Chinese too')
+  } finally {
+    store.close()
+  }
+})
