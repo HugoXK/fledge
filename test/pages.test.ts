@@ -1246,7 +1246,7 @@ test('the job page prints the trace token next to the timeline', () => {
 // into the header line — the number a reader looks for without scrolling — and
 // folds the timeline behind a disclosure so the page stops opening with it, while
 // every event row still renders.
-function seededJobPage(locale: 'en' | 'zh', options: { status?: JobStatus; costUsd?: number; costUnknown?: boolean } = {}): { page: string; store: Store; cost: string } {
+function seededJobPage(locale: 'en' | 'zh', options: { status?: JobStatus; costUsd?: number; costUnknown?: boolean; adherence?: { status: 'pass' | 'violation' | 'unverifiable'; hashVerified: boolean; clauses: { id: string; status: string; detail: string }[] } } = {}): { page: string; store: Store; cost: string } {
   const config = testConfig()
   const store = new Store(':memory:')
   const status = options.status ?? 'succeeded'
@@ -1258,6 +1258,9 @@ function seededJobPage(locale: 'en' | 'zh', options: { status?: JobStatus; costU
   const at = new Date().toISOString()
   const finished = status !== 'queued' && status !== 'running'
   store.updateJob(job.id, { status, cost_usd: costUsd, finished_at: finished ? at : null, pr_url: status === 'succeeded' ? 'https://github.com/o/lp/pull/12' : null })
+  if (options.adherence !== undefined) {
+    store.updateJob(job.id, { adherence_status: options.adherence.status, adherence_json: JSON.stringify(options.adherence) })
+  }
   const events = [
     { id: 1, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.enqueued', role: null, step: 'iterate', meta: 'iterate:manual' },
     { id: 2, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.running', role: null, step: 'iterate', meta: null },
@@ -1344,6 +1347,75 @@ test('a measured zero still reads as zero', () => {
     assert.match(page, /<span data-header-cost>¥0\.00<\/span>/, 'a finished job that recorded a real zero keeps the number')
   } finally {
     store.close()
+  }
+})
+
+// #1175: three of the seven clauses — evidence, sections and forbidden actions —
+// are sealed empty on every real job, so their verdict cell used to read `pass`
+// beside a detail that said nothing was asked. The row stays (the reader needs
+// to know the family was considered); the word becomes the fourth outcome, and
+// the summary names the limit instead of claiming a check nobody performed.
+test('a clause the contract never asked for reads as not asked, never as a pass', () => {
+  const record = (notAsked: string[]): { status: 'pass'; hashVerified: boolean; clauses: { id: string; status: string; detail: string }[] } => ({
+    status: 'pass',
+    hashVerified: true,
+    clauses: [
+      { id: 'contract.hash', status: 'pass', detail: 'the callback echoed 0f1e' },
+      { id: 'branch.base', status: 'pass', detail: 'base main' },
+      { id: 'paths.denied', status: 'pass', detail: 'no changed path matches deploy/' },
+      { id: 'paths.allowed', status: 'pass', detail: 'every changed path is under src/**' },
+      { id: 'evidence.required', status: notAsked.includes('evidence.required') ? 'not-asked' : 'pass', detail: 'the contract names no required evidence' },
+      { id: 'sections.required', status: notAsked.includes('sections.required') ? 'not-asked' : 'pass', detail: 'the contract names no required sections' },
+      { id: 'actions.forbidden', status: notAsked.includes('actions.forbidden') ? 'not-asked' : 'pass', detail: 'the contract forbids no action' },
+    ],
+  })
+  const family = ['evidence.required', 'sections.required', 'actions.forbidden']
+  const row = (card: string, id: string): string => {
+    const start = card.indexOf(`data-adherence-clause="${id}"`)
+    return start === -1 ? '' : card.slice(start, card.indexOf('</tr>', start))
+  }
+
+  const en = seededJobPage('en', { adherence: record(family) })
+  try {
+    const card = en.page.slice(en.page.indexOf('id="job-adherence"'))
+    assert.notEqual(card, '', 'the audit card renders instead of falling back to "no record"')
+    assert.doesNotMatch(card, /no clause audit recorded yet/, 'the record is read, not dropped: an unrecognised clause status must not blank the card')
+    assert.match(card, /data-adherence-status>pass</, 'the record verdict still reads pass: nothing was asked and nothing failed')
+    for (const id of family) {
+      assert.match(row(card, id), /— not asked/, `${id} names the fourth outcome in its verdict cell`)
+      assert.doesNotMatch(row(card, id), />pass</, `${id} never reads as a pass`)
+      assert.match(row(card, id), /the contract (names no|forbids no)/, `${id} keeps its honest detail`)
+    }
+    assert.match(row(card, 'contract.hash'), />pass</, 'a clause that was checked keeps its pass word')
+    assert.match(
+      card,
+      /Every machine-checkable clause passed; this contract required no evidence, named no sections and forbade no action\./,
+      'the summary names the limit instead of claiming completeness',
+    )
+  } finally {
+    en.store.close()
+  }
+
+  const zh = seededJobPage('zh', { adherence: record(family) })
+  try {
+    const card = zh.page.slice(zh.page.indexOf('id="job-adherence"'))
+    for (const id of family) assert.match(row(card, id), /— 无须核对/, `${id} reads as not asked in Chinese`)
+    assert.match(card, /所有可机检的条款都通过了；这份契约没有要求证据、没有指定章节、没有禁止任何动作。/, 'the Chinese summary names the limit')
+    assert.doesNotMatch(row(card, 'evidence.required'), /通过/, 'the Chinese row never reads as a pass')
+  } finally {
+    zh.store.close()
+  }
+
+  // Only the empty family is named: the sentence is built from the record, not
+  // hardcoded, so a contract that names two of the three never claims all three.
+  const partial = seededJobPage('en', { adherence: record(['actions.forbidden']) })
+  try {
+    const card = partial.page.slice(partial.page.indexOf('id="job-adherence"'))
+    assert.match(card, /this contract forbade no action\./, 'the one empty family is named')
+    assert.doesNotMatch(card, /required no evidence/, 'a family the contract does ask for is not claimed as unasked')
+    assert.match(row(card, 'evidence.required'), />pass</, 'and its clause still reads as a checked pass')
+  } finally {
+    partial.store.close()
   }
 })
 

@@ -3702,6 +3702,11 @@ reports: `contract.hash`, `branch.base`, `paths.denied`, `paths.allowed`,
 `pass` when it was observed and satisfied, `violation` when it was observed and
 broken, and `unverifiable` when the runner could not observe it — never `pass`,
 because the record exists to separate "checked and clean" from "not checked". A
+family the contract does not ask for at all — an empty `required.evidence`,
+`required.sections` or `forbidden` list — is its own clause outcome,
+`not-asked`: it says nothing was checked, it is neither `pass` nor
+`unverifiable`, and it stays out of the record's fold so such a contract is
+still a record-level `pass`. A
 callback whose echoed hash is another contract's, or missing, is recorded as not
 verified whatever else it reports. The whole record is `violation` if any clause
 is, otherwise `unverifiable` if any clause is, otherwise `pass`; the clause list
