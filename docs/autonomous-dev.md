@@ -465,15 +465,27 @@ the publisher and names no policy (it is the aggregate #855 removed as evidence)
 while a `ci-ok-publish.yml` run for the head is queued or in progress the sweep
 skips that head, because its verdict is imminent and a red published against the
 aggregate would be permanent. Once the CI workflow has finished and no publisher
-run is pending, the absence of a policy-naming verdict is a missing verdict rather
-than a head still warming up — which is how the sweep closes the trigger's own
-evasion: a head that renames `name: CI` produces no publisher run at all. Intended
+run is pending, the absence of any verdict at all is a missing verdict rather than
+a head still warming up — which is how the sweep closes the trigger's own evasion:
+a head that renames `name: CI` produces no publisher run at all. Intended
 recomputation, not evasion, is why the sweep reads the workflow by *path* rather
 than by name. The sweep is idempotent (its own red already names the current
 policy), skips drafts and heads whose CI has not finished, and writes nothing but
 check runs: it pushes no branch, merges nothing and changes no file. A pull
 request that carries a superseded verdict is fixed by a new commit, which starts a
 fresh `CI` run and a fresh verdict — not by silencing the red.
+
+The policy line arrived after the publisher had already written verdicts, so the
+sweep also reads the legacy shape: a completed `ci-ok` with no policy line but with
+a job list in its summary. That shape is a verdict, judged by the jobs it lists
+instead of by identity. One that lists every job required now is current and is
+left alone (`legacy-current`), which is what keeps the first sweep after this rule
+lands from reddening heads whose verdict predates the line but is still correct —
+a release pull request holding a 20-of-20 green is the live case — and one that
+misses a required job is red under `stale-policy`, naming the missing job, which is
+the correct answer for #1016's 19-job green. The aggregate keeps no job list, so it
+stays non-evidence even in this fallback, and a verdict that names a policy is
+always judged by identity, never by coverage.
 
 
 ### A red `main` reports itself

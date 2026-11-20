@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 
-import { policyIdentity, parsePolicyIdentity, refreshDecision } from '../scripts/lib/ci-ok-refresh.mjs'
+import { jobsOf, policyIdentity, parsePolicyIdentity, refreshDecision } from '../scripts/lib/ci-ok-refresh.mjs'
 import { REQUIRED_JOBS } from '../scripts/ci-ok.mjs'
 import { checkRunPayload } from '../scripts/lib/ci-ok-run.mjs'
 
@@ -20,9 +20,12 @@ import { checkRunPayload } from '../scripts/lib/ci-ok-run.mjs'
 //
 // The tree the fixtures describe is the live one: `.github/workflows/ci.yml:808`
 // still declares a job named `ci-ok`, so two check runs can carry that name after
-// CI completes — the in-run aggregate (no policy line, and not evidence since
-// #855) and the verdict `ci-ok-publish.yml` writes (policy line). Only the second
-// one is a verdict; the aggregate is what the old fixture mistook for one.
+// CI completes — the in-run aggregate (no policy line, no job list, and not
+// evidence since #855) and the verdict `ci-ok-publish.yml` writes. That verdict
+// comes in two shapes: the current one names its policy line, and the legacy one
+// (`legacy()` below, measured on `#1138` head `389aee35…`) predates the line and
+// carries only its job list. Both are verdicts; only the second is judged by the
+// jobs it lists rather than by identity.
 
 const GATE = '0123456789abcdef0123456789abcdef01234567'
 // The required list as it stood when that verdict was computed: everything but
@@ -73,6 +76,33 @@ function aggregate(over = {}) {
   }
 }
 
+/**
+ * The legacy verdict shape, measured on `#1138` head `389aee35…` (`ci-ok` run
+ * `136041728314`, "every required job passed (20 required)"): the publisher wrote
+ * this before it named its policy, so it carries no `policy:` line — but it does
+ * carry the job list it judged, which is what makes it a verdict and not the
+ * aggregate.
+ */
+function legacy(over: { jobs?: string[]; conclusion?: string; completed_at?: string } = {}) {
+  const jobs = over.jobs ?? [...REQUIRED_JOBS]
+  return {
+    name: 'ci-ok',
+    status: 'completed',
+    conclusion: over.conclusion ?? 'success',
+    completed_at: over.completed_at ?? '2026-11-20T02:35:15Z',
+    output: {
+      title: `every required job passed (${String(jobs.length)} required)`,
+      summary: [
+        "Verdict computed from the default branch's copy of the gate, not from the pull request's `ci.yml` (run #44659002955).",
+        '',
+        '```',
+        ...jobs.map((name) => `${name}: success`),
+        '```',
+      ].join('\n'),
+    },
+  }
+}
+
 test('#1116: the policy identity is the required list and the gate blob, and it round-trips', () => {
   const policy = identity()
   assert.match(policy.text, /^policy: required=[0-9a-f]{12} gate=0123456789abcdef0123456789abcdef01234567$/)
@@ -99,6 +129,46 @@ test('#1116: a verdict computed before mock-check became required stops being sa
   assert.match(decision.detail, /mock-check/, 'the detail names the job the stale verdict never ran')
   assert.match(decision.detail, new RegExp(identity().requiredHash))
   assert.match(decision.detail, new RegExp(identity(BEFORE).requiredHash))
+})
+
+test('#1116: a legacy verdict that already lists every required job is current, so a legal head is not reddened', () => {
+  // `#1138` head `389aee35…` as it stood when the scanner landed: the publisher
+  // had written a 20-of-20 green before this branch added the policy line, and the
+  // in-run aggregate sits beside it with an empty summary. Judging the missing line
+  // as "no verdict" would redden a mergeable release pull request, permanently, and
+  // a dummy commit is not an acceptable price for shipping this.
+  const decision = refreshDecision({
+    headSha: '389aee359241365b0a871dc40d8c1a6b689f84b1',
+    policy: identity(),
+    checks: [aggregate({ completed_at: '2026-11-20T02:34:48Z' }), legacy()],
+    ciCompleted: true,
+    publisherPending: false,
+  })
+  assert.equal(decision.publish, false, 'a legacy verdict that covers the current required set must not be recomputed')
+  assert.equal(decision.reason, 'legacy-current')
+  assert.match(decision.detail, /before the policy line existed/)
+})
+
+test('#1116: a legacy verdict missing a required job is the stale answer and names that job (#1016)', () => {
+  // The issue's own example: head `c5f7860b…` carries the publisher's 19-job green
+  // (`ci-ok` run `134914778359`, `every required job passed (19 required)`) and a
+  // newer in-run aggregate. `mock-check` reached `main` afterwards, so the verdict
+  // is stale — red is the right answer, and the reason has to say which job is
+  // missing rather than call the whole thing unreadable.
+  const decision = refreshDecision({
+    headSha: 'c5f7860b103f8fb2e43c0c323318db42e945f01f',
+    policy: identity(),
+    checks: [aggregate({ completed_at: '2026-11-20T02:34:48Z' }), legacy({ jobs: BEFORE })],
+    ciCompleted: true,
+    publisherPending: false,
+  })
+  assert.equal(decision.publish, true)
+  assert.equal(decision.reason, 'stale-policy')
+  assert.match(decision.detail, /mock-check/, 'the detail names the job the legacy verdict never ran')
+  assert.match(decision.detail, /lists 19 of the 20 jobs required now/)
+  // The aggregate is newer than the verdict and still decides nothing: it lists no
+  // job, so it cannot outrank the verdict it shadows.
+  assert.equal(jobsOf(aggregate().output.summary).length, 0)
 })
 
 test('#1116: a verdict computed against the current policy stays green, with no red published', () => {

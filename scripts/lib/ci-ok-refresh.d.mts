@@ -19,6 +19,7 @@ export interface CheckRunLike {
 
 export type RefreshReason =
   | 'stale-policy'
+  | 'legacy-current'
   | 'no-published-verdict'
   | 'current-policy'
   | 'already-refreshed'
