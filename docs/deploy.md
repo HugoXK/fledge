@@ -500,8 +500,11 @@ request and nothing else, and it carries no tag endpoint: the tag stays in the
 workflow. A `POST /pulls` that answers non-201, or answers no pull request
 number, or a readback that reports `maintainer_can_modify: true` — that flag is
 only true for a fork head, and the release head is pushed to this repository — is
-a refusal, but the pull request already exists at that point, so close it by hand
-before retrying.
+a refusal, but the pull request already exists at that point and stays open:
+closing it is the owner's action only (owner instruction 2026-11-15), even
+though the opener's `Pull requests: write` scope would allow a close — so the
+refusal goes to the owner from #80 like any other, and the next run reuses that
+pull request at the same commit instead of opening a second one.
 
 ### Verify a release
 
