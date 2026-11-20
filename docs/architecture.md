@@ -872,8 +872,11 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   explicitly; the platform never auto-selects and an admin cannot assign the
   role. A user can be a maintainer in one repository and a developer in another.
   Maintainer enables review/triage maintenance actions and the opt-in
-  auto-merge switch; developer runs iterate/plan jobs only. There is no separate
-  owner or viewer role. The scheduler re-checks a stale role before review or
+  auto-merge switch; developer runs iterate/plan jobs only. The owner of the
+  connection always resolves as `maintainer`, and a shared member can also hold
+  the read-only `viewer` role: a viewer reads the repository and its schedule
+  but starts and changes nothing, and only `maintainer` or `developer` is stored
+  on the connection itself. The scheduler re-checks a stale role before review or
   auto-merge and downgrades it when the GitHub permission is lost.
 - **Target branch**: each repository stores a `target_branch` that defaults to
   the upstream default but can be `develop` or a release branch. Jobs snapshot

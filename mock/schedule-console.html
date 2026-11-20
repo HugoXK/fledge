@@ -65,6 +65,7 @@
         <dt>宽限</dt><dd data-schedule-grace="none">不限（默认）</dd>
         <dt>每日运行上限</dt><dd data-schedule-daily-runs="none">不限（默认） · 今天已运行 0 次</dd>
       </dl>
+      
       <form method="post" action="#" class="run-now" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><input type="hidden" name="command_key" value="cmd_mock" /><button type="submit">立即运行</button><span class="fine">从当前时刻开始一次，不改动下次运行。</span></form>
       <form method="post" action="#" class="schedule-state" data-mock-inert onsubmit="return false;"><input type="hidden" name="csrf" value="mock-csrf" /><button class="btn btn-ghost" type="submit">暂停排期</button><span class="fine">暂停期间走过的时刻记为 skipped，原因为 paused。</span></form>
     </section>
