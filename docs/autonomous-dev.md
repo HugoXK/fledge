@@ -294,7 +294,7 @@ renames it to `ci-ok-head`. See
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
 - `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
-- `deploy-check` (the `deploy/` worker, alert rules, the nginx sample against a real `nginx -t`, and the systemd sample through a static unit parser, when the diff reaches `deploy/`)
+- `deploy-check` (the `deploy/` worker, alert rules, the nginx sample against a real `nginx -t`, and the systemd sample through a static unit parser, when the diff reaches `deploy/` or a script the sample contract delegates to)
 
 A skipped required job is a failure, not a pass: `scripts/ci-ok.mjs` fails on
 `skipped`, `cancelled` or a job absent from `needs`, except where
@@ -337,6 +337,13 @@ flag is computed from the same path list as `source`, so a diff that mixes
 `deploy/` with `src/` sets both and the code gates still run; the classifier
 cannot answer "deploy-only" for a mixed diff, and `test/ciChanges.test.ts`
 pins that refusal.
+
+The flag also follows the contract past `deploy/`: `scripts/check-deploy-samples.sh`
+is the entry point, but its nginx, systemd and unit-parser checks live under
+`scripts/`, so a diff that edited one of those skipped the job that reads it
+(#1123 — `#1111` shipped a contract whose own control exited 1 with green CI).
+The named files, not `scripts/` wholesale, are in `DEPLOY_PATHS`; a script the
+contract never calls does not start the job.
 
 One full-suite execution per supported Node line is enough (#642): `test (24)` is
 the compatibility run and `coverage` is the Node 22 run, since both commands

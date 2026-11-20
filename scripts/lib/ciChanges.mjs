@@ -99,7 +99,19 @@ const NON_CODE_PATHS = [/^deploy\//, /^CODEOWNERS$/]
 // is separate from `source`, and both are computed from the list independently,
 // so a diff that mixes `deploy/` with `src/` sets both and still runs the code
 // gates — a deploy file can never buy a source skip.
-const DEPLOY_PATHS = [/^deploy\//]
+//
+// #1123: the contract `deploy-check` runs is the entry point plus everything it
+// delegates to, and three of those four files live under `scripts/`. A diff that
+// edits one of them was judged by `deploy/` alone, so the job skipped on exactly
+// the change that can break it. Name the delegated files, not `scripts/`: a
+// script the contract never calls must not start the job.
+const DEPLOY_PATHS = [
+  /^deploy\//,
+  /^scripts\/check-deploy-samples\.sh$/,
+  /^scripts\/check-nginx-config\.sh$/,
+  /^scripts\/check-systemd-unit\.mjs$/,
+  /^scripts\/lib\/systemdUnit\.mjs$/,
+]
 
 function matches(patterns, path) {
   return patterns.some((pattern) => pattern.test(path))
