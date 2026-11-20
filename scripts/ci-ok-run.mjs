@@ -24,9 +24,11 @@
 // explains itself.
 
 import { spawnSync } from 'node:child_process'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REQUIRED_JOBS } from './ci-ok.mjs'
+import { policyIdentity } from './lib/ci-ok-refresh.mjs'
 import { allGateChanges } from './lib/ciChanges.mjs'
 import { checkRunPayload, runIdFrom, shouldPublish, verdict } from './lib/ci-ok-run.mjs'
 
@@ -126,6 +128,15 @@ function range(run) {
   return { base: undefined, ref: undefined }
 }
 
+// #1116: the policy this verdict is computed under, as the blob of the evaluator
+// the default branch publishes. An unreadable blob is not "no policy": a verdict
+// that cannot name its policy cannot be compared later, so it is red below.
+function gateBlob() {
+  const result = spawnSync('git', ['-C', join(CHECKOUT, 'base'), 'rev-parse', 'HEAD:scripts/ci-ok.mjs'], { encoding: 'utf8' })
+  const sha = (result.stdout ?? '').trim()
+  return result.status === 0 && /^[0-9a-f]{40}$/.test(sha) ? sha : ''
+}
+
 function changesFor(run, from) {
   if (from.base === undefined) return allGateChanges()
   const classifier = fileURLToPath(new URL('./ci-changes.mjs', import.meta.url))
@@ -163,8 +174,11 @@ async function main() {
     console.log(`ci-ok-run: run ${String(run.id)} concluded ${String(run.conclusion)}; a newer run for this head supersedes it`)
     return
   }
+  const gateSha = gateBlob()
+  const policy = gateSha === '' ? undefined : policyIdentity({ required: REQUIRED_JOBS, gateSha })
   let result
   try {
+    if (policy === undefined) throw new Error('the default branch checkout has no scripts/ci-ok.mjs blob, so the verdict cannot name its policy')
     const jobs = await loadJobs(run.id)
     const from = range(run)
     const changes = changesFor(run, from)
@@ -178,6 +192,7 @@ async function main() {
     runId: run.id,
     runUrl: typeof run.html_url === 'string' ? run.html_url : undefined,
     required: REQUIRED_JOBS,
+    policy,
   })
   await publish(payload)
   console.log(`ci-ok-run: ${payload.conclusion} at ${payload.head_sha} (${payload.output.title})`)

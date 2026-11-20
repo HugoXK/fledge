@@ -448,6 +448,46 @@ literals from `scripts/lib/ci-ok-run.mjs`, so no file the job can read — the
 event payload included — contributes bytes to the request. That is why the
 script no longer reads `GITHUB_EVENT_PATH` at all.
 
+A published verdict names the policy it was computed under (#1116): the summary
+carries `policy: required=<hash> gate=<blob>`, a hash of the required-job list and
+the blob sha of the `scripts/ci-ok.mjs` that applied it. Without that line a
+verdict cannot be compared to the current policy, so a verdict whose blob cannot
+be read is published red rather than green.
+
+That identity is what `ci-ok-refresh.yml` compares. It runs on `push: [main]`,
+enumerates the open pull request heads and publishes a red `ci-ok` where the
+newest verdict that names a policy was computed under a different policy, so a
+green verdict does not outlive the required set it was computed under — a head
+whose verdict predates a newly required job stops being satisfying the moment that
+job reaches `main`. Two shapes are deliberately not verdicts. The in-run `ci-ok`
+job in `.github/workflows/ci.yml` publishes the same check name, finishes before
+the publisher and names no policy (it is the aggregate #855 removed as evidence);
+while a `ci-ok-publish.yml` run for the head is queued or in progress the sweep
+skips that head, because its verdict is imminent and a red published against the
+aggregate would be permanent. Once the CI workflow has finished and no publisher
+run is pending, the absence of any verdict at all is a missing verdict rather than
+a head still warming up — which is how the sweep closes the trigger's own evasion:
+a head that renames `name: CI` produces no publisher run at all. Intended
+recomputation, not evasion, is why the sweep reads the workflow by *path* rather
+than by name. The sweep is idempotent (its own red already names the current
+policy), skips drafts and heads whose CI has not finished, and writes nothing but
+check runs: it pushes no branch, merges nothing and changes no file. A pull
+request that carries a superseded verdict is fixed by a new commit, which starts a
+fresh `CI` run and a fresh verdict — not by silencing the red.
+
+The policy line arrived after the publisher had already written verdicts, so the
+sweep also reads the legacy shape: a completed `ci-ok` with no policy line but with
+a job list in its summary. That shape is a verdict, judged by the jobs it lists
+instead of by identity. One that lists every job required now is current and is
+left alone (`legacy-current`), which is what keeps the first sweep after this rule
+lands from reddening heads whose verdict predates the line but is still correct —
+a release pull request holding a 20-of-20 green is the live case — and one that
+misses a required job is red under `stale-policy`, naming the missing job, which is
+the correct answer for #1016's 19-job green. The aggregate keeps no job list, so it
+stays non-evidence even in this fallback, and a verdict that names a policy is
+always judged by identity, never by coverage.
+
+
 ### A red `main` reports itself
 
 `ci-ok` still only computes the commit's health; the job that says so out loud is
