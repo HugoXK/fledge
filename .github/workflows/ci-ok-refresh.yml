@@ -1,0 +1,65 @@
+name: CI verdict refresh
+
+# #1116: a green `ci-ok` is a statement about the policy of the moment it was
+# computed, and nothing recomputes it when the required set grows. The publisher
+# (`ci-ok-publish.yml`) runs on `workflow_run`, so it only answers heads whose CI
+# run completed under a workflow still called `CI`.
+#
+# This scanner is out of band: on every push to `main` it enumerates the open pull
+# request heads and publishes a red `ci-ok` where the newest verdict that names a
+# policy was computed under a different required set, or where the CI workflow
+# finished, the publisher is not queued or running, and no such verdict exists
+# (#1108 hole 2: a renamed `name: CI` never reaches the publisher; its in-run
+# aggregate carries the same check name and names no policy, so it is not judged).
+# It reads the default branch's gate and writes check runs only; it merges nothing,
+# pushes nothing and changes no file.
+#
+# `push: [main]` is the trigger because a required-set change lands on `main`, and
+# a scheduled sweep would let a merge use the stale verdict until the next tick.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+  checks: write
+  pull-requests: read
+
+concurrency:
+  # One sweep at a time: two overlapping sweeps would publish duplicate verdicts
+  # for the same head. A queued sweep is never cancelled, so the newest push is
+  # always answered.
+  group: ci-ok-refresh
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    name: refresh ci-ok
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: read
+      checks: write
+      pull-requests: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The gate this verdict is computed under: the default branch, never a
+          # pull request's tree.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Name the policy this sweep compares against
+        run: |
+          set -euo pipefail
+          echo "scripts/ci-ok.mjs blob $(git rev-parse HEAD:scripts/ci-ok.mjs)"
+      - name: Publish red ci-ok where a verdict outlived its policy
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: node scripts/ci-ok-refresh.mjs --repo .

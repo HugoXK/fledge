@@ -138,12 +138,17 @@ export function shouldPublish(run) {
  *  Every field is either a literal from this module, a validated number, or a
  *  string the evaluator formatted from the API's job results — no file read
  *  reaches the request. */
-export function checkRunPayload({ headSha, result, runId, runUrl, required = REQUIRED_JOBS }) {
+export function checkRunPayload({ headSha, result, runId, runUrl, required = REQUIRED_JOBS, policy }) {
   if (typeof headSha !== 'string' || !/^[0-9a-f]{40}$/.test(headSha)) {
     throw new Error('the check run needs the judged head as a 40-character lowercase hex sha')
   }
   if (!Number.isSafeInteger(runId) || runId <= 0) {
     throw new Error('the check run needs the judged run id as a positive integer')
+  }
+  if (policy !== undefined) {
+    if (typeof policy?.text !== 'string' || !/^policy: required=[0-9a-f]{12} gate=[0-9a-f]{40}$/.test(policy.text)) {
+      throw new Error('a policy identity must carry a well-formed policy line')
+    }
   }
   const title = result.ok
     ? `every required job passed (${String(required.length)} required)`
@@ -152,6 +157,9 @@ export function checkRunPayload({ headSha, result, runId, runUrl, required = REQ
   const summary = [
     `Verdict computed from the default branch's copy of the gate, not from the pull request's \`ci.yml\` (run #${String(runId)}${source === undefined ? '' : `, ${source}`}).`,
     '',
+    // #1116: the policy this verdict was computed under, so a later required-set
+    // change is visible as a hash mismatch rather than inferred from a title.
+    ...(policy === undefined ? [] : [policy.text, '']),
     '```',
     ...result.lines,
     ...result.problems,

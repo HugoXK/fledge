@@ -48,4 +48,8 @@ export declare function checkRunPayload(input: {
   runId: number
   runUrl?: string
   required?: string[]
+  /** #1116: the policy this verdict was computed under. When present it is
+   *  written into the summary so the out-of-band scanner can compare hashes
+   *  instead of inferring from a title. */
+  policy?: { requiredHash: string; gateSha: string; text: string }
 }): CheckRunPayload
