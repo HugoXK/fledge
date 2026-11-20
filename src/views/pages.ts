@@ -4083,7 +4083,7 @@ export function jobPage(input: {
     ? ''
     : `<form method="post" action="/repos/${escapeHtml(repo.id)}/jobs/${escapeHtml(job.id)}/red-test" class="row" data-red-test-form>${csrf(viewer)}<input type="text" name="note" maxlength="300" placeholder="${escapeHtml(t('质疑时写理由（至少 8 字）', 'Reason when you challenge (8+ characters)'))}" aria-label="${escapeHtml(t('红测决定理由', 'Red-run decision reason'))}" /><button class="btn btn-ghost btn-small" type="submit" name="decision" value="confirm">${escapeHtml(t('确认这是预期的红', 'Confirm the intended red'))}</button><button class="btn btn-ghost btn-small" type="submit" name="decision" value="challenge">${escapeHtml(t('质疑这次红测', 'Challenge this red run'))}</button></form>`
 
-  const cost = quotaMoney(job.cost_usd * config.quota.usdCny)
+  const cost = jobCostText(t, job, events, config)
   const riskLabel = evidence?.risk === 'low' ? t('低', 'Low') : evidence?.risk === 'high' ? t('高', 'High') : evidence?.risk === 'medium' ? t('中', 'Medium') : '—'
   const teamStats = jobTeamStats(job)
   const teamRows = teamStats === null
@@ -4630,6 +4630,18 @@ function readAdherence(json: string | null): AdherenceRecord | null {
     ${teamRows}
   </section></details>` : ''}`
   return layout({ title: `${t('任务', 'Job')} ${job.id}`, viewer, body, config, locale, path: `/repos/${repo.id}/jobs/${job.id}`, active: 'dashboard', notice, error })
+}
+
+// #1171: the page must not print a figure it never measured. A job that has not
+// finished has no priced call yet; a finished job whose events carry
+// `request.cost_unknown` had a call the price table could not price, and the
+// store already counts that as unknown rather than free (`unknownCost`). A
+// finished job that recorded a real zero keeps `¥0.00`.
+function jobCostText(t: Translate, job: JobRow, events: JobEventRow[], config: Config): string {
+  if (job.cost_usd > 0) return quotaMoney(job.cost_usd * config.quota.usdCny)
+  if (job.status === 'queued' || job.status === 'running' || job.status === 'paused') return '—'
+  if (events.some((event) => event.kind === 'request.cost_unknown')) return `— ${t('未知', 'unknown')}`
+  return quotaMoney(0)
 }
 
 // #636: a foreign bucket has no CNY conversion — show the amount with its code.

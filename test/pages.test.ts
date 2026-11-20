@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
-import type { PostmortemRow } from '../src/db.js'
+import type { JobStatus, PostmortemRow } from '../src/db.js'
 import { MockRunner } from '../src/jobs/mock.js'
 import type { ChangeStory } from '../src/lib/changeStory.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
@@ -1244,22 +1244,26 @@ test('the job page prints the trace token next to the timeline', () => {
 // into the header line — the number a reader looks for without scrolling — and
 // folds the timeline behind a disclosure so the page stops opening with it, while
 // every event row still renders.
-function seededJobPage(locale: 'en' | 'zh'): { page: string; store: Store; cost: string } {
+function seededJobPage(locale: 'en' | 'zh', options: { status?: JobStatus; costUsd?: number; costUnknown?: boolean } = {}): { page: string; store: Store; cost: string } {
   const config = testConfig()
   const store = new Store(':memory:')
+  const status = options.status ?? 'succeeded'
+  const costUsd = options.costUsd ?? 0.5
   const user = makeUser(store, { login: `lead-page-${locale}`, status: 'approved' })
   const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
   const repo = store.createRepo({ id: `repo_lead_page_${locale}`, userId: user.id, owner: 'o', name: 'lp', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
   const job = store.createJob({ id: `job_lead_page_${locale}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb', platformTokenHash: '' })
   const at = new Date().toISOString()
-  store.updateJob(job.id, { status: 'succeeded', cost_usd: 0.5, finished_at: at, pr_url: 'https://github.com/o/lp/pull/12' })
+  const finished = status !== 'queued' && status !== 'running'
+  store.updateJob(job.id, { status, cost_usd: costUsd, finished_at: finished ? at : null, pr_url: status === 'succeeded' ? 'https://github.com/o/lp/pull/12' : null })
   const events = [
     { id: 1, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.enqueued', role: null, step: 'iterate', meta: 'iterate:manual' },
     { id: 2, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.running', role: null, step: 'iterate', meta: null },
     { id: 3, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'job.succeeded', role: null, step: 'iterate', meta: null },
+    ...(options.costUnknown ? [{ id: 4, at, job_id: job.id, repo_id: repo.id, user_id: user.id, kind: 'request.cost_unknown', role: null, step: 'gateway', meta: 'no price for model' }] : []),
   ]
   const page = jobPage({ config, locale, viewer, repo, job: store.getJob(job.id)!, events })
-  return { page, store, cost: quotaMoney(0.5 * config.quota.usdCny) }
+  return { page, store, cost: quotaMoney(costUsd * config.quota.usdCny) }
 }
 
 test('the job page prints the job cost in the header line', () => {
@@ -1293,6 +1297,51 @@ test('the timeline is a disclosure that still renders every event', () => {
     assert.match(zh.page, /<details[^>]*data-timeline[\s\S]*?<h2>时间线<\/h2>/, 'the Chinese timeline is the same disclosure')
   } finally {
     zh.store.close()
+  }
+})
+
+// #1171: the header must not print a figure the job never measured. A queued or
+// running job has made no priced call; a finished job whose events carry
+// `request.cost_unknown` had a call the price table could not price, which the
+// store counts as unknown rather than free (`unknownCost`, db.ts:5357). A
+// finished job that recorded a real zero keeps `¥0.00`.
+test('a queued job has no cost figure yet', () => {
+  for (const locale of ['en', 'zh'] as const) {
+    const { page, store } = seededJobPage(locale, { status: 'queued', costUsd: 0 })
+    try {
+      const header = page.slice(page.indexOf('<section class="card">'), page.indexOf('</section>'))
+      assert.match(header, /<span data-header-cost>—<\/span>/, `${locale}: the header prints a dash, not a zero nobody measured`)
+      assert.doesNotMatch(header, /¥0\.00/, `${locale}: an unpriced job does not read as free`)
+    } finally {
+      store.close()
+    }
+  }
+})
+
+test('an unpriced job does not read as free', () => {
+  const en = seededJobPage('en', { status: 'failed', costUsd: 0, costUnknown: true })
+  try {
+    assert.match(en.page, /<span data-header-cost>— unknown<\/span>/, 'the header names the missing price')
+    assert.match(en.page, /Cost — unknown ·/, 'the details line names it too')
+    assert.doesNotMatch(en.page, /Cost ¥0\.00/, 'the details line is not a measured zero')
+  } finally {
+    en.store.close()
+  }
+  const zh = seededJobPage('zh', { status: 'failed', costUsd: 0, costUnknown: true })
+  try {
+    assert.match(zh.page, /<span data-header-cost>— 未知<\/span>/, 'the Chinese header names the missing price')
+    assert.match(zh.page, /成本 — 未知 ·/, 'the Chinese details line names it too')
+  } finally {
+    zh.store.close()
+  }
+})
+
+test('a measured zero still reads as zero', () => {
+  const { page, store } = seededJobPage('en', { status: 'failed', costUsd: 0 })
+  try {
+    assert.match(page, /<span data-header-cost>¥0\.00<\/span>/, 'a finished job that recorded a real zero keeps the number')
+  } finally {
+    store.close()
   }
 })
 
