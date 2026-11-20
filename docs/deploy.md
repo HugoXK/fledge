@@ -1003,7 +1003,9 @@ four; and the sample must not rely on `BASE_URL` alone, because its documented
 default is `http://localhost:8080`. A reverse proxy in front of this nginx keeps
 its own copy of the set.
 
-CI syntax-checks the example on every diff that touches `deploy/`: `deploy-check`
+CI syntax-checks the example on every diff that touches `deploy/` or one of the
+three scripts the contract delegates to (`scripts/check-nginx-config.sh`,
+`scripts/check-systemd-unit.mjs`, `scripts/lib/systemdUnit.mjs`): `deploy-check`
 installs nginx, then runs `scripts/check-deploy-samples.sh`, which renders the
 example with generated certificates and loopback listens and parses it with a
 real `nginx -t`. The wrapper it renders, `deploy/nginx.check.conf`, declares

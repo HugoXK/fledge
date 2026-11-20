@@ -167,6 +167,31 @@ test('a code-only change does not start the deploy check', () => {
   assert.equal(changes.source, true)
 })
 
+// #1123: the contract is four files and only one of them lives under `deploy/`.
+// A pull request that edits a script the contract delegates to never set the
+// `deploy` flag, so `deploy-check` skipped on exactly the diff that can break
+// it — `#1111` shipped a contract whose own control exited 1 with green CI.
+const DEPLOY_CONTRACT_FILES = [
+  'scripts/check-deploy-samples.sh',
+  'scripts/check-nginx-config.sh',
+  'scripts/check-systemd-unit.mjs',
+  'scripts/lib/systemdUnit.mjs',
+]
+
+test('a change to any file the deploy contract delegates to starts deploy-check', () => {
+  for (const path of DEPLOY_CONTRACT_FILES) {
+    const changes = classifyChanges([path])
+    assert.equal(changes.deploy, true, `${path} is read by deploy-check, so the deploy flag must be on`)
+    assert.equal(changes.source, true, `${path} is still code, so the app gates stay on`)
+  }
+
+  // The widening is the contract, not `scripts/` wholesale: an unrelated script
+  // must not start the deploy check, or every script change pays for a job that
+  // reads none of it.
+  const other = classifyChanges(['scripts/pr-lint.mjs', 'test/ciChanges.test.ts'])
+  assert.equal(other.deploy, false, 'a scripts/ change outside the contract does not start deploy-check')
+})
+
 test('the deploy job starts only on a deploy flag, runs the syntax checks, and ci-ok refuses a skip', () => {
   const workflow = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
   const deploy = jobBlock(workflow, 'deploy-check')
