@@ -44,6 +44,17 @@ issue → claim → branch/worktree → red test → fix → gates → PR
 - Skip an issue with a human assignee or a live claim.
 - Assign the maintainer account, add `agent-working`, and comment with the
   branch name and a one-line plan.
+- Name the instruction the work answers beside them: the card's live body hash
+  as `node scripts/issue-gate.mjs --issue <N>` prints it, or the id of the review
+  or blocker comment a later push answers. A branch name on its own is not a
+  citation, so a push that carries one cannot be matched to what it was asked to
+  do.
+- A "you told me to" is answered with a quote, not an argument. If the Lead's
+  record has no such instruction, freeze the tip — no push on that branch until
+  the next step is recorded — and post the instruction verbatim on the card. A
+  quote that cannot be produced is invented work; a quote that is real but from
+  another conversation is crossed delivery. Both are card comments, not room
+  chat.
 - Heartbeat every 2 h for long work. Release the claim with a comment if you
   stop.
 - An open PR outranks a comment: if a PR exists, join that branch.

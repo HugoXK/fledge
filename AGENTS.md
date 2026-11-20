@@ -87,7 +87,16 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    change is admitted only when it fixes a reproducible defect or is something
    the routine work itself needs.
 2. **Claim.** Assign the issue to the bot account, add `agent-working`, and
-   comment with the branch name. Release the claim if you stop.
+   comment with the branch name, a one-line plan, and the instruction the work
+   answers: the card's live body hash as
+   `node scripts/issue-gate.mjs --issue <N>` prints it, or the id of the review
+   or blocker comment a later push answers. A branch name on its own is not a
+   citation, so a push that carries one cannot be matched to what it was asked to
+   do. When a member says an instruction came from the Lead and the Lead's record
+   has none, the tip is frozen — no push on that branch until the next step is
+   recorded — and the member posts the instruction verbatim on the card: a quote
+   that cannot be produced is invented work, and a quote that is real but from
+   another conversation is crossed delivery. Release the claim if you stop.
 3. **Branch** from the latest `main`. Use a separate worktree when the local
    tree is dirty. One branch, one PR — query open PRs for the head before
    opening.
@@ -300,7 +309,11 @@ replacement.
 A branch never carries a merge commit whose only purpose is to absorb the base,
 and a conflict is not resolved by rewriting a reviewed tip: fix the branch,
 push a new tip, and ask for a verdict at that tip. Never force-push a reviewed
-branch — a rewrite is published as a new branch name with the same tree.
+branch — a rewrite is published as a new branch name with the same tree. A landed
+push whose content is byte-identical to what the instruction asked for is kept,
+not withdrawn: book it `no-owner amend / equivalent content` with its tree sha,
+beside the citation from step 2. Only a push that carries content outside the
+instruction is withdrawn, and that withdraws the push, never the branch.
 
 ## Labels
 
