@@ -1138,8 +1138,10 @@ are absolute.
 npm run db:backup
 # writes ${DATA_DIR}/backups/fledge-<ISO timestamp>.db via SQLite's online backup API
 # set BACKUP_DIR to override; in Docker the default is /data/backups
-# every copy is checked with PRAGMA integrity_check and pruned to BACKUP_KEEP
-# (default 14) newest copies; a copy that fails the check is deleted and the run
+# every copy is checked with PRAGMA integrity_check and pruned to its class's
+# write-time count — BACKUP_KEEP_PLAINTEXT (default 1) plaintext copies,
+# BACKUP_KEEP_ENCRYPTED (default 30) encrypted copies; --keep / BACKUP_KEEP
+# overrides both for one run; a copy that fails the check is deleted and the run
 # exits non-zero, so a failed backup never leaves a usable-looking file
 # each copy gets a <copy>.json manifest: size, sha256, schema version and
 # per-table row counts, written 0600 and deleted together with its copy
@@ -1152,18 +1154,23 @@ npm run db:backup
 
 ### Backup retention and the dry run
 
-`BACKUP_KEEP` (default 14) is the write-time count `npm run db:backup` prunes to,
-and it applies to every copy it writes. The retention the console reports is
-per class, so the encrypted copies an instance keeps do not consume the plaintext
-copy the restore drill reads:
+The write-time counts are per class, and they are the counts the console reports
+and the dry run applies: `npm run db:backup` prunes plaintext copies to
+`BACKUP_KEEP_PLAINTEXT` (default 1) and encrypted copies to
+`BACKUP_KEEP_ENCRYPTED` (default 30), so the encrypted copies an instance keeps
+do not consume the plaintext copy the restore drill reads. `--keep` /
+`BACKUP_KEEP` is an explicit override of both counts for that one run — the
+`retention=` line prints `override=--keep` beside the two counts it applied —
+not a second policy:
 
 | Env | Default | What the scan keeps |
 |---|---|---|
 | `BACKUP_KEEP_PLAINTEXT` | `1` | plaintext `fledge-<stamp>.db` copies (`npm run db:backup` writes one on the host) |
 | `BACKUP_KEEP_ENCRYPTED` | `30` | encrypted `fledge-<stamp>.db.enc` copies |
 
-Both are read by `loadConfig` and by the scan itself, so the policy is in the
-repository instead of only in a host wrapper. A value that is not a positive
+Both are read by `loadConfig`, by the writer that deletes and by the scan
+itself, so the policy is in the repository instead of only in a host wrapper and
+the three cannot disagree about what is kept. A value that is not a positive
 whole number is refused — `0` would erase every copy of that class — rather than
 clamped.
 
