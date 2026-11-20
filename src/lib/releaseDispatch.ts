@@ -1,4 +1,5 @@
-import { nextReleaseVersion } from '../../scripts/lib/release-version.mjs'
+import { MIN_FEATURES, MIN_PRS, planRelease } from '../../scripts/release-plan.mjs'
+import type { ReleasePlanPr } from '../../scripts/release-plan.mjs'
 
 // #897: the superadmin release action is a preview plus a dispatch. It never
 // creates a tag, merges a pull request or deploys: the existing release
@@ -14,10 +15,10 @@ export interface ReleaseDispatchPreview {
   latestTagSha: string
   packageVersion: string
   nextVersion: string
-  aheadCommits: number
-  fixes: number
+  /** Merged pull requests since the last tag, as `planRelease` counts them. */
+  aheadMerges: number
+  /** Feature merges by the planner's rule: `feat:`/`feature:` title or `enhancement`. */
   features: number
-  others: number
   fragments: number
   ciOk: string
   openReleasePr: { number: number; title: string; headSha: string; branch: string; url: string } | null
@@ -68,27 +69,6 @@ function compareVersions(left: string, right: string): number {
     if (delta !== 0) return delta
   }
   return 0
-}
-
-function countKind(message: string): 'fix' | 'feat' | 'other' {
-  const first = message.trim().split(/\s+/)[0] ?? ''
-  const head = first.replace(/\([^)]*\)/, '')
-  if (head.startsWith('fix:')) return 'fix'
-  if (head.startsWith('feat:')) return 'feat'
-  return 'other'
-}
-
-export function countCommitKinds(messages: string[]): { fixes: number; features: number; others: number } {
-  let fixes = 0
-  let features = 0
-  let others = 0
-  for (const message of messages) {
-    const kind = countKind(message)
-    if (kind === 'fix') fixes += 1
-    else if (kind === 'feat') features += 1
-    else others += 1
-  }
-  return { fixes, features, others }
 }
 
 export function latestTagOf(tags: string[]): string {
@@ -144,6 +124,35 @@ async function optional<T>(options: ReleaseDispatchOptions, path: string): Promi
   return (await response.json()) as T
 }
 
+const PULL_PAGE_SIZE = 100
+// The rule counts merged pull requests since the last tag, and the nightly run
+// reads the same listing with `--paginate`. A release window is days old, so
+// three pages hold far more merges than one window can; an unbounded walk would
+// turn a page render into dozens of requests, and stopping short only refuses a
+// release the night might make, which is the safe direction.
+const MAX_PULL_PAGES = 3
+
+async function mergedPulls(options: ReleaseDispatchOptions, repo: string): Promise<ReleasePlanPr[]> {
+  const out: ReleasePlanPr[] = []
+  for (let page = 1; page <= MAX_PULL_PAGES; page += 1) {
+    const batch = await json<Array<{ number?: number; title?: string; labels?: Array<{ name?: string }>; merged_at?: string | null }>>(
+      options,
+      `/repos/${repo}/pulls?state=closed&per_page=${String(PULL_PAGE_SIZE)}&sort=updated&direction=desc&page=${String(page)}`,
+    )
+    for (const pr of batch) {
+      if (typeof pr.merged_at !== 'string' || pr.merged_at === '') continue
+      out.push({
+        number: Number(pr.number ?? 0),
+        title: String(pr.title ?? ''),
+        labels: (Array.isArray(pr.labels) ? pr.labels : []).map((label) => String(label?.name ?? '')),
+        mergedAt: pr.merged_at,
+      })
+    }
+    if (batch.length < PULL_PAGE_SIZE) break
+  }
+  return out
+}
+
 function decodePackage(content: { content?: string; encoding?: string }): string {
   if (content.encoding !== 'base64' || typeof content.content !== 'string') return ''
   try {
@@ -165,22 +174,12 @@ export async function previewRelease(options: ReleaseDispatchOptions): Promise<R
   const latestTag = latestTagOf(tags)
   const latest = latestTag === ''
     ? null
-    : await json<{ commit: { committer: { date: string } } }>(options, `/repos/${repo}/commits/${encodeURIComponent(latestTag)}`)
-  const latestTagSha = latest === null ? '' : (await json<{ sha: string }>(options, `/repos/${repo}/commits/${encodeURIComponent(latestTag)}`)).sha
+    : await json<{ sha?: string; commit: { committer: { date: string } } }>(options, `/repos/${repo}/commits/${encodeURIComponent(latestTag)}`)
+  const latestTagSha = latest === null ? '' : String(latest.sha ?? '')
+  const latestTagCommittedAt = latest?.commit.committer.date ?? ''
   const isRelease = latestTag === ''
-  const compare = isRelease
-    ? { commits: [] as Array<{ commit: { message: string } }>, total_commits: 0 }
-    : await json<{ commits: Array<{ commit: { message: string } }>; total_commits: number }>(options, `/repos/${repo}/compare/${encodeURIComponent(latestTag)}...${encodeURIComponent(mainSha)}`)
-  const messages = compare.commits.map((entry) => String(entry.commit.message.split('\n')[0] ?? ''))
-  const counts = countCommitKinds(messages)
   const pkg = await json<{ content?: string; encoding?: string }>(options, `/repos/${repo}/contents/package.json?ref=${encodeURIComponent(mainSha)}`)
   const packageVersion = decodePackage(pkg)
-  const next = nextReleaseVersion({
-    packageVersion,
-    lastTagCommittedAt: latest?.commit.committer.date ?? '',
-    releaseAt: new Date(options.now ?? Date.now()).toISOString(),
-  })
-  const nextVersion = next.version
   const fragmentsRaw = await json<Array<{ name?: string; type?: string }> | { message?: string }>(options, `/repos/${repo}/contents/changelog.d?ref=${encodeURIComponent(mainSha)}`)
   const fragments = Array.isArray(fragmentsRaw)
     ? fragmentsRaw.filter((entry) => entry.type === 'file' && String(entry.name ?? '').endsWith('.md') && String(entry.name ?? '').toLowerCase() !== 'readme.md').length
@@ -192,6 +191,23 @@ export async function previewRelease(options: ReleaseDispatchOptions): Promise<R
     : String(ciRuns.reduce((best, run) => (Number(run.id ?? 0) >= Number(best.id ?? 0) ? run : best)).conclusion ?? 'missing')
   const pulls = await json<Array<{ number?: number; title?: string; html_url?: string; head?: { sha?: string; ref?: string } }>>(options, `/repos/${repo}/pulls?state=open&per_page=100`)
   const openReleasePr = pulls.find((pr) => String(pr.title ?? '').startsWith('release: v') || String(pr.head?.ref ?? '').startsWith('release/v'))
+  // The rule is `planRelease`, the function the nightly workflow calls: a feature
+  // is a merged pull request whose title is `feat:`/`feature:` or which carries
+  // `enhancement`, and the merge count is merged pull requests since the tag. The
+  // preview used to count commit messages of its own, so `feature: …` was not a
+  // feature and the label was never read: the button could refuse a release the
+  // night would make, and it printed numbers that were not the rule's (#985).
+  const plan = planRelease({
+    lastTag: latestTag,
+    packageVersion,
+    prs: await mergedPulls(options, repo),
+    fragments,
+    openReleasePr: openReleasePr !== undefined,
+    existingTags: tags,
+    lastTagCommittedAt: latestTagCommittedAt,
+    releaseAt: new Date(options.now ?? Date.now()).toISOString(),
+  })
+  const nextVersion = plan.nextVersion
   const tagName = nextVersion === '' ? '' : `v${nextVersion}`
   const tagExists = tagName !== '' && tags.includes(tagName)
   const branchExists = nextVersion === '' ? false : (await optional<{ ref?: string }>(options, `/repos/${repo}/git/ref/heads/release/v${encodeURIComponent(nextVersion)}`)) !== null
@@ -206,8 +222,16 @@ export async function previewRelease(options: ReleaseDispatchOptions): Promise<R
   if (branchExists) reasons.push('release-branch-exists')
   if (fragments === 0) reasons.push('no-fragments')
   if (isRelease) reasons.push('main-is-release')
-  if (counts.features < 5) reasons.push('not-enough-features')
-  if (compare.total_commits < 10) reasons.push('not-enough-prs')
+  // The thresholds are the planner's own exports and the numbers are its output,
+  // so both count gates can be named at once instead of only the first one.
+  if (plan.features < MIN_FEATURES) reasons.push('not-enough-features')
+  if (plan.total < MIN_PRS) reasons.push('not-enough-prs')
+  // The preview adds gates on top of the rule and must never relax it: if the
+  // planner refuses for a reason this list did not name, the refusal stands.
+  if (reasons.length === 0 && !plan.shouldRelease) {
+    const token = plan.reason.split('; ')[0] ?? ''
+    if (token !== '') reasons.push(token)
+  }
   const preview: ReleaseDispatchPreview = {
     repo,
     workflow: options.workflow,
@@ -217,11 +241,9 @@ export async function previewRelease(options: ReleaseDispatchOptions): Promise<R
     latestTagSha,
     packageVersion,
     nextVersion,
-    aheadCommits: compare.total_commits,
-    fixes: counts.fixes,
-    features: counts.features,
-    others: counts.others,
-    fragments,
+    aheadMerges: plan.total,
+    features: plan.features,
+    fragments: plan.fragments,
     ciOk,
     openReleasePr: openReleasePr === undefined
       ? null

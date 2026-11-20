@@ -1064,9 +1064,11 @@ admin-only redirect to that section for older links and bookmarks, while
 `/admin/users/:id` remains the read-only support view.
 
 For a superadmin, the Release card also carries the one-click preview
-(`src/lib/releaseDispatch.ts`): the current `main`, latest tag, commit/fix/
-feature/fragment counts, computed next version, `ci-ok`, any open release PR and
-the exact reason the action is blocked. `POST /admin/release` requires superadmin,
+(`src/lib/releaseDispatch.ts`): the current `main`, latest tag, the daily release
+planner's merged-pull-request and feature counts with the pending fragments, the
+computed next version, `ci-ok`, any open release PR and the exact reason the
+action is blocked. The preview calls `planRelease` itself, so its verdict and its
+numbers are the ones the nightly workflow uses. `POST /admin/release` requires superadmin,
 CSRF, a recent GitHub re-authentication, the destructive rate-limit class and an
 audit row; it re-reads the preview and then dispatches the existing
 `daily-release.yml` with `dry_run=false`. It never creates a tag, merges a pull
