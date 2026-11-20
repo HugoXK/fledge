@@ -447,6 +447,38 @@ missing base, and a run whose evidence cannot be read publishes `failure` with t
 reason rather than silence. The skip is logged with the branch of the decision
 that fired, so a later reader can tell a skip from a failure.
 
+A job that keeps its required name and changes what it does is a separate hole
+(#1108): the publisher matches names, so a head could leave `mock-check` in place
+and make its body `run: true`, add `continue-on-error: true` to the step so a
+failing job reports `success`, or rename the real job and let a stub take its
+display name. A pull request run is therefore also compared with the default
+branch's copy of `.github/workflows/ci.yml` — both texts read through the contents
+API, so the publisher still reads no file: the base at the default branch,
+resolved from the repository API because the run object's `repository` carries no
+`default_branch`, and the head at the run's head sha, never the publisher's own
+ref — and the whole file must match, not only the required jobs. Every top-level
+block other than `jobs:` is compared byte for byte, because a top-level
+`defaults:` or `env:` decides how every `run:` step executes; adding or losing a
+block is a refusal too. Inside `jobs:` every key of every required job must
+match, and `name:` is *not* allowlisted: it is the value the publisher matches
+against the required list, so a required display name belongs to exactly one job,
+and a second job claiming it is refused as a collision (a matrix-shaped name such
+as `test (${{ matrix.node }})` is reserved by its literal prefix). Only
+`timeout-minutes:` is allowlisted, because it cannot flip a conclusion. The
+`ci-ok` job's `needs` may grow but not shrink, and its step must still be exactly
+`node base/scripts/ci-ok.mjs` with the gate checked out under `path: base`. The
+comparator is `scripts/lib/gate-compare.mjs`, and it fails closed: a duplicated
+top-level key, a duplicated job, a duplicated key or a line it cannot read is a
+refusal, never a skipped comparison. That label is not read at all — it only
+ever changed the wording of a refusal, so reading it would add a pull-request
+scope for a sentence; every refusal names the reviewed-change path instead.
+`ci-workflow-change` (owner-applied) records a reviewed workflow change,
+but it does not turn the verdict green: the publisher cannot verify a PASS, so
+such a change stays red and is a T3 decision made outside this check. The
+residual is explicit — a head that renames `name: CI` produces no publisher run,
+so nothing here compares it; `ci-ok-refresh.yml` (#1116) is the out-of-band path
+that closes that trigger, and this comparator adds no second scanner.
+
 The trigger reaches the script as one integer: `ci-ok-publish.yml` passes
 `CI_OK_RUN_ID` from `github.event.workflow_run.id`, and `runIdFrom` accepts
 digits only before the value can enter a request path. Every other fact about the
