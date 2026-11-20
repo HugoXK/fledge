@@ -604,6 +604,10 @@ the recorded value, or whose echo names another bundle, is recorded as a mismatc
 and the job page prints it as unverified; a callback with no echo leaves the job
 without a verdict rather than with a passing one. The field is optional on the
 wire so an older runner keeps working, and its absence is recorded as `missing`.
+The verdict is written only by a callback that is accepted: a delivery answered
+with a non-2xx (already finished, timed out, not dispatched, bad branch) leaves
+the stored value alone, so the job page keeps describing the accepted finish
+rather than the last request that reached the row.
 
 Review jobs use `kind=review` and return `reviewScore` (0–100) instead of a
 branch/PR:

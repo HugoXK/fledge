@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import type { RepoRow } from '../src/db.js'
+import { compileContextBundle } from '../src/lib/contextBundle.js'
 import { Jobs } from '../src/jobs/service.js'
 import { prOrigin } from '../src/jobs/prUrl.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
@@ -165,6 +166,40 @@ function runningJob(store: Store, repo: RepoRow, id: string, secret: string, sta
   return id
 }
 
+// #1124: a running job that holds a sealed bundle, so a callback's echo has
+// something to be checked against. The bytes are compiled by the module the
+// dispatch uses, so the test does not hand-build a hash the row would disagree
+// with.
+function runningJobWithBundle(store: Store, repo: RepoRow, id: string, secret: string): { id: string; hash: string } {
+  const { bundle, hash } = compileContextBundle({
+    repo: { id: repo.id, fullName: `${repo.owner}/${repo.name}`, defaultBranch: repo.default_branch },
+    goal: 'g',
+    playbook: { version: null, hash: 'a'.repeat(40) },
+    contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
+    paths: { allow: ['src/'], deny: ['deploy/'] },
+    branch: { base: 'main', name: 'fledge/job' },
+    required: { evidence: [], sections: [] },
+    forbidden: [],
+    carryOver: [],
+    model: { provider: null, name: null },
+    role: 'developer',
+  })
+  store.createJob({
+    id,
+    repoId: repo.id,
+    userId: repo.user_id,
+    trigger: 'manual',
+    goal: 'g',
+    callbackHash: sha256Hex(secret),
+    platformTokenHash: '',
+    kind: 'iterate',
+    baseBranch: 'main',
+    contextBundle: { hash, json: JSON.stringify(bundle) },
+  })
+  store.updateJob(id, { status: 'running', started_at: new Date().toISOString(), branch: 'fledge/job' })
+  return { id, hash }
+}
+
 function count(store: Store, sql: string): number {
   return Number(store.get<{ n: number }>(sql)?.n ?? 0)
 }
@@ -283,6 +318,59 @@ test('a contradicting terminal report is rejected without touching the recorded 
     assert.equal(after.error, before.error)
     assert.equal(h.merges.length, 1, 'the conflict merges nothing')
     assert.equal(jobEvents(h.store, 'job.failed'), 0)
+  } finally {
+    await h.close()
+  }
+})
+
+// #1124: the verdict is a fact about the callback that was accepted, so a
+// callback that is refused must leave the stored string exactly as it was. Both
+// directions are pinned here: a refused heartbeat may not erase `verified`, and
+// a refused report may not upgrade `missing`.
+test('a refused late heartbeat does not rewrite the bundle verdict', async () => {
+  const h = await harness()
+  try {
+    const secret = 'bundle-verified-secret'
+    const sealed = runningJobWithBundle(h.store, h.repo, 'job_bundle_verified', secret)
+    const finished = await h.jobs.handleCallback(sealed.id, secret, {
+      status: 'succeeded',
+      prUrl: `${PR_ORIGIN}/o/r/pull/1`,
+      summary: 'done',
+      contextBundleHash: sealed.hash,
+    })
+    assert.equal(finished.ok, true, finished.error ?? 'no error')
+    assert.equal(h.store.getJob(sealed.id)?.context_bundle_state, 'verified', 'the accepted finish records the echo')
+
+    const late = await h.jobs.handleCallback(sealed.id, secret, { status: 'running', summary: 'alive' })
+    assert.equal(late.ok, false)
+    assert.equal(late.status, 409, 'a heartbeat after the finish is refused')
+    assert.equal(h.store.getJob(sealed.id)?.context_bundle_state, 'verified', 'a refused heartbeat writes no verdict')
+  } finally {
+    await h.close()
+  }
+})
+
+test('a refused report does not upgrade a finish that echoed no bundle hash', async () => {
+  const h = await harness()
+  try {
+    const secret = 'bundle-missing-secret'
+    const sealed = runningJobWithBundle(h.store, h.repo, 'job_bundle_missing', secret)
+    const finished = await h.jobs.handleCallback(sealed.id, secret, {
+      status: 'succeeded',
+      prUrl: `${PR_ORIGIN}/o/r/pull/1`,
+      summary: 'done',
+    })
+    assert.equal(finished.ok, true, finished.error ?? 'no error')
+    assert.equal(h.store.getJob(sealed.id)?.context_bundle_state, 'missing', 'a finish with no echo records missing')
+
+    const late = await h.jobs.handleCallback(sealed.id, secret, {
+      status: 'running',
+      summary: 'alive',
+      contextBundleHash: sealed.hash,
+    })
+    assert.equal(late.ok, false)
+    assert.equal(late.status, 409, 'the finished job refuses the heartbeat')
+    assert.equal(h.store.getJob(sealed.id)?.context_bundle_state, 'missing', 'a refused report writes no verdict')
   } finally {
     await h.close()
   }
