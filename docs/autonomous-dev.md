@@ -1000,12 +1000,12 @@ A PASS that arrives after a rejection at the same SHA keeps the
 check red until the repair step re-runs the failed run at that SHA. That now
 happens without a hand step on two triggers: the verdict itself
 (`pull_request_review` and `issue_comment`), and a `pr-lint` run that settled
-after the gate had finished — the `review-gate-retrigger` job, a `workflow_run` on
-`pr-lint` that resolves the pull request from the finished run's head SHA and hands
-it to the same repair. The job's own condition carries the head-repository test, so
-a run from another repository skips it before it can use `actions: write`; whether
-the finished run came from a pull request at all is the entrypoint's first check,
-and it refuses before any read. A run above
+after the gate had finished — the `review-gate-retrigger` workflow, a
+`workflow_run` on `pr-lint` that resolves the pull request from the finished run's
+head SHA and hands it to the same repair. It lives in its own file, so the only
+path it offers is that event, and its job is skipped for a run from another
+repository or one no pull request started — before it can use `actions: write`.
+A run above
 the attempt cap (attempt 3, after
 two automatic re-runs) is repainted once when the red it owns predates the newest
 verdict, and otherwise needs a new commit to move the tip; the step says which by

@@ -205,7 +205,7 @@ test('the real workflow tree has no un-allowlisted shell interpolation', () => {
   const directory = join(repoRoot, '.github/workflows')
   // `pr-lint.yml` joined this list with #753: a workflow that is not named here
   // is scanned by nothing, and the scan is the only thing that reads the tree.
-  for (const name of ['ci.yml', 'release.yml', 'codeql.yml', 'review-gate.yml', 'pr-lint.yml', 'daily-release.yml']) {
+  for (const name of ['ci.yml', 'release.yml', 'codeql.yml', 'review-gate.yml', 'review-gate-retrigger.yml', 'pr-lint.yml', 'daily-release.yml']) {
     const findings = scanWorkflowText(readFileSync(join(directory, name), 'utf8'), name, allowlist)
     assert.deepEqual(findings, [], `${name} interpolates an expression into a shell script`)
   }

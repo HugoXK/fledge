@@ -23,7 +23,7 @@ import { TRIGGERING_CONCLUSIONS, execRetrigger, refusalFor } from '../scripts/re
 // implementation of the repair.
 
 const read = (path: string): string => readFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)), 'utf8')
-const workflow = read('.github/workflows/review-gate.yml')
+const workflow = read('.github/workflows/review-gate-retrigger.yml')
 
 function jobBlock(text: string, id: string): string {
   const lines = text.split('\n')
@@ -51,6 +51,7 @@ function declaredNames(text: string): string[] {
 
 const RETRIGGER = 'review-gate-retrigger'
 const HEAD_REPOSITORY_GUARD = 'github.event.workflow_run.head_repository.full_name == github.repository'
+const PULL_REQUEST_RUN = `github.event.workflow_run.event == 'pull_request'`
 
 function runPayload(overrides: Record<string, unknown> = {}): Record<string, unknown> {
   return {
@@ -93,15 +94,9 @@ test('the retrigger job is skipped, not merely refused, for a run from another r
     condition.indexOf(`github.event_name == 'workflow_run'`) < condition.indexOf(HEAD_REPOSITORY_GUARD),
     'the head repository is tested only for a workflow_run event',
   )
-  // The other half of the guard — the run was started by a pull request, not a
-  // push — is `refusalFor`'s first check, so it refuses before any read. It is not
-  // repeated here because the required `action-pins` job that judges this file
-  // runs from the base tree, and that copy reads a quoted `'pull_request'` in a
-  // job's condition as "this job serves pull_request" and demands an association
-  // gate a `workflow_run` payload cannot satisfy (base job 136344245360).
-  assert.doesNotMatch(condition, /'pull_request'/, 'the origin test lives in the entrypoint, not in the job condition')
+  assert.ok(condition.includes(PULL_REQUEST_RUN), 'the job must name the event that produced the run')
   assert.match(block, /actions: write/, 'the job is privileged, which is why the guard matters')
-  const findings = checkActorGates(workflow, 'review-gate.yml')
+  const findings = checkActorGates(workflow, 'review-gate-retrigger.yml')
   assert.deepEqual(findings.map((finding) => `${finding.job} ${finding.problem}`), [], 'the scan over the real file is clean')
 })
 
@@ -216,10 +211,13 @@ test('one repair per head at a time, and the same group for a re-settling lint',
 })
 
 test('the retrigger publishes no required context and hands the head to the repair', () => {
-  assert.equal(declaredNames(workflow).filter((name) => name === 'review-gate').length, 1, 'exactly one job publishes review-gate')
   const names = declaredNames(workflow)
-  assert.ok(names.includes(RETRIGGER), 'the new job carries its own name')
+  assert.deepEqual(names, [RETRIGGER], 'the new file carries its own name and publishes nothing else')
+  assert.ok(!names.includes('review-gate'), 'the retrigger belongs to another file and must not repaint the required context')
   assert.ok(!names.includes('pr-lint'), 'the retrigger must not publish the lint context')
+  // The required context keeps its one publisher, in the file that already owns it.
+  const gate = read('.github/workflows/review-gate.yml')
+  assert.equal([...gate.matchAll(/^ {4}name: (.+)$/gm)].map((match) => match[1]!.trim()).filter((name) => name === 'review-gate').length, 1)
   const block = jobBlock(workflow, RETRIGGER)
   assert.match(block, /node scripts\/gate-repair\.mjs --pr "\$PULL_REQUEST"/, 'the repair is the one implementation, invoked, never copied')
   assert.match(block, /--sha "\$HEAD_SHA"/, 'the verdict is judged at the finished run head')
@@ -232,8 +230,12 @@ test('the retrigger publishes no required context and hands the head to the repa
   assert.deepEqual(scan.findings.map((finding) => `${finding.file} ${finding.job} ${finding.problem}`), [])
 })
 
-test('the gate job does not run on the retrigger event, so no review-gate check lands on main', () => {
-  const gate = ifLineOf(jobBlock(workflow, 'review-gate'))
-  assert.match(gate, /github\.event_name != 'issue_comment'/)
-  assert.match(gate, /github\.event_name != 'workflow_run'/, 'a workflow_run event has the default branch as its sha')
+test('the gate never answers the retrigger event, so no review-gate check lands on main', () => {
+  // Structural rather than a condition: the retrigger lives in its own file, and
+  // `review-gate.yml` does not list `workflow_run` at all — a `workflow_run` run
+  // carries the default branch as its SHA, so its check would land on `main`.
+  const gate = read('.github/workflows/review-gate.yml')
+  const onBlock = gate.slice(gate.indexOf('on:'), gate.indexOf('jobs:'))
+  assert.doesNotMatch(onBlock, /workflow_run:/, 'the gate file waits for verdicts only')
+  assert.match(onBlock, /pull_request_review:/, 'the verdict trigger stays where it is')
 })
