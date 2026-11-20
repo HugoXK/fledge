@@ -4034,12 +4034,11 @@ export class Jobs {
     // against the bytes the row stored rather than against the hash the row
     // reports. A job with no sealed bundle records `missing`, and a callback that
     // names another job's bundle records `mismatch`; neither is ever `verified`.
+    // #1124: it is computed here, beside the parsed payload, but written only on
+    // an accepted transition (see recordContextVerdict below), because a refused
+    // callback must leave the verdict the accepted one established.
     const contextEcho = typeof payload.contextBundleHash === 'string' ? payload.contextBundleHash.slice(0, 100) : null
     const contextVerdict = verifyContextBundleEcho(job.context_bundle_json, job.context_bundle_hash, contextEcho)
-    if (contextVerdict.state === 'mismatch') {
-      this.store.audit(job.user_id, 'job.context_bundle_mismatch', `${jobId}: ${contextVerdict.detail}`.slice(0, 300))
-    }
-    this.store.updateJob(jobId, { context_bundle_state: contextVerdict.state })
     if (branch !== undefined && (!isValidBranchName(branch) || branch === job.base_branch)) {
       return { ok: false, status: 400, error: 'invalid branch' }
     }
@@ -4078,6 +4077,16 @@ export class Jobs {
     if (status !== 'running' && this.pastHardTimeout(job)) return { ok: false, status: 409, error: 'job timed out' }
     // A queued job has no dispatched worker yet, so a heartbeat may not promote it.
     if (status === 'running' && job.status !== 'running') return { ok: false, status: 409, error: 'job not dispatched' }
+    // #1124: the verdict belongs to the callback that was accepted, so it is
+    // written after the delivery has passed every guard above and claimed its
+    // own transition below. A callback answered 4xx writes nothing, and the loser
+    // of a concurrent finish does not overwrite the winner's verdict.
+    const recordContextVerdict = (): void => {
+      if (contextVerdict.state === 'mismatch') {
+        this.store.audit(job.user_id, 'job.context_bundle_mismatch', `${jobId}: ${contextVerdict.detail}`.slice(0, 300))
+      }
+      this.store.updateJob(jobId, { context_bundle_state: contextVerdict.state })
+    }
     const revoke = (): void => {
       const row = this.store.findApiToken(job.platform_token_hash ?? '')
       if (row !== undefined) this.store.revokeApiToken(row.id, row.user_id)
@@ -4126,6 +4135,7 @@ export class Jobs {
     // Only a callback that will be acted on may refresh the stall window.
     this.store.touchJobCallback(jobId)
     if (status === 'running') {
+      recordContextVerdict()
       this.store.updateJob(jobId, {
         status: 'running',
         started_at: job.started_at ?? nowIso(),
@@ -4194,6 +4204,7 @@ export class Jobs {
       if (latest !== undefined && latest.callback_fingerprint !== null && latest.callback_fingerprint === fingerprint) return { ok: true, duplicate: true }
       return { ok: false, status: 409, error: 'job already finished' }
     }
+    recordContextVerdict()
     if (checkpoint !== undefined) {
       this.store.updateJob(jobId, { checkpoint })
       this.consumeCoordination(jobId)
