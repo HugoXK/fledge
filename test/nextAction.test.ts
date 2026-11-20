@@ -286,6 +286,18 @@ test('secondary sections collapse into one disclosure and lose nothing', () => {
   // element, not the bare tag that carried no attribute.
   assert.match(html, /<table\b/, 'the repository table is still rendered, only collapsed')
   assert.match(html, /Recent jobs/, 'the job section is still rendered')
+
+  // #1020's rendered half: the summary's text is exactly its own bilingual label.
+  // The marker is CSS-generated, so it was never in `textContent` and this half is
+  // green before the sheet fix — the red half is in `test/layout.test.ts`, which
+  // reads `content`. Keeping both makes it impossible to satisfy the card by
+  // deleting the marker.
+  const secondary = /<details class="secondary"[^>]*>\s*<summary[^>]*>([\s\S]*?)<\/summary>/
+  const summary = html.match(secondary)?.[1] ?? ''
+  assert.match(summary, /^More: repositories, delivery and jobs$/, 'the English summary is its label and nothing else')
+  const zhSummary = render('zh', { setup: completeSetup }).match(secondary)?.[1] ?? ''
+  assert.match(zhSummary, /^更多：仓库、交付与任务$/, 'the Chinese summary is its label and nothing else')
+  assert.doesNotMatch(summary + zhSummary, /[\u25B8\u25BE]/, 'no typed marker reaches either language')
 })
 
 test('the disclosure opens when the next action points inside it', () => {
