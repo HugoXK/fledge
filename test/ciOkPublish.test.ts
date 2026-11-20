@@ -16,6 +16,7 @@ import {
   shouldPublish,
   verdict,
 } from '../scripts/lib/ci-ok-run.mjs'
+import * as runModule from '../scripts/lib/ci-ok-run.mjs'
 
 // #855: the aggregate that gates a merge used to be a job inside `ci.yml`, and
 // GitHub takes a `pull_request` workflow file from the pull request's own tree.
@@ -160,6 +161,60 @@ test('a cancelled run publishes nothing, because the run that replaced it owns t
   assert.equal(shouldPublish({ conclusion: 'cancelled' }), false)
   assert.equal(shouldPublish({ conclusion: 'failure' }), true)
   assert.equal(shouldPublish(null), false)
+})
+
+// #1117: the publisher reported "a pull request run must name exactly one base
+// sha, got 0" as a red verdict after the pull request merged mid-run — the base
+// was missing because the merge removed it, and nothing about the diff failed.
+// The decision is driven here through the pure half; the CLI only supplies the
+// lookup it makes when the payload lost its own list.
+test('a pull request that merged mid-run publishes no verdict (#1117)', () => {
+  const run = { conclusion: 'success', event: 'pull_request', pull_requests: [], head_sha: 'a'.repeat(40) }
+  const merged = { number: 1115, merged_at: '2026-11-19T14:39:27Z', state: 'closed' }
+  assert.equal(runModule.lostItsBase(run), true, 'an empty pull request list is the shape the merge leaves behind')
+  assert.equal(runModule.mergedPullRequestOf(merged)?.number, 1115)
+  assert.equal(runModule.skipReason(run, merged), 'pull-request-merged')
+  assert.equal(runModule.shouldPublish(run, merged), false)
+})
+
+test('a lost base without a merged pull request keeps the red, so nothing is silently skipped', () => {
+  const run = { conclusion: 'success', event: 'pull_request', pull_requests: [] }
+  assert.equal(runModule.skipReason(run, null), null, 'no merged pull request behind the head means no skip')
+  assert.equal(runModule.shouldPublish(run, { number: 7, merged_at: null, state: 'closed' }), true, 'closed without merge still has its red')
+  assert.equal(runModule.shouldPublish(run, { number: 8, merged_at: '', state: 'open' }), true)
+  assert.equal(runModule.mergedPullRequestOf({ number: 7, merged_at: null }), null)
+  assert.equal(runModule.mergedPullRequestOf(null), null)
+})
+
+test('a run that can still be ranged is judged, even when a merged pull request is offered', () => {
+  const run = { conclusion: 'success', event: 'pull_request', pull_requests: [{ base: { sha: 'b'.repeat(40) } }] }
+  assert.equal(runModule.baseShas(run).length, 1)
+  assert.equal(runModule.lostItsBase(run), false)
+  assert.equal(runModule.shouldPublish(run, { number: 9, merged_at: '2026-11-19T14:39:27Z' }), true)
+  assert.equal(runModule.shouldPublish({ conclusion: 'success', event: 'push' }, { number: 9, merged_at: '2026-11-19T14:39:27Z' }), true, 'a push run has no pull request to merge away')
+})
+
+test('the skip log names the merged pull request that removed the base', () => {
+  const run = { conclusion: 'success', event: 'pull_request', pull_requests: [] }
+  const merged = { number: 1115, merged_at: '2026-11-19T14:39:27Z' }
+  assert.equal(
+    runModule.skipDetail(run, 'pull-request-merged', merged),
+    'pull request #1115 merged at 2026-11-19T14:39:27Z while the run was in flight; no merge candidate is left to judge',
+  )
+  assert.match(
+    runModule.skipDetail(run, 'pull-request-merged', { number: 1115, mergedAt: '2026-11-19T14:39:27Z' }),
+    /unknown number/,
+    'a shape the API does not return is not evidence for the log either',
+  )
+  assert.match(runModule.skipDetail({ conclusion: 'cancelled' }, 'superseded'), /supersedes it/)
+})
+
+test('the publisher looks up the commit and logs which branch of the decision fired', () => {
+  const cli = read('scripts/ci-ok-run.mjs')
+  assert.match(cli, /lostItsBase\(run\)/, 'the lookup is made only for the run shape that lost its base')
+  assert.match(cli, /commits\/\$\{headSha\}\/pulls/, 'the merged decision reads the head commit\'s pull requests, not reachability')
+  assert.match(cli, /skipped \(/, 'a skipped run says so in the log rather than passing silently')
+  assert.doesNotMatch(cli, /git\(\['merge-base'/, 'reachability is not the test: a squash merge leaves the head unreachable while merged')
 })
 
 test('the published check run carries the required context and the failing job names', () => {

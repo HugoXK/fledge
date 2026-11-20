@@ -18,9 +18,10 @@
 // #1108: the job list alone cannot prove a required job did its work. It reports
 // the job's *name* and its conclusion, so a head can keep the name `mock-check`
 // and make the body `run: true`. A pull request run is therefore also compared
-// against the default branch's copy of `.github/workflows/ci.yml` — every key of
-// every required job, with `scripts/lib/gate-compare.mjs` deciding — and a
-// mismatch is a refusal that names the job and the key. Both workflow texts are
+// against the default branch's copy of `.github/workflows/ci.yml` — every
+// top-level block outside `jobs:` and every key of every required job, with
+// `scripts/lib/gate-compare.mjs` deciding — and a mismatch is a refusal that
+// names the job and the key. Both workflow texts are
 // read through the contents API at the head sha and the default branch, not from
 // the checkouts, for the same reason the run id is: a file read whose bytes end
 // up in the check-run body is the `js/file-access-to-http` shape alert 140
@@ -34,11 +35,14 @@
 // sentence. Every refusal names the reviewed-change path instead.
 //
 // A push or a merge-queue entry is not compared: the queue head's tree already
-// contains the reviewed change and carries no label, and a push has no base range
-// at all.
+// contains the reviewed change, and a push has no base range at all.
 //
 // A superseded (`cancelled`) run is skipped: a newer run for the same head is
-// the one whose verdict counts.
+// the one whose verdict counts. A `pull_request` run whose payload no longer
+// names its base is skipped too when the head's pull request is already merged:
+// the base is missing because the merge removed it, not because anything about
+// the change failed, and there is no merge candidate left to judge (#1117).
+// Every other unreadable run still publishes a red.
 //
 // Nothing here is allowed to turn silence into a pass: a run whose evidence
 // cannot be read publishes `failure` with the reason, because a missing
@@ -52,7 +56,15 @@ import { fileURLToPath } from 'node:url'
 import { REQUIRED_JOBS } from './ci-ok.mjs'
 import { policyIdentity } from './lib/ci-ok-refresh.mjs'
 import { allGateChanges } from './lib/ciChanges.mjs'
-import { checkRunPayload, runIdFrom, shouldPublish, verdict } from './lib/ci-ok-run.mjs'
+import {
+  checkRunPayload,
+  lostItsBase,
+  mergedPullRequestOf,
+  runIdFrom,
+  skipDetail,
+  skipReason,
+  verdict,
+} from './lib/ci-ok-run.mjs'
 import { GATE_COMPARE_FILE, compareGate } from './lib/gate-compare.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
@@ -221,12 +233,36 @@ async function publish(payload) {
   await api(`/repos/${REPO}/check-runs`, { method: 'POST', body: JSON.stringify(payload) })
 }
 
+// The head a squashed or merged pull request used to have is not on the default
+// branch, so reachability says nothing here: the commit's own pull request list
+// says whether the merge is what removed the base. The lookup is made only for
+// the run shape that lost its own list, and a lookup that fails answers nothing,
+// which falls through to the red — an unreadable base is still a finding.
+async function mergedHead(run) {
+  if (!lostItsBase(run)) return null
+  const headSha = String(run.head_sha ?? '')
+  if (!/^[0-9a-f]{40}$/.test(headSha)) return null
+  let pulls
+  try {
+    pulls = await api(`/repos/${REPO}/commits/${headSha}/pulls?per_page=100`)
+  } catch (error) {
+    console.error(`ci-ok-run: could not read the pull requests of ${headSha}: ${error.message}`)
+    return null
+  }
+  for (const pull of Array.isArray(pulls) ? pulls : []) {
+    if (mergedPullRequestOf(pull) !== null) return pull
+  }
+  return null
+}
+
 async function main() {
   if (TOKEN === '') fail('GITHUB_TOKEN is empty, and the check run cannot be created without it')
   if (REPO === '') fail('GITHUB_REPOSITORY is empty')
   const run = await loadRun(triggeredRunId())
-  if (!shouldPublish(run)) {
-    console.log(`ci-ok-run: run ${String(run.id)} concluded ${String(run.conclusion)}; a newer run for this head supersedes it`)
+  const merged = await mergedHead(run)
+  const reason = skipReason(run, merged)
+  if (reason !== null) {
+    console.log(`ci-ok-run: run ${String(run.id)} skipped (${reason}): ${skipDetail(run, reason, merged)}`)
     return
   }
   const gateSha = gateBlob()

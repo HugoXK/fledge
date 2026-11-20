@@ -437,8 +437,15 @@ that job's own result, and every check run at the head sha counts, so the
 publisher's red still blocks. A required job the head deletes or renames is
 reported missing by name, which is red — the same answer as dropping it from
 `needs` inside the run. A run the platform `cancelled` publishes nothing, because
-the run that replaced it owns the verdict, and a run whose evidence cannot be
-read publishes `failure` with the reason rather than silence.
+the run that replaced it owns the verdict. A `pull_request` run whose payload no
+longer names its base publishes nothing either, but only when the head's own pull
+request is closed as merged (#1117): the merge removed the base, there is no merge
+candidate left to judge, and a squash merge leaves the head unreachable, so
+reachability is not the test — the commit's pull request list is. The same shape
+with an unmerged or unfindable pull request still publishes `failure` naming the
+missing base, and a run whose evidence cannot be read publishes `failure` with the
+reason rather than silence. The skip is logged with the branch of the decision
+that fired, so a later reader can tell a skip from a failure.
 
 A job that keeps its required name and changes what it does is a separate hole
 (#1108): the publisher matches names, so a head could leave `mock-check` in place
