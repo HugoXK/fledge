@@ -71,9 +71,19 @@ export interface InstructionContract extends Omit<InstructionContractInput, 'pla
 
 export type AdherenceStatus = 'pass' | 'violation' | 'unverifiable'
 
+/**
+ * One clause's outcome. `not-asked` is the fourth answer (#1175): the contract
+ * carried no requirement for that family, so nothing was checked — it is not a
+ * pass, and it is not `unverifiable` either, because that word means "asked for
+ * and not observed". It stays out of the record's fold on purpose, so a contract
+ * that asks for none of the three is still a record-level `pass` and no merge
+ * outcome moves.
+ */
+export type ClauseStatus = AdherenceStatus | 'not-asked'
+
 export interface ClauseResult {
   id: string
-  status: AdherenceStatus
+  status: ClauseStatus
   detail: string
 }
 
@@ -182,7 +192,7 @@ export function evaluateAdherence(contract: InstructionContract, observation: Ad
   }
 
   if (contract.required.evidence.length === 0) {
-    clauses.push({ id: 'evidence.required', status: 'pass', detail: 'the contract names no required evidence' })
+    clauses.push({ id: 'evidence.required', status: 'not-asked', detail: 'the contract names no required evidence' })
   } else if (observation.evidence === null) {
     clauses.push({ id: 'evidence.required', status: 'unverifiable', detail: 'the evidence was not observed' })
   } else {
@@ -195,7 +205,7 @@ export function evaluateAdherence(contract: InstructionContract, observation: Ad
   }
 
   if (contract.required.sections.length === 0) {
-    clauses.push({ id: 'sections.required', status: 'pass', detail: 'the contract names no required sections' })
+    clauses.push({ id: 'sections.required', status: 'not-asked', detail: 'the contract names no required sections' })
   } else if (observation.sections === null) {
     clauses.push({ id: 'sections.required', status: 'unverifiable', detail: 'the body sections were not observed' })
   } else {
@@ -208,7 +218,7 @@ export function evaluateAdherence(contract: InstructionContract, observation: Ad
   }
 
   if (contract.forbidden.length === 0) {
-    clauses.push({ id: 'actions.forbidden', status: 'pass', detail: 'the contract forbids no action' })
+    clauses.push({ id: 'actions.forbidden', status: 'not-asked', detail: 'the contract forbids no action' })
   } else if (observation.actions === null) {
     clauses.push({ id: 'actions.forbidden', status: 'unverifiable', detail: 'the actions were not observed' })
   } else {

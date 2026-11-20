@@ -146,6 +146,38 @@ test('a job that satisfies every checkable clause is a pass', () => {
   assert.ok(record.clauses.every((clause) => clause.status === 'pass'), 'no clause is left undecided')
 })
 
+// #1175: a job seals the three requirement lists empty (`src/jobs/service.ts`),
+// so the empty-requirement branch is the only one these clauses can take in
+// production. It answered `pass`, which reads as "checked and clean" for a
+// check nobody performed; the detail beside it already said nothing was asked.
+test('a requirement the contract never asked for is not asked, never a pass', () => {
+  const { contract, hash } = compileInstructionContract({
+    ...compiled(),
+    required: { evidence: [], sections: [] },
+    forbidden: [],
+  })
+  // The gate's observation of these three is `null`, so the empty branch wins
+  // only because it is tested before the null branch; this is the production
+  // shape, not a hypothetical one.
+  const record = evaluateAdherence(contract, { ...cleanObservation(hash), evidence: null, sections: null, actions: null })
+  for (const id of ['evidence.required', 'sections.required', 'actions.forbidden']) {
+    const clause = record.clauses.find((entry) => entry.id === id)
+    assert.equal(clause?.status, 'not-asked', `${id} is its own outcome, not a verdict`)
+    assert.notEqual(clause?.status, 'pass', `${id} must never read as a pass`)
+    assert.notEqual(clause?.status, 'unverifiable', `${id} was not asked, so it cannot be "asked and unobserved"`)
+  }
+  assert.equal(record.status, 'pass', 'nothing was asked and nothing failed, so the record still passes and no merge outcome moves')
+})
+
+test('a contract that names its requirements keeps a pass on every clause', () => {
+  const { contract, hash } = compileInstructionContract(compiled())
+  const record = evaluateAdherence(contract, cleanObservation(hash))
+  for (const id of ['evidence.required', 'sections.required', 'actions.forbidden']) {
+    const clause = record.clauses.find((entry) => entry.id === id)
+    assert.equal(clause?.status, 'pass', `${id} was asked and satisfied, so the new outcome does not leak onto it`)
+  }
+})
+
 test('a changed denied path is a violation even when the job reports green tests', () => {
   const { contract, hash } = compileInstructionContract(compiled())
   const record = evaluateAdherence(contract, {

@@ -27,7 +27,7 @@ import { parseSkillBundleRecord, type SkillBundleSourceRow } from '../lib/skillB
 // #369: the job page reads the bundle back from the row and re-hashes it, so the
 // page never prints "verified" for bytes that no longer match the hash.
 import { diffContextBundles, readContextBundle, verifyContextBundle } from '../lib/contextBundle.js'
-import type { AdherenceRecord, AdherenceStatus, ClauseResult } from '../lib/instructions.js'
+import type { AdherenceRecord, AdherenceStatus, ClauseStatus, ClauseResult } from '../lib/instructions.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -4444,6 +4444,12 @@ function readAdherence(json: string | null): AdherenceRecord | null {
   if (value === null || typeof value !== 'object') return null
   const record = value as Partial<AdherenceRecord>
   const statuses: AdherenceStatus[] = ['pass', 'violation', 'unverifiable']
+  // #1175: a clause has a fourth outcome, and the allowlist has to carry it or
+  // the shape check rejects the record and the whole card falls back to "not
+  // recorded yet" — an audit that silently disappears instead of getting more
+  // honest. The record's own verdict keeps the three-value list: `not-asked` is
+  // clause-level and stays out of the fold.
+  const clauseStatuses: ClauseStatus[] = ['pass', 'violation', 'unverifiable', 'not-asked']
   if (record.status === undefined || !statuses.includes(record.status) || typeof record.hashVerified !== 'boolean') return null
   if (!Array.isArray(record.clauses)) return null
   const clauses: ClauseResult[] = []
@@ -4451,7 +4457,7 @@ function readAdherence(json: string | null): AdherenceRecord | null {
     if (entry === null || typeof entry !== 'object') return null
     const clause = entry as Partial<ClauseResult>
     if (typeof clause.id !== 'string' || typeof clause.detail !== 'string') return null
-    if (clause.status === undefined || !statuses.includes(clause.status)) return null
+    if (clause.status === undefined || !clauseStatuses.includes(clause.status)) return null
     clauses.push({ id: clause.id, status: clause.status, detail: clause.detail })
   }
   return { status: record.status, hashVerified: record.hashVerified, clauses }
@@ -4508,12 +4514,34 @@ function readAdherence(json: string | null): AdherenceRecord | null {
   // is rendered as its own outcome so a clause nobody could check is never read
   // as a pass, and a row with no record says so instead of showing an empty table.
   const adherence = readAdherence(job.adherence_json)
-  const adherenceStatusLabel = (status: AdherenceStatus): string =>
+  const adherenceStatusLabel = (status: ClauseStatus): string =>
     status === 'pass'
       ? t('通过', 'pass')
       : status === 'violation'
         ? t('违反', 'violation')
-        : t('无法核对', 'unverifiable')
+        : status === 'unverifiable'
+          ? t('无法核对', 'unverifiable')
+          : t('— 无须核对', '— not asked')
+  // #1175: a contract that asks for none of evidence, sections or forbidden
+  // actions is still a record-level pass, and "every clause passed" would then
+  // claim three checks nobody performed. The sentence names the families the
+  // contract did not ask for, built from the record so it states only what is
+  // true — a contract that named them keeps the plain sentence.
+  const adherenceSummary = (clauses: ClauseResult[]): string => {
+    const notAsked = clauses.filter((clause) => clause.status === 'not-asked').map((clause) => clause.id)
+    const families = [
+      { id: 'evidence.required', zh: '没有要求证据', en: 'required no evidence' },
+      { id: 'sections.required', zh: '没有指定章节', en: 'named no sections' },
+      { id: 'actions.forbidden', zh: '没有禁止任何动作', en: 'forbade no action' },
+    ].filter((family) => notAsked.includes(family.id))
+    if (families.length === 0) return t('所有可机检的条款都通过了。', 'Every machine-checkable clause passed.')
+    const zh = families.map((family) => family.zh).join('、')
+    const english = families.map((family) => family.en)
+    const joined = english.length === 1
+      ? `${english[0] ?? ''}`
+      : `${english.slice(0, -1).join(', ')} and ${english[english.length - 1] ?? ''}`
+    return t(`所有可机检的条款都通过了；这份契约${zh}。`, `Every machine-checkable clause passed; this contract ${joined}.`)
+  }
   const adherenceCard = `<section class="card" id="job-adherence">
     <h2>${escapeHtml(t('指令契约审计', 'Instruction contract audit'))}</h2>
     ${adherence === null
@@ -4522,7 +4550,7 @@ function readAdherence(json: string | null): AdherenceRecord | null {
         ? `<p class="fine" data-adherence-violation><strong>${escapeHtml(t('违反了它运行的指令契约，合并请求已被阻止。', 'It violated the instruction contract it ran under, so the merge request was blocked.'))}</strong></p>`
         : adherence.status === 'unverifiable'
           ? `<p class="fine">${escapeHtml(t('有些条款无法核对，不能当作通过。', 'Some clauses could not be checked, so this is not a pass.'))}</p>`
-          : `<p class="fine">${escapeHtml(t('所有可机检的条款都通过了。', 'Every machine-checkable clause passed.'))}</p>`}
+          : `<p class="fine">${escapeHtml(adherenceSummary(adherence.clauses))}</p>`}
       <p class="fine">${escapeHtml(t('条款审计结论', 'Audit verdict'))}: <code data-adherence-status>${escapeHtml(adherence.status)}</code> · ${escapeHtml(t('回调哈希一致', 'callback hash matched'))}: <code>${adherence.hashVerified ? 'true' : 'false'}</code></p>
       <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('条款', 'Clause'))}</th><th>${escapeHtml(t('结论', 'Verdict'))}</th><th>${escapeHtml(t('依据', 'Detail'))}</th></tr></thead><tbody>${adherence.clauses.map((clause) => `<tr data-adherence-clause="${escapeHtml(clause.id)}"><td><code>${escapeHtml(clause.id)}</code></td><td>${escapeHtml(adherenceStatusLabel(clause.status))}</td><td>${escapeHtml(clause.detail)}</td></tr>`).join('')}</tbody></table></div>`}
   </section>`
