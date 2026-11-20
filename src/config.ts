@@ -5,7 +5,7 @@ import { resolve } from 'node:path'
 import { buildIdentity } from './lib/buildIdentity.js'
 import { DEFAULT_EXPECTED_HOURS } from './lib/backupStatus.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
-import { registerRedactionSecrets } from './lib/secrets.js'
+import { registerRedactionSecrets, registerSecretKeyring } from './lib/secrets.js'
 import { DEFAULT_RATE_LIMIT_BUDGETS, type RateLimitBudgets } from './lib/rateLimit.js'
 import { parseManagementService, type ManagementServiceMode } from './management/mode.js'
 import { RETENTION_CLASSES, retentionDefaultWindows, retentionWindow, type RetentionId, type RetentionWindows } from '../scripts/lib/retention.mjs'
@@ -71,6 +71,10 @@ export interface Config {
   // `off` (the default) is the route that existed before the contract.
   managementService: ManagementServiceMode
   tokenEncryptionKey: string
+  // #388: optional JSON `{ "<id>": "<base64 32 bytes>" }` keyring. Its keys
+  // decrypt `v2` payloads by id; `TOKEN_ENCRYPTION_KEY` stays the `v1` default.
+  // Empty means no named key is configured. This is a path, never the key.
+  tokenEncryptionKeysFile: string
   github: {
     clientId: string
     clientSecret: string
@@ -449,6 +453,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   if (env !== 'development' && env !== 'production' && env !== 'test') throw new Error(`unknown NODE_ENV: ${rawEnv}`)
   const keyB64 = text('TOKEN_ENCRYPTION_KEY')
   const encryptionKey = keyB64 === '' ? randomBytes(32).toString('base64') : keyB64
+  const keysFileRaw = text('TOKEN_ENCRYPTION_KEYS_FILE', '')
   const dataDir = resolve(text('DATA_DIR', './data'))
   // #281: one window per retention class, with the shipped literal as the
   // effective default. `retentionWindow` refuses 0 and non-integers rather than
@@ -508,6 +513,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     managementService: parseManagementService(text('MANAGEMENT_SERVICE', 'off')),
     tokenEncryptionKey: encryptionKey,
+    tokenEncryptionKeysFile: keysFileRaw === '' ? '' : resolve(keysFileRaw),
     github: {
       clientId: text('GITHUB_CLIENT_ID'),
       clientSecret: text('GITHUB_CLIENT_SECRET'),
@@ -675,11 +681,16 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
   if (merged.plan.reminderDays >= merged.plan.expiryDays) {
     throw new Error(`PLAN_REMINDER_DAYS (${merged.plan.reminderDays}) must be smaller than PLAN_EXPIRY_DAYS (${merged.plan.expiryDays}); a reminder at or after the deadline is sent immediately.`)
   }
+  // #388: load the named keyring and refuse to boot on any bad entry, naming
+  // the file and the id. Registration happens before the app can decrypt.
+  const secretKeyring = loadTokenEncryptionKeys(merged.tokenEncryptionKeysFile)
+  registerSecretKeyring(secretKeyring)
   // #458: these values have no recognisable shape, so the one redactor is told
   // them here, once, before anything can log, store or mail them.
   registerRedactionSecrets([
     merged.sessionSecret,
     merged.tokenEncryptionKey,
+    ...Object.values(secretKeyring),
     merged.github.clientSecret,
     merged.githubApp.webhookSecret,
     merged.githubApp.webhookSecretPrevious ?? '',
@@ -698,6 +709,42 @@ function isAbsoluteHttpsUrl(value: string): boolean {
   } catch {
     return false
   }
+}
+
+// #388: one parser for the keyring file, so startup and a test read the same
+// rule. Every failure names the path; an entry failure also names the id, because
+// "one of these keys is wrong" is not something an operator can act on.
+function loadTokenEncryptionKeys(file: string): Record<string, string> {
+  if (file === '') return {}
+  let raw: string
+  try {
+    raw = readFileSync(file, 'utf8')
+  } catch (error) {
+    throw new Error(`TOKEN_ENCRYPTION_KEYS_FILE ${file} could not be read: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(raw)
+  } catch (error) {
+    throw new Error(`TOKEN_ENCRYPTION_KEYS_FILE ${file} is not valid JSON: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`TOKEN_ENCRYPTION_KEYS_FILE ${file} must be a JSON object mapping a key id to a base64 32-byte key`)
+  }
+  const keys: Record<string, string> = {}
+  for (const [id, value] of Object.entries(parsed as Record<string, unknown>)) {
+    if (id === '' || id.includes(':')) {
+      throw new Error(`TOKEN_ENCRYPTION_KEYS_FILE ${file}: key id ${id} is not usable: it must be non-empty and contain no colon`)
+    }
+    if (typeof value !== 'string') {
+      throw new Error(`TOKEN_ENCRYPTION_KEYS_FILE ${file}: key id ${id} must be a base64 string`)
+    }
+    if (Buffer.from(value, 'base64').length !== 32) {
+      throw new Error(`TOKEN_ENCRYPTION_KEYS_FILE ${file}: key id ${id} must decode to exactly 32 bytes`)
+    }
+    keys[id] = value
+  }
+  return keys
 }
 
 export function assertProductionConfig(config: Config): void {
