@@ -223,7 +223,7 @@ test('the exhausted-quota banner is a stack message, not a second banner outside
     const stack = stackOf(main)
     // The dashboard's next-action card also says the quota is used up; only the
     // banner sentence counts, and it must exist exactly once, inside the stack.
-    const banner = /Platform quota is used up\. Add your own model API in Settings/g
+    const banner = /Platform quota is used up: repositories on the platform model pause/g
     assert.match(stack, banner)
     assert.equal(main.match(banner)?.length, 1, 'the quota banner rendered outside the stack as well')
   } finally {

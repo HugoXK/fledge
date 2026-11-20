@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { dispatchRelease } from '../scripts/trigger-release.mjs'
+import { dispatchRelease, dispatchWithProof } from '../scripts/trigger-release.mjs'
 
 function fakeFetch(status: number, body = '') {
   const calls: Array<{ url: string; init: { method?: string; headers?: Record<string, string>; body?: string } }> = []
@@ -43,4 +43,35 @@ test('a non-2xx dispatch is an error, not a quiet success', async () => {
     () => dispatchRelease({ repo: 'HugoXK/fledge', token: 'secret-token', fetchImpl: fake.fetchImpl }),
     /403.*Resource not accessible/,
   )
+})
+
+// #881: the host cron runs on a clock that is ~28 minutes ahead (#758), so at its
+// `0 2 * * *` the API still reads 01:32Z. Dispatching then creates a release
+// commit that belongs to the previous day's slot. The trigger now refuses to
+// dispatch before the 02:00Z boundary of its own UTC day; GitHub's `schedule`
+// stays the fallback for the slot.
+test('#881: the external trigger refuses to dispatch before the 02:00Z boundary', async () => {
+  const fake = fakeFetch(204)
+  const result = await dispatchWithProof({
+    repo: 'HugoXK/fledge',
+    token: 'secret-token',
+    fetchImpl: fake.fetchImpl,
+    clock: () => '2026-11-16T01:32:00Z',
+  })
+  if (result.ok !== false) assert.fail('an early dispatch must be refused, not dispatched')
+  assert.match(result.reason, /before-boundary/)
+  assert.equal(fake.calls.length, 0, 'an early dispatch must not create a release commit')
+  assert.doesNotMatch(JSON.stringify(result), /secret-token/)
+})
+
+test('#881: the same trigger dispatches once the boundary has passed', async () => {
+  const fake = fakeFetch(204)
+  const result = await dispatchWithProof({
+    repo: 'HugoXK/fledge',
+    token: 'secret-token',
+    fetchImpl: fake.fetchImpl,
+    clock: () => '2026-11-16T02:00:00Z',
+  })
+  assert.equal(result.ok, true)
+  assert.equal(fake.calls.filter((call) => call.init.method === 'POST').length, 1)
 })

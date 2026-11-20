@@ -24,6 +24,9 @@ import { firstRunOutcome, setupChecklist, type SetupState, type SetupStepKey } f
 import { oauthConfigured, tokenLoginEnabled } from '../auth/login.js'
 import { allowedRepoRoles, REPO_ROLE_LABELS, type RepoRole } from '../lib/repoRole.js'
 import { parseSkillBundleRecord, type SkillBundleSourceRow } from '../lib/skillBundle.js'
+// #369: the job page reads the bundle back from the row and re-hashes it, so the
+// page never prints "verified" for bytes that no longer match the hash.
+import { diffContextBundles, readContextBundle, verifyContextBundle } from '../lib/contextBundle.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
@@ -954,6 +957,24 @@ function nextScheduledRun(input: { repos: RepoRow[]; facts: NextRunFact[]; confi
 // mapping this test is what keeps the raw text off the headline card.
 const CJK_TEXT = /[\u4e00-\u9fff]/
 
+// #1104: the platform quota only stops a repository whose model the platform
+// pays for (`platformFundedFor`, src/db.ts), so the page message states that
+// split instead of claiming every job stopped, and it links the section that
+// changes it — the same target the next action uses. One builder, so the
+// dashboard and the console cannot drift apart.
+function quotaExhaustedNotice(t: Translate): PageNotification {
+  return {
+    level: 'error',
+    key: 'quota-exhausted',
+    html: `${escapeHtml(
+      t(
+        '平台额度已用完：使用平台模型的仓库会暂停，直到额度恢复或为它选择自己的模型；已选自己模型的仓库照常运行。',
+        'Platform quota is used up: repositories on the platform model pause until it is restored or a model is chosen for them; repositories with their own model keep running.',
+      ),
+    )} <a class="link" href="/settings#model-providers">${escapeHtml(t('配置模型', 'Add a model'))}</a>`,
+  }
+}
+
 function nextActionFor(input: {
   t: Translate
   locale: Locale
@@ -1339,6 +1360,13 @@ export function dashboardPage(input: {
   // caller that omits the queue renders the list exactly as before.
   queued?: JobRow[]
   setup?: SetupState
+  // #1104 review: whether any repository of this account still runs on the
+  // platform model, so the quota banner warns about a paused repository rather
+  // than about the account. A mixed account is `false` for `setup.modelConfigured`
+  // — it does own a model — but `true` here, because its other repository is
+  // still paused. Absent means the caller did not read the fact; the banner
+  // keeps its pre-#1104 answer.
+  platformFunded?: boolean
   notice?: string
   error?: string
 }): string {
@@ -1360,12 +1388,14 @@ export function dashboardPage(input: {
   // #472 slice 3: page-level messages are entries, not hand-written banners.
   // The stack owns their order, region and dismiss control.
   const pageMessages: PageNotification[] = []
-  if (quota.exhausted) {
-    pageMessages.push({
-      level: 'error',
-      key: 'quota-exhausted',
-      text: t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'),
-    })
+  // #1104 review: the quota pauses a repository, not an account, so the banner
+  // is shown while this account still has a repository the platform pays for.
+  // `setup.modelConfigured` cannot answer that — it is the checklist's account
+  // fact and is true for a mixed account whose other repository is still paused.
+  // Absent means the caller did not read the fact, and the banner keeps the
+  // answer it had before the fact existed.
+  if (quota.exhausted && input.platformFunded !== false) {
+    pageMessages.push(quotaExhaustedNotice(t))
   }
   const loopRepos = input.allRepos ?? repos
   const nextAction = nextActionFor({
@@ -3470,6 +3500,11 @@ export function workspacePage(input: {
   jobsTotal?: number
   activeJobs?: number
   questions?: InboxQuestion[]
+  // #1104 review: the console reads the same per-repository fact the dashboard
+  // does, so the quota banner does not tell an own-model account that its jobs
+  // stopped and does not hide the pause from a mixed account. Absent means the
+  // caller did not read the fact — the message that was there before it existed.
+  platformFunded?: boolean
   notice?: string
   error?: string
 }): string {
@@ -3481,12 +3516,8 @@ export function workspacePage(input: {
   // #472 slice 3: page-level messages are entries, not hand-written banners.
   // The stack owns their order, region and dismiss control.
   const pageMessages: PageNotification[] = []
-  if (quota.exhausted) {
-    pageMessages.push({
-      level: 'error',
-      key: 'quota-exhausted',
-      text: t('平台额度已用完。请到 Settings → Model 配置你自己的模型 API，任务才能继续。', 'Platform quota is used up. Add your own model API in Settings → Model to keep jobs running.'),
-    })
+  if (quota.exhausted && input.platformFunded !== false) {
+    pageMessages.push(quotaExhaustedNotice(t))
   }
   const active = input.activeJobs ?? jobs.filter((job) => job.status === 'queued' || job.status === 'running').length
   const recent = jobs.slice(0, 10)
@@ -3613,6 +3644,9 @@ export function jobPage(input: {
   viewer: Viewer
   repo: RepoRow
   job: JobRow
+  // #369: the previous job of this repository that recorded a context bundle, so
+  // the page can say what changed since the policy the reader last saw.
+  previousJob?: JobRow | null
   // #565: position and total are instance-wide counts, so the route hands over
   // the queue rather than a bare index. The ahead-list is the viewer's own
   // queued jobs only; a job owned by anybody else stays a count.
@@ -4197,6 +4231,42 @@ export function jobPage(input: {
         ...(input.merge === undefined ? {} : { merge: input.merge }),
       })
 
+  // #369: the bundle card is built from the stored bytes, never from the hash the
+  // row reports. `verifyContextBundle` re-hashes what was stored, so a row whose
+  // hash belongs to a different bundle prints as a mismatch instead of a badge.
+  const contextBundle = readContextBundle(job.context_bundle_json)
+  const contextBundleVerdict = verifyContextBundle(job.context_bundle_json, job.context_bundle_hash)
+  const previousBundle = input.previousJob === undefined || input.previousJob === null
+    ? null
+    : readContextBundle(input.previousJob.context_bundle_json)
+  const contextBundleChanges = contextBundle === null ? [] : diffContextBundles(previousBundle, contextBundle)
+  const contextBundleEcho = job.context_bundle_state === 'verified'
+    ? t('回调回传了同一个哈希。', 'The callback echoed the same hash.')
+    : job.context_bundle_state === 'mismatch'
+      ? t('回调回传的是另一个包的哈希，这次运行与记录的政策不一致。', 'The callback echoed a different bundle hash; this run and the recorded policy disagree.')
+      : job.context_bundle_state === 'missing'
+        ? t('回调没有回传包哈希，无法确认运行读到的是这份政策。', 'The callback echoed no bundle hash, so the policy the run read cannot be confirmed.')
+        : t('还没有回调回传哈希。', 'No callback has echoed a hash yet.')
+  const contextBundleCard = job.context_bundle_hash === null
+    ? `<section class="card" id="job-context-bundle">
+    <h2>${escapeHtml(t('上下文包', 'Context bundle'))}</h2>
+    <p class="muted">${escapeHtml(t('这个任务没有记录上下文包（例如规则不可读，或任务早于这项记录），所以没有可核验的哈希。', 'This job recorded no context bundle (the rules were unreadable, or the job predates the record), so there is no hash to verify.'))}</p>
+  </section>`
+    : `<section class="card" id="job-context-bundle">
+    <h2>${escapeHtml(t('上下文包', 'Context bundle'))}</h2>
+    ${contextBundleVerdict.state === 'verified'
+      ? `<p class="fine">${escapeHtml(t('已按存储字节重算，与任务记录的哈希一致。', 'Recomputed from the stored bytes and it matches the hash the job records.'))}</p>`
+      : `<p class="fine" data-context-bundle-mismatch><strong>${escapeHtml(t('记录与字节不一致，不能当作已验证。', 'The record and the bytes disagree, so this is not verified.'))}</strong> ${escapeHtml(contextBundleVerdict.detail)}</p>`}
+    <p class="fine">${escapeHtml(t('包哈希', 'Bundle hash'))}: <code>${escapeHtml(job.context_bundle_hash)}</code></p>
+    <p class="fine">${escapeHtml(contextBundleEcho)}</p>
+    ${contextBundleChanges.length === 0
+      ? `<p class="fine">${escapeHtml(previousBundle === null
+        ? t('这是这个仓库记录的第一个上下文包。', 'This is the first bundle recorded for the repository.')
+        : t('与上一个任务记录的包相同。', 'Identical to the previous job’s bundle.'))}</p>`
+      : `<h3 class="mt-16">${escapeHtml(t('与上一个任务的包相比', 'Changed since the previous bundle'))}</h3>
+        <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('字段', 'Field'))}</th><th>${escapeHtml(t('之前', 'Before'))}</th><th>${escapeHtml(t('之后', 'After'))}</th></tr></thead><tbody>${contextBundleChanges.map((change) => `<tr><td><code>${escapeHtml(change.field)}</code></td><td>${escapeHtml(change.before)}</td><td>${escapeHtml(change.after)}</td></tr>`).join('')}</tbody></table></div>`}
+  </section>`
+
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -4225,6 +4295,7 @@ export function jobPage(input: {
   ${supportMode ? '' : workTypeCard}
   ${supportMode ? '' : triageCard}
   ${changeStoryCard}
+  ${contextBundleCard}
   ${input.strategy === undefined ? '' : jobStrategyBlock({ locale, repoId: repo.id, strategy: input.strategy })}
   ${jobSecurityFindingsCard(t, findings)}
   <section class="cols">

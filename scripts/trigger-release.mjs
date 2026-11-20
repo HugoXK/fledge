@@ -69,11 +69,34 @@ export async function readReleaseRuns({ repo, token, fetchImpl = globalThis.fetc
     : []))
 }
 
+/** Whether a dispatch at `now` is allowed: the day's 02:00Z boundary must have
+ * passed. #881: the scheduler host's clock runs ~28 minutes ahead (#758), so a
+ * `0 2 * * *` cron reaches the API at 01:32Z; a dispatch then creates a release
+ * commit for the previous day's slot and that slot ships twice. GitHub's
+ * `schedule` stays the fallback for the slot the host misses. */
+export function dispatchWindow(now) {
+  const { boundary } = slotWindow(now)
+  const at = Date.parse(String(now))
+  if (!Number.isFinite(at)) {
+    return { dispatch: false, boundary, reason: `before-boundary: ${String(now)} cannot be placed against the 02:00Z boundary` }
+  }
+  if (at < Date.parse(boundary)) {
+    return { dispatch: false, boundary, reason: `before-boundary: ${String(now)} is before today's ${boundary} boundary` }
+  }
+  return { dispatch: true, boundary, reason: '' }
+}
+
 /** Dispatch, then read back the run it created. The dispatch is the result; the
  * read-back is proof, so a read failure returns `run: null` instead of turning a
- * real dispatch into an error. */
+ * real dispatch into an error. A dispatch before the boundary makes no request at
+ * all: `ok: false` with the reason names it. */
 export async function dispatchWithProof({ repo, token, fetchImpl = globalThis.fetch, ref = 'main', workflow = WORKFLOW, clock = () => new Date().toISOString() }) {
-  const dispatched = await dispatchRelease({ repo, token, fetchImpl, ref, workflow, clock })
+  const at = clock()
+  const window = dispatchWindow(at)
+  if (!window.dispatch) {
+    return { ok: false, reason: window.reason, at, boundary: window.boundary, repo, workflow, ref, run: null }
+  }
+  const dispatched = await dispatchRelease({ repo, token, fetchImpl, ref, workflow, clock: () => at })
   let run = null
   try {
     const since = new Date(Date.parse(dispatched.at) - 120_000).toISOString()

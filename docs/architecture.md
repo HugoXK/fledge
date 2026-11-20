@@ -68,7 +68,24 @@ one event that reaches the page on two paths prints once. A page that used to
 render its own ad-hoc banner hands its messages to the layout as
 `notifications` instead, so a page cannot classify the same event a second time
 outside the region; an entry may carry already-escaped `html` when it needs a
-list or a button the plain-text builder cannot express. A message that belongs
+list or a button the plain-text builder cannot express. The exhausted-quota
+banner is the one page message whose severity depends on a fact the page has to
+be handed: `quotaExhaustedNotice` is built for both the dashboard and the
+console, and each route hands it `platformFunded`, whether any repository of the
+account still runs on the platform model, and the banner prints only when that is
+true. The fact is the per-repository answer (`platformFundedFor`) unless no
+repository is platform-funded *and* the account has a model of its own
+(`setup.modelConfigured` on the dashboard, the same helper on the console): an
+account with no repository at all has chosen nothing yet, so a spent platform
+quota still has something to pause and still shows the banner, which is the state
+every account starts in. The question stays per repository on purpose: one
+own-model repository does not unpause another repository the platform pays for,
+so a mixed account keeps the banner for the paused one, while an account running
+entirely on its own model gets none and is not told that its jobs stopped.
+`setup.modelConfigured` stays the checklist's account-level fact (a model is
+configured somewhere) and only gates the suppression, never the wording. The sentence
+states the split and links `/settings#model-providers`, the same target the next
+action uses. A message that belongs
 to a form or a control — the release card, the settings provider/email/token
 forms, the schedule cron error, the danger card's stale-confirmation step —
 keeps its place next to that form. Each message carries
@@ -3610,6 +3627,37 @@ The compiler and the evaluator are pure: no store, no clock and no network. The
 job column that keeps the contract, the bridge echo that carries its hash, the
 job-page clause list and the merge refusal that a violation raises are the next
 slice of the same card, and they read this record rather than re-deriving it.
+
+## The policy a job ran under is sealed into the job record (#369)
+
+The contract above describes the policy; a job also needs one sealed copy of it
+that a reader can recompute. `compileContextBundle` in
+`src/lib/contextBundle.ts` wraps it in the envelope
+`{version, contract, contractHash}` and `contextBundleHash` takes the SHA-256 of
+the envelope's canonical JSON. The envelope carries no clock, no host name and no
+environment value, so the hash identifies the policy rather than the moment it was
+compiled, and two jobs dispatched under the same rules get the same bytes. Fledge
+compiles the bundle before the job row is inserted, so a job can never be created
+holding a hash it did not compile; a dispatch with no readable rules records no
+bundle at all, which the page prints as "no bundle" rather than as a verified one.
+
+Verification never trusts the recorded hash. `verifyContextBundle` re-hashes the
+stored JSON and compares that with the value in the row, so a row whose bytes were
+replaced by another job's bundle — or edited after the hash was written — reads
+`mismatch`. A bundle that checked itself against its own recorded hash would pass
+while holding any content, which is why the recorded value is treated as a claim
+and the bytes as the evidence. The callback's echo decides one further thing and
+one only: whether the runner and the row agree on which bundle the run read. It is
+compared with the recomputed hash, never with the recorded one, so an echo can
+never upgrade a bundle whose bytes fail verification.
+`context_bundle_state` holds that outcome — `verified`, `mismatch` or `missing`,
+and NULL while no callback has answered.
+
+The job page prints the hash, the echo state, and `diffContextBundles` against the
+previous job of the same repository that recorded a bundle: field by field, before
+and after, ordered by the contract's own field order. A reader therefore sees the
+policy change itself, not only that a hash differs, and a mismatch prints as a
+plain refusal rather than a green badge.
 
 ## One decision, one action id (#633)
 

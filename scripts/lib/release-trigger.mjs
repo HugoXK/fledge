@@ -41,8 +41,13 @@ export function latestBoundary(now) {
   const at = now instanceof Date ? now : new Date(String(now ?? ''))
   const ms = at.getTime()
   if (Number.isNaN(ms)) return null
-  const today = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate(), BOUNDARY_HOUR, BOUNDARY_MINUTE, 0, 0)
+  const today = boundaryOfUtcDay(at)
   return new Date(ms < today ? today - DAY_MS : today).toISOString()
+}
+
+/** The 02:00Z boundary of `at`'s own UTC day, in milliseconds. */
+function boundaryOfUtcDay(at) {
+  return Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate(), BOUNDARY_HOUR, BOUNDARY_MINUTE, 0, 0)
 }
 
 function branchNames(branches) {
@@ -94,6 +99,18 @@ export function decideTrigger(input = {}) {
     return no(`invalid-clock: ${String(now)} cannot be placed against the ${BOUNDARY} boundary`)
   }
 
+  // #881: the external trigger runs on a host whose clock is ~28 minutes ahead
+  // (#758), so a `0 2 * * *` cron reaches the API at 01:32Z. A dispatch before
+  // its own day's boundary can only create a release commit for the previous
+  // day's slot, so it is refused here as well as in the trigger script; the
+  // scheduled run remains the fallback for the slot.
+  const at = new Date(String(now))
+  const todayBoundary = Date.UTC(at.getUTCFullYear(), at.getUTCMonth(), at.getUTCDate(), BOUNDARY_HOUR, BOUNDARY_MINUTE, 0, 0)
+  const today = new Date(todayBoundary).toISOString()
+  if (event === 'workflow_dispatch' && at.getTime() < todayBoundary) {
+    return no(`before-boundary: a dispatch at ${String(now)} is before today's ${today} boundary`, boundary)
+  }
+
   const tag = `v${version}`
   if (Array.isArray(tags) && tags.map(String).includes(tag)) {
     return no(`tag-exists: ${tag} is already tagged, so that slot shipped`, boundary)
@@ -115,22 +132,22 @@ export function decideTrigger(input = {}) {
     if (Number.isNaN(committed)) {
       return no(`invalid-tag-time: ${committedAt} cannot be read, so the slot cannot be judged`, boundary)
     }
-    if (committed >= Date.parse(boundary)) {
-      return no(`slot-shipped: the newest tag was committed at ${committedAt}, after the ${boundary} boundary`, boundary)
+    // #881: a tag counts for the boundary's UTC day, not from the boundary
+    // instant. The production host's clock is ~28 minutes ahead (#758), so the
+    // slot's release commit can carry 01:32Z on the boundary day; compared
+    // against 02:00Z it read as unshipped and released the slot a second time.
+    const boundaryDayStart = Date.UTC(
+      new Date(Date.parse(boundary)).getUTCFullYear(),
+      new Date(Date.parse(boundary)).getUTCMonth(),
+      new Date(Date.parse(boundary)).getUTCDate(),
+    )
+    if (committed >= boundaryDayStart) {
+      return no(`slot-shipped: the newest tag was committed at ${committedAt}, on the ${boundary} boundary's UTC day`, boundary)
     }
   }
 
   // A push before today's boundary against yesterday's unreleased slot is the
   // catch-up: a dropped slot must not cost a whole day, and the card says so.
-  const today = new Date(Date.UTC(
-    new Date(String(now)).getUTCFullYear(),
-    new Date(String(now)).getUTCMonth(),
-    new Date(String(now)).getUTCDate(),
-    BOUNDARY_HOUR,
-    BOUNDARY_MINUTE,
-    0,
-    0,
-  )).toISOString()
   if (event === 'push' && today !== boundary) {
     return { plan: true, catchUp: true, boundary, reason: `catch-up: the ${boundary} boundary went unreleased and this push is before today's boundary` }
   }
