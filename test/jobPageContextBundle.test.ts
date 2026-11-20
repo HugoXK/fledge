@@ -96,6 +96,90 @@ test('the job page refuses a bundle whose stored bytes disagree with the recorde
   }
 })
 
+// #1129: the row's echo column is the callback's own claim, and the byte verdict
+// is computed independently. A card that refuses the bytes and then confirms them
+// in the next sentence contradicts itself, so every sentence is asserted on the
+// card slice rather than anywhere on the page.
+function card(page: string): string {
+  const start = page.indexOf('id="job-context-bundle"')
+  assert.notEqual(start, -1, 'the page renders the bundle card')
+  return page.slice(start, page.indexOf('</section>', start))
+}
+
+test('a tampered bundle whose row still says the echo verified prints no unscoped confirmation', () => {
+  const store = new Store(':memory:')
+  try {
+    const f = fixture(store, 'bundle-page-tampered-verified')
+    const previous = bundleJob(store, f.repo.id, f.userId, 'job_page_tampered_previous', instructions())
+    store.updateJob(previous.id, { status: 'succeeded' })
+    const current = bundleJob(store, f.repo.id, f.userId, 'job_page_tampered_current', instructions({ goal: 'ship the bundle card' }))
+    const other = compileContextBundle(instructions({ goal: 'ship a different policy' }))
+    // The row keeps its best case: the callback's claim still reads `verified`
+    // while the stored bytes belong to another bundle.
+    store.updateJob(current.id, {
+      context_bundle_json: JSON.stringify(other.bundle),
+      context_bundle_state: 'verified',
+    })
+    const page = jobPage({
+      config: testConfig(), locale: 'en', viewer: f.viewer, repo: f.repo,
+      job: store.getJob(current.id)!, previousJob: store.getJob(previous.id)!,
+    })
+    const bundle = card(page)
+    assert.match(bundle, /data-context-bundle-mismatch/)
+    assert.doesNotMatch(bundle, /The callback echoed the same hash\./)
+    assert.ok(bundle.includes('The callback reported the same hash as the record; the stored bytes do not verify, so this report is not evidence about them.'))
+    assert.ok(bundle.includes('Changed since the previous bundle, read from the stored bytes that did not verify'))
+    assert.doesNotMatch(bundle, /<h3 class="mt-16">Changed since the previous bundle<\/h3>/, 'the plain heading cannot stand beside a failed byte verdict')
+    assert.match(bundle, /<th>Field<\/th>/, 'the table is relabelled, not removed')
+  } finally {
+    store.close()
+  }
+})
+
+test('the job page does not call unreadable stored bytes a first or identical bundle', () => {
+  const store = new Store(':memory:')
+  try {
+    const f = fixture(store, 'bundle-page-unreadable')
+    const previous = bundleJob(store, f.repo.id, f.userId, 'job_page_unreadable_previous', instructions())
+    store.updateJob(previous.id, { status: 'succeeded' })
+    const current = bundleJob(store, f.repo.id, f.userId, 'job_page_unreadable_current', instructions({ goal: 'ship the bundle card' }))
+    store.updateJob(current.id, { context_bundle_json: '{not json' })
+    const page = jobPage({
+      config: testConfig(), locale: 'en', viewer: f.viewer, repo: f.repo,
+      job: store.getJob(current.id)!, previousJob: store.getJob(previous.id)!,
+    })
+    const bundle = card(page)
+    assert.match(bundle, /data-context-bundle-mismatch/)
+    assert.doesNotMatch(bundle, /This is the first bundle recorded for the repository\./)
+    assert.doesNotMatch(bundle, /Identical to the previous job’s bundle\./)
+    assert.ok(bundle.includes('No bundle could be read from the stored bytes, so there is nothing to compare.'))
+  } finally {
+    store.close()
+  }
+})
+
+test('a verified bundle keeps its echo confirmation and the plain diff heading', () => {
+  const store = new Store(':memory:')
+  try {
+    const f = fixture(store, 'bundle-page-control')
+    const previous = bundleJob(store, f.repo.id, f.userId, 'job_page_control_previous', instructions())
+    store.updateJob(previous.id, { status: 'succeeded' })
+    const current = bundleJob(store, f.repo.id, f.userId, 'job_page_control_current', instructions({ goal: 'ship the bundle card' }))
+    store.updateJob(current.id, { context_bundle_state: 'verified' })
+    const page = jobPage({
+      config: testConfig(), locale: 'en', viewer: f.viewer, repo: f.repo,
+      job: store.getJob(current.id)!, previousJob: store.getJob(previous.id)!,
+    })
+    const bundle = card(page)
+    assert.ok(bundle.includes('Recomputed from the stored bytes and it matches the hash the job records.'))
+    assert.ok(bundle.includes('The callback echoed the same hash.'))
+    assert.doesNotMatch(bundle, /The callback reported the same hash as the record;/)
+    assert.match(bundle, /<h3 class="mt-16">Changed since the previous bundle<\/h3>/)
+  } finally {
+    store.close()
+  }
+})
+
 test('the job page lists the previous-bundle changes in the contract order', () => {
   const store = new Store(':memory:')
   try {
