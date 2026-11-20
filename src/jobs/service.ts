@@ -49,7 +49,7 @@ import {
 } from '../lib/adversarialReview.js'
 import { evaluateTestEvidence, isTestCheckName, type VerificationResult } from '../lib/verification.js'
 import { selectTests, type TestImpact } from '../lib/testImpact.js'
-import { observedAttribution } from '../lib/teamStats.js'
+import { groundAttribution, observedAttribution } from '../lib/teamStats.js'
 import { normalizeReviewInstruction, reviewInstructionLine } from '../lib/followUpInstruction.js'
 import { decideMention, mentionIdentity, mentionJobKind, type MentionTarget } from '../lib/mentionGovernance.js'
 import { DEFAULT_MAX_REVISIONS, decideRevision, maxRevisionsSettingKey, parseMaxRevisions, revisionCounterKey, type ReviewAuthor } from '../lib/revisionBudget.js'
@@ -3323,7 +3323,14 @@ export class Jobs {
   }
 
   private async captureTeamStats(jobId: string, claimed: Attribution | null = null): Promise<Attribution | null> {
-    if (this.instances === undefined || this.config.flybot.instanceImage === '') return null
+    if (this.instances === undefined || this.config.flybot.instanceImage === '') {
+      // #368: a host with no instance never observes a job, and that is a fact
+      // the page may state. Recording it keeps a claim from reading as verified
+      // on the one host where nothing could have verified it; `attribution_json`
+      // still holds the claim itself.
+      if (claimed !== null) this.store.updateJob(jobId, { attribution_ground_json: JSON.stringify(groundAttribution(claimed, null)) })
+      return null
+    }
     const job = this.store.getJob(jobId)
     if (job === undefined) return null
     try {
@@ -3338,7 +3345,10 @@ export class Jobs {
         lastActivityAt: bot.lastActivityAt,
       }))
       const observed = observedAttribution(stats)
-      this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats), ...(observed === null ? {} : { attribution_json: JSON.stringify(observed) }) })
+      // #368: the observation goes beside the claim, never over it. Writing it
+      // into `attribution_json` is what made a claimed seat print as a fact.
+      const ground = groundAttribution(claimed, stats)
+      this.store.updateJob(jobId, { team_stats_json: JSON.stringify(stats), attribution_ground_json: JSON.stringify(ground) })
       this.store.event('team_stats', { userId: job.user_id, repoId: job.repo_id, jobId })
       for (const entry of stats.filter((stat) => stat.calls > 0)) {
         this.store.recordJobEvent({
@@ -3352,7 +3362,10 @@ export class Jobs {
         })
       }
       if (observed !== null && claimed !== null) {
-        this.store.event('team_attribution_grounded', { userId: job.user_id, repoId: job.repo_id, jobId, meta: `claimed=${Object.values(claimed).join(',')};observed=${Object.values(observed).join(',')}`.slice(0, 500) })
+        // The event is the metric's counter; the per-step truth is the record the
+        // page reads, so the event names the states instead of repeating role names.
+        const states = ground.steps.map((step) => `${step.key}:${step.state}`).join(';')
+        this.store.event('team_attribution_grounded', { userId: job.user_id, repoId: job.repo_id, jobId, meta: `states=${states}`.slice(0, 500) })
       }
       if (job.kind === 'iterate') {
         const active = stats.filter((entry) => entry.calls > 0).map((entry) => entry.role)
