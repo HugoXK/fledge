@@ -331,8 +331,9 @@ The submit button requires `RELEASE <version>` to be typed, a CSRF token, a
 recent GitHub re-authentication, the destructive rate-limit class and an audit
 row. It dispatches the existing `daily-release.yml` with `dry_run=false`; it
 never creates a tag, merges a pull request or deploys a host. The existing
-release PR, `ci-ok`, `review-gate`, auto-merge, tag job and `release.yml` publish
-chain stay in charge.
+release PR, `ci-ok`, `review-gate`, tag job and `release.yml` publish chain stay
+in charge, and a person merges the release PR: the workflow no longer opts it
+into auto-merge (#1127).
 
 The dispatch credential is `RELEASE_DISPATCH_TOKEN` in the server `.env`, scoped
 to the Fledge repository with `Actions: write` to dispatch the workflow and

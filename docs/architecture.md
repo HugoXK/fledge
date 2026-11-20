@@ -2583,9 +2583,10 @@ inside the header card, so no new `.card[id]` is added and the section-nav
 contract is unchanged. The user table keeps its fields and POST routes but
 folds quota, role, private-model and approve/reject controls behind a `Manage`
 details control, so the default row is a summary rather than a stack of forms.
-The mechanical release pull request is opted into GitHub auto-merge after it is
-opened or reused; `ci-ok`, `review-gate` and `pr-lint` still decide when it may
-squash, and `--match-head-commit` pins the tip. The release card also renders a
+The mechanical release pull request is opened or reused by the workflow and
+merged by a person: it is not opted into auto-merge, so `ci-ok`, `review-gate`
+and `pr-lint` report on the tip and a maintainer performs the squash merge
+(#1127). The release card also renders a
 compact `plan → merge → publish` timeline from the snapshot's `plan.plannedAt`,
 `pull.mergedAt` and `release.publishedAt`, so a late release can be attributed to
 the scheduler, the checks or the merge wait.

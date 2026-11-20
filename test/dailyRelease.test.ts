@@ -7,8 +7,11 @@ import { join } from 'node:path'
 
 // The contract of issue #80, as a structural test: the file may carry no stored
 // secret, no file-level permissions block, no pull-request creation or release
-// command and no local tag command. Auto-merge is the one deliberate exception:
-// it is enabled only on the mechanical release PR with a pinned head commit.
+// command and no local tag command. Since #1127 it also carries no auto-merge:
+// the workflow opens the mechanical release pull request and reports where it
+// stands, and a person merges it once the required checks and the review gate
+// pass. Before #1127 auto-merge was the one deliberate exception, enabled on
+// that PR with a pinned head commit, and a release could merge with no PASS.
 // Every assertion here fails on the pre-#80 file, where `RELEASE_TOKEN` gated the
 // run, the permissions block was file-level, and the tag came from
 // `git tag`/`git push origin "$TAG"`.
@@ -173,17 +176,45 @@ test('only the trigger can let a run push, and a manual dry run never does', () 
   assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.trigger\.outputs\.plan == 'true' && steps\.opener\.outputs\.ready == 'true' \}\}/)
 })
 
-test('the file never creates or releases a pull request with gh, and auto-merge is pinned to the mechanical PR', () => {
+test('the file never creates, releases or auto-merges a pull request with gh, and the opener only reports where it stands', () => {
   for (const forbidden of ['gh pr create', 'gh release', 'git tag', 'git push origin "$TAG"', 'git push --tags', '--admin']) {
     assert.equal(daily.includes(forbidden), false, `"${forbidden}" must not appear`)
   }
   const pushes = [...daily.matchAll(/git push /g)]
   assert.equal(pushes.length, 1, 'exactly one git push, of the release branch')
   assert.ok(daily.includes('git push origin "$BRANCH"'), 'that push is the release branch')
-  assert.match(daily, /gh pr merge "\$PR" --auto --squash --match-head-commit "\$PUSHED"/, 'auto-merge names the PR and pins its head commit')
-  const step = between('      - name: Enable auto-merge on the release pull request', '      - name: Comment on #80')
-  assert.match(step, /steps\.open\.outputs\.state == 'opened' \|\| steps\.open\.outputs\.state == 'reused'/)
-  assert.doesNotMatch(step, /--admin/)
+  // #1127: opting the mechanical release PR into auto-merge merged a release with
+  // no PASS on its tip. The workflow may open that PR and say where it stands;
+  // merging it is a person's decision, so none of the auto-merge machinery may
+  // appear anywhere in the file.
+  for (const forbidden of ['gh pr merge', '--auto', '--match-head-commit', 'autoMergeRequest', 'Enable auto-merge']) {
+    assert.equal(daily.includes(forbidden), false, `"${forbidden}" must not appear`)
+  }
+  const opener = between('      - name: Open the release pull request', '      - name: Comment on #80')
+  assert.match(opener, /printf 'state=%s\\ndetail=%s\\npr=%s\\n'/, 'the opener still reports state, detail and pr')
+  assert.match(opener, /steps\.push\.outputs\.pushed != ''/, 'and still runs only after a push')
+})
+
+test('this change removes the automatic merge without editing the gate that judges the release PR', () => {
+  // #1127 takes away the release workflow's ability to merge its own pull
+  // request, and it must not do that by touching the verdict machinery: a
+  // release PR that widened or narrowed its own exemption would be the exact
+  // failure this card exists to stop, so the diff is asserted here rather than
+  // left to review. The one-commit CI checkout has no merge base to diff
+  // against — the same limitation the release-branch guard above documents — so
+  // an unreadable base is skipped instead of failing a T3 for a false reason.
+  const gate = ['scripts/lib/review-gate.mjs', 'scripts/lib/mechanical-release.mjs', '.github/agent/review-policy.json']
+  let touched: string[] | null = null
+  try {
+    touched = execFileSync('git', ['diff', '--name-only', 'origin/main...HEAD', '--', ...gate], { encoding: 'utf8' })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+  } catch {
+    touched = null
+  }
+  if (touched === null) return
+  assert.deepEqual(touched, [], 'the release workflow may not edit the gate that judges its pull request')
 })
 
 test('the tag write is the two API calls on the merge commit and nothing else', () => {
