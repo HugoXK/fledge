@@ -199,7 +199,7 @@ test('the release job runs on a push too, and the trigger predicate decides whet
   // (tag present? release present?), not from the event that woke it.
   assert.match(job('tag'), /if: github\.event_name == 'push' \|\| github\.event_name == 'schedule'/)
   assert.doesNotMatch(job('tag'), /workflow_dispatch/, 'a manual dispatch never tags, so a dry run cannot publish')
-  assert.match(job('tag'), /releases\/tags\/\$\{RELEASE_TAG\}/, 'the tag job reads whether the GitHub Release exists')
+  assert.match(job('tag'), /releaseLookupPath/, 'the tag job reads whether the GitHub Release exists, with the tag as one encoded path segment')
   assert.match(job('tag'), /release: JSON\.parse/, 'the release state is an input to the pure decision')
   const dispatchStep = between('      - name: Dispatch release.yml at the tag', '')
   assert.match(dispatchStep, /steps\.decide\.outputs\.action == 'create' \|\| steps\.decide\.outputs\.action == 'publish'/, 'a tag without its release dispatches the publish run')

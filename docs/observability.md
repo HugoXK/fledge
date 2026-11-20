@@ -45,6 +45,11 @@ Core series:
   `fledge_auto_merge_candidates`, `fledge_ops_alerts_open`
 - `fledge_retries_total{kind}`, `fledge_merges_total{result}`,
   `fledge_path_guard_blocked_total`, `fledge_verification_failed_total`
+- `fledge_gateway_requests_total{tenant}` — only while
+  `GATEWAY_TENANT_METERING=on`: authenticated gateway requests as
+  `tenant="user:<id>"` and, for a repository token, `tenant="repo:<id>"` on the
+  same request. With the switch off the series is absent, because nothing was
+  metered.
 - `fledge_notification_outbox{status}` — queued or delivered notifications by
   outbox state; a state with no rows is absent, so an empty panel means "none",
   not "zero delivered".

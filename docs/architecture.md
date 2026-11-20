@@ -967,6 +967,22 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   still in flight or that failed afterwards. A pull request that is already
   merged is never a candidate, so the bulk merge does not re-check it on every
   pass.
+- **Who may press merge**: both human entries — the single merge on the job
+  page and the bulk `merge-clean` on the repository page — answer from the
+  actor's role that `ownedRepo` resolved (the connection owner is `maintainer`,
+  a member is their row's role), never from `repo.repo_role`, which records the
+  connection's chosen upstream role and can differ from the person pressing. The
+  routes thread that role into `manualMerge`/`mergeCleanPrs` and then
+  `tryMerge`, so the refusal and the audit row name the person pressing, and the
+  bulk control is drawn from the page's actor flag (`canMaintain`) with a
+  `data-bulk-merge` hook when it is withheld. `tryMerge` with `manual: false`
+  (the scheduler, which has no actor) keeps reading the column, and the
+  capability-checked `task.merge` command keeps the column fallback because
+  `job.merge` is already maintainer-only there. The same wrong source is still
+  read at the review job kind, the gate-session and decision/relations/work-item
+  surfaces, and the chat `approve` command; those are named follow-ups, not
+  converted here — see
+  [0026](decisions/0026-merge-press-actor-role.md).
 
 ### Public API v1
 

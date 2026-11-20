@@ -2781,11 +2781,15 @@ export class Jobs {
     return { block, reused: false, refusal: null }
   }
 
-  private async tryMerge(job: JobRow, prUrl: string, manual: boolean, rethrowTransport = false): Promise<{ ok: boolean; message?: string; alreadyMerged?: boolean }> {
+  private async tryMerge(job: JobRow, prUrl: string, manual: boolean, rethrowTransport = false, actorRole?: string | null): Promise<{ ok: boolean; message?: string; alreadyMerged?: boolean }> {
     if (job.kind !== 'iterate') return { ok: false, message: '只有 iterate 任务可以合并。' }
     let repo = this.store.getRepo(job.repo_id)
     if (repo === undefined) return { ok: false, message: '仓库不存在。' }
-    if (repo.repo_role !== 'maintainer') return { ok: false, message: '只有 maintainer 可以合并。' }
+    // #1132: a person pressing merge is authorized by the role they hold on
+    // this repository, not by the connection's `repo_role`. The automatic path
+    // still reads the connection role, because a scheduler has no actor.
+    const mergeRole = manual && actorRole !== undefined && actorRole !== null ? actorRole : repo.repo_role
+    if (mergeRole !== 'maintainer') return { ok: false, message: '只有 maintainer 可以合并。' }
     if (!manual && repo.auto_merge !== 1) return { ok: false, message: '自动合并未开启。' }
     // #380: the sources are read again here, not from the job's snapshot, so a
     // source revoked after the job started stops the automatic merge. The job is
@@ -3124,7 +3128,7 @@ export class Jobs {
     await this.tryMerge(job, prUrl, false)
   }
 
-  async mergeCleanPrs(repoId: string): Promise<{ merged: string[]; skipped: Array<{ jobId: string; message: string; reason: 'job-state' | 'gate' }> }> {
+  async mergeCleanPrs(repoId: string, actorRole?: string | null): Promise<{ merged: string[]; skipped: Array<{ jobId: string; message: string; reason: 'job-state' | 'gate' }> }> {
     const repo = this.store.getRepo(repoId)
     if (repo === undefined) return { merged: [], skipped: [] }
     const merged: string[] = []
@@ -3135,17 +3139,17 @@ export class Jobs {
         skipped.push({ jobId: job.id, message: `未合并：这个 PR 的最新任务状态是 ${job.status}。`, reason: 'job-state' })
         continue
       }
-      const result = await this.manualMerge(repo, job)
+      const result = await this.manualMerge(repo, job, actorRole === undefined || actorRole === null ? {} : { actorRole })
       if (result.ok) merged.push(job.id)
       else skipped.push({ jobId: job.id, message: result.message ?? 'skipped', reason: 'gate' })
     }
     return { merged, skipped }
   }
 
-  async manualMerge(repo: RepoRow, job: JobRow, options: { rethrowTransport?: boolean } = {}): Promise<{ ok: boolean; message?: string; alreadyMerged?: boolean }> {
+  async manualMerge(repo: RepoRow, job: JobRow, options: { rethrowTransport?: boolean; actorRole?: string | null } = {}): Promise<{ ok: boolean; message?: string; alreadyMerged?: boolean }> {
     if (job.repo_id !== repo.id) return { ok: false, message: '任务不属于这个仓库。' }
     if (job.pr_url === null) return { ok: false, message: '这个任务没有 PR。' }
-    return this.tryMerge(job, job.pr_url, true, options.rethrowTransport === true)
+    return this.tryMerge(job, job.pr_url, true, options.rethrowTransport === true, options.actorRole)
   }
 
   private async resolveHeadSha(repo: RepoRow, prUrl: string): Promise<string | undefined> {

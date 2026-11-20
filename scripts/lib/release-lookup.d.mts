@@ -17,3 +17,5 @@ export interface ReleaseLookupResult {
 }
 
 export function classifyReleaseLookup(observation?: ReleaseLookupObservation): ReleaseLookupResult
+
+export function releaseLookupPath(repository: string, tag: string): string

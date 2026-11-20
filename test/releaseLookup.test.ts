@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 
-import { classifyReleaseLookup } from '../scripts/lib/release-lookup.mjs'
+import { classifyReleaseLookup, releaseLookupPath } from '../scripts/lib/release-lookup.mjs'
 
 // #909: both release workflows read one fact — does this tag already have a
 // GitHub Release? — and `gh` exits non-zero for "not found" (404) and for
@@ -76,4 +76,22 @@ test('a 200 document that still exited non-zero is not "present"', () => {
   // which only a zero exit supports.
   const result = classifyReleaseLookup({ status: 1, stdout: '{"tag_name":"v0.4.0"}' })
   assert.equal(result.state, 'unreadable')
+})
+
+// #918: the lookup path carries the tag as ONE path segment. A raw tag with a
+// slash (`release/1.0`) was pasted into `releases/tags/<tag>`, which the API
+// reads as a deeper path and answers 404 — the same answer as "no release yet",
+// so a slash tag would republish its image.
+test('the tag is one encoded path segment, so a slash tag is not a deeper path', () => {
+  assert.equal(releaseLookupPath('o/r', 'v1.2.3'), 'repos/o/r/releases/tags/v1.2.3')
+  assert.equal(releaseLookupPath('o/r', 'release/1.0'), 'repos/o/r/releases/tags/release%2F1.0')
+  assert.equal(releaseLookupPath('o/r', 'v1/beta/2'), 'repos/o/r/releases/tags/v1%2Fbeta%2F2')
+  assert.equal(releaseLookupPath('o/r', 'v1 #2?'), 'repos/o/r/releases/tags/v1%20%232%3F')
+  // The tag part after the prefix is one segment: no separator survives it.
+  assert.doesNotMatch(releaseLookupPath('o/r', 'release/1.0').slice('repos/o/r/releases/tags/'.length), /\//)
+})
+
+test('an empty repository or tag is refused instead of building a broken path', () => {
+  assert.throws(() => releaseLookupPath('', 'v1'), /repository/)
+  assert.throws(() => releaseLookupPath('o/r', ''), /tag/)
 })

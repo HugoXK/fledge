@@ -163,3 +163,34 @@ test('the queue speaks the page language and names no internal code', () => {
     assert.equal(block.includes(code), false, `no internal code (${code}) in the primary path`)
   }
 })
+
+// #655: a repository that cannot run is not calm. The row used to say "nothing
+// needs you" for a disabled repository, a repository whose automatic work is off
+// and one whose workspace is not ready — three states that all need the person
+// and all print the same happy sentence. Each now names the lock and the action
+// that lifts it, and the next run is no longer invented for them.
+test('a disabled repository names the lock and the action that lifts it', () => {
+  const html = render('en', (store, user) => {
+    const off = repo(store, user.id, 'repo_disabled', 'disabled')
+    store.updateRepo(off.id, { enabled: 0 })
+    return { repos: [store.getRepo(off.id)!], jobs: [] }
+  })
+  const row = rowFor(html, 'repo_disabled')
+  assert.match(row, /data-decision="locked"/, 'the row is a lock, not the calm state')
+  assert.match(row, /This repository is disabled/)
+  assert.doesNotMatch(row, /Nothing needs you in this repository/, 'a repository that cannot run is not calm')
+  assert.equal((row.match(/data-decision-action/g) ?? []).length, 1, 'it names exactly one action')
+  assert.match(row, /#repo-settings/, 'and the action goes where the lock is lifted')
+})
+
+test('a repository whose automatic work is off says so and offers to turn it on', () => {
+  const html = render('en', (store, user) => {
+    const manual = repo(store, user.id, 'repo_manual', 'manual')
+    store.updateRepo(manual.id, { auto_iterate: 0 })
+    return { repos: [store.getRepo(manual.id)!], jobs: [] }
+  })
+  const row = rowFor(html, 'repo_manual')
+  assert.match(row, /data-decision="locked"/)
+  assert.match(row, /manual/i, 'it says the repository runs only when started by hand')
+  assert.match(row, /#repo-settings/)
+})

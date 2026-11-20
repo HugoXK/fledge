@@ -7,7 +7,7 @@ import { redactCommand, type DriftAssessment, type EnvironmentCurrent, type Rele
 import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
-import { nextRun, type NextRun } from '../lib/nextRun.js'
+import { nextRun, type NextRun, type NextRunState } from '../lib/nextRun.js'
 import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
 import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
@@ -835,7 +835,7 @@ function setupSection(setup: SetupState | undefined, t: Translate, primaryElsewh
 // all-clear that says when the platform runs again on its own. Nothing here
 // reads a second source of truth, so the block cannot disagree with the
 // sections below it.
-export type NextActionKind = 'questions' | 'alert' | 'job' | 'quota' | 'setup' | 'clear'
+export type NextActionKind = 'questions' | 'alert' | 'job' | 'quota' | 'setup' | 'locked' | 'clear'
 
 export interface NextActionView {
   kind: NextActionKind
@@ -976,6 +976,116 @@ function quotaExhaustedNotice(t: Translate): PageNotification {
   }
 }
 
+// #655: the run state a repository is actually in, from the inputs the row and
+// the all-clear already load. A saved schedule row owns its repository's answer
+// (#544), and a paused row is its own lock: the worker skips it, so no run comes
+// until the person resumes it.
+type RepoRunState = NextRunState | 'paused'
+
+const LOCKED_RUN_STATES: RepoRunState[] = ['disabled', 'not-ready', 'auto-off', 'paused']
+
+function repoRunState(repo: RepoRow, fact: NextRunFact | undefined, config: Config): RepoRunState {
+  const scheduled = fact?.scheduledNext
+  if (scheduled !== undefined) {
+    if (scheduled.kind === 'paused') return 'paused'
+    if (scheduled.kind === 'unreadable') return 'not-ready'
+    return 'scheduled'
+  }
+  return nextRun({
+    lastRunAt: repo.last_run_at,
+    intervalMinutes: repo.interval_minutes,
+    workCooldownMinutes: config.runner.workCooldownMinutes,
+    autoIterate: repo.auto_iterate === 1,
+    hasOpenWork: fact === undefined ? true : fact.openWork,
+    hasActiveJob: fact?.activeJob ?? false,
+    repoEnabled: repo.enabled === 1,
+    instanceReady: config.flybot.instanceImage !== '' && fact !== undefined ? fact.instanceReady : true,
+  }).state
+}
+
+// One lock, one sentence: what stops this repository from running on its own and
+// the action that lifts it. The calm state must not be borrowed here — "nothing
+// needs you" on a repository that cannot run was the defect (#655).
+function repoLock(kind: RepoRunState, t: Translate, repoId: string): Pick<RepoDecisionView, 'title' | 'body' | 'href' | 'actionLabel'> | null {
+  switch (kind) {
+    case 'disabled':
+      return {
+        title: t('这个仓库已停用。', 'This repository is disabled.'),
+        body: t('重新启用后，自动运行才会继续。', 'Automatic runs resume only after you enable it again.'),
+        href: `/repos/${repoId}#repo-settings`,
+        actionLabel: t('重新启用', 'Enable it'),
+      }
+    case 'not-ready':
+      return {
+        title: t('工作区未就绪，自动运行不会开始', 'Workspace not ready; no automatic run starts'),
+        body: t('工作区启动后，这里的自动运行会继续。', 'Automatic runs here resume once the workspace is running.'),
+        href: `/repos/${repoId}`,
+        actionLabel: t('打开仓库', 'Open repository'),
+      }
+    case 'auto-off':
+      return {
+        title: t('这个仓库只在你手动开始时运行。', 'This repository runs only when you start it.'),
+        body: t('打开自动迭代后，平台会自己继续。', 'Turn automatic iteration on and the platform continues on its own.'),
+        href: `/repos/${repoId}#repo-settings`,
+        actionLabel: t('打开设置', 'Open settings'),
+      }
+    case 'paused':
+      return {
+        title: t('这个仓库的排期已暂停。', 'The schedule for this repository is paused.'),
+        body: t('恢复排期后，它会从下一个时刻开始运行。', 'Resume it and the next run starts from the next instant.'),
+        href: `/repos/${repoId}`,
+        actionLabel: t('打开仓库', 'Open repository'),
+      }
+    default:
+      return null
+  }
+}
+
+// The account's own lock: every repository is in a state that needs the person,
+// so the page must not answer with the all-clear. The dominant reason gives the
+// headline; a mixed board points at the rows that each carry their own sentence.
+function accountLock(states: RepoRunState[], t: Translate): Pick<RepoDecisionView, 'title' | 'body' | 'href' | 'actionLabel'> | null {
+  if (states.length === 0 || !states.every((state) => LOCKED_RUN_STATES.includes(state))) return null
+  if (states.every((state) => state === 'disabled')) {
+    return {
+      title: t('所有仓库都已停用。', 'All repositories are disabled.'),
+      body: t('重新启用任一仓库后，自动运行才会继续。', 'Enable one of them again and automatic runs resume.'),
+      href: '#repositories',
+      actionLabel: t('打开仓库', 'Open repositories'),
+    }
+  }
+  if (states.every((state) => state === 'paused')) {
+    return {
+      title: t('所有仓库的排期都已暂停。', 'Every repository\'s schedule is paused.'),
+      body: t('恢复任一排期后，它会从下一个时刻开始运行。', 'Resume one and it runs from the next instant.'),
+      href: '#repositories',
+      actionLabel: t('打开仓库', 'Open repositories'),
+    }
+  }
+  if (states.every((state) => state === 'auto-off')) {
+    return {
+      title: t('自动工作已关闭。', 'Automatic work is off.'),
+      body: t('为任一仓库打开自动迭代，平台才会继续工作。', 'Turn automatic iteration on for a repository and the platform resumes.'),
+      href: '#repositories',
+      actionLabel: t('打开仓库', 'Open repositories'),
+    }
+  }
+  if (states.every((state) => state === 'not-ready')) {
+    return {
+      title: t('工作区未就绪，自动运行不会开始', 'Workspace not ready; no automatic run starts'),
+      body: t('工作区启动后，自动运行会继续。', 'Automatic runs resume once the workspace is running.'),
+      href: '#repositories',
+      actionLabel: t('打开仓库', 'Open repositories'),
+    }
+  }
+  return {
+    title: t('没有仓库能自动运行。', 'No repository can run automatically.'),
+    body: t('下面每个仓库都写明了要先解开什么。', 'Each repository below names what has to be unlocked first.'),
+    href: '#repositories',
+    actionLabel: t('查看仓库', 'View repositories'),
+  }
+}
+
 function nextActionFor(input: {
   t: Translate
   locale: Locale
@@ -1065,6 +1175,13 @@ function nextActionFor(input: {
       setupStep: step.key,
     }
   }
+  // #655: an account whose every repository is switched off is not quiet, and the
+  // all-clear told it so. The lock is the account's own primary action until one
+  // repository can run again.
+  const locked = accountLock(repos.map((repo) => repoRunState(repo, nextRunFacts.find((fact) => fact.repoId === repo.id), config)), t)
+  if (locked !== null) {
+    return { kind: 'locked', title: locked.title, body: locked.body, href: locked.href, label: locked.actionLabel, setupStep: null }
+  }
   const nextRunView = nextScheduledRun({ repos, facts: nextRunFacts, config, t })
   return {
     kind: 'clear',
@@ -1091,6 +1208,7 @@ function loopStage(action: NextActionView, hasGoal: boolean): LoopStage | null {
     case 'questions':
     case 'job': return 'work'
     case 'alert': return 'review'
+    case 'locked': return null
     case 'clear': return hasGoal ? 'goal' : null
   }
 }
@@ -1136,7 +1254,7 @@ function nextActionSection(action: NextActionView, t: Translate): string {
 // Each row here carries exactly one action — the signals below are ranked, never
 // stacked into a second button — and a repository that needs nothing shows the
 // calm state instead of an empty widget.
-export type RepoDecisionKind = 'question' | 'alert' | 'job' | 'growing'
+export type RepoDecisionKind = 'question' | 'alert' | 'job' | 'locked' | 'growing'
 
 export interface RepoDecisionView {
   repoId: string
@@ -1233,6 +1351,14 @@ function repoDecisionFor(input: {
       actionLabel: t('查看任务', 'Open job'),
     }
   }
+  // #655: a repository that cannot run is not calm. Its row names the lock and
+  // the action that lifts it, instead of printing "nothing needs you" over a
+  // repository that will never start on its own.
+  const runState = repoRunState(repo, nextRunFact, config)
+  const lock = repoLock(runState, t, repo.id)
+  if (lock !== null) {
+    return { repoId: repo.id, repoLabel, kind: 'locked', rank: 10, ...lock }
+  }
   // Nothing is waiting on a person. The calm state names when the platform runs
   // here on its own and what it last produced, because an empty widget tells a
   // reader nothing about whether the repository is alive.
@@ -1305,7 +1431,7 @@ function repoDecisionsSection(decisions: RepoDecisionView[], t: Translate): stri
   return `<section class="card" id="decisions" aria-labelledby="decisions-title">
     <div class="eyebrow">${escapeHtml(t('下一步', 'Next action'))}</div>
     <h2 id="decisions-title">${escapeHtml(t('每个仓库，一件事', 'One thing per repository'))}</h2>
-    <p class="muted">${escapeHtml(t('按影响排序：先回答问题，再看失败的任务，最后是现在不需要你的仓库。', 'Ordered by impact: an answer first, then a failed job, and last the repositories that need nothing.'))}</p>
+    <p class="muted">${escapeHtml(t('按影响排序：先回答问题，再看失败的任务，然后是等待解锁的仓库，最后是现在不需要你的仓库。', 'Ordered by impact: an answer first, then a failed job, then a repository waiting to be unlocked, and last the ones that need nothing.'))}</p>
     <ol class="decision-list">${rows}</ol>
   </section>`
 }
@@ -2068,7 +2194,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   }
   const deliveryCard = `<section class="card"><h2>${escapeHtml(t('待处理 PR', 'Pull requests to decide'))}</h2>
     <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。每个 PR 的合并在它自己的任务页『审查 → 合并』卡片里，只有那一个合并控件。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection. Each pull request is merged from the one review → merge card on its own job page.'))}</p>
-    ${repo.repo_role === 'maintainer' && prJobs.length > 0 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : ''}
+    ${prJobs.length === 0 ? '' : input.canMaintain === true ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : `<p class="fine" data-bulk-merge="not-maintainer">${escapeHtml(t('只有维护者可以批量合并 clean PR。', 'Only a maintainer can merge clean pull requests.'))}</p>`}
     <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('核实', 'Verified'))}</th><th>${escapeHtml(t('审核分', 'Review'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th><th>${escapeHtml(t('创建', 'Created'))}</th><th></th></tr></thead><tbody>${prRows}</tbody></table></div></section>`
   const lifecycleItems: string[] = []
   if (!repoEnabled) lifecycleItems.push(t('仓库已停用：不会自动或手动运行任务。', 'Repository disabled: no jobs run automatically or manually.'))
@@ -4221,7 +4347,9 @@ export function jobPage(input: {
   // evidence cards, so the action is reachable without scrolling past them.
   const mergeState = reviewMergeState({
     job,
-    role: repo.repo_role ?? '',
+    // #1132: the card states the actor's role, which is the role the merge
+    // route now decides with; `repo_role` is the connection's, not theirs.
+    role: input.viewerRole ?? '',
     verification,
     guard: pathGuard,
     adversarial,

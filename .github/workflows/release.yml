@@ -153,8 +153,14 @@ jobs:
           # tested rule in scripts/lib/release-lookup.mjs: present, absent (404
           # only), or unreadable — and an unreadable read stops the run before a
           # single write.
+          # #918: one path segment, so a tag with a slash cannot read as a
+          # deeper path the API answers 404 for.
+          RELEASE_PATH="$(node --input-type=module -e '
+            import { releaseLookupPath } from "./scripts/lib/release-lookup.mjs"
+            process.stdout.write(releaseLookupPath(process.env.GITHUB_REPOSITORY ?? "", process.env.RELEASE_TAG ?? ""))
+          ')"
           status=0
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+          gh api "$RELEASE_PATH" \
             >/dev/null 2> "${RUNNER_TEMP}/release-lookup.err" || status=$?
           STATE="$(STATUS="$status" node --input-type=module -e '
             import { readFileSync } from "node:fs"
@@ -389,8 +395,14 @@ jobs:
           # and here names an image this run did not push, so rewriting its notes
           # would leave the body naming the previous digest — the refusal is the
           # point, and the answer goes through the same tested rule.
+          # #918: one path segment, so a tag with a slash cannot read as a
+          # deeper path the API answers 404 for.
+          RELEASE_PATH="$(node --input-type=module -e '
+            import { releaseLookupPath } from "./scripts/lib/release-lookup.mjs"
+            process.stdout.write(releaseLookupPath(process.env.GITHUB_REPOSITORY ?? "", process.env.RELEASE_TAG ?? ""))
+          ')"
           status=0
-          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" \
+          gh api "$RELEASE_PATH" \
             >/dev/null 2> "${RUNNER_TEMP}/release-write.err" || status=$?
           STATE="$(STATUS="$status" node --input-type=module -e '
             import { readFileSync } from "node:fs"

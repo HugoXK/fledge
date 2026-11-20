@@ -521,8 +521,11 @@ GITHUB_TOKEN=… METRICS_TOKEN=… node scripts/verify-release.mjs --version 0.3
 
 `release.yml` runs that same check itself as its last step (#883), so a release
 whose body claims a digest, an SBOM or an attestation it does not have fails the
-publish instead of leaving the claim for an operator to find. The publish side is
-closed in five places:
+publish instead of leaving the claim for an operator to find. Both release
+workflows read "does this tag have a Release?" through one encoder that keeps the
+tag as a single path segment (`scripts/lib/release-lookup.mjs`), so a tag
+containing `/` is not read as a deeper path and mistaken for "no release yet".
+The publish side is closed in five places:
 
 - the image is built once and published under a commit tag
   (`ghcr.io/hugoxk/fledge:sha-<12 hex>`), and the digest that push produced is

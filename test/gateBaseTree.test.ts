@@ -37,6 +37,7 @@ const evaluators: Array<[string, string]> = [
   ['risk', 'base/scripts/risk-gate.mjs'],
   ['action-pins', 'base/scripts/action-pins.mjs'],
   ['workflow-lint', 'base/scripts/workflow-injection.mjs'],
+  ['reserved-contexts', 'base/scripts/reserved-contexts.mjs'],
   ['codeql-required', 'base/scripts/codeql-required.mjs'],
   ['ci-ok', 'base/scripts/ci-ok.mjs'],
 ]

@@ -4330,14 +4330,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/repos/:id/jobs/:jobId/merge', async (request, reply) => {
     // #708: expensive — a merge writes to the upstream repository.
     if (!limits.take('expensive', `job-merge:${rateLimitKey(request)}`)) return refuseTooMany(request, reply)
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
     const job = store.getJob(String((request.params as Record<string, string>).jobId))
     if (job === undefined || job.repo_id !== repo.id) throw httpError(404, '任务不存在。', 'JOB_NOT_FOUND')
     const back = `/repos/${repo.id}/jobs/${job.id}`
     const t = translator(request.locale ?? 'zh')
     const today = async (): Promise<{ notice: string } | { error: string }> => {
-      if (repo.repo_role !== 'maintainer') return { error: t('只有 maintainer 可以合并 PR。', 'Only a maintainer can merge a pull request.') }
-      const result = await jobs.manualMerge(repo, job)
+      if (role !== 'maintainer') return { error: t('只有 maintainer 可以合并 PR。', 'Only a maintainer can merge a pull request.') }
+      const result = await jobs.manualMerge(repo, job, { actorRole: role })
       const merged = result.ok || result.alreadyMerged === true
       store.audit(viewer.user.id, 'job.merge_requested', `${job.id}: ${merged ? 'merged' : (result.message ?? 'failed')}`)
       return merged ? { notice: t('PR 已合并。', 'The pull request is merged.') } : { error: result.message ?? t('合并失败。', 'The merge failed.') }
@@ -4587,9 +4587,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/repos/:id/delivery/merge-clean', async (request, reply) => {
-    const { viewer, repo } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
-    if (repo.repo_role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以批量合并 PR。')}#delivery`)
-    const result = await jobs.mergeCleanPrs(repo.id)
+    const { viewer, repo, role } = ownedRepo(request, String((request.params as Record<string, string>).id), true)
+    if (role !== 'maintainer') return reply.redirect(`/repos/${repo.id}?error=${encodeURIComponent('只有 maintainer 可以批量合并 PR。')}#delivery`)
+    const result = await jobs.mergeCleanPrs(repo.id, role)
     store.audit(viewer.user.id, 'delivery.merge_clean', `${repo.id} merged=${result.merged.length} skipped=${result.skipped.length}`)
     const jobStateSkips = result.skipped.filter((entry) => entry.reason === 'job-state').length
     const gateSkips = result.skipped.length - jobStateSkips
