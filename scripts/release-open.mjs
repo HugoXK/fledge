@@ -265,8 +265,26 @@ export async function runReleaseOpen(options) {
   const reuse = sameBranch.find((pr) => String(pr?.head?.sha ?? '') === sha && sameTitle(pr))
   if (reuse !== undefined) {
     // (a) Reuse, never duplicate: even a plan that says `open-release-pr` is the
-    // state this branch exists to reuse.
-    return { status: 'reused', reason: `pull request #${String(reuse.number)} already has ${branch} at ${sha}`, pr: Number(reuse.number), identity: login, permissions, scopes }
+    // state this branch exists to reuse. A reuse is the create path's equal, so
+    // the head is read before the pull request is adopted (#1183): the list item
+    // names the head repository for free, and the flag the create path refuses on
+    // needs one `GET /pulls/{number}`. A candidate that fails either reading is
+    // refused on the spot — never dropped from `sameBranch`, because falling
+    // through would rely on a second pull request to hit `conflicting` and could
+    // otherwise open a second one on the same branch.
+    const number = Number(reuse.number)
+    const headRepo = String(reuse?.head?.repo?.full_name ?? '')
+    if (headRepo !== '' && headRepo !== repo) {
+      return refuse(`pull request #${number} heads ${headRepo}, not ${repo}; the release head is pushed to this repository, so its head is a fork of another repository — the shape \`maintainer_can_modify: true\` describes — and it is not reused`, { pr: number, identity: login, permissions, scopes })
+    }
+    const readback = await apiCall(api, 'GET', `/pulls/${number}`)
+    if (readback.status !== 200) {
+      return refuse(`GET /pulls/${number} answered ${readback.status}${messageOf(readback.payload) === '' ? '' : `: ${messageOf(readback.payload)}`}; a reused pull request whose head cannot be read back is not reused`, { pr: number, identity: login, permissions, scopes })
+    }
+    if (readback.payload?.maintainer_can_modify === true) {
+      return refuse(`pull request #${number} came back with maintainer_can_modify true; the release head is pushed to ${repo}, so its head is a fork of another repository, and a reused pull request must pass the same check a created one does`, { pr: number, identity: login, permissions, scopes })
+    }
+    return { status: 'reused', reason: `pull request #${number} already has ${branch} at ${sha}`, pr: number, identity: login, permissions, scopes }
   }
   const conflicting = sameBranch[0]
   if (conflicting !== undefined) {

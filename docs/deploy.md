@@ -494,17 +494,20 @@ against the branch's contents fetched through the API (never the branch's own
 copies of those scripts), refuses when `main` moved since the plan or the diff
 leaves `CHANGELOG.md`, `README.md`, `README.zh.md`, `changelog.d/`,
 `docker-compose.yml`, `package-lock.json` and `package.json`, reuses an open pull
-request at the same commit instead of
-opening a second one, and prints the JSON it acted on. It writes that one pull
-request and nothing else, and it carries no tag endpoint: the tag stays in the
-workflow. A `POST /pulls` that answers non-201, or answers no pull request
+request at the same commit — after re-reading its head, the same check a freshly
+opened pull request gets, so a head in another repository, a flag that does not
+read back, or a readback that cannot be made is a refusal rather than a reuse —
+instead of opening a second one, and prints the JSON it acted on. It writes that
+one pull request and nothing else, and it carries no tag endpoint: the tag stays
+in the workflow. A `POST /pulls` that answers non-201, or answers no pull request
 number, or a readback that reports `maintainer_can_modify: true` — that flag is
 only true for a fork head, and the release head is pushed to this repository — is
 a refusal, but the pull request already exists at that point and stays open:
 closing it is the owner's action only (owner instruction 2026-11-15), even
 though the opener's `Pull requests: write` scope would allow a close — so the
-refusal goes to the owner from #80 like any other, and the next run reuses that
-pull request at the same commit instead of opening a second one.
+refusal goes to the owner from #80 like any other, and the next run re-reads that
+pull request's head and either reuses it at the same commit or refuses it again,
+never opening a second one.
 
 ### Verify a release
 
