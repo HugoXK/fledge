@@ -65,7 +65,10 @@ Core paths:
      second concurrent write session is how duplicate PRs happen.
    - **One branch, one open PR.** Before opening, query
      `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open`; if one
-     exists, push to it, and close a second PR for that branch at once.
+     exists, push to it and open nothing new. A second PR already open on that
+     branch stays open: report it to the Lead and the owner decides whether it
+     closes — opening no duplicate is the rule, closing one is not a Dev's act
+     (owner instruction 2026-11-15).
    - **One worktree, one writer.** No two bots and no two sessions in the same
      worktree.
    - **Dedicated ports for verification servers.** Never `8080`, the documented
@@ -202,9 +205,10 @@ e.g. `Fledge Platform Dev-4 <dev4@fledge.invalid>` (`7e2b847`).
 `HugoXK-bot` login, and a tip whose author resolves to a reviewer identity can
 never receive a PASS. `reviewerAuthoredCommit` (`scripts/lib/review-gate.mjs:169-188`)
 reads `commit.author.login` and falls back to `commit.commit.author.email` only
-when that login is empty, and `review-gate` refuses the tip at `:431-434`. The
-pre-push check stays `git log -1 --format='%an <%ae> | %cn <%ce>'`: the author half
-is the gate's decision and the committer half is hygiene — the gate reads the
+when that login is empty, and `review-gate` refuses the tip at `:431-434`. Check
+both halves of the tip before pushing with
+`git log -1 --format='%an <%ae> | %cn <%ce>'`: the author half is the gate's
+decision and the committer half is hygiene — the gate reads the
 author, not the committer, so a reviewer-address committer is corrected but never
 refused. A branch whose tip carries a reviewer-authored commit is rebuilt, never
 force-pushed: new branch, byte-identical tree, `supersedes #<old> — same tree

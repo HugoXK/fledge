@@ -582,8 +582,10 @@ with the commands they name, because a gate only works if it can be run:
    a time. A second concurrent write session is how a duplicate PR appears.
 2. **One branch, one open PR.** Before opening, query
    `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open`; if a pull
-   request exists, push to it. A second PR on that branch is closed the moment it
-   appears.
+   request exists, push to it and open nothing new. A second PR already open on
+   that branch stays open: report it to the Lead and the owner decides whether it
+   closes — opening no duplicate is the rule, closing one is not a Dev's act
+   (owner instruction 2026-11-15).
 3. **One worktree, one writer.** No two bots and no two sessions share one
    worktree.
 4. **Dedicated ports for verification servers.** Never `8080`, the documented
