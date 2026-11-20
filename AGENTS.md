@@ -208,9 +208,12 @@ is the gate's decision and the committer half is hygiene — the gate reads the
 author, not the committer, so a reviewer-address committer is corrected but never
 refused. A branch whose tip carries a reviewer-authored commit is rebuilt, never
 force-pushed: new branch, byte-identical tree, `supersedes #<old> — same tree
-<sha>, author-identity fix only` in the new PR body, and the old PR closed only
-after the replacement exists and links it, on the Lead's approval. The ruling is
-the team playbook's "Commit identity (Chief ruling 2026-11-15)".
+<sha>, author-identity fix only` in the new PR body, and the old PR stays open
+until the owner approves closing it. Closing is the owner's action only: no one
+on this team closes a pull request — superseded, duplicate, stale, red or probe
+included — without the owner's explicit yes in the team room, and the Lead
+reports it (owner instruction 2026-11-15). The ruling is the team playbook's
+"Commit identity (Chief ruling 2026-11-15)".
 
 ## Changelog
 

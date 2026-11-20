@@ -895,8 +895,9 @@ in `.github/agent/review-policy.json`, never the reviewer address
 ("Commit identity") carries the rule and the shapes in use.
 The fix is a rebuild, not a force-push: re-author the commits on a new branch with
 the same tree and a `supersedes #<old> — same tree <sha>, author-identity fix only`
-line in its PR body, and leave the old PR open until the Lead approves the
-replacement; the trees do not change.
+line in its PR body, and leave the old PR open until the owner approves closing
+it — closing is the owner's action only, and a replacement does not authorise it
+(owner instruction 2026-11-15); the trees do not change.
 Before this job existed the condition was visible only in the job log of a red
 `review-gate` run, which is how `#532`, `#533` and `#618` each spent a review round
 on a tip that could never merge.
