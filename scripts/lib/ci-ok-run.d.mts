@@ -33,15 +33,32 @@ export interface CheckRunPayload {
   output: { title: string; summary: string }
 }
 
+export interface FinishedRun {
+  conclusion?: string | null
+  event?: string
+  pull_requests?: Array<{ base?: { sha?: string; ref?: string } }>
+}
+
+export interface MergedPullRequest {
+  number: number | null
+  mergedAt: string
+}
+
 export declare const REQUIRED_CHECK: string
 export declare const HEAD_AGGREGATE_JOB: string
 export declare const CHECK_STATUS: string
 export declare const CHECK_CONCLUSIONS: Readonly<{ pass: string; fail: string }>
+export declare const SKIP_REASONS: Readonly<{ superseded: string; merged: string; notARun: string }>
 export declare function runIdFrom(input?: { args?: string[]; env?: Record<string, string | undefined> }): number
 export declare function jobKey(name: string, required?: string[]): string | null
 export declare function needsFromJobs(jobs: FinishedJob[], required?: string[]): Record<string, JobResult>
 export declare function verdict(input: AggregateInput): AggregateVerdict
-export declare function shouldPublish(run: { conclusion?: string | null } | null): boolean
+export declare function baseShas(run: FinishedRun | null): string[]
+export declare function lostItsBase(run: FinishedRun | null): boolean
+export declare function mergedPullRequestOf(candidate: unknown): MergedPullRequest | null
+export declare function skipReason(run: FinishedRun | null, mergedCandidate?: unknown): string | null
+export declare function skipDetail(run: FinishedRun | null, reason: string | null, mergedCandidate?: unknown): string
+export declare function shouldPublish(run: FinishedRun | null, mergedCandidate?: unknown): boolean
 export declare function checkRunPayload(input: {
   headSha: string
   result: AggregateVerdict

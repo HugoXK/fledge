@@ -128,10 +128,78 @@ export function verdict(input) {
   return { needs, lines, problems, ok: problems.length === 0 }
 }
 
-/** A superseded run is replaced by a newer one for the same head. */
-export function shouldPublish(run) {
-  if (run === null || typeof run !== 'object') return false
-  return run.conclusion !== 'cancelled'
+/** The base shas a `pull_request` run says it was measured against. A run that
+ *  names none, or more than one, cannot be ranged and is a finding of its own. */
+export function baseShas(run) {
+  const pulls = Array.isArray(run?.pull_requests) ? run.pull_requests : []
+  const shas = new Set()
+  for (const pull of pulls) {
+    const sha = pull?.base?.sha
+    if (typeof sha === 'string' && sha !== '') shas.add(sha)
+  }
+  return [...shas]
+}
+
+/** A `pull_request` run whose payload no longer names exactly one base.
+ *  GitHub produces that shape when the pull request merges while its run is in
+ *  flight: the run then reports an empty `pull_requests` array, and the base it
+ *  was measured against is gone from the payload rather than from the diff. */
+export function lostItsBase(run) {
+  return run !== null && typeof run === 'object' && run.event === 'pull_request' && baseShas(run).length !== 1
+}
+
+/** The merged pull request a candidate describes, or `null` when the candidate
+ *  is not one. A closed pull request that was not merged answers `null` on
+ *  purpose: its head still had a merge candidate when the run started. */
+export function mergedPullRequestOf(candidate) {
+  if (candidate === null || typeof candidate !== 'object') return null
+  if (typeof candidate.merged_at !== 'string' || candidate.merged_at === '') return null
+  const number = Number.isSafeInteger(candidate.number) && candidate.number > 0 ? candidate.number : null
+  return { number, mergedAt: candidate.merged_at }
+}
+
+/** The reasons a finished run publishes no verdict. Only two of them are not
+ *  findings: a run the platform cancelled, and a pull request run whose pull
+ *  request merged away before the verdict was computed. */
+export const SKIP_REASONS = Object.freeze({
+  superseded: 'superseded',
+  merged: 'pull-request-merged',
+  notARun: 'not-a-run',
+})
+
+/**
+ * Why this finished run must publish no verdict, or `null` when it must be
+ * judged. `mergedCandidate` is the pull request the caller looked up for the
+ * head; it is consulted only for the shape that lost its own base, so a run
+ * that can still be ranged is always judged — and a lost base with no merged
+ * pull request behind it stays a red, because an unreadable base is a finding.
+ */
+export function skipReason(run, mergedCandidate = null) {
+  if (run === null || typeof run !== 'object') return SKIP_REASONS.notARun
+  if (run.conclusion === 'cancelled') return SKIP_REASONS.superseded
+  if (lostItsBase(run) && mergedPullRequestOf(mergedCandidate) !== null) return SKIP_REASONS.merged
+  return null
+}
+
+/** The log line's explanation, one branch per reason, so a reader can tell a
+ *  skip from a failure and which branch of the decision fired. */
+export function skipDetail(run, reason, mergedCandidate = null) {
+  if (reason === SKIP_REASONS.superseded) {
+    return `concluded ${String(run?.conclusion)}; a newer run for this head supersedes it`
+  }
+  if (reason === SKIP_REASONS.merged) {
+    const merged = mergedPullRequestOf(mergedCandidate)
+    const number = merged === null || merged.number === null ? 'unknown number' : `#${String(merged.number)}`
+    return `pull request ${number} merged at ${String(merged?.mergedAt)} while the run was in flight; no merge candidate is left to judge`
+  }
+  return 'the trigger is not a finished run'
+}
+
+/** Whether a finished run publishes a verdict at all: a superseded run is
+ *  replaced by a newer one for the same head, and a pull request that merged
+ *  mid-run has no candidate left to judge (#1117). Everything else is judged. */
+export function shouldPublish(run, mergedCandidate = null) {
+  return skipReason(run, mergedCandidate) === null
 }
 
 /** The check run body: a reader sees the same lines the in-run job used to log.
