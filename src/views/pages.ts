@@ -4765,12 +4765,17 @@ export function metricsPage(input: {
   const eventRows = metrics.events.length === 0
     ? stateCell(2, { kind: 'empty', title: t('还没有事件。', 'No events yet.'), body: t('任务开始后会记录每一次状态变化。', 'Every state change is recorded once the job starts.'), action: { href: '#', label: t('等第一个任务运行后回来看。', 'Come back after the first job runs.') } })
     : metrics.events.map((event) => `<tr><td><code>${escapeHtml(event.name)}</code></td><td>${event.n}</td></tr>`).join('')
-  const sparkDays = daily.map((row) => row.day)
-  const trendSparks = daily.length === 0 ? '' : `<div class="spark-grid" data-spark-window="${String(windowDays)}">${[
-    dailySparkline({ t, series: 'jobs', name: t('任务', 'Jobs'), label: t('每日任务数', 'Jobs per day'), values: daily.map((row) => row.jobs), days: sparkDays, windowDays }),
-    dailySparkline({ t, series: 'succeeded', name: t('成功', 'Succeeded'), label: t('每日成功数', 'Succeeded per day'), values: daily.map((row) => row.succeeded), days: sparkDays, windowDays }),
-    dailySparkline({ t, series: 'failed', name: t('失败', 'Failed'), label: t('每日失败数', 'Failed per day'), values: daily.map((row) => row.failed), days: sparkDays, windowDays }),
-    dailySparkline({ t, series: 'merged', name: t('已合并 PR', 'Merged PRs'), label: t('每日合并 PR 数', 'Merged PRs per day'), values: daily.map((row) => row.merged), days: sparkDays, windowDays }),
+  // #1170: `Store.dailyMetrics` returns the window newest-first (`ORDER BY day
+  // DESC`), which is also the order the table below keeps. The chart runs left to
+  // right in time, so it takes the same rows reversed and the newest day lands on
+  // the last point, not the first.
+  const trend = [...daily].reverse()
+  const sparkDays = trend.map((row) => row.day)
+  const trendSparks = trend.length === 0 ? '' : `<div class="spark-grid" data-spark-window="${String(windowDays)}">${[
+    dailySparkline({ t, series: 'jobs', name: t('任务', 'Jobs'), label: t('每日任务数', 'Jobs per day'), values: trend.map((row) => row.jobs), days: sparkDays, windowDays }),
+    dailySparkline({ t, series: 'succeeded', name: t('成功', 'Succeeded'), label: t('每日成功数', 'Succeeded per day'), values: trend.map((row) => row.succeeded), days: sparkDays, windowDays }),
+    dailySparkline({ t, series: 'failed', name: t('失败', 'Failed'), label: t('每日失败数', 'Failed per day'), values: trend.map((row) => row.failed), days: sparkDays, windowDays }),
+    dailySparkline({ t, series: 'merged', name: t('已合并 PR', 'Merged PRs'), label: t('每日合并 PR 数', 'Merged PRs per day'), values: trend.map((row) => row.merged), days: sparkDays, windowDays }),
   ].join('')}</div>`
   const body = `<section class="card">
     <div class="row between">

@@ -3092,10 +3092,12 @@ function sparkTiles(page: string): Map<string, string> {
 }
 
 test('the admin metrics daily card draws one labelled sparkline per series', () => {
+  // Newest first, the order `Store.dailyMetrics` returns; the store-order case
+  // below is the one that pins what that does to the drawing.
   const daily = [
-    { day: '2026-01-01', jobs: 1, succeeded: 1, failed: 0, merged: 0 },
-    { day: '2026-01-02', jobs: 4, succeeded: 3, failed: 1, merged: 2 },
     { day: '2026-01-03', jobs: 2, succeeded: 2, failed: 0, merged: 1 },
+    { day: '2026-01-02', jobs: 4, succeeded: 3, failed: 1, merged: 2 },
+    { day: '2026-01-01', jobs: 1, succeeded: 1, failed: 0, merged: 0 },
   ]
   const page = sparkMetricsPage({ daily })
   const tiles = sparkTiles(page)
@@ -3142,4 +3144,38 @@ test('the sparkline labels follow the page language', () => {
   assert.match(zh, /每日任务|任务<\/span>/, 'no Chinese series name')
   assert.match(en, /Jobs<\/span>/, 'no English series name')
   assert.notEqual(zh, en)
+})
+
+// #1170: the reviewer caught the axis reversed. `Store.dailyMetrics` hands the
+// window over newest-first (`ORDER BY day DESC` in src/db.ts), so the row the
+// store returns first has to sit at the right edge. This case reads the rows
+// from a real store instead of a hand-written ascending list, so the fixture
+// cannot drift away from the query again.
+test('the daily sparkline ends on the day the store returns first', () => {
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'metrics-spark-order', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_spark_order', userId: user.id, owner: 'o', name: 'spark-order', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const seed = (day: string, count: number): void => {
+      for (let n = 0; n < count; n += 1) {
+        const id = `job_spark_${day}_${String(n)}`
+        makeTerminalJob(store, { id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `cb-${id}`, platformTokenHash: '', kind: 'iterate' })
+        store.db.exec(`UPDATE jobs SET created_at = '${day}T09:00:00.000Z' WHERE id = '${id}'`)
+      }
+    }
+    seed('2026-01-01', 1)
+    seed('2026-01-02', 1)
+    seed('2026-01-03', 10)
+    const daily = store.dailyMetrics('2026-01-01T00:00:00.000Z', 7)
+    assert.deepEqual(daily.map((row) => row.day), ['2026-01-03', '2026-01-02', '2026-01-01'], 'the store no longer returns newest-first; this case pins the order the page draws')
+    const jobs = sparkTiles(sparkMetricsPage({ daily, windowDays: 7 })).get('jobs') ?? ''
+    const drawn = (/points="([^"]+)"/.exec(jobs)?.[1] ?? '').split(' ').map((pair) => pair.split(',').map(Number))
+    assert.equal(drawn.length, 3, `the chart does not draw one point per day: ${jobs}`)
+    assert.equal(drawn[0]?.[0], 0, 'the oldest day is not the first point')
+    assert.equal(drawn[2]?.[0], 100, 'the newest day is not the last point')
+    assert.ok((drawn[2]?.[1] ?? 28) < (drawn[0]?.[1] ?? 0), `the newest day is not drawn as the peak: ${drawn.map((point) => point.join(',')).join(' ')}`)
+    assert.match(jobs, /Peak 10 on 2026-01-03/, 'the caption no longer names the newest day as the peak')
+  } finally {
+    store.close()
+  }
 })

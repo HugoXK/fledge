@@ -1308,8 +1308,10 @@ merge duration, review duration and score), cost by repository and by model,
 daily trend buckets, and current alerts. The daily-trend card also draws one
 inline sparkline per series it receives — jobs, succeeded, failed and merged —
 as server-side SVG with the same figure in text and in an `aria-label`, no chart
-library and no external asset; a window with no daily rows keeps the empty state
-instead of drawing a zero line. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
+library and no external asset; the rows arrive newest-first, so the tile reverses
+them and the line runs left to right in time while the table keeps the store
+order; a window with no daily rows keeps the empty state instead of drawing a
+zero line. Alerts are localized, sorted by severity, and link to the affected repository or job; the dashboard shows the same alerts scoped to the signed-in user. Missing values render as `—`, never as a confident zero.
 
 The repository page's Delivery section also carries `#review-trend`, one row per
 fixed window (7 and 30 days). `Store.reviewTrend(repoId, sinceIso)` is a read
