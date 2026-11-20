@@ -5612,6 +5612,18 @@ export function scheduleConsolePage(input: {
   // a repository without one has no cadence to run out of turn.
   // #903: and only to a role that may run it. A viewer reads the console but is
   // told which role starts work instead of being handed a control that refuses.
+  // #1003: a repository whose own `repo_role` was never chosen has no scheduled
+  // runs. The tick's `enqueue` is refused `ROLE_REQUIRED` for want of an actor
+  // role and settles each due instant as a skipped occurrence, while Run now
+  // works because the route hands the service the role it resolved. The owner
+  // resolves as `maintainer` here, so the note must read the repository's role,
+  // not the viewer's — keying it on the viewer left exactly this surface silent.
+  const scheduledPaused = repo.repo_role !== null
+    ? ''
+    : `<p class="banner warn" data-scheduled-paused="role-missing">${escapeHtml(t(
+      '这个仓库还没有选择角色，定时运行保持暂停：每个到期的时刻都会被跳过。立即运行仍然可用。',
+      'No role has been chosen for this repository, so scheduled runs stay paused: every due instant is skipped. Run now still works.',
+    ))}</p>`
   const runNow = state.kind === 'none' || state.kind === 'unreadable'
     ? ''
     : role === 'viewer'
@@ -5724,6 +5736,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('宽限', 'Grace'))}</dt><dd data-schedule-grace="${escapeHtml(state.graceMs === null ? 'none' : String(state.graceMs))}">${escapeHtml(state.graceMs === null ? t('不限（默认）', 'unbounded (default)') : t(`${Math.round(state.graceMs / 60_000)} 分钟`, `${Math.round(state.graceMs / 60_000)} minutes`))}</dd>
         <dt>${escapeHtml(t('每日运行上限', 'Daily run limit'))}</dt><dd data-schedule-daily-runs="${escapeHtml(state.budget.dailyRuns === null ? 'none' : String(state.budget.dailyRuns))}">${escapeHtml(state.budget.dailyRuns === null ? t('不限（默认）', 'unbounded (default)') : t(`${state.budget.dailyRuns} 次`, `${state.budget.dailyRuns} runs`))} · ${escapeHtml(state.budget.runsToday === null ? t('今天已运行 unknown', 'today unknown') : t(`今天已运行 ${state.budget.runsToday} 次`, `${state.budget.runsToday} today`))}${state.budget.remaining === null ? '' : ` · ${escapeHtml(t(`今天还剩 ${state.budget.remaining} 次`, `${state.budget.remaining} left today`))}`}</dd>
       </dl>
+      ${scheduledPaused}
       ${runNow}
       ${pauseControls}
     </section>
