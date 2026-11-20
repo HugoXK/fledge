@@ -4,6 +4,7 @@ import { isIP } from 'node:net'
 import { resolve } from 'node:path'
 import { buildIdentity } from './lib/buildIdentity.js'
 import { DEFAULT_EXPECTED_HOURS } from './lib/backupStatus.js'
+import { DEFAULT_KEEP_ENCRYPTED, DEFAULT_KEEP_PLAINTEXT } from '../scripts/lib/backup-manifest.mjs'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
 import { registerRedactionSecrets, registerSecretKeyring } from './lib/secrets.js'
 import { DEFAULT_RATE_LIMIT_BUDGETS, type RateLimitBudgets } from './lib/rateLimit.js'
@@ -238,6 +239,13 @@ export interface Config {
     dir: string
     /** Age above which the newest copy is shown as stale, in hours. */
     expectedIntervalHours: number
+    /**
+     * #692: how many copies of each class a retention scan keeps. The console
+     * reads the same counts the dry run does, so the policy cannot live only in
+     * the host wrapper.
+     */
+    keepPlaintext: number
+    keepEncrypted: number
   }
   allowPrivateModelUrls: boolean
   inboundEmailSecret: string
@@ -288,6 +296,17 @@ function number(name: string, fallback: number): number {
   if (raw === '') return fallback
   const n = Number(raw)
   return Number.isFinite(n) ? n : fallback
+}
+
+// A keep count decides what gets deleted, so it is refused rather than clamped:
+// `BACKUP_KEEP_PLAINTEXT=0` would otherwise erase every plaintext copy, and a
+// typo must stop the boot (or the scan) instead of choosing a retention.
+function keepCount(name: string, fallback: number): number {
+  const raw = text(name)
+  if (raw === '') return fallback
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n < 1) throw new Error(`${name} must be a positive whole number, got ${raw}`)
+  return n
 }
 
 function bool(name: string, fallback: boolean): boolean {
@@ -654,6 +673,10 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     backup: {
       dir: resolve(text('BACKUP_DIR', `${dataDir}/backups`)),
       expectedIntervalHours: Math.max(1, number('BACKUP_EXPECTED_HOURS', DEFAULT_EXPECTED_HOURS)),
+      // Parsed like `--keep` in scripts/backup.mjs: a keep count that is not a
+      // positive whole number is refused, never silently read as 0 or NaN.
+      keepPlaintext: keepCount('BACKUP_KEEP_PLAINTEXT', DEFAULT_KEEP_PLAINTEXT),
+      keepEncrypted: keepCount('BACKUP_KEEP_ENCRYPTED', DEFAULT_KEEP_ENCRYPTED),
     },
     allowPrivateModelUrls: bool('ALLOW_PRIVATE_MODEL_URLS', false),
     inboundEmailSecret: text('INBOUND_EMAIL_SECRET'),

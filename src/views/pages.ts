@@ -52,6 +52,7 @@ import { readReleaseNotesProvenance, readReleaseNotesSources } from '../releases
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
+import { planBackupExpiry, type BackupExpiryPlan } from '../../scripts/lib/backup-manifest.mjs'
 import { RETENTION_CLASSES, RETENTION_IDLE_TABLES, RETENTION_SETTINGS_CLASS, type RetentionId } from '../../scripts/lib/retention.mjs'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
@@ -3120,6 +3121,11 @@ export function adminPage(input: {
   releaseDispatchError?: string
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
+  /**
+   * #692: the retention scan for the configured keep counts. Defaults to
+   * scanning `config.backup.dir`; a test may pass the same plan it checks.
+   */
+  expiry?: BackupExpiryPlan
   /** Defaults to reading `<dataDir>/backup-drill.json`; a test passes a fixture record. */
   drill?: RestoreDrillStatus | null
   /**
@@ -3132,6 +3138,11 @@ export function adminPage(input: {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
   const release = input.release ?? releaseSurface()
   const backup = input.backup ?? readBackupStatus({ dir: config.backup.dir, expectedHours: config.backup.expectedIntervalHours })
+  const expiry = input.expiry ?? planBackupExpiry({
+    dir: config.backup.dir,
+    keepPlaintext: config.backup.keepPlaintext,
+    keepEncrypted: config.backup.keepEncrypted,
+  })
   const drill = input.drill === undefined ? readRestoreDrill(`${config.dataDir}/backup-drill.json`) : input.drill
   const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
@@ -3353,6 +3364,12 @@ export function adminPage(input: {
   const copiesLine = [copyCount, encryptedCount, copyAgreement]
     .filter((part): part is string => part !== null)
     .join(' · ')
+  // #692: the same scan the dry run prints, read-only. The number is what the
+  // next run with the configured counts would take, never a record of a delete:
+  // this tip has no `--apply`, so the card says "dry run" beside it.
+  const expiredText = expiry.expiredCopies === 1
+    ? t(`1 (试运行) · 保留 ${expiry.keep.plaintext} 明文 / ${expiry.keep.encrypted} 加密`, `1 (dry run) · keep ${expiry.keep.plaintext} plaintext / ${expiry.keep.encrypted} encrypted`)
+    : t(`${expiry.expiredCopies} (试运行) · 保留 ${expiry.keep.plaintext} 明文 / ${expiry.keep.encrypted} 加密`, `${expiry.expiredCopies} (dry run) · keep ${expiry.keep.plaintext} plaintext / ${expiry.keep.encrypted} encrypted`)
   const drillText = drill === null
     ? t('没有记录', 'none recorded')
     : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`
@@ -3362,6 +3379,7 @@ export function adminPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本', 'Newest copy'))}</strong><small>${newest === null ? escapeHtml(t('还没有记录备份副本', 'No backup copy recorded yet')) : `${escapeHtml(newest.name)} · ${escapeHtml(backupSize(newest.sizeBytes))} · ${escapeHtml(humanTimeShort(newest.createdAt))}`}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('新鲜度', 'Freshness'))}</strong><small>${escapeHtml(freshness)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('副本数', 'Copies'))}</strong><small>${escapeHtml(copiesLine)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('过期副本', 'Expired copies'))}</strong><small>${escapeHtml(expiredText)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
       ${problemRows}
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(drillText)}</small></div></div>

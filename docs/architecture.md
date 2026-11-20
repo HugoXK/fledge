@@ -2645,6 +2645,16 @@ all, so the console can report it only as staleness plus a mismatch; the drill
 prints its verdict and records nothing, so the card says "restore drill: none
 recorded" rather than a green it cannot prove.
 
+`planBackupExpiry` (`scripts/lib/backup-manifest.mjs`, #692) is the second
+read-only source: the same scan `node scripts/backup-prune.mjs` prints as a dry
+run, applied to `config.backup.dir` with the configured
+`BACKUP_KEEP_PLAINTEXT`/`BACKUP_KEEP_ENCRYPTED` counts. The card renders its
+`expiredCopies` as "Expired copies: N (dry run)", and the helper never deletes —
+this tip has no `--apply`, so the number cannot be mistaken for a completed
+cleanup. Each expired copy brings its manifest and `-wal`/`-shm` sidecars into the
+same plan, because those files describe that copy and nothing else; a directory
+inside its counts plans zero candidates.
+
 ### Data retention windows (#281)
 
 `Store.pruneOldData` is the one age-based delete pass, run from the scheduler
