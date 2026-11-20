@@ -679,16 +679,18 @@ exits 0 whether it found a sink or nothing at all, so the job runs
 fails on a high or critical result the recorded baseline does not already hold.
 The baseline is `.github/agent/codeql-baseline.json` — every high/critical result
 the analysis at the recorded sha emits, by rule id, path and line. It holds seven
-entries today: the four open `js/missing-rate-limiting` findings in `src/app.ts`
-(issues #62–#65) and three results GitHub already carries as dismissed false
-positive (alert #36 in `src/app.ts`, alerts #41 and #42 in
+entries today, all recorded dismissals: the four `js/missing-rate-limiting`
+findings in `src/app.ts` (alerts #62–#65, dismissed false positive in the alert UI
+since 2026-11-12 once #708's route rate limiting landed, `fixed_at
+2026-11-13T01:32Z`) and three older results GitHub already carries as dismissed
+false positive (alert #36 in `src/app.ts`, alerts #41 and #42 in
 `src/gateway/gateway.ts`). The lines follow the tree that ships the file, because
 the gate compares against the pull request's own tree; a reviewed PR that inserts
-before an anchor refreshes that line and says so in its body. The four open alerts
-stay open: the gate exists so a pull request cannot quietly add a fifth while
-working beside them. The three dismissed entries are recorded so a decision
-already reviewed in the alert UI does not fail the gate again — recording them
-dismisses nothing. The same step runs on a push to `main`, so new
+before an anchor refreshes that line and says so in its body. Nothing is left open
+with an expiry: the four alerts are dismissed in the alert UI, so recording them
+dismisses nothing, and a new high result still fails the gate (#928). The entries
+are recorded so a decision already reviewed in the alert UI does not fail the gate
+again. The same step runs on a push to `main`, so new
 highs cannot accumulate there either. Changing the baseline is a reviewed commit,
 and the PR that does it says why the alert is accepted; a line that drifts for an
 unrelated reason fails loudly rather than being silently re-labelled. Every open
