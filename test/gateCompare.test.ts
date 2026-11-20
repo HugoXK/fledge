@@ -305,8 +305,8 @@ test('a refusal quotes no file content: only the file name, a job id and a plain
   const result = compareGate({ base: ci, head })
   assert.equal(result.ok, false)
   const text = result.problems.join('\n')
-  assert.doesNotMatch(text, new RegExp(marker), 'a value from the workflow text never reaches the refusal')
-  assert.match(text, new RegExp(GATE_COMPARE_FILE.replace(/[.]/g, '\\.')))
+  assert.equal(text.includes(marker), false, 'a value from the workflow text never reaches the refusal')
+  assert.equal(text.includes(GATE_COMPARE_FILE), true, 'the refusal names the compared file')
   assert.doesNotMatch(text, /npm run mock:check/, 'the base command text is not echoed either')
 })
 
