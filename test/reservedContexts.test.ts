@@ -21,7 +21,7 @@ const cliPath = fileURLToPath(new URL('../scripts/reserved-contexts.mjs', import
 const workflowsDir = fileURLToPath(new URL('../.github/workflows', import.meta.url))
 const ciPath = fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url))
 
-type Finding = { file: string; line: number; context: string; kind: string }
+type Finding = { file: string; line: number; context: string; kind: string; reason?: string }
 type Lib = {
   RESERVED_CONTEXTS: Record<string, string[]>
   scanWorkflowText: (text: string, file: string, table?: Record<string, string[]>) => Finding[]
@@ -238,4 +238,125 @@ test('ci.yml runs the base-tree scanner over the head workflows and ci-ok requir
 test('the ci-ok list in docs/autonomous-dev.md names the new job', () => {
   const doc = readFileSync(fileURLToPath(new URL('../docs/autonomous-dev.md', import.meta.url)), 'utf8')
   assert.ok(doc.includes('`reserved-contexts`'), 'the ci-ok list is the documentation a reviewer reads')
+})
+
+// The first review of #963 (REQUEST_CHANGES at 492b8221) found three ways the
+// line parser passed the shadow it exists to reject: quotes were stripped but
+// not unescaped (`name: "ci\u002dok"`), the job id had to be at exactly two
+// spaces (a four-space `jobs:` block produced no finding), and a `jobs:` block
+// the parser could not classify was skipped instead of refused. These cases pin
+// every shape the fix now refuses, so the next rewrite of this kind cannot
+// regress them into a green.
+
+test('a double-quoted name with a backslash escape is refused, not read as a different string', async () => {
+  const { scanWorkflowText } = await lib()
+  const text = [
+    'name: shadow',
+    'on: pull_request',
+    'jobs:',
+    '  publish:',
+    '    name: "ci\\u002dok"',
+    '    runs-on: ubuntu-latest',
+    '',
+  ].join('\n')
+  const findings = scanWorkflowText(text, 'shadow.yml')
+  assert.equal(findings.length, 1, `exactly one refusal expected, got ${JSON.stringify(findings)}`)
+  assert.deepEqual(findings[0], {
+    file: 'shadow.yml',
+    line: 5,
+    context: '',
+    kind: 'unsupported',
+    reason: 'the name: of job "publish" is a double-quoted scalar with a backslash escape',
+  })
+  const directory = fixture({ 'shadow.yml': text })
+  await assert.rejects(
+    async () => execFileAsync(process.execPath, [cliPath, '--workflows', directory], { encoding: 'utf8' }),
+    (error: NodeJS.ErrnoException & { code?: number; stderr?: string }) => {
+      assert.equal(error.code, 1, 'YAML resolves the escape to ci-ok, so the gate must be red')
+      assert.match(String(error.stderr ?? ''), /shadow\.yml:5/)
+      assert.match(String(error.stderr ?? ''), /cannot be resolved into a check-run name/)
+      return true
+    },
+  )
+})
+
+test('a four-space jobs block is read as a jobs block instead of passing silently', async () => {
+  const { scanWorkflowText } = await lib()
+  const job = ['name: shadow', 'on: pull_request', 'jobs:', '    ci-ok:', '        runs-on: ubuntu-latest', ''].join('\n')
+  assert.deepEqual(scanWorkflowText(job, 'shadow.yml'), [{ file: 'shadow.yml', line: 4, context: 'ci-ok', kind: 'job-id' }])
+  const name = ['jobs:', '    publish:', '        name: ci-ok', '        runs-on: ubuntu-latest', ''].join('\n')
+  assert.deepEqual(scanWorkflowText(name, 'shadow.yml'), [{ file: 'shadow.yml', line: 3, context: 'ci-ok', kind: 'name' }])
+})
+
+test('a jobs block the parser cannot classify is refused, not skipped', async () => {
+  const { scanWorkflowText } = await lib()
+  const cases: Array<[string, RegExp]> = [
+    [['jobs:', '  - ci-ok', ''].join('\n'), /not a job id/],
+    ['jobs: {ci-ok: {runs-on: ubuntu-latest}}\n', /inline value/],
+    [['jobs:', '\tci-ok:', ''].join('\n'), /tab indentation/],
+    [['jobs:', '  "ci\\u002dok":', '    runs-on: ubuntu-latest', ''].join('\n'), /not a job id/],
+    [['jobs:', '  ci-ok:', '    runs-on: ubuntu-latest', '   name: ci-ok', ''].join('\n'), /shallower than its properties/],
+  ]
+  for (const [text, reason] of cases) {
+    const findings = scanWorkflowText(text, 'shadow.yml')
+    assert.ok(
+      findings.some((finding) => finding.kind === 'unsupported' && reason.test(String(finding.reason))),
+      `${JSON.stringify(text)} must be refused with ${String(reason)}, got ${JSON.stringify(findings)}`,
+    )
+  }
+})
+
+test('a block scalar, tag, anchor or flow name is refused instead of being read as a literal', async () => {
+  const { scanWorkflowText } = await lib()
+  const cases: Array<[string, RegExp]> = [
+    ['|', /block scalar/],
+    ['>', /block scalar/],
+    ['|-', /block scalar/],
+    ['!!str ci-ok', /tag, anchor, alias or flow collection/],
+    ['&anchor ci-ok', /tag, anchor, alias or flow collection/],
+    ['*alias', /tag, anchor, alias or flow collection/],
+    ['{name: ci-ok}', /tag, anchor, alias or flow collection/],
+    ['[ci-ok]', /tag, anchor, alias or flow collection/],
+    ['"ci-ok', /unterminated double-quoted scalar/],
+    ["'ci-ok", /unterminated single-quoted scalar/],
+  ]
+  for (const [value, reason] of cases) {
+    const text = ['jobs:', '  publish:', `    name: ${value}`, '    runs-on: ubuntu-latest', ''].join('\n')
+    const findings = scanWorkflowText(text, 'shadow.yml')
+    assert.equal(findings.length, 1, `${value} must be exactly one refusal, got ${JSON.stringify(findings)}`)
+    assert.equal(findings[0]?.kind, 'unsupported')
+    assert.match(String(findings[0]?.reason), reason, value)
+  }
+})
+
+test('a quoted job id or job-level name key with an escape is refused, because YAML resolves it', async () => {
+  const { scanWorkflowText } = await lib()
+  const jobId = ['jobs:', '  "ci\\u002dok":', '    runs-on: ubuntu-latest', ''].join('\n')
+  const fromId = scanWorkflowText(jobId, 'shadow.yml')
+  assert.equal(fromId.length, 1, `one refusal expected, got ${JSON.stringify(fromId)}`)
+  assert.equal(fromId[0]?.kind, 'unsupported')
+  assert.equal(fromId[0]?.line, 2)
+  const nameKey = ['jobs:', '  publish:', '    runs-on: ubuntu-latest', '    "na\\u006de": ci-ok', ''].join('\n')
+  const fromKey = scanWorkflowText(nameKey, 'shadow.yml')
+  assert.equal(fromKey.length, 1, `one refusal expected, got ${JSON.stringify(fromKey)}`)
+  assert.equal(fromKey[0]?.kind, 'unsupported')
+  assert.equal(fromKey[0]?.line, 4)
+  assert.match(String(fromKey[0]?.reason), /backslash escape/)
+})
+
+test('a top-level jobs key that cannot be resolved is refused', async () => {
+  const { scanWorkflowText } = await lib()
+  const text = ['name: shadow', '"jo\\u0062s":', '  ci-ok:', '    runs-on: ubuntu-latest', ''].join('\n')
+  const findings = scanWorkflowText(text, 'shadow.yml')
+  assert.equal(findings.length, 1, `one refusal expected, got ${JSON.stringify(findings)}`)
+  assert.equal(findings[0]?.kind, 'unsupported')
+  assert.equal(findings[0]?.line, 2)
+})
+
+test('a document marker and a step name are read without inventing a finding', async () => {
+  const { scanWorkflowText } = await lib()
+  const marked = ['---', 'name: shadow', 'jobs:', '  ci-ok:', '    runs-on: ubuntu-latest', '...', ''].join('\n')
+  assert.deepEqual(scanWorkflowText(marked, 'shadow.yml'), [{ file: 'shadow.yml', line: 4, context: 'ci-ok', kind: 'job-id' }])
+  const stepName = ['jobs:', '  build:', '    runs-on: ubuntu-latest', '    steps:', '      - name: ci-ok', '        run: "true"', ''].join('\n')
+  assert.deepEqual(scanWorkflowText(stepName, 'shadow.yml'), [], 'a step name is not the check-run name')
 })

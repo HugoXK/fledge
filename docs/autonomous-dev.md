@@ -617,7 +617,12 @@ the `needs` of the run it executes inside and never notices the second check.
 `scripts/lib/reserved-contexts.mjs` allows `ci-ok` only from `ci.yml` and
 `ci-ok-publish.yml` (the in-run aggregate and the publisher, both canonical),
 `review-gate` only from `review-gate.yml` and `pr-lint` only from `pr-lint.yml`;
-it reads both spellings, and a workflow file it cannot read fails the job.
+it reads both spellings, takes the job indent from the first key under `jobs:`
+rather than assuming two spaces, and a workflow file it cannot read fails the
+job. So does a job id or `name:` it cannot resolve into a literal — a backslash
+escape, a block scalar, a tag, an anchor or a tab — because YAML could still
+resolve that shape to a reserved context, and a check that cannot tell is not a
+check that passes.
 The pull request that introduces the scanner is the one case with no base
 copy: that job prints a notice and runs the head copy once, so the check
 takes effect from the next pull request on without skipping silently.

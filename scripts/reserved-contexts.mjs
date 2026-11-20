@@ -4,6 +4,11 @@
 // file that is not allowed to produce it fails the job, and so does a workflow
 // file that cannot be read (fail closed).
 //
+// The same exit code covers a line the scanner cannot resolve into a check-run
+// name — a backslash escape, a block scalar, a tag, a tab — because those can
+// resolve to a reserved context in YAML even when this line parser cannot see
+// it. A gate that cannot tell is not a gate that passes.
+//
 // #640: the checker comes from the base branch and the workflows are the data
 // under test, so the directory is an argument rather than this script's own
 // tree — a copy of the scanner on the branch could otherwise judge itself.
@@ -25,7 +30,15 @@ try {
   process.exit(1)
 }
 
+let publishers = 0
+let unresolved = 0
 for (const finding of report.findings) {
+  if (finding.kind === 'unsupported') {
+    unresolved += 1
+    console.error(`${finding.file}:${finding.line}: ${finding.reason}; this check cannot prove which context it publishes`)
+    continue
+  }
+  publishers += 1
   const allowed = (RESERVED_CONTEXTS[finding.context] ?? []).join(', ')
   const position = finding.kind === 'name' ? 'name:' : 'job id'
   console.error(
@@ -34,7 +47,10 @@ for (const finding of report.findings) {
 }
 
 if (report.findings.length > 0) {
-  console.error(`reserved-contexts: ${report.findings.length} job(s) publish a required check context outside its own workflow`)
+  const parts = []
+  if (publishers > 0) parts.push(`${publishers} job(s) publish a required check context outside its own workflow`)
+  if (unresolved > 0) parts.push(`${unresolved} line(s) cannot be resolved into a check-run name`)
+  console.error(`reserved-contexts: ${parts.join('; ')}`)
   process.exit(1)
 }
 
