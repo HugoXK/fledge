@@ -42,6 +42,16 @@ const LOCAL_BINARIES = new Map<string, string>([
   ['npx tsx scripts/isolation-check.ts --image fledge:ci', 'tsx is a devDependency already installed, and the command is a script in this checkout, so `npx` resolves the local binary instead of fetching a package'],
 ])
 
+// #972: an exclusion is a property of the workflow file whose context was
+// reviewed, not of the command text. "a devDependency already installed and a
+// script in this checkout" is true of a job that ran `npm ci --ignore-scripts`
+// first; the same line copied into another workflow resolves `tsx` from the
+// registry and runs its lifecycle scripts, which is the event this gate names.
+const LOCAL_BINARY_FILES = new Map<string, string>([
+  ['npx playwright install --with-deps chromium', 'ci.yml'],
+  ['npx tsx scripts/isolation-check.ts --image fledge:ci', 'ci.yml'],
+])
+
 interface InstallLine {
   file: string
   line: number
@@ -57,15 +67,24 @@ interface InstallLine {
 const INSTALL_FAMILY = /\b(?:npm\s+(?:ci|install|i|add|exec)|yarn\s+(?:install|add)|pnpm\s+(?:install|add|i|exec))\b/
 const NPX_PACKAGE = /\bnpx\s+(?:--?[A-Za-z][\w-]*\s+)*[A-Za-z@]/
 
-function isInstallCommand(trimmed: string): boolean {
+function isInstallCommand(trimmed: string, file: string): boolean {
   if (INSTALL_FAMILY.test(trimmed)) return true
   if (!NPX_PACKAGE.test(trimmed)) return false
   // An `npx` that runs a binary this checkout already has installs nothing; the
-  // exclusion is the exact reviewed line, never a package-name pattern.
-  for (const command of LOCAL_BINARIES.keys()) {
+  // exclusion is the exact reviewed line, never a package-name pattern, and it
+  // applies only in the workflow file whose context was reviewed (#972), so a
+  // copy of the line in any other workflow is still an install.
+  for (const [command, owner] of LOCAL_BINARY_FILES) {
+    if (!ownsWorkflowFile(file, owner)) continue
     if (trimmed === command || trimmed === `- run: ${command}` || trimmed === `run: ${command}`) return false
   }
   return true
+}
+
+// A sweep over a fixture directory passes the bare file name, while the
+// repository tests pass `.github/workflows/ci.yml`; both name the same workflow.
+function ownsWorkflowFile(file: string, owner: string): boolean {
+  return file === owner || file === `.github/workflows/${owner}`
 }
 
 function installs(file: string, text: string): InstallLine[] {
@@ -75,7 +94,7 @@ function installs(file: string, text: string): InstallLine[] {
     const trimmed = line.trim()
     // A mention in a comment is documentation, not an install.
     if (trimmed.startsWith('#')) continue
-    if (isInstallCommand(trimmed)) found.push({ file, line: index + 1, text: trimmed })
+    if (isInstallCommand(trimmed, file)) found.push({ file, line: index + 1, text: trimmed })
   }
   return found
 }
@@ -218,4 +237,45 @@ test('each local-binary npx exclusion names a line that still exists', () => {
     ['npx playwright install --with-deps chromium', 'npx tsx scripts/isolation-check.ts --image fledge:ci'],
     'the exclusions are the two reviewed local-binary lines, not a growing list',
   )
+})
+
+// #972: the exclusion is a property of the workflow file that was reviewed, not
+// of the command text. The same reviewed line copied into a workflow that never
+// ran `npm ci --ignore-scripts` resolves `tsx` from the registry and runs its
+// lifecycle scripts, which is exactly the event this gate exists to name — so
+// the sweep must report that copy instead of excluding it by text.
+test('a local-binary exclusion covers its own workflow file only', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-install-exclusion-'))
+  try {
+    writeFileSync(join(dir, 'copy.yml'), ['jobs:', '  build:', '    steps:', '      - run: npx tsx scripts/isolation-check.ts --image fledge:ci', ''].join('\n'))
+    assert.deepEqual(
+      sweep(dir),
+      ['copy.yml:4 - run: npx tsx scripts/isolation-check.ts --image fledge:ci'],
+      'the tsx exclusion covers ci.yml, not every workflow that copies the reviewed line',
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// #972: the key is only honest while it names a real owner and the excluded text
+// lives nowhere else. A copy in another workflow is an install the exclusion no
+// longer covers, so it fails here rather than merging into a context nobody read.
+test('each local-binary exclusion names its owning workflow and no other', () => {
+  assert.deepEqual(
+    [...LOCAL_BINARY_FILES.keys()],
+    [...LOCAL_BINARIES.keys()],
+    'every excluded line names the workflow it was reviewed in',
+  )
+  const workflows = readdirSync(workflowsDir).filter((name) => name.endsWith('.yml') || name.endsWith('.yaml'))
+  for (const [command, owner] of LOCAL_BINARY_FILES) {
+    assert.ok(workflows.includes(owner), `the exclusion for "${command}" names a workflow that exists (${owner})`)
+    for (const name of workflows) {
+      if (name === owner) continue
+      assert.ok(
+        !readFileSync(`${workflowsDir}${name}`, 'utf8').includes(command),
+        `"${command}" also appears in ${name}; the exclusion covers ${owner} only, so that copy is an install`,
+      )
+    }
+  }
 })
