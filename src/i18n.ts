@@ -272,6 +272,32 @@ const MESSAGES: Record<string, string> = {
   '这个报告编号不存在。': 'That report reference does not exist.',
   '需要授权': 'Authorization required',
   '请先勾选“我已知晓并授权 Fledge 平台读取这些失败数据”，再提交报告。': 'Select “I understand and authorize Fledge to read this failure data” before sending the report.',
+  // #1087: the app throws these as `httpError(status, message)` and the error
+  // handler prints the sentence verbatim, so without an entry an English console
+  // showed a Chinese refusal under an English heading at exactly the moment the
+  // reader could least guess what happened.
+  '只读成员不能修改这个仓库。': 'A read-only member cannot change this repository.',
+  '只有维护者可以修改仓库设置。': 'Only a maintainer can change the repository settings.',
+  '安装不存在。': 'Installation not found.',
+  '这个仓库没有可用的 GitHub token。': 'This repository has no usable GitHub token.',
+  '发布记录不存在。': 'Release not found.',
+  '只有 maintainer 可以编辑规则覆盖。': 'Only a maintainer can edit a rule override.',
+  '只有 maintainer 可以修改技能包来源。': "Only a maintainer can change a skill pack's source.",
+  '任务不存在。': 'Job not found.',
+  '计划任务不存在或尚未完成。': 'The plan job does not exist or has not finished.',
+  '工作项不存在。': 'Work item not found.',
+  '仅超级管理员可重试。': 'Only a super admin can retry.',
+  'Webhook delivery 不存在。': 'Webhook delivery not found.',
+  '仅超级管理员可重发。': 'Only a super admin can resend.',
+  '通知不存在。': 'Notification not found.',
+  '预览模式不可读取部署记录。': 'Preview mode cannot read deployment records.',
+  '仅管理员可以记录部署。': 'Only an admin can record a deployment.',
+  '仅管理员可以记录回滚。': 'Only an admin can record a rollback.',
+  '仅管理员可以停止平台。': 'Only an admin can stop the platform.',
+  '仅管理员可以恢复平台。': 'Only an admin can restore the platform.',
+  '预览模式不可删除账号。': 'Preview mode cannot delete an account.',
+  '不能删除自己的账号。': 'You cannot delete your own account.',
+  '不能删除最后一个超级管理员。': 'You cannot delete the last super admin.',
 }
 
 export function localizeMessage(locale: Locale, message: string | undefined): string | undefined {
