@@ -24,7 +24,7 @@ function instructions(overrides: Partial<InstructionContractInput> = {}): Instru
   return {
     repo: { id: 'repo_bundle_page', fullName: 'o/bundle-page', defaultBranch: 'main' },
     goal: 'fix the job page',
-    playbook: { version: '8', hash: 'a'.repeat(40) },
+    playbook: { version: '8', text: 'a'.repeat(40) },
     contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
     paths: { allow: ['src/'], deny: ['deploy/'] },
     branch: { base: 'main', name: 'dev/369' },

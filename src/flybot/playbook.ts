@@ -114,6 +114,24 @@ export function playbookFingerprint(goal = ''): string {
   return sha256Hex(playbookBundleContent(goal))
 }
 
+/**
+ * #1118: the label every role in the team is named with. It is part of the
+ * playbook text, so the text hash moves when it does.
+ */
+export function teamLabelFor(upstreamName: string): string {
+  return upstreamName.slice(0, 30) || 'Repo'
+}
+
+/**
+ * #1118: SHA-256 of the playbook text a job is actually told. `playbookFingerprint`
+ * reads the goal alone, so every role in every repository with one goal carries
+ * the same value at v8; this one reads the protocol, the role text, the label and
+ * the goal, which is what the contract records.
+ */
+export function playbookTextHash(text: string): string {
+  return sha256Hex(text)
+}
+
 export function playbookFor(role: TeamRole, teamLabel: string, goal = ''): string {
   const current = normalizedGoal(goal)
   const goalSection = current === ''

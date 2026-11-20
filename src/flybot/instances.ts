@@ -8,7 +8,7 @@ import type { RepoInstanceRow, RepoRow, Store } from '../db.js'
 import { log } from '../lib/log.js'
 import { decryptSecret, encryptSecret, randomToken, sha256Hex } from '../lib/secrets.js'
 import { nowIso } from '../lib/time.js'
-import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor } from './playbook.js'
+import { PLAYBOOK_VERSION, TEAM_ROLES, playbookFingerprint, playbookFor, teamLabelFor } from './playbook.js'
 import { PLAYBOOK_BUNDLE_SOURCE, attestSkillBundle, playbookBundle } from '../lib/skillBundle.js'
 import { flybotContainerArgs } from './isolation.js'
 import { clearWorkspaceCookie, dshCookie } from './workspace.js'
@@ -571,7 +571,7 @@ server.listen(3081, '0.0.0.0')
   }
 
   private async provisionTeam(repo: RepoRow, port: number, token: string, chief: string): Promise<RepoTeam> {
-    const label = repo.upstream_name.slice(0, 30) || 'Repo'
+    const label = teamLabelFor(repo.upstream_name)
     const reviewerScope: RepoTeam['reviewerScope'] = repo.can_review === 1 ? 'upstream' : 'self'
     const members = [
       `${label} Product: Own the product positioning, competitor gap, acceptance criteria and issue quality.`,

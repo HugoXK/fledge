@@ -20,7 +20,7 @@ function contractInput(overrides: Partial<InstructionContractInput> = {}): Instr
   return {
     repo: { id: 'repo_1', fullName: 'HugoXK/fledge', defaultBranch: 'main' },
     goal: 'fix the job page',
-    playbook: { version: 'v8', hash: 'playbook-hash' },
+    playbook: { version: 'v8', text: 'playbook-hash' },
     contextFiles: [{ path: 'AGENTS.md', sha: 'agents-sha' }],
     paths: { allow: ['src/'], deny: ['deploy/'] },
     branch: { base: 'main', name: null },

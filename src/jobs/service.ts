@@ -89,7 +89,7 @@ import {
 import { compileContextBundle, readContextBundle, verifyContextBundleEcho } from '../lib/contextBundle.js'
 // #364: the contract's clauses, evaluated against what this process can observe.
 import { evaluateAdherence, type AdherenceRecord } from '../lib/instructions.js'
-import type { TeamRole } from '../flybot/playbook.js'
+import { playbookFor, teamLabelFor, type TeamRole } from '../flybot/playbook.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
 
@@ -1516,9 +1516,19 @@ export class Jobs {
         repo: { id: repo.id, fullName: `${repo.owner}/${repo.name}`, defaultBranch: repo.default_branch },
         goal,
         // The playbook version is chosen by the instance at dispatch time, after
-        // the row exists, so the bundle records the rules commit hash it can
-        // observe; `playbook.version` stays null rather than guessing a number.
-        playbook: { version: null, hash: rules.hash },
+        // the row exists, so `playbook.version` stays null rather than guessing a
+        // number. The text is the one this dispatch sends, so #1118's contract
+        // names the instructions rather than the rules commit; `rules.hash` is
+        // still recorded on the job and its event below.
+        //
+        // The goal here is the repository's, not the job's: `ensurePlaybook` above
+        // applied `playbookFor(role, team, repo.goal)` (`instances.ts:714`, `:731`),
+        // and a job's own goal is the kind prompt for review/discover/triage/scope/
+        // verify and carries the preflight and carry-over tail for a follow-up. The
+        // section the text calls authoritative is the repository goal, so recording
+        // the job goal would seal a text the team was never given — and the
+        // repository page (`app.ts:2536`) hashes `repo.goal` for the same reason.
+        playbook: { version: null, text: playbookFor(flybot?.role ?? 'lead', teamLabelFor(repo.upstream_name), repo.goal) },
         contextFiles: rules.files.map((file) => ({ path: file.path, sha: file.sha256 })),
         paths: { allow: splitPathPatterns(repo.allow_paths), deny: splitPathPatterns(repo.deny_paths) },
         branch: { base: baseBranch, name: null },

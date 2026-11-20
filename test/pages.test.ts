@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync, readdirSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import type { JobStatus, PostmortemRow } from '../src/db.js'
@@ -14,6 +15,7 @@ import { localizeMessage } from '../src/i18n.js'
 import { WORK_ITEM_STATES } from '../src/lib/workItems.js'
 import { encryptSecret } from '../src/lib/secrets.js'
 import { planPacketHash } from '../src/lib/planDecision.js'
+import { playbookFor } from '../src/flybot/playbook.js'
 
 test('healthz reports the package version', async () => {
   const config = testConfig()
@@ -2564,6 +2566,39 @@ test('the token expiry rule is read, not hovered', () => {
     assert.match(enAfter, /<p class="fine">[^<]*A personal token must expire/, 'the expiry rule is printed under the select in English')
     assert.deepEqual(tipsOf(zh).filter((tip) => tip.includes('必须有期限')), [], 'the expiry rule is not left inside a tooltip')
     assert.deepEqual(tipsOf(en).filter((tip) => tip.includes('must expire')), [], 'the expiry rule is not left inside a tooltip')
+  } finally {
+    store.close()
+  }
+})
+
+test('the repository page names the playbook text hash the team runs', () => {
+  // #1118: the goal sentence says the playbook follows the goal, and a version
+  // number cannot tell two v8 playbooks apart. The page prints the text hash, so
+  // an edit to the protocol or a role text moves the number on the next render.
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'repo-playbook-text', status: 'approved', superadmin: true })
+    const repo = store.createRepo({ id: 'repo_playbook_text', userId: user.id, owner: 'o', name: 'playbook', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: 'keep the team small', autoIterate: false, intervalMinutes: 1440 })
+    const textHash = (label: string): string => createHash('sha256').update(playbookFor('lead', label, repo.goal), 'utf8').digest('hex').slice(0, 12)
+    const render = (label: string, viewerRole: 'superadmin' | 'user'): string => {
+      const viewer = { user: { ...store.userById(user.id)!, role: viewerRole }, csrfToken: 'csrf' }
+      return repoPage({ config, locale: 'en', viewer, repo, jobs: [], playbookTextHash: textHash(label) })
+    }
+    const page = render('Fledge Platform', 'superadmin')
+    assert.match(page, /Team playbook text hash/, 'the page names the hash beside the goal sentence')
+    assert.match(page, new RegExp(`<code>${textHash('Fledge Platform')}</code>`), 'the hash is the 12-character text hash')
+    const sentence = page.indexOf('Saving the goal updates the team playbook')
+    const hashed = page.indexOf(`<code>${textHash('Fledge Platform')}</code>`)
+    assert.ok(sentence >= 0 && hashed > sentence && hashed - sentence < 800, 'the hash sits beside the goal sentence, not elsewhere on the page')
+
+    const other = render('Another Team', 'superadmin')
+    assert.ok(!other.includes(`<code>${textHash('Fledge Platform')}</code>`), 'another team label is another hash')
+    assert.match(other, new RegExp(`<code>${textHash('Another Team')}</code>`))
+
+    // A maintainer who is not the platform superadmin still reads the record: the
+    // line cannot live only inside the superadmin-only advanced block.
+    assert.match(render('Fledge Platform', 'user'), new RegExp(`<code>${textHash('Fledge Platform')}</code>`))
   } finally {
     store.close()
   }

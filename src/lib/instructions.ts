@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto'
 import { canonicalJson } from '../gates/plan.js'
 import { matchesPath } from './pathGuard.js'
+import { playbookTextHash } from '../flybot/playbook.js'
 
 // #364 slice 1: the instruction set a job runs under is prose today — the goal,
 // the playbook, AGENTS.md, the path rules and the carry-over are pasted into one
@@ -36,10 +37,23 @@ export interface InstructionFile {
   sha: string
 }
 
+/** The playbook half of the compiled contract: the version and the text's hash. */
+export interface InstructionPlaybook {
+  version: string | null
+  /** SHA-256 of the playbook text the job was told, never a caller-supplied value (#1118). */
+  hash: string
+}
+
 export interface InstructionContractInput {
   repo: { id: string; fullName: string; defaultBranch: string }
   goal: string
-  playbook: { version: string | null; hash: string }
+  /**
+   * #1118: the contract names the text, not a fingerprint of the goal. The caller
+   * passes the playbook it will send (`playbookFor(role, teamLabel, goal)`) and the
+   * compile derives the hash, so two v8 playbooks that differ in role text or team
+   * label are different contracts.
+   */
+  playbook: { version: string | null; text: string }
   contextFiles: InstructionFile[]
   paths: { allow: string[]; deny: string[] }
   branch: { base: string; name: string | null }
@@ -50,8 +64,9 @@ export interface InstructionContractInput {
   role: string | null
 }
 
-export interface InstructionContract extends InstructionContractInput {
+export interface InstructionContract extends Omit<InstructionContractInput, 'playbook'> {
   version: number
+  playbook: InstructionPlaybook
 }
 
 export type AdherenceStatus = 'pass' | 'violation' | 'unverifiable'
@@ -88,7 +103,7 @@ export function compileInstructionContract(input: InstructionContractInput): { c
     version: INSTRUCTION_CONTRACT_VERSION,
     repo: { ...input.repo },
     goal: input.goal,
-    playbook: { ...input.playbook },
+    playbook: { version: input.playbook.version, hash: playbookTextHash(input.playbook.text) },
     // Sorted by path so two compilations of the same file set hash the same even
     // when the caller read them in a different order; the sha breaks a tie, so
     // the order is total and no compiler-dependent sort can change the result.
