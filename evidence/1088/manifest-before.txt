@@ -1,0 +1,4 @@
+/home/xuke/.dsh/bot/workspace/fledge-dev-1/artifacts/1088-frames/approve-before-1280-zh.png status=200 width=1280 locale=zh line="申请时间 2026-11-01 09:12:44 UTC。这个链接只能使用一次。" box=330,370,620x22
+/home/xuke/.dsh/bot/workspace/fledge-dev-1/artifacts/1088-frames/approve-before-1280-en.png status=200 width=1280 locale=en line="Applied 2026-11-01 09:12:44 UTC. This link can be used once." box=330,362,620x22
+/home/xuke/.dsh/bot/workspace/fledge-dev-1/artifacts/1088-frames/approve-before-390-zh.png status=200 width=390 locale=zh line="申请时间 2026-11-01 09:12:44 UTC。这个链接只能使用一次。" box=16,342,358x47
+/home/xuke/.dsh/bot/workspace/fledge-dev-1/artifacts/1088-frames/approve-before-390-en.png status=200 width=390 locale=en line="Applied 2026-11-01 09:12:44 UTC. This link can be used once." box=16,373,358x47
