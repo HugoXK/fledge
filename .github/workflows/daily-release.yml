@@ -608,8 +608,14 @@ jobs:
           # The rule is a status parser, not a grep of `gh`'s prose, so a
           # reworded message cannot flip the answer.
           RELEASE_TAG="v$(cat "$RUNNER_TEMP/version.txt")"
+          # #918: one path segment, so a tag with a slash cannot read as a
+          # deeper path the API answers 404 for.
+          RELEASE_PATH="$(REPO="$REPO" RELEASE_TAG="$RELEASE_TAG" node --input-type=module -e '
+            import { releaseLookupPath } from "./scripts/lib/release-lookup.mjs"
+            process.stdout.write(releaseLookupPath(process.env.REPO ?? "", process.env.RELEASE_TAG ?? ""))
+          ')"
           status=0
-          gh api "repos/${REPO}/releases/tags/${RELEASE_TAG}" \
+          gh api "$RELEASE_PATH" \
             > "$RUNNER_TEMP/release.json" 2> "$RUNNER_TEMP/release.err" || status=$?
           STATE="$(STATUS="$status" node --input-type=module -e '
             import { readFileSync } from "node:fs"

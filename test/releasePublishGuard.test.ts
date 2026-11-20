@@ -242,6 +242,17 @@ test('both workflows classify the release state through one tested rule, not a g
     assert.doesNotMatch(body, /grep -q/, `${name} does not grep the message`)
   }
 
+  // #918: every lookup builds its path through the shared encoder, so a tag
+  // with a slash is one segment instead of a deeper path the API reads as 404.
+  for (const [name, body] of [
+    ['the guard', guardBody],
+    ['the release write', writeBody],
+    ['the collect step', collectBody.join('\n')],
+  ] as const) {
+    assert.match(body, /releaseLookupPath/, `${name} encodes the tag as one path segment`)
+    assert.doesNotMatch(body, /releases\/tags\/\$\{/, `${name} does not paste the raw tag into the path`)
+  }
+
   // The old lenient read is gone from both workflows, and no inline grep survives
   // as a second classifier.
   assert.doesNotMatch(release, /gh release view/, 'release.yml reads the release state one way')
