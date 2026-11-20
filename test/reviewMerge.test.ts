@@ -98,6 +98,7 @@ function render(input: {
   mergeableState?: string
   tip?: { headSha: string } | null
   merge?: boolean
+  viewerRole?: 'maintainer' | 'developer' | 'viewer'
   events?: Parameters<typeof jobPage>[0]['events']
 } & Parameters<typeof fixture>[0] = {}): string {
   const { store, repo, job, close } = fixture(input)
@@ -112,6 +113,9 @@ function render(input: {
         ? { headSha: SHA_TIP, state: 'open', draft: false, mergeableState: input.mergeableState ?? 'clean' }
         : input.tip === null ? null : { headSha: input.tip.headSha, state: 'open', draft: false, mergeableState: input.mergeableState ?? 'clean' },
       merge: input.merge === false ? undefined : { revision: 3, idempotencyKey: 'cmd-review-merge' },
+      // #1132: the card is drawn for the actor's role; these fixtures render
+      // directly, so they pass the value the route would have resolved.
+      viewerRole: input.viewerRole ?? (input.role === 'developer' ? 'developer' : 'maintainer'),
       events: input.events,
     })
   } finally {
@@ -174,7 +178,7 @@ test('no verdict yet is the review state with the re-check as its one action', (
   assert.match(html, /action="[^"]+\/recheck"/)
 })
 
-test('a developer role sees the state but never the merge control', () => {
+test('a developer actor sees the state but never the merge control', () => {
   const html = render({ role: 'developer' })
   assert.equal(stateOf(html), 'blocked')
   assert.equal(mergeForms(html).length, 0)

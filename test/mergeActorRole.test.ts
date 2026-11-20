@@ -200,7 +200,7 @@ async function getPage(s: Fixture, user: UserRow, url: string): Promise<string> 
   return response.body
 }
 
-async function postForm(s: Fixture, user: UserRow, url: string): Promise<{ statusCode: number; location: string }> {
+async function postForm(s: Fixture, user: UserRow, url: string): Promise<{ statusCode: number; location: string; setCookie: string }> {
   const { cookie, csrf } = sessionFor(s.built, user)
   const response = await s.built.app.inject({
     method: 'POST',
@@ -208,7 +208,7 @@ async function postForm(s: Fixture, user: UserRow, url: string): Promise<{ statu
     headers: { cookie: `${cookie}; fledge_lang=en`, 'content-type': 'application/x-www-form-urlencoded' },
     payload: formBody({ csrf }),
   })
-  return { statusCode: response.statusCode, location: String(response.headers.location ?? '') }
+  return { statusCode: response.statusCode, location: String(response.headers.location ?? ''), setCookie: String(response.headers['set-cookie'] ?? '') }
 }
 
 test('case 1: an invited developer sees no single-merge control and their POST merges nothing', async () => {
@@ -218,6 +218,9 @@ test('case 1: an invited developer sees no single-merge control and their POST m
     assert.doesNotMatch(page, /\/jobs\/[^"]*\/merge"/, 'a developer member must not see the merge form')
     assert.match(page, /data-merge-reason="not-maintainer"/, 'the card must say why the control is absent')
     assert.match(page, /Only a maintainer can merge; your role is developer\./)
+    const { cookie } = sessionFor(s.built, s.member)
+    const zh = await s.built.app.inject({ method: 'GET', url: `/repos/${s.repo.id}/jobs/${s.job.id}`, headers: { cookie } })
+    assert.match(zh.body, /只有 maintainer 能合并；你的角色是 developer。/, 'the Chinese twin must state the same refusal')
     const posted = await postForm(s, s.member, `/repos/${s.repo.id}/jobs/${s.job.id}/merge`)
     assert.equal(posted.statusCode, 302)
     assert.equal(s.github.merges.length, 0, 'a developer member must never reach the merge call')
@@ -310,6 +313,10 @@ test('case 7: an invited developer sees no bulk-merge control and their POST mer
     assert.match(page, /Only a maintainer can merge clean pull requests\./)
     const posted = await postForm(s, s.member, `/repos/${s.repo.id}/delivery/merge-clean`)
     assert.equal(posted.statusCode, 302)
+    // The redirect helper moves the message into the flash cookie, so the
+    // refusal sentence is asserted where the next page reads it.
+    const flash = Buffer.from(/fledge_flash=([^;]+)/.exec(posted.setCookie)?.[1] ?? '', 'base64').toString('utf8')
+    assert.match(flash, /只有 maintainer 可以批量合并 PR。/, 'the bulk redirect must state the refusal')
     assert.equal(s.github.merges.length, 0, 'a developer member must never merge the clean set')
     assert.equal(auditOf(s.store, 'delivery.merge_clean').length, 0)
   } finally {
