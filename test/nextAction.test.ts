@@ -216,14 +216,36 @@ test('the all-clear dashboard marks no loop stage as current', () => {
 // The Goal stage was unreachable: `loopStage` never returned it, so a quiet
 // account whose goal is written was told the loop stood at Merge.
 test('a quiet account with a written goal marks Goal as the current stage', () => {
+  // The rail rule is about a quiet account, so the fixture has to be one that can
+  // actually run: since #655 a repository with automatic work off is a lock, not
+  // the quiet state, and it has its own case below.
   const html = render('en', { setup: completeSetup }, (store, user) => {
-    store.createRepo({ id: 'repo_goal', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: 'keep the suite green', autoIterate: false, intervalMinutes: 1440 })
+    store.createRepo({ id: 'repo_goal', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: 'keep the suite green', autoIterate: true, intervalMinutes: 1440 })
+    store.updateRepo('repo_goal', { last_run_at: new Date(Date.now() - 60 * 60_000).toISOString() })
   })
   assert.match(html, /data-next-action="clear"/, 'this is still the quiet state')
   const rail = loopRailBlock(html)
   assert.match(rail, /data-stage="connect" data-state="done"/, 'the account has connected a repository')
   assert.match(rail, /data-stage="goal" data-state="current" aria-current="step"/, 'the written goal is where the loop stands')
   assert.doesNotMatch(rail, /data-stage="merge"[^>]*data-state="current"/, 'Merge is not claimed')
+})
+
+// #655: the all-clear is for an account that will run again on its own. An
+// account whose every repository is switched off cannot, and the page used to
+// answer "Nothing needs you right now" over it — the lock has to be the action.
+test('an account with every repository switched off leads with the lock, not the all-clear', () => {
+  const html = render('en', { setup: completeSetup }, (store, user) => {
+    const off = store.createRepo({ id: 'repo_off', userId: user.id, owner: 'o', name: 'off', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'developer', goal: '', autoIterate: true, intervalMinutes: 60 })
+    store.updateRepo(off.id, { enabled: 0 })
+  })
+  const section = nextActionBlock(html)
+  assert.match(section, /data-next-action="locked"/, 'the primary action is the lock')
+  assert.match(section, /All repositories are disabled/)
+  assert.doesNotMatch(section, /Nothing needs you/, 'a locked account is not told nothing needs it')
+  assert.equal((section.match(/<a class="btn/g) ?? []).length, 1, 'the lock still offers exactly one primary action')
+  assert.match(section, /href="#repositories"/, 'and it goes where the lock is lifted')
+  // The rail names no stage: a locked account is not standing anywhere in the loop.
+  assert.doesNotMatch(loopRailBlock(html), /aria-current="step"/)
 })
 
 test('an unfinished first run keeps exactly one primary action, in the next-action block', () => {
