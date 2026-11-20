@@ -1,11 +1,13 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { createHmac } from 'node:crypto'
+import { readFileSync } from 'node:fs'
 import { sha256Hex } from '../src/lib/secrets.js'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { GithubApp } from '../src/repos/app.js'
-import { makeUser, MemoryMailer, testConfig } from './helpers.js'
+import { localizeMessage } from '../src/i18n.js'
+import { makeUser, MemoryMailer, sessionFor, testConfig } from './helpers.js'
 
 function appConfig() {
   return testConfig({ githubApp: { id: '1', slug: 'fledge-platform', privateKeyPath: '/tmp/fake.pem', webhookSecret: 'secret', useUserToken: false } })
@@ -144,6 +146,81 @@ test('a 404 page is entirely English when the console is English', async () => {
     // The pair stays bilingual: the Chinese console keeps the sentence.
     const zh = await built.app.inject({ method: 'GET', url: '/no-such-page-xyz', headers: { cookie: 'fledge_lang=zh' } })
     assert.match(/<section class="card narrow">([\s\S]*?)<\/section>/.exec(zh.body)?.[1] ?? '', /你访问的页面不存在。/)
+  } finally {
+    await built.close()
+  }
+})
+
+// #1087: the not-found handler's own sentence is in the table, so the case above
+// passed while every *thrown* 4xx printed its Chinese message under an English
+// heading. The handler renders `httpError(status, message)` verbatim, and the
+// table had no entry for any of the 22 messages the app throws, so `localizeMessage`
+// fell back to the original string.
+const THROWN_REFUSALS = [
+  '只读成员不能修改这个仓库。',
+  '只有维护者可以修改仓库设置。',
+  '安装不存在。',
+  '这个仓库没有可用的 GitHub token。',
+  '发布记录不存在。',
+  '只有 maintainer 可以编辑规则覆盖。',
+  '只有 maintainer 可以修改技能包来源。',
+  '任务不存在。',
+  '计划任务不存在或尚未完成。',
+  '工作项不存在。',
+  '仅超级管理员可重试。',
+  'Webhook delivery 不存在。',
+  '仅超级管理员可重发。',
+  '通知不存在。',
+  '预览模式不可读取部署记录。',
+  '仅管理员可以记录部署。',
+  '仅管理员可以记录回滚。',
+  '仅管理员可以停止平台。',
+  '仅管理员可以恢复平台。',
+  '预览模式不可删除账号。',
+  '不能删除自己的账号。',
+  '不能删除最后一个超级管理员。',
+]
+
+test('every thrown refusal has an English form, and the Chinese console keeps its sentence', () => {
+  for (const message of THROWN_REFUSALS) {
+    const english = localizeMessage('en', message) ?? ''
+    assert.notEqual(english, message, `${message} has no English form`)
+    assert.doesNotMatch(english, /[\u4e00-\u9fff]/, `${message} renders as ${english}, which is not English`)
+    assert.equal(localizeMessage('zh', message), message, 'the Chinese console keeps the thrown sentence')
+  }
+})
+
+test('no message the app throws as an http error is left untranslated', async () => {
+  // The list above is a snapshot; this reads the app so a new thrown sentence
+  // cannot re-open the leak one route at a time.
+  const source = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
+  const thrown = [...source.matchAll(/httpError\(\d+,\s*'([^']*)'/g)].map((match) => match[1] ?? '')
+  assert.ok(thrown.length > 0, 'the app throws at least one literal message')
+  for (const message of thrown) {
+    const english = localizeMessage('en', message) ?? ''
+    assert.doesNotMatch(english, /[\u4e00-\u9fff]/, `${message} renders as ${english} on the English console`)
+  }
+})
+
+test('a 404 page from a thrown handler is entirely English on the English console', async () => {
+  const config = appConfig()
+  const store = new Store(':memory:')
+  const runner = { name: 'capture', async run() { return { status: 'running' as const } } }
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner, startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'thrown-404', status: 'approved' })
+    const session = sessionFor(built, user)
+    const res = await built.app.inject({
+      method: 'GET',
+      url: '/repos/new?installation=999999999',
+      headers: { cookie: `${session.cookie}; fledge_lang=en` },
+    })
+    assert.equal(res.statusCode, 404, 'the missing installation is a not-found page')
+    const block = /<section class="card narrow">([\s\S]*?)<\/section>/.exec(res.body)
+    assert.ok(block !== null, 'the error block is rendered')
+    const markup = block[1] ?? ''
+    assert.doesNotMatch(markup, /[\u4e00-\u9fff]/, `the thrown sentence is English too: ${markup}`)
+    assert.match(markup, /Installation not found/, 'the sentence says what is missing')
   } finally {
     await built.close()
   }
