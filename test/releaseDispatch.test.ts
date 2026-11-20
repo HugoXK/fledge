@@ -1,17 +1,53 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { countCommitKinds, latestTagOf, previewRelease, previewAndDispatch } from '../src/lib/releaseDispatch.js'
+import { planRelease } from '../scripts/release-plan.mjs'
+import { latestTagOf, previewRelease, previewAndDispatch } from '../src/lib/releaseDispatch.js'
 import type { ReleaseDispatchOptions } from '../src/lib/releaseDispatch.js'
 
 const MAIN = 'a'.repeat(40)
 const TAG_SHA = 'b'.repeat(40)
 const base64 = (value: string): string => Buffer.from(value).toString('base64')
+const TAG_TIME = '2026-11-16T01:20:00Z'
+
+interface Merge { number: number; title: string; labels: Array<{ name: string }>; merged_at: string }
+
+// One entry per merged pull request, the shape `GET /pulls?state=closed` answers.
+function mergeFixture(titles: string[], labelled: string[] = []): Merge[] {
+  return titles.map((title, index) => ({
+    number: index + 1,
+    title,
+    labels: labelled.includes(title) ? [{ name: 'enhancement' }] : [],
+    merged_at: '2026-11-16T02:00:00Z',
+  }))
+}
+
+const DEFAULT_MERGES: Merge[] = mergeFixture([
+  'fix(a): one (#1)',
+  'fix(b): two (#2)',
+  'fix(c): three (#3)',
+  'fix(d): four (#4)',
+  'fix(e): five (#5)',
+  'fix(f): six (#6)',
+  'feat(a): one (#7)',
+  'feat(b): two (#8)',
+  'feat(c): three (#9)',
+  'feat(d): four (#10)',
+  'feat(e): five (#11)',
+  'docs: one (#12)',
+])
+
+// The preview asks for page 1 first and stops on an empty page, so the fixture
+// answers everything on page 1.
+function pageOf(url: string, rows: Merge[]): Merge[] {
+  const page = Number(/[?&]page=(\d+)/.exec(url)?.[1] ?? '1')
+  return page === 1 ? rows : []
+}
 
 function json(value: unknown, status = 200): Response {
   return new Response(JSON.stringify(value), { status, headers: { 'content-type': 'application/json' } })
 }
 
-function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: number | null; tags?: string[]; packageContent?: string; refuseAt?: string } = {}): { fetch: typeof globalThis.fetch; calls: Array<{ url: string; method: string; body: string }> } {
+function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; merges?: Merge[]; fragments?: number | null; tags?: string[]; packageContent?: string; refuseAt?: string } = {}): { fetch: typeof globalThis.fetch; calls: Array<{ url: string; method: string; body: string }> } {
   const calls: Array<{ url: string; method: string; body: string }> = []
   const fetcher = async (input: string | URL | Request, init?: RequestInit): Promise<Response> => {
     const url = String(input)
@@ -23,24 +59,15 @@ function fakeFetch(overrides: { ci?: string; pulls?: unknown[]; fragments?: numb
     }
     if (url.endsWith('/repos/o/r/commits/main')) return json({ sha: MAIN, commit: { committer: { date: '2026-11-16T07:00:00Z' } } })
     if (url.endsWith('/repos/o/r/git/matching-refs/tags/v')) return json((overrides.tags ?? ['v0.4.0']).map((tag) => ({ ref: `refs/tags/${tag}` })))
-    if (url.endsWith('/repos/o/r/commits/v0.4.0')) return json({ sha: TAG_SHA, commit: { committer: { date: '2026-11-16T01:20:00Z' } } })
+    if (url.endsWith('/repos/o/r/commits/v0.4.0')) return json({ sha: TAG_SHA, commit: { committer: { date: TAG_TIME } } })
+    // The old counting path reads the compare range, whose commit messages are
+    // the merged pull requests' titles; the fix reads the merged pull requests
+    // themselves.
     if (url.includes('/repos/o/r/compare/v0.4.0...')) {
-      const messages = [
-        'fix(a): one (#1)',
-        'fix(b): two (#2)',
-        'fix(c): three (#3)',
-        'fix(d): four (#4)',
-        'fix(e): five (#5)',
-        'fix(f): six (#6)',
-        'feat(a): one (#7)',
-        'feat(b): two (#8)',
-        'feat(c): three (#9)',
-        'feat(d): four (#10)',
-        'feat(e): five (#11)',
-        'docs: one (#12)',
-      ]
+      const messages = (overrides.merges ?? DEFAULT_MERGES).map((merge) => merge.title)
       return json({ total_commits: messages.length, commits: messages.map((message) => ({ commit: { message } })) })
     }
+    if (url.includes('/repos/o/r/pulls?state=closed')) return json(pageOf(url, overrides.merges ?? DEFAULT_MERGES))
     if (url.includes('/repos/o/r/contents/package.json')) return json({ encoding: 'base64', content: base64(overrides.packageContent ?? JSON.stringify({ version: '0.4.0' })) })
     if (url.includes('/repos/o/r/contents/changelog.d')) {
       if (overrides.fragments === null) return json({ message: 'not a directory' })
@@ -69,9 +96,72 @@ function options(fetch: typeof globalThis.fetch): ReleaseDispatchOptions {
   }
 }
 
-test('counts conventional commit kinds and picks the highest semver tag', () => {
-  assert.deepEqual(countCommitKinds(['fix: a', 'feat(x): b', 'docs: c']), { fixes: 1, features: 1, others: 1 })
+test('picks the highest semver tag', () => {
   assert.equal(latestTagOf(['v0.9.0', 'v0.10.0', 'not-a-tag', 'v0.3.9']), 'v0.10.0')
+})
+
+// #985: the one-click action is enabled "only when the normal rule is met", so
+// the preview has to decide with `planRelease` itself. It used to count commit
+// messages of its own: `feature: …` was "other" even though the planner's own
+// test pins it as a feature, and the `enhancement` label was never read at all.
+// Each row feeds one fixture through both readers; a test that only asserted the
+// preview's own numbers would stay green and prove nothing.
+test('the preview decides with the planner rule, not with its own commit counts', async () => {
+  const rows = [
+    {
+      name: 'feature: titles and an enhancement label reach the rule',
+      titles: [
+        'feature: daily release',
+        'feature(api): expose the plan',
+        'feat(ui): stack the job table',
+        'feat: another one',
+        'docs: rewrite the guide',
+        'fix: a',
+        'fix: b',
+        'fix: c',
+        'fix: d',
+        'fix: e',
+      ],
+      labelled: ['docs: rewrite the guide'],
+      shouldRelease: true,
+    },
+    {
+      name: 'nine merges are short of the ten the rule counts',
+      titles: ['feat: a', 'feat: b', 'feat: c', 'feat: d', 'feat: e', 'fix: a', 'fix: b', 'fix: c', 'fix: d'],
+      labelled: [],
+      shouldRelease: false,
+    },
+    {
+      name: 'ten merges with four features are short of five',
+      titles: ['feat: a', 'feat: b', 'feat: c', 'docs: rewrite the guide', 'fix: a', 'fix: b', 'fix: c', 'fix: d', 'fix: e', 'fix: f'],
+      labelled: ['docs: rewrite the guide'],
+      shouldRelease: false,
+    },
+  ] as const
+
+  for (const row of rows) {
+    const merges = mergeFixture([...row.titles], [...row.labelled])
+    const preview = await previewRelease(options(fakeFetch({ merges }).fetch))
+    const plan = planRelease({
+      lastTag: 'v0.4.0',
+      packageVersion: '0.4.0',
+      prs: merges.map((merge) => ({
+        number: merge.number,
+        title: merge.title,
+        labels: merge.labels.map((label) => label.name),
+        mergedAt: merge.merged_at,
+      })),
+      fragments: 2,
+      openReleasePr: false,
+      existingTags: ['v0.4.0'],
+      lastTagCommittedAt: TAG_TIME,
+      releaseAt: '2026-11-16T07:30:00Z',
+    })
+    assert.equal(plan.shouldRelease, row.shouldRelease, `${row.name}: the fixture is what the row claims`)
+    assert.equal(preview.eligible, plan.shouldRelease, `${row.name}: the button and the night agree`)
+    assert.equal(preview.features, plan.features, `${row.name}: the feature count is the rule's`)
+    assert.equal(preview.aheadMerges, plan.total, `${row.name}: the merge count is the rule's`)
+  }
 })
 
 test('preview reads the current state and is eligible when the rule is met', async () => {
@@ -80,8 +170,7 @@ test('preview reads the current state and is eligible when the rule is met', asy
   assert.equal(preview.mainSha, MAIN)
   assert.equal(preview.latestTag, 'v0.4.0')
   assert.equal(preview.nextVersion, '0.4.1')
-  assert.equal(preview.aheadCommits, 12)
-  assert.equal(preview.fixes, 6)
+  assert.equal(preview.aheadMerges, 12)
   assert.equal(preview.features, 5)
   assert.equal(preview.fragments, 2)
   assert.equal(preview.ciOk, 'success')
