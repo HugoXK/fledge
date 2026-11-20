@@ -63,3 +63,18 @@ export function classifyReleaseLookup({ status, stdout = '', stderr = '' } = {})
     reason: `the release lookup failed (exit ${exit}) without an HTTP status; it is unreadable, not absent`,
   }
 }
+
+// #918: the release lookup puts the tag in ONE path segment. GitHub reads
+// `releases/tags/release/1.0` as a deeper path and answers 404, which the rule
+// above must read as "no release yet" — so a slash tag would republish its
+// image. `encodeURIComponent` turns the slash into `%2F` and the tag stays a
+// single segment; every caller builds its path through this one function.
+export function releaseLookupPath(repository, tag) {
+  if (typeof repository !== 'string' || !repository.includes('/')) {
+    throw new TypeError('releaseLookupPath needs an owner/repository')
+  }
+  if (typeof tag !== 'string' || tag.trim() === '') {
+    throw new TypeError('releaseLookupPath needs a tag')
+  }
+  return `repos/${repository}/releases/tags/${encodeURIComponent(tag)}`
+}
