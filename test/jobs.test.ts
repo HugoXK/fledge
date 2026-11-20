@@ -4180,6 +4180,32 @@ test('a job that violates its sealed instruction contract is refused the merge',
     await jobs.handleCallback('job_adherence_merge_ok', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', contextBundleHash: clean.hash, summary: 'done' })
     assert.equal(merges.length, 1, 'a clean contract still merges')
     assert.equal(store.getJob('job_adherence_merge_ok')?.adherence_status, 'pass')
+
+    // The observation is what Fledge actually saw, not what the contract asks
+    // for: a contract that requires evidence Fledge does not audit is
+    // `unverifiable`, never `violation`, and an unverifiable clause does not
+    // block the merge. This is the difference between `null` (not observed) and
+    // an empty array (observed nothing).
+    const strict = compileContextBundle({
+      repo: { id: repo.id, fullName: 'o/r', defaultBranch: 'main' },
+      goal: 'fix it',
+      playbook: { version: '8', hash: 'a'.repeat(40) },
+      contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
+      paths: { allow: [], deny: [] },
+      branch: { base: 'main', name: 'fledge/fix' },
+      required: { evidence: ['npm run check'], sections: ['Ran:'] },
+      forbidden: [],
+      carryOver: [],
+      model: { provider: 'deepseek', name: 'DeepSeek-V4.1-Flash-1017' },
+      role: 'developer',
+    })
+    store.createJob({ id: 'job_adherence_merge_unobserved', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', contextBundle: { hash: strict.hash, json: JSON.stringify(strict.bundle) } })
+    store.updateJob('job_adherence_merge_unobserved', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString(), context_bundle_state: 'verified' })
+    await jobs.handleCallback('job_adherence_merge_unobserved', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', contextBundleHash: strict.hash, summary: 'done' })
+    const unobserved = store.getJob('job_adherence_merge_unobserved')!
+    assert.equal(unobserved.adherence_status, 'unverifiable', 'a requirement Fledge cannot observe is unverifiable, not a violation')
+    assert.match(unobserved.adherence_json ?? '', /evidence\.required/)
+    assert.equal(merges.length, 2, 'an unverifiable clause does not block the merge')
   } finally {
     store.close()
     await github.close()

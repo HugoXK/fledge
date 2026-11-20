@@ -2378,8 +2378,12 @@ export class Jobs {
       contractHash: job.context_bundle_state === 'verified' ? bundle.contractHash : null,
       baseBranch,
       changedPaths: changedFiles,
-      evidence: [],
-      sections: [],
+      // `null` is "the runner did not observe this", and an empty array would be
+      // "it observed nothing" — which is a real answer a required-evidence clause
+      // would record as a violation. Fledge does not audit the run's evidence list
+      // here, so the honest observation is that it did not observe one.
+      evidence: null,
+      sections: null,
       actions: null,
     })
   }
