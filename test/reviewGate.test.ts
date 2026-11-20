@@ -686,6 +686,74 @@ test('a failed run whose gate job passed is not re-run, and a red that cannot be
   assert.equal(exhausted.action, 'blocked')
 })
 
+// #1143: a pr-lint red whose replacement run is still queued is not
+// "cannot be repainted". On #1141 the repair gave up at 04:23:43Z, 46 seconds
+// before the queued pr-lint run's check started, exited 1, and left the head
+// reading unstable while every required context was green.
+const prLintRed = (conclusion = 'failure') => ({
+  name: 'pr-lint',
+  status: 'completed',
+  conclusion,
+  started_at: '2026-11-20T03:53:13Z',
+  completed_at: '2026-11-20T03:53:13Z',
+  check_suite: { id: 4242 },
+})
+const prLintRun = (id: number, status: string, created: string) => ({
+  name: 'pr-lint',
+  path: '.github/workflows/pr-lint.yml',
+  id,
+  status,
+  run_attempt: 1,
+  conclusion: null,
+  created_at: created,
+})
+
+test('#1143: a queued pr-lint run at the SHA makes the plan wait instead of calling the tip unrepaintable', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const queued = prLintRun(44671062954, 'queued', '2026-11-20T03:56:32Z')
+  const plan = repairPlan({
+    expected: 'success',
+    checkRuns: [prLintRed(), { name: 'review-gate', status: 'completed', conclusion: 'success' }],
+    runs: [prLintRun(44668382762, 'completed', '2026-11-20T03:56:32Z'), queued],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'wait')
+  assert.deepEqual(plan.ids, [], 'a wait must never post a rerun')
+  assert.match(plan.reason, new RegExp(String(queued.id)), 'the reason names the run that will settle the red')
+})
+
+test('#1143 control: a red with nothing coming stays blocked, and a queued run older than the red does not flip it', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const base = {
+    expected: 'success' as const,
+    checkRuns: [prLintRed(), { name: 'review-gate', status: 'completed', conclusion: 'success' }],
+    jobsFor: () => [],
+    currentRunId: '900',
+  }
+  const nothingComing = repairPlan({ ...base, runs: [prLintRun(44668382762, 'completed', '2026-11-20T03:56:32Z')] })
+  assert.equal(nothingComing.action, 'blocked', 'a genuinely stuck tip must not be silenced')
+  assert.deepEqual(nothingComing.ids, [])
+
+  // A run created before the standing red cannot have painted it: the red is
+  // newer than the run, so this tip still needs a new run.
+  const older = repairPlan({ ...base, runs: [prLintRun(44668382762, 'queued', '2026-11-20T03:00:00Z')] })
+  assert.equal(older.action, 'blocked')
+})
+
+test('#1143: the blocked reason states the standing conclusion, not a fixed word', async () => {
+  const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
+  const plan = repairPlan({
+    expected: 'success',
+    checkRuns: [prLintRed('cancelled'), { name: 'review-gate', status: 'completed', conclusion: 'success' }],
+    runs: [],
+    jobsFor: () => [],
+    currentRunId: '900',
+  })
+  assert.equal(plan.action, 'blocked')
+  assert.match(plan.reason, /cancelled pr-lint/, 'the reason says what the standing check says')
+})
+
 test('the second identical trigger finds nothing on its first attempt and makes no write', async () => {
   const { repairPlan } = await import('../scripts/lib/gate-repair.mjs')
   const plan = repairPlan({

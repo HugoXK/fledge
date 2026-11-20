@@ -942,6 +942,19 @@ while the merge gate kept refusing.
   comparison uses the check's timestamp, never the run's `updated_at`, which moves
   when any sibling job finishes. Without a verdict timestamp the plan fails closed.
 
+  `#1143` applies the same rule to the non-gate contexts. A standing `pr-lint` red
+  is not "cannot be repainted" while a run of `pr-lint`'s workflow is `queued` or
+  `in_progress` at that SHA and was created after the red started: the plan answers
+  `STATE=wait`, names that run in the reason and keeps `ids` empty, so nothing can
+  be posted against a live run. The repair job also reports the standing check's
+  actual conclusion (`cancelled` vs `failure`) instead of a fixed word, because a
+  suite whose newest check is `cancelled` was being described as a failed run.
+  `cannot be repainted` stays for the case where no run is coming. This tip ships
+  the plan decision; re-triggering the repair when the awaited run settles is a
+  separate workflow-trigger change, so until that lands the human action after a
+  `STATE=wait` is to re-run `review-gate-repair` at that SHA once the live run has
+  finished.
+
 The comment path is the job `review-gate-comment`, never `review-gate`: its checks
 land on the default branch, and a skipped job would still publish a check run
 under the required name. Its `if:` tests the event first and reaches the
