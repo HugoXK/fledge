@@ -582,8 +582,10 @@ with the commands they name, because a gate only works if it can be run:
    a time. A second concurrent write session is how a duplicate PR appears.
 2. **One branch, one open PR.** Before opening, query
    `GET /repos/{owner}/{repo}/pulls?head={owner}:{branch}&state=open`; if a pull
-   request exists, push to it. A second PR on that branch is closed the moment it
-   appears.
+   request exists, push to it and open nothing new. A second PR already open on
+   that branch stays open: report it to the Lead and the owner decides whether it
+   closes — opening no duplicate is the rule, closing one is not a Dev's act
+   (owner instruction 2026-11-15).
 3. **One worktree, one writer.** No two bots and no two sessions share one
    worktree.
 4. **Dedicated ports for verification servers.** Never `8080`, the documented
@@ -889,8 +891,15 @@ fails at the push that makes the condition true: a tip carrying a commit whose
 be independently reviewed, and no verdict at any SHA can turn that green. It reads
 the same `reviewerAuthoredCommit()` the gate reads, from the **base** ref, and it
 is an early warning rather than a required context — `review-gate` still decides.
-The fix is to re-author the commit (`git commit --amend --author=...`, or a
-`filter-branch`/`rebase` over the branch) and push; the trees do not change.
+Every commit on the tip is authored by an admitted identity — a name in `authors`
+in `.github/agent/review-policy.json`, never the reviewer address
+`hugo2001xk@gmail.com`, which GitHub resolves to `HugoXK-bot`; `AGENTS.md`
+("Commit identity") carries the rule and the shapes in use.
+The fix is a rebuild, not a force-push: re-author the commits on a new branch with
+the same tree and a `supersedes #<old> — same tree <sha>, author-identity fix only`
+line in its PR body, and leave the old PR open until the owner approves closing
+it — closing is the owner's action only, and a replacement does not authorise it
+(owner instruction 2026-11-15); the trees do not change.
 Before this job existed the condition was visible only in the job log of a red
 `review-gate` run, which is how `#532`, `#533` and `#618` each spent a review round
 on a tip that could never merge.
