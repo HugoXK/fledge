@@ -142,9 +142,10 @@ test('the next-run sentence and the inbox heading are fixed at every call site t
   try {
     const zh = { dashboard: await get(h, '/dashboard', 'zh'), repo: await get(h, `/repos/${h.repo.id}`, 'zh'), console: await get(h, '/console', 'zh') }
     const en = { dashboard: await get(h, '/dashboard', 'en'), repo: await get(h, `/repos/${h.repo.id}`, 'en'), console: await get(h, '/console', 'en') }
-    // The dashboard names the next run on its all-clear card; a fixture that fell
-    // back to another card would make the assertion below test nothing.
-    for (const page of [zh.dashboard, en.dashboard]) assert.ok(page.body.includes('data-next-action="clear"'), 'the dashboard fixture reaches the all-clear card')
+    // #655: a workspace that is not ready is the card's lock, not the all-clear, so
+    // the fixture reaches the locked card; a fixture that fell back to another card
+    // would make the sentence assertions below test nothing.
+    for (const page of [zh.dashboard, en.dashboard]) assert.ok(page.body.includes('data-next-action="locked"'), 'the dashboard fixture reaches the lock card')
     // The same helper renders on both surfaces; a fix applied to one call site
     // only is red here.
     for (const page of [zh.dashboard, zh.repo]) assert.ok(page.body.includes('工作区未就绪，自动运行不会开始'), 'zh next-run sentence on the dashboard and the repository page')
