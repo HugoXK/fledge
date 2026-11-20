@@ -121,6 +121,21 @@ function blockingRun(reds, runs, jobsFor, currentRunId) {
   return [...(owning.length > 0 ? owning : pool)].sort(newestFirst)[0]
 }
 
+// #1143: the run that will paint a non-gate context next. Queued or in progress
+// at this SHA and created after the standing red started, so a run that predates
+// the red cannot be mistaken for its replacement. An unparseable red timestamp
+// returns undefined on purpose: without the boundary the plan fails closed to
+// `blocked`, never to a wait that would loop on an old run.
+function liveRunBehindRed(runs, spec, red, currentRunId) {
+  const redAt = Date.parse(String(red?.started_at ?? red?.completed_at ?? ''))
+  if (!Number.isFinite(redAt)) return undefined
+  const live = (runs ?? []).filter((run) => ownsContext(run, spec)
+    && String(run.id) !== String(currentRunId ?? '')
+    && (run?.status === 'queued' || run?.status === 'in_progress')
+    && Date.parse(String(run?.created_at ?? '')) > redAt)
+  return [...live].sort(newestFirst)[0]
+}
+
 function startedAt(check) {
   return Date.parse(check.started_at ?? check.completed_at ?? '') || 0
 }
@@ -206,8 +221,21 @@ export function repairPlan({ expected, checkRuns, runs, jobsFor, currentRunId, v
   if (reds.length === 0) {
     for (const spec of REPAIRABLE_CONTEXTS) {
       if (spec.context === REQUIRED_CONTEXT) continue
-      if (redOfContext(completed, spec.context).length === 0) continue
-      return { action: 'blocked', ids: [], reason: `a failed ${spec.context} still stands at this SHA and no completed ${spec.workflowName} run below attempt ${MAX_REPAIR_ATTEMPT + 1} can be re-run; a new run of ${spec.workflowPath} is needed` }
+      const contextReds = redOfContext(completed, spec.context)
+      if (contextReds.length === 0) continue
+      const red = newestCompletedAt(contextReds)
+      // #1143: a run that is queued or running at this SHA has not painted
+      // anything yet, but it is coming — so the tip is not "cannot be
+      // repainted". Wait, write nothing, and let the run that settles it decide.
+      const live = liveRunBehindRed(runs, spec, red, currentRunId)
+      if (live !== undefined) {
+        return {
+          action: 'wait',
+          ids: [],
+          reason: `run ${live.id} of ${spec.workflowName} is still ${String(live.status)} and was created after the standing ${String(red?.conclusion ?? 'failed')} ${spec.context} (${String(red?.started_at ?? red?.completed_at ?? 'unknown time')}); the result of that run decides again`,
+        }
+      }
+      return { action: 'blocked', ids: [], reason: `a ${String(red?.conclusion ?? 'failed')} ${spec.context} still stands at this SHA and no completed ${spec.workflowName} run below attempt ${MAX_REPAIR_ATTEMPT + 1} can be re-run; a new run of ${spec.workflowPath} is needed` }
     }
     return { action: 'none', ids: [], reason: 'no failed required check at this SHA' }
   }
