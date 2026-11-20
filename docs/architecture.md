@@ -483,6 +483,17 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   `state` and the callback returns there. `/api/*`, `/v1/*` and non-GET requests
   keep the 401, so a machine client keeps its status code and a form post keeps
   its body.
+- **Error pages** (`errorPage` in `src/views/pages.ts`): every HTML failure shows
+  the status the route already replied with — `错误 404` / `Error 404` above the
+  title, the code in the tab title, `data-status` on the card — and one recovery
+  action chosen from the viewer rather than a fixed one. A 401, 403 or 404 offers
+  `/dashboard` (回到控制台 / Back to dashboard) to a signed-in person and
+  `/auth/github` (使用 GitHub 登录 / Sign in with GitHub) to an anonymous one; a
+  route may pass its own action and that wins. A 429 or a 5xx derives nothing,
+  because signing in cannot change that answer: a 5xx keeps its
+  `errors/<ref>/report` form and never prints a stack. `src/app.ts` passes the
+  status it is about to reply at each call site, and the 2xx reuse for the
+  "report sent" confirmation shows no code.
 - **SQLite** via Node's built-in `node:sqlite` (WAL, foreign keys). The database
   file is the only state; the mail outbox is a development artifact.
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is

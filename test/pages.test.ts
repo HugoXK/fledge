@@ -1849,13 +1849,14 @@ test('every redirect banner value has an English form', () => {
 
 // --- errorPage localization (#449) ------------------------------------------
 //
-// `errorPage(config, viewer, title, message, locale)` runs both sentences through
-// `localizeMessage`, which returns an unmatched literal verbatim, so a title or a
-// message with no `MESSAGES` row ships in Chinese inside the English console.
-// Until this guard only the 404 pair (#444) was pinned, by hand. The walk below
-// reads every `errorPage(` call in `src/app.ts` and takes arguments 3 and 4
-// (title, message); the fifth argument is the action, whose label is bilingual by
-// construction (`t('使用 GitHub 登录', 'Sign in with GitHub')`).
+// `errorPage(config, viewer, status, title, message, locale)` runs both sentences
+// through `localizeMessage`, which returns an unmatched literal verbatim, so a
+// title or a message with no `MESSAGES` row ships in Chinese inside the English
+// console. Until this guard only the 404 pair (#444) was pinned, by hand. The walk
+// below reads every `errorPage(` call in `src/app.ts` and takes arguments 4 and 5
+// (title, message); the sixth argument is the action, whose label is bilingual by
+// construction (`t('使用 GitHub 登录', 'Sign in with GitHub')`). The third argument
+// became the replied status in #469 and is not a sentence.
 //
 // An argument is read as the sentences it can be at run time: a literal, both
 // branches of a top-level conditional, or the English side of a `t(zh, en)`
@@ -1964,7 +1965,7 @@ function errorPageTexts(source: string): { texts: string[]; unreadable: string[]
     calls += 1
     const call = balanced(source, at + needle.length - 1)
     const args = splitTopLevel(call.body)
-    for (const index of [2, 3]) {
+    for (const index of [3, 4]) {
       const read = errorPageArgumentTexts(args[index] ?? '')
       for (const text of read.texts) {
         if (seen.has(text)) continue
