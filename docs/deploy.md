@@ -1304,9 +1304,14 @@ check` is what an empty directory says. An encrypted copy is listed the same
 way: its manifest's size and `sha256` cover the file on disk, so the card
 compares the ciphertext and reads the age from the name. The restore drill
 writes `${DATA_DIR}/backup-drill.json` when `DATA_DIR` is set (or the path passed
-with `--status-file`), and the card shows that record's time, `ok`/`failed` and
-RTO/RPO. It says `none recorded` only when that file is absent or unreadable, so
-the card never shows a green it cannot prove.
+with `--status-file`), and the card shows that record's time, `ok`/`failed`,
+RTO/RPO and the column check as its own row — `列检查：通过 / column check:
+passed`, `列检查：未运行（未提供密钥） / not run (no key given)` when the run
+carried no key, `列检查：失败 / failed` with the column names, or `列检查：未记录
+/ not recorded` for a record written before the field existed. A drill whose
+column check did not pass never reads as an unqualified `成功 / ok`: the success
+word carries the qualification. It says `none recorded` only when that file is
+absent or unreadable, so the card never shows a green it cannot prove.
 
 The same two readers publish five series on `/metrics` at scrape time, so the
 backup can page without somebody opening the card: `fledge_backup_age_hours`,
@@ -1336,7 +1341,11 @@ written `0600`, so the dump is not readable by other accounts on the host either
 Prove that the newest copy still restores, without touching the live database:
 
 ```sh
-npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json"
+# The column key lives in the root-only env file. Derive it into an owner-only
+# file so it never appears on a command line, and remove the file after the run.
+sudo sh -c 'umask 077; sed -n "s/^TOKEN_ENCRYPTION_KEY=//p" /etc/fledge/fledge.env > /var/tmp/fledge-column.key'
+npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json" --secret-key-file /var/tmp/fledge-column.key
+# a keyring host passes the JSON file TOKEN_ENCRYPTION_KEYS_FILE names instead
 # encrypted copy: prefix with BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key
 # manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
 # table=jobs expected=5000 actual=5000        one line per table: copy vs manifest
@@ -1357,11 +1366,23 @@ How it works and how to read it:
   directory (write a fresh copy first with `--fresh`; with a key configured that
   fresh copy is encrypted too). Nothing is created if a copy already exists, so
   the RPO you see is the age of your real backup schedule.
-- `--status-file <path>` records the result for `/admin`: `{at, ok, detail}`,
-  mode `0600`, written atomically. With neither the flag nor `DATA_DIR` the drill
-  writes nothing, so a CI run cannot touch an operator's data directory. A failed
-  drill overwrites the last success with `ok:false`, so the card never shows a
-  stale green.
+- `--status-file <path>` records the result for `/admin`:
+  `{at, ok, detail, columnCheck, columnErrors}`, mode `0600`, written atomically.
+  With neither the flag nor `DATA_DIR` the drill writes nothing, so a CI run
+  cannot touch an operator's data directory. A failed drill overwrites the last
+  success with `ok:false`, so the card never shows a stale green.
+- `--secret-key-file <path>` proves the copy's encrypted columns still open: one
+  payload per ciphertext column (`users.github_token_enc`, `repos.token_enc`,
+  `jobs.callback_secret_enc` and the other `*_enc` columns an application schema
+  carries) is decrypted with the key at that path. The file holds one base64
+  32-byte key, or the keyring JSON `{"<id>": "<base64 32 bytes>"}` a keyed host
+  already uses, so a `v2:<id>:…` payload passes with the id it names and fails
+  naming that id when the file does not carry it. The drill records
+  `columnCheck: pass`, `fail` (with the failing `table.column` entries in
+  `columnErrors`, exit non-zero), or `skipped` when the flag is absent — the
+  previous verdict and exit code are unchanged, and an unrun check is never
+  reported as a pass. The drill never reads the key from its own environment and
+  never imports the application's config; remove the key file when the run ends.
 - **An encrypted copy is decrypted with the configured key before the database
   checks.** The `.db.enc` extension selects the encrypted path; the ciphertext is
   checked against the manifest first, then decrypted with
@@ -1482,17 +1503,22 @@ contents or query results into this file.
 Restore for real, on a stopped instance. The work directory must be outside
 `DATA_DIR` (the drill refuses a target inside it), so use a scratch path. For an
 encrypted copy, set the same key source the backup used; a missing or wrong key
-stops the drill before it can produce a `restored.db`:
+stops the drill before it can produce a `restored.db`. The column key is passed
+the same way, so a copy whose credentials no longer open is refused here — a
+non-zero exit takes the `else` branch and `restored.db` is never copied in:
 
 ```sh
 sudo systemctl stop fledge
 sudo install -d -m 700 /var/tmp/fledge-restore
-if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore; then
+sudo sh -c 'umask 077; sed -n "s/^TOKEN_ENCRYPTION_KEY=//p" /etc/fledge/fledge.env > /var/tmp/fledge-restore/column.key'
+if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore --secret-key-file /var/tmp/fledge-restore/column.key; then
   echo "restore-drill: OK"
 else
   echo "drill failed; do not restore from this copy" >&2
   exit 1
 fi
+# the column key was only needed for the check above
+sudo rm -f /var/tmp/fledge-restore/column.key
 # a failed drill renames the copy to restored.db.failed, so only a fresh, verified
 # restored.db can be copied in the next step
 sudo rm -f "$DB_PATH-wal" "$DB_PATH-shm"
