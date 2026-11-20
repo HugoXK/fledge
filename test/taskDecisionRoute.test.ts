@@ -20,7 +20,7 @@ interface Fixture {
   close: () => Promise<void>
 }
 
-async function fixture(tag: string): Promise<Fixture> {
+async function fixture(tag: string, repoRole: string | null = 'maintainer'): Promise<Fixture> {
   const config = testConfig()
   const store = new Store(':memory:')
   const built = await buildApp({
@@ -39,7 +39,9 @@ async function fixture(tag: string): Promise<Fixture> {
     defaultBranch: 'main',
     tokenEnc: 'x',
     permission: 'admin',
-    repoRole: 'maintainer',
+    // #1113: a repository connected before any role was checked records NULL,
+    // and the caller decides whether this fixture is that shape.
+    repoRole,
     goal: '',
     autoIterate: false,
     intervalMinutes: 1440,
@@ -301,6 +303,60 @@ test('a related decision on a task that did run still writes the task and one re
     const relations = f.store.listTaskRelations(f.existedJobId)
     assert.equal(relations.length, 1)
     assert.equal(relations[0]?.kind, 'related')
+  } finally {
+    await f.close()
+  }
+})
+
+// #1113: the "may not decide" answer belongs to the shared mutating guard, not
+// to a branch written inside this route: `ownedRepo` already answers 404 for a
+// non-member and 403 for a viewer, so a check of its own could never run. This
+// case keeps the refusal on the record instead of on an unreachable line.
+test('a viewer member posting a decision is refused by the shared write guard', async () => {
+  const f = await fixture('viewer')
+  try {
+    const viewer = makeUser(f.store, { login: 'decision-route-viewer', status: 'approved' })
+    f.store.addRepoMember({ repoId: f.repoId, userId: viewer.id, role: 'viewer', grantedBy: f.user.id })
+    assert.equal(f.store.memberRoleFor(f.repoId, viewer.id), 'viewer')
+    const before = f.store.listWorkItems(f.repoId).length
+    const session = sessionFor(f.built, viewer)
+    const response = await f.built.app.inject({
+      method: 'POST',
+      url: `/repos/${f.repoId}/jobs/${f.verifyId}/decision`,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `${session.cookie}; fledge_lang=en` },
+      payload: formBody({ csrf: session.csrf, ...good, kind: 'new', title: 'a viewer cannot decide' }),
+    })
+    assert.equal(response.statusCode, 403, 'a viewer is refused before the decision is read')
+    assert.equal(f.store.listWorkItems(f.repoId).length, before, 'a refused viewer writes no task')
+    assert.equal(
+      f.store.listAudit(200).some((entry) => entry.action.startsWith('task.decision_')),
+      false,
+      'and no decision audit row',
+    )
+  } finally {
+    await f.close()
+  }
+})
+
+// #1113: a repository connected before any upstream role was recorded keeps
+// `repo_role` NULL, and the page already offers the decision there because the
+// page reads the actor's role (#1081). The route read the upstream column
+// instead, so the form the page drew could only come back as "choose your role
+// first". This case is the one that tells the two readers apart: no role on the
+// repository, an owner session, a finished verify job.
+test('a repository with no recorded upstream role takes the decision the page offers', async () => {
+  const f = await fixture('nullrole', null)
+  try {
+    const html = await page(f, f.verifyId)
+    assert.match(html, /action="\/repos\/[^"]+\/jobs\/[^"]+\/decision"/, 'the page offers the decision form')
+    assert.doesNotMatch(html, /data-decision-role-required/, 'the page does not tell the owner to pick a role')
+    const before = f.store.listWorkItems(f.repoId).length
+    const response = await post(f, 'en', { ...good, kind: 'new', title: 'fix the retry in the second call site' })
+    assert.equal(response.statusCode, 302)
+    assert.equal(response.flash?.error, undefined, 'the route does not refuse a decision the page offered')
+    assert.ok(response.flash?.notice)
+    assert.match(response.flash?.notice?.text ?? '', /Recorded as the next step/)
+    assert.equal(f.store.listWorkItems(f.repoId).length, before + 1)
   } finally {
     await f.close()
   }
