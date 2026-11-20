@@ -317,7 +317,9 @@ test('an instance that never wrote a backup says so, and names the command that 
 test('the admin route reads the backup directory the writer uses, from config', async () => {
   const dir = makeBackupDir()
   const store = new Store(':memory:')
-  const config = testConfig({ backup: { dir, expectedIntervalHours: 26 } })
+  // The keep counts are part of the backup config the card reads (#692); the
+  // defaults are 1 plaintext / 30 encrypted, so the fixture names them too.
+  const config = testConfig({ backup: { dir, expectedIntervalHours: 26, keepPlaintext: 1, keepEncrypted: 30 } })
   const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   try {
     const admin = makeUser(store, { login: 'backup-admin', admin: true })

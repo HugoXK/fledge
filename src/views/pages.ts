@@ -52,6 +52,7 @@ import { readReleaseNotesProvenance, readReleaseNotesSources } from '../releases
 import { readReleaseAnalysis } from '../releases/analysis.js'
 import { compareRunning, type ReleaseStatusSnapshot } from '../lib/releaseStatus.js'
 import { readBackupStatus, readRestoreDrill, SHA256_MAX_BYTES, type BackupCopyStatus, type BackupStatus, type RestoreDrillStatus } from '../lib/backupStatus.js'
+import { planBackupExpiry, type BackupExpiryPlan } from '../../scripts/lib/backup-manifest.mjs'
 import { RETENTION_CLASSES, RETENTION_IDLE_TABLES, RETENTION_SETTINGS_CLASS, type RetentionId } from '../../scripts/lib/retention.mjs'
 import { classifyFailure, failureLabel, failureSentence, type FailureAction, type FailureKind } from '../lib/failure.js'
 import { filterTrials, trialCounts, trialStateOf, TRIAL_DAYS, type TrialCandidateSource, type TrialFilter } from '../lib/trials.js'
@@ -3078,6 +3079,15 @@ function pager(path: string, pageParam: string, page: number, total: number, per
   return `<div class="pager">${prev}<span class="pager-info">${page} / ${pages} · ${total}</span>${next}</div>`
 }
 
+/**
+ * #692: the errno code behind a failed retention scan, for the one row the admin
+ * card prints. A throw without a code still has to read as a failure, never blank.
+ */
+function scanErrorCode(error: unknown): string {
+  const code = error !== null && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined
+  return typeof code === 'string' && code !== '' ? code : 'unknown'
+}
+
 /** One row of the admin retention card: an age window and what it would delete now. */
 export interface RetentionRow {
   id: RetentionId | 'settingsMarkers' | 'sessions' | 'api_tokens'
@@ -3120,6 +3130,11 @@ export function adminPage(input: {
   releaseDispatchError?: string
   /** Defaults to reading `config.backup.dir`; a test passes a fixture directory. */
   backup?: BackupStatus
+  /**
+   * #692: the retention scan for the configured keep counts. Defaults to
+   * scanning `config.backup.dir`; a test may pass the same plan it checks.
+   */
+  expiry?: BackupExpiryPlan
   /** Defaults to reading `<dataDir>/backup-drill.json`; a test passes a fixture record. */
   drill?: RestoreDrillStatus | null
   /**
@@ -3132,6 +3147,22 @@ export function adminPage(input: {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
   const release = input.release ?? releaseSurface()
   const backup = input.backup ?? readBackupStatus({ dir: config.backup.dir, expectedHours: config.backup.expectedIntervalHours })
+  // #692: an unreadable backup directory is exactly when an operator needs this
+  // card, so a failed scan is one row on the page instead of a 500. The CLI
+  // keeps the strict throw; only this read-only surface renders the failure.
+  let expiry: BackupExpiryPlan | null = input.expiry ?? null
+  let expiryError: string | null = null
+  if (input.expiry === undefined) {
+    try {
+      expiry = planBackupExpiry({
+        dir: config.backup.dir,
+        keepPlaintext: config.backup.keepPlaintext,
+        keepEncrypted: config.backup.keepEncrypted,
+      })
+    } catch (error) {
+      expiryError = scanErrorCode(error)
+    }
+  }
   const drill = input.drill === undefined ? readRestoreDrill(`${config.dataDir}/backup-drill.json`) : input.drill
   const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
@@ -3353,6 +3384,16 @@ export function adminPage(input: {
   const copiesLine = [copyCount, encryptedCount, copyAgreement]
     .filter((part): part is string => part !== null)
     .join(' · ')
+  // #692: the same scan the dry run prints, read-only. The number is what the
+  // next run with the configured counts would take, never a record of a delete:
+  // this tip has no `--apply`, so the card says "dry run" beside it. A scan that
+  // failed says so and keeps the configured counts, so the operator still sees
+  // the policy on the page that reports the broken directory.
+  const keep = expiry?.keep ?? { plaintext: config.backup.keepPlaintext, encrypted: config.backup.keepEncrypted }
+  const keepText = t(`保留 ${keep.plaintext} 明文 / ${keep.encrypted} 加密`, `keep ${keep.plaintext} plaintext / ${keep.encrypted} encrypted`)
+  const expiredText = expiry === null
+    ? `${t(`扫描失败：${expiryError ?? 'unknown'}`, `scan failed: ${expiryError ?? 'unknown'}`)} · ${keepText}`
+    : `${expiry.expiredCopies === 1 ? t('1 (试运行)', '1 (dry run)') : t(`${expiry.expiredCopies} (试运行)`, `${expiry.expiredCopies} (dry run)`)} · ${keepText}`
   const drillText = drill === null
     ? t('没有记录', 'none recorded')
     : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`
@@ -3362,6 +3403,7 @@ export function adminPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本', 'Newest copy'))}</strong><small>${newest === null ? escapeHtml(t('还没有记录备份副本', 'No backup copy recorded yet')) : `${escapeHtml(newest.name)} · ${escapeHtml(backupSize(newest.sizeBytes))} · ${escapeHtml(humanTimeShort(newest.createdAt))}`}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('新鲜度', 'Freshness'))}</strong><small>${escapeHtml(freshness)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('副本数', 'Copies'))}</strong><small>${escapeHtml(copiesLine)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('过期副本', 'Expired copies'))}</strong><small>${escapeHtml(expiredText)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
       ${problemRows}
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(drillText)}</small></div></div>

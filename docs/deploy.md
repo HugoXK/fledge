@@ -1144,6 +1144,49 @@ npm run db:backup
 # outside the backup directory; BACKUP_WORK_DIR moves it (default: the temp dir)
 ```
 
+### Backup retention and the dry run
+
+`BACKUP_KEEP` (default 14) is the write-time count `npm run db:backup` prunes to,
+and it applies to every copy it writes. The retention the console reports is
+per class, so the encrypted copies an instance keeps do not consume the plaintext
+copy the restore drill reads:
+
+| Env | Default | What the scan keeps |
+|---|---|---|
+| `BACKUP_KEEP_PLAINTEXT` | `1` | plaintext `fledge-<stamp>.db` copies (`npm run db:backup` writes one on the host) |
+| `BACKUP_KEEP_ENCRYPTED` | `30` | encrypted `fledge-<stamp>.db.enc` copies |
+
+Both are read by `loadConfig` and by the scan itself, so the policy is in the
+repository instead of only in a host wrapper. A value that is not a positive
+whole number is refused — `0` would erase every copy of that class — rather than
+clamped.
+
+`node scripts/backup-prune.mjs` prints what the next run with those counts would
+take and **deletes nothing**. It lists each copy beyond its class's keep count
+with its age and reason, and the manifest and the `-wal`/`-shm` sidecars that
+belong to that copy:
+
+```sh
+node scripts/backup-prune.mjs                  # dry run against BACKUP_DIR, human output
+node scripts/backup-prune.mjs --json           # same decision for a script or the console
+node scripts/backup-prune.mjs --keep-plaintext 2 --keep-encrypted 30
+```
+
+The `<section id="backups">` card on `/admin` shows the same number as
+`Expired copies: N (dry run)`, read through the same `planBackupExpiry()` helper,
+so the operator sees what the next run would take without opening a copy. This
+tip has no `--apply`: confirm the counts first, and the first real deletion stays
+the owner's.
+
+The scan stays strict where it decides: `node scripts/backup-prune.mjs` exits
+non-zero on a directory it cannot read, and on a `BACKUP_DIR` that exists but is
+a regular file (`ENOTDIR`), because neither may read as "nothing to prune". Only
+a missing directory scans as empty, which is the first boot before any copy is
+written. The card is the surface an operator opens when backups are already
+broken, so a failed scan there is a row — `scan failed: <errno>` beside the
+configured counts — instead of a failed `/admin` request; the copy counts the
+page can still read are shown as usual.
+
 ### Backup encryption
 
 Backups stay plaintext by default, so existing schedules keep working. Set one
