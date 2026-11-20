@@ -138,14 +138,14 @@ test('a 404 page is entirely English when the console is English', async () => {
     for (const url of ['/no-such-page-xyz', '/lang/xx']) {
       const res = await built.app.inject({ method: 'GET', url, headers: { cookie: 'fledge_lang=en' } })
       assert.equal(res.statusCode, 404, `${url} answers 404`)
-      const block = /<section class="card narrow">([\s\S]*?)<\/section>/.exec(res.body)
+      const block = /<section class="card narrow"[^>]*>([\s\S]*?)<\/section>/.exec(res.body)
       assert.ok(block !== null, `${url} renders the error block`)
       const markup = block[1] ?? ''
       assert.doesNotMatch(markup, /[\u4e00-\u9fff]/, `${url} error block is English: ${markup}`)
     }
     // The pair stays bilingual: the Chinese console keeps the sentence.
     const zh = await built.app.inject({ method: 'GET', url: '/no-such-page-xyz', headers: { cookie: 'fledge_lang=zh' } })
-    assert.match(/<section class="card narrow">([\s\S]*?)<\/section>/.exec(zh.body)?.[1] ?? '', /你访问的页面不存在。/)
+    assert.match(/<section class="card narrow"[^>]*>([\s\S]*?)<\/section>/.exec(zh.body)?.[1] ?? '', /你访问的页面不存在。/)
   } finally {
     await built.close()
   }
@@ -216,7 +216,7 @@ test('a 404 page from a thrown handler is entirely English on the English consol
       headers: { cookie: `${session.cookie}; fledge_lang=en` },
     })
     assert.equal(res.statusCode, 404, 'the missing installation is a not-found page')
-    const block = /<section class="card narrow">([\s\S]*?)<\/section>/.exec(res.body)
+    const block = /<section class="card narrow"[^>]*>([\s\S]*?)<\/section>/.exec(res.body)
     assert.ok(block !== null, 'the error block is rendered')
     const markup = block[1] ?? ''
     assert.doesNotMatch(markup, /[\u4e00-\u9fff]/, `the thrown sentence is English too: ${markup}`)

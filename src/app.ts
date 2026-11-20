@@ -714,7 +714,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // sign-in routes already returned, never a bare status a form post cannot
   // explain.
   const refuseTooMany = (request: FastifyRequest, reply: FastifyReply) =>
-    htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
   // #460 review: the destructive actions below are rate-limited as well as
   // re-authenticated, through `@fastify/rate-limit` (registered `global: false`
   // below) so the limit is visible to callers and to CodeQL's Fastify model
@@ -1230,7 +1230,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/lang/:locale', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).locale)
-    if (!isLocale(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    if (!isLocale(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), 404, '页面不存在', '你访问的页面不存在。', request.locale))
     const next = queryText(request, 'next')
     const safeNext = safeLocalPath(next, '/')
     reply.setCookie(LOCALE_COOKIE, requested, {
@@ -1249,7 +1249,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // default, and `next` goes through the same same-origin contract as `/lang`.
   app.get('/density/:mode', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).mode)
-    if (!isDensity(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    if (!isDensity(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), 404, '页面不存在', '你访问的页面不存在。', request.locale))
     reply.setCookie(DENSITY_COOKIE, requested, {
       path: '/',
       httpOnly: true,
@@ -1266,7 +1266,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // goes through the same same-origin contract as `/lang` and `/density`.
   app.get('/theme/:mode', async (request, reply) => {
     const requested = String((request.params as Record<string, string>).mode)
-    if (!isTheme(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    if (!isTheme(requested)) return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), 404, '页面不存在', '你访问的页面不存在。', request.locale))
     reply.setCookie(THEME_COOKIE, requested, {
       path: '/',
       httpOnly: true,
@@ -1290,7 +1290,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/auth/dev', async (request, reply) => {
     if (config.env === 'production' || config.devLogin.login === '') {
-      return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '页面不存在', 'Dev 登录没有开启。', request.locale))
+      return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, 404, '页面不存在', 'Dev 登录没有开启。', request.locale))
     }
     const user = store.upsertGithubUser({
       id: randomId('usr'),
@@ -1313,9 +1313,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.post('/auth/token', async (request, reply) => {
     if (!tokenLoginEnabled(config)) {
       const t = translator(request.locale ?? 'zh')
-      return htmlPage(reply, 403, errorPage(config, request.viewer ?? null, 'OAuth 已启用', '这个部署已经启用 GitHub OAuth，请使用 GitHub 登录。', request.locale, { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }))
+      return htmlPage(reply, 403, errorPage(config, request.viewer ?? null, 403, 'OAuth 已启用', '这个部署已经启用 GitHub OAuth，请使用 GitHub 登录。', request.locale, { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }))
     }
-    if (!limits.take('login', `token:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `token:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const token = (form(request).token ?? '').trim()
     if (token === '') return htmlPage(reply, 400, messagePage(config, '缺少 token', '请填写一个 GitHub token。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     let profile
@@ -1346,9 +1346,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github', async (request, reply) => {
-    if (!limits.take('login', `login:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `login:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     if (!oauthConfigured(config)) {
-      return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
+      return htmlPage(reply, 503, errorPage(config, request.viewer ?? null, 503, 'GitHub OAuth 未配置', '请先在 .env 设置 GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET。', request.locale))
     }
     const state = randomToken(32)
     store.createOAuthState(sha256Hex(state), addMinutes(20), safeLocalPath(queryText(request, 'next'), '/dashboard'))
@@ -1357,7 +1357,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/auth/github/reauthorize', async (request, reply) => {
     const viewer = requireApproved(request)
-    if (!limits.take('login', `reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `reauth:${viewer.user.id}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     if (!oauthConfigured(config)) return reply.redirect('/settings?error=' + encodeURIComponent('GitHub OAuth 未配置。'))
     const state = randomToken(32)
     store.createOAuthState(sha256Hex(state), addMinutes(20), safeLocalPath(queryText(request, 'next'), '/dashboard'))
@@ -1366,7 +1366,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.get('/auth/github/callback', async (request, reply) => {
-    if (!limits.take('login', `callback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `callback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const query = request.query as Record<string, string | undefined>
     const code = query.code ?? ''
     const state = query.state ?? ''
@@ -1374,7 +1374,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       const t = translator(request.locale ?? 'zh')
       return htmlPage(reply, 400, errorPage(
         config,
-        request.viewer ?? null,
+        request.viewer ?? null, 400,
         '登录链接已失效',
         '这个 GitHub 登录链接已失效或已经被使用。请重新登录；如果是在微信/QQ 内置浏览器打开，请改用 Safari 或 Chrome。',
         request.locale,
@@ -1395,7 +1395,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     } catch (error) {
       log.warn('github login failed', { error: String(error) })
       const t = translator(request.locale ?? 'zh')
-      return htmlPage(reply, 400, errorPage(config, request.viewer ?? null, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。', request.locale, { href: '/auth/github', label: t('重新登录', 'Sign in again') }))
+      return htmlPage(reply, 400, errorPage(config, request.viewer ?? null, 400, 'GitHub 登录失败', '无法完成 GitHub 登录，请重试。', request.locale, { href: '/auth/github', label: t('重新登录', 'Sign in again') }))
     }
     const isSuperAdmin = profile.login.toLowerCase() === config.github.adminLogin.toLowerCase()
     const user = store.upsertGithubUser({
@@ -5422,18 +5422,18 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const ref = String((request.params as Record<string, string>).ref ?? '')
     const viewer = request.viewer === undefined ? null : viewOf(request.viewer)
     if (!/^[A-Za-z0-9_-]{10,80}$/.test(ref)) {
-      return htmlPage(reply, 404, errorPage(config, viewer, '页面不存在', '这个报告编号不存在。', request.locale))
+      return htmlPage(reply, 404, errorPage(config, viewer, 404, '页面不存在', '这个报告编号不存在。', request.locale))
     }
     const report = store.errorReportByRef(ref)
     if (report === undefined) {
-      return htmlPage(reply, 404, errorPage(config, viewer, '页面不存在', '这个报告编号不存在。', request.locale))
+      return htmlPage(reply, 404, errorPage(config, viewer, 404, '页面不存在', '这个报告编号不存在。', request.locale))
     }
     const reportBody = form(request)
     if (reportBody.consent !== '1') {
-      return htmlPage(reply, 400, errorPage(config, viewer, '需要授权', '请先勾选“我已知晓并授权 Fledge 平台读取这些失败数据”，再提交报告。', request.locale))
+      return htmlPage(reply, 400, errorPage(config, viewer, 400, '需要授权', '请先勾选“我已知晓并授权 Fledge 平台读取这些失败数据”，再提交报告。', request.locale))
     }
     if (!store.claimErrorReport(ref, ERROR_REPORT_CONSENT_VERSION)) {
-      return htmlPage(reply, 200, errorPage(config, viewer, '报告已发送', `这个报告（${ref}）已经发送过了，谢谢。`, request.locale))
+      return htmlPage(reply, 200, errorPage(config, viewer, 200, '报告已发送', `这个报告（${ref}）已经发送过了，谢谢。`, request.locale))
     }
     const publishConsent = request.viewer !== undefined && reportBody.publish === '1'
     const triage = store.createFeedbackTriage({
@@ -5468,7 +5468,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       log.error('error report mail failed', { ref, error: redact(String(error)) })
     }
     store.audit(report.user_id, 'error.reported', `${ref} ${report.status_code} ${report.path}`)
-    return htmlPage(reply, 200, errorPage(config, viewer, '报告已发送', `谢谢。编号：${ref}。开发者会查看这个错误的类型、页面和时间；报告不包含你的输入、token 或请求体。`, request.locale))
+    return htmlPage(reply, 200, errorPage(config, viewer, 200, '报告已发送', `谢谢。编号：${ref}。开发者会查看这个错误的类型、页面和时间；报告不包含你的输入、token 或请求体。`, request.locale))
   })
 
   const triageAuthorized = (request: FastifyRequest, ref: string): boolean => {
@@ -5600,7 +5600,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // and answers the same 429 page: CSRF proves the request came from our page, it
   // does not bound how many a stolen cookie may send.
   app.post('/settings/sessions/:hash/revoke', async (request, reply) => {
-    if (!limits.take('login', `session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `session-revoke:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const hash = String((request.params as Record<string, string>).hash)
     if (hash === viewer.sessionHash) {
@@ -5614,7 +5614,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/sessions/revoke-others', async (request, reply) => {
-    if (!limits.take('login', `session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `session-revoke-others:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const removed = store.deleteOtherSessions(viewer.user.id, viewer.sessionHash)
     store.audit(viewer.user.id, 'session.revoked', `others=${removed}`)
@@ -5622,7 +5622,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/settings/sessions/rotate', async (request, reply) => {
-    if (!limits.take('login', `session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `session-rotate:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     const raw = sessions.start(viewer.user.id, request)
     const hash = sha256Hex(raw)
@@ -5647,7 +5647,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = requireApproved(request)
     const id = (request.params as { id?: string }).id ?? ''
     const action = store.getAction(id)
-    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '找不到', '这一步不存在，或不属于你。', request.locale))
+    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, 404, '找不到', '这一步不存在，或不属于你。', request.locale))
     store.markActionRead(action.id)
     store.audit(viewer.user.id, 'action.opened', action.id)
     return reply.redirect(action.href)
@@ -5657,7 +5657,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = approvedCsrfGuard(request)
     const id = (request.params as { id?: string }).id ?? ''
     const action = store.getAction(id)
-    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '找不到', '这一步不存在，或不属于你。', request.locale))
+    if (action === undefined || action.user_id !== viewer.user.id) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, 404, '找不到', '这一步不存在，或不属于你。', request.locale))
     store.resolveAction(action.id)
     store.audit(viewer.user.id, 'action.resolved', action.id)
     return reply.redirect('/dashboard')
@@ -5691,7 +5691,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const viewer = requireSuperAdmin(request)
     if (viewer.preview === true) return reply.redirect('/console')
     if (!store.productAnalyticsEnabled()) {
-      return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '页面不存在', '回路统计已关闭，没有可导出的记录。', request.locale))
+      return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, 404, '页面不存在', '回路统计已关闭，没有可导出的记录。', request.locale))
     }
     const windowDays = queryText(request, 'window') === '7' ? 7 : 30
     const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1_000).toISOString()
@@ -5871,7 +5871,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     store.audit(viewer.user.id, kind === 'audit' ? 'admin.audit_export' : 'admin.jobs_export', `refused=too_large matched=${matched} cap=${EXPORT_ROW_CAP}`)
     return htmlPage(reply, 400, errorPage(
       config,
-      viewOf(viewer),
+      viewOf(viewer), 400,
       t('导出范围过大', 'Export too large'),
       t(
         `这个筛选匹配 ${matched} 行，而单次导出最多 ${EXPORT_ROW_CAP} 行；请缩小日期范围或加一个关键词，再导出一次。`,
@@ -6278,7 +6278,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/deployments/promote', async (request, reply) => {
-    if (!limits.take('login', `deployment-promote:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `deployment-promote:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录部署。', 'ADMIN_ONLY')
     const parsed = parsePromotionForm(form(request), viewer.user.login)
@@ -6305,7 +6305,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/deployments/rollback', async (request, reply) => {
-    if (!limits.take('login', `deployment-rollback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `deployment-rollback:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以记录回滚。', 'ADMIN_ONLY')
     const parsed = parseRollbackForm(form(request), store.listDeployments(null, 500), viewer.user.login)
@@ -6339,7 +6339,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // Same limiter and window as the other mutating form (`/approve/:token`), and
     // an HTML page rather than the JSON 429 the API routes send: this is a form
     // post from a browser, and a raw JSON body would replace the page.
-    if (!limits.take('login', `platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `platform-stop:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以停止平台。', 'ADMIN_ONLY')
     // #525: a stop drains the fleet and cancels work that a resume cannot bring
@@ -6358,7 +6358,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   })
 
   app.post('/admin/platform/resume', async (request, reply) => {
-    if (!limits.take('login', `platform-resume:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `platform-resume:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const viewer = approvedCsrfGuard(request)
     if (!isAdminRole(viewer.user.role)) throw httpError(403, '仅管理员可以恢复平台。', 'ADMIN_ONLY')
     const t = translator(request.locale ?? 'zh')
@@ -6575,13 +6575,13 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   app.get('/approve/:token', async (request, reply) => {
     const token = String((request.params as Record<string, string>).token)
     const resolved = approvals.resolve(token)
-    if (resolved === undefined) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, '链接无效', '这个审批链接无效或已经过期。', request.locale))
+    if (resolved === undefined) return htmlPage(reply, 404, errorPage(config, request.viewer ?? null, 404, '链接无效', '这个审批链接无效或已经过期。', request.locale))
     if (resolved.user.status !== 'pending') return reply.type('text/html').send(messagePage(config, '已经处理过', '这个申请已经处理过了。', request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
     return reply.type('text/html').send(approvalPage({ config, locale: request.locale ?? 'zh', user: resolved.user, action: resolved.row.action, token }))
   })
 
   app.post('/approve/:token', async (request, reply) => {
-    if (!limits.take('login', `approve:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, '请求过多', '请稍后再试。', request.locale))
+    if (!limits.take('login', `approve:${rateLimitKey(request)}`)) return htmlPage(reply, 429, errorPage(config, request.viewer ?? null, 429, '请求过多', '请稍后再试。', request.locale))
     const token = String((request.params as Record<string, string>).token)
     const result = await approvals.apply(token, 'email-link')
     if (!result.ok) return htmlPage(reply, 400, messagePage(config, '无法处理', result.reason, request.viewer === undefined ? null : viewOf(request.viewer), request.locale))
@@ -7327,7 +7327,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.setNotFoundHandler((request, reply) => {
     if (request.url.startsWith('/v1') || request.url.startsWith('/api/')) return reply.code(404).send({ error: { type: 'not_found', message: 'No such endpoint' } })
-    return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), '页面不存在', '你访问的页面不存在。', request.locale))
+    return htmlPage(reply, 404, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), 404, '页面不存在', '你访问的页面不存在。', request.locale))
   })
 
   app.setErrorHandler((error, request, reply) => {
@@ -7369,7 +7369,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         log.warn('error report capture failed', { error: redact(String(reportError)) })
       }
     }
-    return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale, undefined, report))
+    return htmlPage(reply, status, errorPage(config, request.viewer === undefined ? null : viewOf(request.viewer), status, status === 404 ? '页面不存在' : '出错了', status >= 500 ? '服务器出了点问题，请稍后再试。' : message, request.locale, undefined, report))
   })
 
   // #635: the optional receiver is pushed at most once a UTC day, and its day

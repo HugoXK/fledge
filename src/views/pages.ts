@@ -3383,9 +3383,16 @@ export function approvalPage(input: { config: Config; locale: Locale; user: User
   return layout({ title: `${verb}`, body, config, locale, path: `/approve/${token}`, error })
 }
 
+// #469: an error page answers two questions it used to leave out — what the reply
+// actually was, and what this viewer can do about it. The status is the one the
+// route already replied with; the recovery follows the viewer, so a signed-in
+// person returns to the console instead of the landing page. A 429 or a 5xx gets
+// no derived action: signing in cannot change that answer, and a 5xx keeps its
+// report form instead.
 export function errorPage(
   config: Config,
   viewer: Viewer | null,
+  status: number,
   title: string,
   message: string,
   locale: Locale = 'zh',
@@ -3395,7 +3402,16 @@ export function errorPage(
   const t = translator(locale)
   const localizedTitle = localizeMessage(locale, title) ?? title
   const localizedMessage = localizeMessage(locale, message) ?? message
-  const actionHtml = action === undefined ? '' : `<a class="btn" href="${escapeHtml(action.href)}">${escapeHtml(action.label)}</a>`
+  const viewerRemedy = status === 401 || status === 403 || status === 404
+  const recovery = action ?? (viewerRemedy
+    ? viewer === null
+      ? { href: '/auth/github', label: t('使用 GitHub 登录', 'Sign in with GitHub') }
+      : { href: '/dashboard', label: t('回到控制台', 'Back to dashboard') }
+    : undefined)
+  const actionHtml = recovery === undefined ? '' : `<a class="btn" href="${escapeHtml(recovery.href)}">${escapeHtml(recovery.label)}</a>`
+  // The page doubles as the "report sent" confirmation on a 2xx, so the code is
+  // only shown when there is an error to name.
+  const statusHtml = status < 400 ? '' : `<div class="eyebrow">${escapeHtml(t(`错误 ${status}`, `Error ${status}`))}</div>`
   // #786: only an unexpected 5xx carries a ref. One click posts the ref; the
   // report contains no request body, query, cookie or token.
   const reportHtml = report === undefined ? '' : `<form method="post" action="/errors/${escapeHtml(report.ref)}/report" class="form">
@@ -3405,12 +3421,12 @@ export function errorPage(
       <button class="btn" type="submit">${escapeHtml(t('报告给开发者', 'Report to the maintainer'))}</button>
     </form>`
   return layout({
-    title: localizedTitle,
+    title: status < 400 ? localizedTitle : `${status} · ${localizedTitle}`,
     viewer,
     config,
     locale,
     path: '/',
-    body: `<section class="card narrow"><h1>${escapeHtml(localizedTitle)}</h1><p>${escapeHtml(localizedMessage)}</p><div class="actions">${actionHtml}<a class="btn btn-ghost" href="/">${escapeHtml(t('回首页', 'Back home'))}</a></div>${reportHtml}</section>`,
+    body: `<section class="card narrow" data-status="${status}">${statusHtml}<h1>${escapeHtml(localizedTitle)}</h1><p>${escapeHtml(localizedMessage)}</p><div class="actions">${actionHtml}<a class="btn btn-ghost" href="/">${escapeHtml(t('回首页', 'Back home'))}</a></div>${reportHtml}</section>`,
   })
 }
 
