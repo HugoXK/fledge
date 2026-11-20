@@ -2068,7 +2068,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
   }
   const deliveryCard = `<section class="card"><h2>${escapeHtml(t('待处理 PR', 'Pull requests to decide'))}</h2>
     <p class="muted">${escapeHtml(t('合并前会重新检查 PR 状态、checks、commit status、reviews 和 branch protection。每个 PR 的合并在它自己的任务页『审查 → 合并』卡片里，只有那一个合并控件。', 'Merging re-checks the PR state, checks, commit status, reviews and branch protection. Each pull request is merged from the one review → merge card on its own job page.'))}</p>
-    ${repo.repo_role === 'maintainer' && prJobs.length > 0 ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : ''}
+    ${prJobs.length === 0 ? '' : input.canMaintain === true ? `<form method="post" action="/repos/${escapeHtml(repo.id)}/delivery/merge-clean" data-confirm="${escapeHtml(t('逐个重新检查并合并所有 clean PR？有阻塞的会跳过。', 'Re-check and merge all clean PRs? Blocked PRs are skipped.'))}">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('合并所有 clean PR', 'Merge all clean PRs'))}</button></form>` : `<p class="fine" data-bulk-merge="not-maintainer">${escapeHtml(t('只有维护者可以批量合并 clean PR。', 'Only a maintainer can merge clean pull requests.'))}</p>`}
     <div class="table-scroll"><table class="table-cards"><thead><tr><th>PR</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('核实', 'Verified'))}</th><th>${escapeHtml(t('审核分', 'Review'))}</th><th>${escapeHtml(t('成本', 'Cost'))}</th><th>${escapeHtml(t('创建', 'Created'))}</th><th></th></tr></thead><tbody>${prRows}</tbody></table></div></section>`
   const lifecycleItems: string[] = []
   if (!repoEnabled) lifecycleItems.push(t('仓库已停用：不会自动或手动运行任务。', 'Repository disabled: no jobs run automatically or manually.'))
@@ -4221,7 +4221,9 @@ export function jobPage(input: {
   // evidence cards, so the action is reachable without scrolling past them.
   const mergeState = reviewMergeState({
     job,
-    role: repo.repo_role ?? '',
+    // #1132: the card states the actor's role, which is the role the merge
+    // route now decides with; `repo_role` is the connection's, not theirs.
+    role: input.viewerRole ?? '',
     verification,
     guard: pathGuard,
     adversarial,

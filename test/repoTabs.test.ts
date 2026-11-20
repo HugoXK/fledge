@@ -123,6 +123,9 @@ function renderRepo(options: { repoRole?: 'maintainer' | null } = {}): Rendered 
     repo,
     jobs: [job],
     prJobs: [job],
+    // #1132: the bulk control reads the actor's flag, the same value the route
+    // passes; this fixture's viewer owns the repository.
+    canMaintain: repoRole === 'maintainer',
   })
   return { html, close: () => store.close() }
 }
