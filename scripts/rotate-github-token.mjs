@@ -56,6 +56,31 @@ if (tokenFile === undefined || tokenFile === '') fail(`--token-file is required.
 // letting the run appear to work.
 if ((process.env.NEW_GITHUB_TOKEN ?? '') !== '') fail('the token must not come from NEW_GITHUB_TOKEN; pass --token-file <path|-> instead')
 
+// #840: the same redirect the check above refuses for the token itself has a
+// second form — the origin it is sent to. GITHUB_API_URL is inherited from the
+// environment, so a hostile or stale value would carry the freshly read PAT to
+// another host, and this is the one script whose whole job is handling a token.
+// Only GitHub itself and a loopback fake server are accepted; a loopback host is
+// the exception test/rotateToken.test.ts needs to exercise the rest of the run.
+// There is no fallback to the default base: a value that does not parse is
+// refused the same way, because a silent rewrite would hide the hostile input.
+const API_ORIGIN = 'https://api.github.com'
+
+function apiBase() {
+  const raw = process.env.GITHUB_API_URL ?? API_ORIGIN
+  let url
+  try {
+    url = new URL(raw)
+  } catch {
+    fail(`GITHUB_API_URL ${raw} is refused; only ${API_ORIGIN} or a loopback host is accepted`)
+  }
+  const loopback = url.hostname === '127.0.0.1' || url.hostname === '[::1]'
+  if (!(url.protocol === 'https:' && url.hostname === 'api.github.com') && !loopback) {
+    fail(`GITHUB_API_URL ${raw} is refused; only ${API_ORIGIN} or a loopback host is accepted`)
+  }
+  return raw.replace(/\/$/, '')
+}
+
 function readToken(path) {
   if (path === '-') {
     // 0 is stdin: the caller pipes the token, so it is in neither the history
@@ -85,11 +110,14 @@ function readToken(path) {
   }
 }
 
+// The destination is settled before the secret is opened, so a refused origin
+// can never see it: this line has to stay above the readToken call below.
+const api = apiBase()
+
 const token = readToken(tokenFile).trim()
 if (token === '') fail(`no token in ${tokenFile === '-' ? 'stdin' : tokenFile}`)
 
 const path = process.env.SECRETS_PATH ?? join(homedir(), '.dsh/bot/secrets.json')
-const api = (process.env.GITHUB_API_URL ?? 'https://api.github.com').replace(/\/$/, '')
 
 // `probe` answers with the HTTP status the token got, and 0 when the request
 // never reached GitHub. A network failure is not a 401: only an answer counts as
