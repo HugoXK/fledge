@@ -7,8 +7,11 @@ import { join } from 'node:path'
 
 // The contract of issue #80, as a structural test: the file may carry no stored
 // secret, no file-level permissions block, no pull-request creation or release
-// command and no local tag command. Auto-merge is the one deliberate exception:
-// it is enabled only on the mechanical release PR with a pinned head commit.
+// command and no local tag command. Since #1127 it also carries no auto-merge:
+// the workflow opens the mechanical release pull request and reports where it
+// stands, and a person merges it once the required checks and the review gate
+// pass. Before #1127 auto-merge was the one deliberate exception, enabled on
+// that PR with a pinned head commit, and a release could merge with no PASS.
 // Every assertion here fails on the pre-#80 file, where `RELEASE_TOKEN` gated the
 // run, the permissions block was file-level, and the tag came from
 // `git tag`/`git push origin "$TAG"`.
@@ -39,6 +42,67 @@ function addedReleaseEntries(added: string[], branch: string): { tests: string[]
   return {
     tests: added.filter((path) => path.startsWith('test/') && path.endsWith('.test.ts') && !allowedTests.has(path)),
     scripts: added.filter((path) => path.startsWith('scripts/') && !allowedScripts.has(path)),
+  }
+}
+
+// #1127's rule, and the reason it is not a repo-wide ban: the change that
+// decides how a release pull request merges may not also edit the gate that
+// judges it. Two shapes reach that rule — the branch the nightly opens
+// (`release/v<version>`) and any change that edits the release workflow — and
+// everything else may change `review-gate.mjs` under normal review, which is
+// what the exemption card this thread defers will do. Returning the violations
+// instead of asserting here is what lets one checkout drive every shape; the
+// first version of this guard read `origin/main...HEAD` unconditionally, so it
+// failed every later pull request that touched the gate.
+const gatePaths = [
+  'scripts/lib/review-gate.mjs',
+  'scripts/lib/mechanical-release.mjs',
+  '.github/agent/review-policy.json',
+]
+
+function gateEdits(changed: string[], branch: string): string[] {
+  const releaseBranch = branch.startsWith('release/v')
+  const touchesReleaseWorkflow = changed.includes('.github/workflows/daily-release.yml')
+  if (!releaseBranch && !touchesReleaseWorkflow) return []
+  return changed.filter((path) => gatePaths.includes(path))
+}
+
+// The branch this checkout is on, or `null` when git cannot answer. In CI the
+// pull-request branch comes from `GITHUB_HEAD_REF`; the merge checkout's own
+// `HEAD` is detached, so reading it alone would name no branch at all.
+function currentBranch(): string | null {
+  const fromEnv = process.env.GITHUB_HEAD_REF ?? ''
+  if (fromEnv !== '') return fromEnv
+  try {
+    const branch = execFileSync('git', ['rev-parse', '--abbrev-ref', 'HEAD'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    }).trim()
+    return branch === 'HEAD' || branch === '' ? null : branch
+  } catch {
+    return null
+  }
+}
+
+// The paths this branch changes against `main`. `null` means "not answerable in
+// this checkout" — a one-commit CI checkout with no merge base — and the caller
+// records that as a skip. Any other git failure throws, so a broken checkout can
+// never read as a pass.
+function changedPaths(base: string): string[] | null {
+  try {
+    return execFileSync('git', ['diff', '--name-only', `${base}...HEAD`], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line !== '')
+  } catch (error) {
+    const stderr = String((error as { stderr?: unknown }).stderr ?? '')
+    if (/no merge base|unknown revision|bad revision|ambiguous argument|not a valid object name|Needed a single revision/i.test(stderr)) {
+      return null
+    }
+    throw error
   }
 }
 
@@ -173,17 +237,58 @@ test('only the trigger can let a run push, and a manual dry run never does', () 
   assert.match(pushStep, /if: \$\{\{ inputs\.dry_run != true && steps\.trigger\.outputs\.plan == 'true' && steps\.opener\.outputs\.ready == 'true' \}\}/)
 })
 
-test('the file never creates or releases a pull request with gh, and auto-merge is pinned to the mechanical PR', () => {
+test('the file never creates, releases or auto-merges a pull request with gh, and the opener only reports where it stands', () => {
   for (const forbidden of ['gh pr create', 'gh release', 'git tag', 'git push origin "$TAG"', 'git push --tags', '--admin']) {
     assert.equal(daily.includes(forbidden), false, `"${forbidden}" must not appear`)
   }
   const pushes = [...daily.matchAll(/git push /g)]
   assert.equal(pushes.length, 1, 'exactly one git push, of the release branch')
   assert.ok(daily.includes('git push origin "$BRANCH"'), 'that push is the release branch')
-  assert.match(daily, /gh pr merge "\$PR" --auto --squash --match-head-commit "\$PUSHED"/, 'auto-merge names the PR and pins its head commit')
-  const step = between('      - name: Enable auto-merge on the release pull request', '      - name: Comment on #80')
-  assert.match(step, /steps\.open\.outputs\.state == 'opened' \|\| steps\.open\.outputs\.state == 'reused'/)
-  assert.doesNotMatch(step, /--admin/)
+  // #1127: opting the mechanical release PR into auto-merge merged a release with
+  // no PASS on its tip. The workflow may open that PR and say where it stands;
+  // merging it is a person's decision, so none of the auto-merge machinery may
+  // appear anywhere in the file.
+  for (const forbidden of ['gh pr merge', '--auto', '--match-head-commit', 'autoMergeRequest', 'Enable auto-merge']) {
+    assert.equal(daily.includes(forbidden), false, `"${forbidden}" must not appear`)
+  }
+  const opener = between('      - name: Open the release pull request', '      - name: Comment on #80')
+  assert.match(opener, /printf 'state=%s\\ndetail=%s\\npr=%s\\n'/, 'the opener still reports state, detail and pr')
+  assert.match(opener, /steps\.push\.outputs\.pushed != ''/, 'and still runs only after a push')
+})
+
+test('the change that decides how a release PR merges may not also edit the gate that judges it', (t) => {
+  // #1127 takes away the release workflow's ability to merge its own pull
+  // request, and it must not do that by touching the verdict machinery: the
+  // release workflow widening or narrowing its own exemption would be the exact
+  // failure this card exists to stop. The rule is scoped to the shapes that can
+  // reach it, so it does not become a standing ban on the gate for everyone else
+  // (#1127 review, 2026-11-20).
+  const gate = ['scripts/lib/review-gate.mjs', 'scripts/lib/mechanical-release.mjs', '.github/agent/review-policy.json']
+  const workflow = '.github/workflows/daily-release.yml'
+
+  // The decision, driven from this one checkout: every shape is exercised here.
+  assert.deepEqual(gateEdits([...gate, workflow], 'dev2/1127-no-release-auto-merge'), gate, 'this change touches the release workflow, so it may not also edit the gate')
+  assert.deepEqual(gateEdits([...gate, workflow], 'release/v0.4.4'), gate, 'the release branch may not edit the gate either')
+  assert.deepEqual(gateEdits(['docs/deploy.md', workflow], 'dev2/anything'), [], 'the release workflow itself is not a gate file')
+  assert.deepEqual(gateEdits(gate, 'dev2/1127-no-release-auto-merge'), [], 'a branch that leaves the release workflow alone may change the gate under review')
+  assert.deepEqual(gateEdits([...gate, 'src/app.ts'], 'main'), [], 'main may change the gate under review, including the exemption card this thread defers')
+  assert.deepEqual(gateEdits(gate, 'release/v0.4.4'), gate, 'on the release branch the rule holds without the workflow being touched')
+
+  // The live half: this checkout's own diff, held to the same scoped rule.
+  const branch = currentBranch()
+  if (branch === null) {
+    t.skip('this checkout is not on a branch, so there is no diff to judge')
+    return
+  }
+  // `GITHUB_BASE_SHA` is the pull request's own base when a runner exports it;
+  // `origin/main` is the same thing in a normal checkout. Neither is a standing
+  // ban: `gateEdits` decides, and it only fires for the two shapes above.
+  const touched = changedPaths(process.env.GITHUB_BASE_SHA ?? 'origin/main')
+  if (touched === null) {
+    t.skip('this checkout has no merge base against origin/main (one-commit CI checkout)')
+    return
+  }
+  assert.deepEqual(gateEdits(touched, branch), [], 'the release workflow may not edit the gate that judges its pull request')
 })
 
 test('the tag write is the two API calls on the merge commit and nothing else', () => {

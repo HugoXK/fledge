@@ -17,9 +17,10 @@ name: Daily minor release
 #            automatic token and opens exactly one release pull request with the
 #            team token (`RELEASE_OPEN_TOKEN`). Without that secret the night is
 #            red, pushes nothing and names the missing secret; it never reports
-#            a green blocked night after pushing a branch. It enables GitHub
-#            auto-merge on the mechanical release PR; it never creates or
-#            publishes a pull request itself. A push to `main` is eligible only when
+#            a green blocked night after pushing a branch. It never creates,
+#            publishes or auto-merges a pull request itself: the mechanical
+#            release PR is merged by a person once `ci-ok`, `review-gate` and
+#            `pr-lint` pass on its tip (#1127). A push to `main` is eligible only when
 #            the paths filter below matched a release-shaped change, so an
 #            ordinary feature merge no longer starts a full plan job
 #            (`fetch-depth: 0`, several API calls) just to report
@@ -89,7 +90,7 @@ jobs:
     environment: release
     # #864: the decide step re-reads `ci-ok` for up to ten minutes when CI is
     # still running, so the job keeps room for the waits plus the push, the
-    # opener, auto-merge and the comment that follow.
+    # opener and the comment that follow.
     timeout-minutes: 30
     permissions:
       contents: write
@@ -471,28 +472,6 @@ jobs:
           printf 'state=%s\ndetail=%s\npr=%s\n' "$STATE" "$DETAIL" "$PR" >> "$GITHUB_OUTPUT"
           echo "- release pull request: **${STATE}** — ${DETAIL}" >> "$GITHUB_STEP_SUMMARY"
           exit "$CODE"
-
-      - name: Enable auto-merge on the release pull request
-        # Only the mechanical release PR is auto-merged. The PR is opened by the
-        # team token, and the required checks (ci-ok, review-gate, pr-lint) still
-        # decide when GitHub may squash it; this step only opts it in.
-        if: ${{ inputs.dry_run != true && (steps.open.outputs.state == 'opened' || steps.open.outputs.state == 'reused') }}
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_OPEN_TOKEN }}
-          PR: ${{ steps.open.outputs.pr }}
-          PUSHED: ${{ steps.push.outputs.pushed }}
-        run: |
-          set -euo pipefail
-          if [ -z "$PR" ] || [ -z "$PUSHED" ]; then
-            echo "::error::the release pull request or its head SHA is missing; refusing to enable auto-merge"
-            exit 1
-          fi
-          if gh pr view "$PR" --repo "$GITHUB_REPOSITORY" --json autoMergeRequest --jq '.autoMergeRequest != null' | grep -q true; then
-            echo "auto-merge already enabled on #${PR}" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
-          gh pr merge "$PR" --auto --squash --match-head-commit "$PUSHED" --repo "$GITHUB_REPOSITORY"
-          echo "auto-merge enabled on #${PR} at ${PUSHED}" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Comment on #80
         # `always()` so a refused opener still says why on #80: the open state is
