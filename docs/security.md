@@ -725,6 +725,14 @@ It does not revoke the old token. A secrets file that is not valid JSON is
 reported by position only — never with a fragment of its contents, which would
 put the token in a log.
 
+**The destination is fixed.** The script reads `GITHUB_API_URL` and accepts only
+`https://api.github.com` (with or without a trailing slash) or a loopback host
+(`127.0.0.1`, `[::1]`, any port, which exists for the fake servers in
+`test/rotateToken.test.ts`). The check runs **before** the token file is opened,
+so a hostile or inherited value cannot send the freshly read PAT to another
+host, and it exits `1` naming the refused origin. An unparseable value is
+refused the same way; there is no silent fallback to the default base.
+
 **The old value is dead only when one and the same run proves it.** The script
 runs `GET /user` with the old value and with the new value inside a single run
 and acts on that pair; `401` for the old and `200` for the new is the only pair
