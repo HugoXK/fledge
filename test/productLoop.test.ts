@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
-import { encryptSecret } from '../src/lib/secrets.js'
+import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
 import { RETENTION_CLASSES, SETTINGS_RETENTION } from '../scripts/lib/retention.mjs'
 import { makeUser, testConfig } from './helpers.js'
 
@@ -322,6 +322,85 @@ test('the page names the receiver state it was handed', async () => {
     const off = await built.app.inject({ method: 'GET', url: '/admin/product', headers: { cookie } })
     assert.match(off.body, /data-loop-off/)
     assert.equal(off.body.includes('/admin/product.csv'), false)
+  } finally {
+    await built.app.close()
+  }
+})
+
+test('a succeeded run with no pull request is not counted as a failure', async () => {
+  const { Jobs } = await import('../src/jobs/service.js')
+  const { MemoryMailer } = await import('./helpers.js')
+  const store = memoryStore()
+  try {
+    const user = makeUser(store, { login: 'review-path-owner' })
+    const repoId = repoFor(store, user.id, 'repo-review-path')
+    const jobs = new Jobs(store, testConfig(), { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+    store.createJob({
+      id: 'job_review_path', repoId, userId: user.id, trigger: 'manual', goal: 'review the open PRs',
+      callbackHash: sha256Hex('review-path-secret'), platformTokenHash: '', kind: 'review', baseBranch: 'main',
+    })
+    store.updateJob('job_review_path', { status: 'running', started_at: new Date().toISOString() })
+    const reviewed = await jobs.handleCallback('job_review_path', 'review-path-secret', { status: 'succeeded', summary: 'Reviewed 3 PRs', reviewScore: 82 })
+    assert.equal(reviewed.ok, true, reviewed.error ?? 'no error')
+    const names = store.all<{ name: string }>('SELECT name FROM product_events').map((row) => row.name)
+    assert.equal(names.includes('job_failed'), false, 'a review answers with no pull request and is still a success')
+    assert.equal(store.productLoopMetrics(new Date(0).toISOString()).rescue.failed, 0, 'the rescue rate has no failure to divide by')
+
+    store.createJob({
+      id: 'job_failed_path', repoId, userId: user.id, trigger: 'manual', goal: 'fix the splitter',
+      callbackHash: sha256Hex('failed-path-secret'), platformTokenHash: '', kind: 'iterate', baseBranch: 'main',
+    })
+    store.updateJob('job_failed_path', { status: 'running', started_at: new Date().toISOString() })
+    const failed = await jobs.handleCallback('job_failed_path', 'failed-path-secret', { status: 'failed', error: 'the tests never went green' })
+    assert.equal(failed.ok, true, failed.error ?? 'the failed report is accepted')
+    assert.equal(store.getJob('job_failed_path')?.status, 'failed', 'a failed report still records the failure')
+    const after = store.all<{ name: string }>('SELECT name FROM product_events').map((row) => row.name)
+    assert.equal(after.filter((name) => name === 'job_failed').length, 1, 'only the failed run counts as one failure')
+    assert.equal(store.productLoopMetrics(new Date(0).toISOString()).rescue.failed, 1)
+  } finally {
+    store.close()
+  }
+})
+
+test('deleting a repository with analytics off mints no salt', () => {
+  const store = memoryStore()
+  try {
+    const user = makeUser(store, { login: 'delete-off-owner' })
+    const repoId = repoFor(store, user.id, 'repo-delete-off')
+    store.setSetting('product.analytics', 'off')
+    store.deleteRepo(repoId)
+    // A delete is not an event and must not be the write that creates the salt.
+    assert.equal(store.getSetting('product.salt'), undefined)
+    assert.deepEqual(store.all("SELECT key FROM settings WHERE key = 'product.salt'"), [])
+  } finally {
+    store.close()
+  }
+})
+
+test('the funnel prints no drop when a later stage is outside the connected cohort', async () => {
+  const { buildApp } = await import('../src/app.js')
+  const { MockRunner } = await import('../src/jobs/mock.js')
+  const { MemoryMailer, sessionFor } = await import('./helpers.js')
+  const store = memoryStore()
+  const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const admin = makeUser(store, { login: 'cohort-admin', superadmin: true, status: 'approved' })
+    const connected = repoFor(store, admin.id, 'repo-cohort-connected')
+    store.recordProductEvent({ name: 'repo_connected', repoId: connected, subject: connected })
+    // Two more repositories started a job inside the window without a connection
+    // event in it, so the later stage is larger than the stage it would be
+    // measured against. `1` connected and `3` first jobs is not a −200% drop.
+    for (const id of ['repo-cohort-b', 'repo-cohort-c']) {
+      const other = repoFor(store, admin.id, id)
+      store.recordProductEvent({ name: 'first_job_started', repoId: other, subject: other })
+    }
+    store.recordProductEvent({ name: 'first_job_started', repoId: connected, subject: connected })
+    const { cookie } = sessionFor(built, admin)
+    const page = await built.app.inject({ method: 'GET', url: '/admin/product', headers: { cookie } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /第一次任务<\/td><td>3<\/td><td class="muted"><\/td>/, 'the count is printed and the drop cell stays empty')
+    assert.equal(page.body.includes('−-'), false, 'no double negative percentage')
+    assert.equal(page.body.includes('−200%'), false, 'no impossible drop')
   } finally {
     await built.app.close()
   }

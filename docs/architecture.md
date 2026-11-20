@@ -3704,15 +3704,23 @@ sentence or an address in the one text column. `repo_hash` is
 `sha256('repo:' + salt + ':' + repoId)` truncated to 32 hex characters, and the
 salt is one `settings` row for the installation; the same event from two
 different accounts therefore produces rows that differ only in that digest, and
-`deleteRepo` recomputes it to remove the repository's rows.
+`deleteRepo` recomputes it to remove the repository's rows — only when a salt
+already exists, because a delete is not a reason to mint one while analytics is
+off.
 
 `id` is `sha256(salt + ':' + name + ':' + subject)` truncated, and the insert is
 `INSERT OR IGNORE`, so an event replayed by a retry is one row rather than a
 second count. `repo_returned` is not stored: the read model derives it by
 comparing each repository's first event in the window with its last event before
 the window, which is why the funnel needs the prior window as well as the current
-one. The rescue rate may exceed 100% by design — one failure answered twice is
-two rescues — and the page states that instead of clamping it.
+one. `job_failed` is written only by a run that answered `failed`: a succeeded
+review, or a discovery or iterate run that answers with an issue instead of a
+pull request, is not a failure and adds no failure event. The rescue rate may
+exceed 100% by design — one failure answered twice is two rescues — and the page
+states that instead of clamping it. A funnel drop is printed only when the later
+stage is a subset of the earlier one; stages are counted inside the window, so a
+later stage can be larger than `connected` and the page then prints no
+percentage rather than a negative one.
 
 The read model is one function, `Store.productLoopMetrics(since)`: the page
 (`src/views/product.ts`), the CSV (`GET /admin/product.csv`) and the optional

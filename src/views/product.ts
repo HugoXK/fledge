@@ -27,7 +27,12 @@ export function productPage(input: {
   const sample = (metric: { samples: number; medianMs: number | null }): string =>
     metric.samples === 0 ? t('n/a（还没有样本）', 'n/a (no samples yet)') : `${durationText(metric.medianMs)} · ${t(`${metric.samples} 个样本`, `${metric.samples} samples`)}`
   const stage = (label: string, count: number, from: number | null): string => {
-    const drop = from === null || from === 0 ? '' : t(`−${Math.round(((from - count) / from) * 100)}%`, `−${Math.round(((from - count) / from) * 100)}%`)
+    // A drop is a share of the earlier stage, so it only exists when the later
+    // count is part of that stage. Stages are counted inside the window, so a
+    // repository connected before the window can make `count > from`; printing
+    // `−-200%` there would be a number the page cannot defend, so it prints
+    // nothing instead.
+    const drop = from === null || from === 0 || count > from ? '' : t(`−${Math.round(((from - count) / from) * 100)}%`, `−${Math.round(((from - count) / from) * 100)}%`)
     return `<tr><td>${escapeHtml(label)}</td><td>${count}</td><td class="muted">${escapeHtml(drop)}</td></tr>`
   }
   const funnelRows = [

@@ -1914,7 +1914,16 @@ export class Jobs {
     this.store.recordJobEvent({ jobId, repoId: job.repo_id, userId: job.user_id, kind: `job.${result.status}`, step: job.kind, meta: eventMeta === null ? null : redact(eventMeta) })
     if (result.status === 'failed') this.notePostmortem(jobId)
     if (result.status === 'succeeded' && prUrl !== null) this.store.event('pr_open', { userId: job.user_id, repoId: job.repo_id, jobId })
-    this.store.recordProductEvent({ name: result.status === 'succeeded' && prUrl !== null ? 'first_pr_opened' : 'job_failed', repoId: job.repo_id, subject: result.status === 'succeeded' && prUrl !== null ? job.repo_id : jobId })
+    // #635 review: only a failed run is a failure. A succeeded run with no pull
+    // request (every review, and issue-output discover/iterate) records nothing
+    // here, because counting it as `job_failed` made the rescue rate divide by
+    // failures that never happened. A success with a PR is the funnel's first-PR
+    // stage; the first one wins, because the store keeps MIN(at) per digest.
+    if (result.status === 'failed') {
+      this.store.recordProductEvent({ name: 'job_failed', repoId: job.repo_id, subject: jobId })
+    } else if (prUrl !== null) {
+      this.store.recordProductEvent({ name: 'first_pr_opened', repoId: job.repo_id, subject: job.repo_id })
+    }
     if (result.status === 'failed') {
       // #633: a failure is one action, not one notice per event. The action id is
       // derived from the job, so a duplicate callback finds the same row and gets

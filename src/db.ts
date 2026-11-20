@@ -6245,8 +6245,13 @@ export class Store {
     this.run('DELETE FROM repos WHERE id = ?', id)
     // #635: the loop store keeps only a salted digest, so the cascade has to be
     // computed from the id while the id is still known. Without this, a deleted
-    // repository stayed in every funnel the digest appeared in.
-    this.run('DELETE FROM product_events WHERE repo_hash = ?', this.productRepoHash(id))
+    // repository stayed in every funnel the digest appeared in. The salt is read,
+    // never minted here: deleting a repository while analytics is off must not
+    // write the installation's salt, and without a salt no digest can exist.
+    const loopSalt = this.getSetting('product.salt')
+    if (loopSalt !== undefined && loopSalt.length >= 32) {
+      this.run('DELETE FROM product_events WHERE repo_hash = ?', this.productRepoHash(id))
+    }
     // #697: the repository cap is keyed by the repository id and no cascade
     // reaches it, so deleting the repository has to take its scope row with it.
     this.run("DELETE FROM budget_scopes WHERE kind = 'repository' AND id = ?", id)

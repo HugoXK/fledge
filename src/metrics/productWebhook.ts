@@ -5,6 +5,7 @@
 // is not a count or a duration cannot leave the process through this path.
 import type { Config } from '../config.js'
 import type { Store } from '../db.js'
+import { releaseSurface } from '../lib/releaseSurface.js'
 import { NotificationWebhookError, postWebhook } from '../lib/webhook.js'
 import type { ProductLoopSnapshot } from './product.js'
 
@@ -96,11 +97,15 @@ export async function pushProductLoopWebhook(input: {
   const at = new Date(now).toISOString()
   const since = new Date(now - PRODUCT_PUSH_WINDOW_DAYS * 86_400_000).toISOString()
   const body = JSON.stringify(productWebhookPayload(store.productLoopMetrics(since), PRODUCT_PUSH_WINDOW_DAYS, since))
+  // The receiver identifies the sender by its own version, so it is read from the
+  // package this process runs (`/healthz` uses the same reader) instead of a
+  // literal that goes stale at the next release.
+  const version = releaseSurface().version
   let response: Response
   try {
     response = await postWebhook(new URL(config.productWebhookUrl), body, {
       'content-type': 'application/json',
-      'user-agent': 'fledge/0.2',
+      'user-agent': version === null ? 'fledge' : `fledge/${version}`,
     }, {
       ...(input.fetch === undefined ? {} : { fetch: input.fetch }),
       ...(input.resolve === undefined ? {} : { resolve: input.resolve }),

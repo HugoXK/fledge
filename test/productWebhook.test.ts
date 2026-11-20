@@ -2,6 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { Store } from '../src/db.js'
 import { encryptSecret } from '../src/lib/secrets.js'
+import { readFileSync } from 'node:fs'
 import { PRODUCT_PUSH_KEY, pushProductLoopWebhook } from '../src/metrics/productWebhook.js'
 import { makeUser, testConfig } from './helpers.js'
 
@@ -31,10 +32,10 @@ function repoFor(store: Store, userId: string, id: string): string {
   return id
 }
 
-function fakeFetch(status = 200): { fetch: typeof fetch; calls: Array<{ url: string; body: string }> } {
-  const calls: Array<{ url: string; body: string }> = []
+function fakeFetch(status = 200): { fetch: typeof fetch; calls: Array<{ url: string; body: string; agent: string }> } {
+  const calls: Array<{ url: string; body: string; agent: string }> = []
   const impl = (async (input: string | URL | Request, init?: RequestInit) => {
-    calls.push({ url: String(input), body: String(init?.body ?? '') })
+    calls.push({ url: String(input), body: String(init?.body ?? ''), agent: String((init?.headers as Record<string, string> | undefined)?.['user-agent'] ?? '') })
     return new Response('', { status })
   }) as unknown as typeof fetch
   return { fetch: impl, calls }
@@ -91,6 +92,10 @@ test('the push carries counts and rates only, once a day, and retries a failed d
   assert.equal(body.rescue.actions, 1)
   assert.equal(body.rescue.rate, 100)
   assert.equal(body.window.days, 30)
+  // #635 review: the receiver identifies the sender by the version it runs, not
+  // by a literal that goes stale at the next release.
+  const packageVersion = (JSON.parse(readFileSync('package.json', 'utf8')) as { version: string }).version
+  assert.equal(call.agent, `fledge/${packageVersion}`, 'the user-agent names the running version')
   // The boundary is the payload's shape: no digest, no id, no login, no free text.
   const text = JSON.stringify(body)
   for (const secret of [store.productRepoHash(repoId), owner.id, owner.login, repoId]) {
