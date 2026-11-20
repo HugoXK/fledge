@@ -140,11 +140,11 @@ export function planBackupExpiry(options) {
   try {
     names = readdirSync(dir)
   } catch (error) {
-    // No directory means no copy has been written yet: nothing to take. Any
-    // other failure (a typo'd path that is not a directory, a lost permission)
-    // is a real error and must not read as "nothing to prune".
+    // A missing directory means no copy has been written yet: nothing to take.
+    // Everything else — a lost permission, a path that is a regular file — is a
+    // real error and must not read as "nothing to prune".
     const code = error !== null && typeof error === 'object' ? error.code : undefined
-    if (code !== 'ENOENT' && code !== 'ENOTDIR') throw error
+    if (code !== 'ENOENT') throw error
     names = []
   }
   const copies = { plaintext: [], encrypted: [] }

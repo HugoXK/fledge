@@ -148,6 +148,29 @@ test('a directory inside its keep counts exits 0 with no candidates', () => {
   assert.doesNotMatch(result.stdout, /^(copy|manifest|sidecar) /m)
 })
 
+test('a missing backup directory is an empty scan, not an error', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dir = join(root, 'not-created-yet')
+
+  const result = runPrune(['--backup-dir', dir, '--keep-plaintext', '1', '--keep-encrypted', '30'])
+  assert.equal(result.code, 0, result.stderr)
+  assert.match(result.stdout, /expired=0\b/)
+  assert.match(result.stdout, /candidates=0\b/)
+})
+
+test('a path that is a regular file is refused, not scanned as zero copies', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const file = join(root, 'backups')
+  writeFileSync(file, 'not a directory\n')
+
+  // Before this fix the catch swallowed ENOTDIR, so a typo'd path printed
+  // `expired=0 candidates=0` and exited 0 — the one answer that says "nothing
+  // to prune" while nothing was ever listed.
+  const result = runPrune(['--backup-dir', file, '--keep-plaintext', '1', '--keep-encrypted', '30'])
+  assert.notEqual(result.code, 0)
+  assert.match(result.stderr, /ENOTDIR/)
+})
+
 test('--json carries the same decision for the console and a script', () => {
   const { dir } = makeFixture()
   const result = runPrune(['--backup-dir', dir, '--keep-plaintext', '1', '--keep-encrypted', '30', '--json'])

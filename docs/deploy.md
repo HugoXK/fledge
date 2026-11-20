@@ -1179,11 +1179,13 @@ tip has no `--apply`: confirm the counts first, and the first real deletion stay
 the owner's.
 
 The scan stays strict where it decides: `node scripts/backup-prune.mjs` exits
-non-zero on a directory it cannot read, because a permission accident must not
-read as "nothing to prune". The card is the surface an operator opens when
-backups are already broken, so a failed scan there is a row —
-`scan failed: <errno>` beside the configured counts — instead of a failed
-`/admin` request; the copy counts the page can still read are shown as usual.
+non-zero on a directory it cannot read, and on a `BACKUP_DIR` that exists but is
+a regular file (`ENOTDIR`), because neither may read as "nothing to prune". Only
+a missing directory scans as empty, which is the first boot before any copy is
+written. The card is the surface an operator opens when backups are already
+broken, so a failed scan there is a row — `scan failed: <errno>` beside the
+configured counts — instead of a failed `/admin` request; the copy counts the
+page can still read are shown as usual.
 
 ### Backup encryption
 
