@@ -100,6 +100,11 @@ export const releaseRefusals = {
   // holds commits the default branch does not — the unmerged branch refused here.
   targetNotOnDefault: (sha: string, branch: string, status: string): string => `${sha} is ${status === 'ahead' ? 'ahead of' : 'not contained in'} the default branch ${branch}; nothing was tagged, because a release is cut from a commit the default branch contains`,
   ancestryUnreadable: (branch: string): string => `the default branch ${branch} could not be compared with the target commit; nothing was tagged, because ancestry is required before a ref write`,
+  // #946: every tag is newer than the target, so the walk finds no previous
+  // release and the first-release branch used to take it — a repository that
+  // already shipped v1.20.0 would accept v0.5.0 as "the first release". There is
+  // a previous release here; it is simply not an ancestor of this commit.
+  targetBeforeReleases: (sha: string, tag: string): string => `${sha} predates every release tag in this repository (the newest is ${tag}); nothing was tagged, because a repository that already has releases cannot declare a first release`,
   tagScopeMissing: (status: number): string => status === 404
     // A 404 does not prove a missing permission: it also means the App cannot see
     // the repository any more. Both causes are named, neither is asserted.
@@ -123,6 +128,8 @@ export type ReleaseRefusalCode =
   // ancestry compare could not be read (fail closed).
   | 'target_not_on_default'
   | 'ancestry_unreadable'
+  // #946: the target predates every release tag, so it is not a first release.
+  | 'target_before_releases'
   | 'missing_gate'
   | 'missing_release_workflow'
   | 'tag_exists'
@@ -379,6 +386,15 @@ export async function releasePreflight(
     if (targetCommitsAhead === null) continue
     candidates.push({ name: tag.name, sha: tag.sha, targetCommitsAhead })
     break
+  }
+  // #946: a repository that has released before can never declare a first
+  // release. When the walk kept no candidate, every tag is newer than the
+  // target, so the target predates the releases rather than starting them.
+  // Refused here, before `planRelease`, because the first-release branch there
+  // skips both version guards by design.
+  const newestTag = semverTags[0]
+  if (newestTag !== undefined && candidates.length === 0) {
+    return { ok: false, code: 'target_before_releases', message: releaseRefusals.targetBeforeReleases(input.targetSha, newestTag.name) }
   }
   const workflow = await client.getRepoFile(input.owner, input.name, '.github/workflows/release.yml', input.targetSha)
   const protection = await client.getBranchProtection(input.owner, input.name, input.defaultBranch)
