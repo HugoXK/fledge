@@ -110,7 +110,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/no-frame-options
   echo 'security headers: ACCEPTED a copy without X-Frame-Options — the header check is not a gate (#1009)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'X-Frame-Options'; then
+if ! [[ "$output" == *'X-Frame-Options'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of a copy without X-Frame-Options did not name the header (#1009)'
   exit 1
@@ -123,7 +123,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/no-always.conf" 
   echo 'security headers: ACCEPTED an HSTS line without `always` — nginx would drop it on its own 4xx/5xx (#1009)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'Strict-Transport-Security'; then
+if ! [[ "$output" == *'Strict-Transport-Security'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of an HSTS line without `always` did not name the header (#1009)'
   exit 1
@@ -148,7 +148,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-header.
   echo 'security headers: ACCEPTED a location that declares its own add_header — nginx would drop all four headers there (#1097)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+if ! [[ "$output" == *'location block opened at line'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of a location-level header did not name the location block (#1097)'
   exit 1
@@ -188,7 +188,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-one-lin
   echo 'security headers: ACCEPTED a one-liner location that declares its own add_header — a shadowed header set would serve no security header (#1097)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+if ! [[ "$output" == *'location block opened at line'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of the one-liner location did not name the location block (#1097)'
   exit 1
@@ -221,7 +221,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-brace-n
   echo 'security headers: ACCEPTED a location whose `{` is on the next line and declares its own add_header — the rule depends on where the brace sits (#1097)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+if ! [[ "$output" == *'location block opened at line'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of the brace-on-the-next-line location did not name the location block (#1097)'
   exit 1
@@ -241,7 +241,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-brace-i
   echo 'security headers: ACCEPTED a location whose regex carries a `}` and that serves one header — nginx keeps the brace in the token and the block still opens (#1097)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'location block opened at line'; then
+if ! [[ "$output" == *'location block opened at line'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of a brace-inside-a-token location did not name the location block (#1097)'
   exit 1
@@ -257,7 +257,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/location-if-head
   echo 'security headers: ACCEPTED an if inside a location that declares one header — the matched responses serve only that header (#1097)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'inside a location'; then
+if ! [[ "$output" == *'inside a location'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of an if-level header did not name the inner block (#1097)'
   exit 1
@@ -310,7 +310,7 @@ if output="$(bash scripts/check-nginx-config.sh --sample "$work/empty-nginx.conf
   echo 'security headers: ACCEPTED an empty sample — a check with nothing to assert is not a gate (#1097)'
   exit 1
 fi
-if ! printf '%s\n' "$output" | grep -q 'no server block to check'; then
+if ! [[ "$output" == *'no server block to check'* ]]; then
   printf '%s\n' "$output"
   echo 'security headers: the rejection of an empty sample did not name the reason (#1097)'
   exit 1
