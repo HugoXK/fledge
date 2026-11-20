@@ -501,3 +501,52 @@ test('no control is a typed glyph, and every drawn icon keeps its label', () => 
     store.close()
   }
 })
+
+// #1020: the disclosure marker was the last typed control glyph in the console,
+// and it lived in the stylesheet: `content: '▸'` closed and `content: '▾'` open,
+// on `.secondary` and on the job page's `.job-more`/`.job-detail` pair. Generated
+// `content` text can join the summary's accessible name and is drawn in whatever
+// fallback face the platform picks, so the marker is geometry now — an empty
+// `content` plus borders, still `var(--accent)`. `CONTROL_GLYPHS` above cannot see
+// this class of defect: it reads rendered markup, and generated content is not in
+// it, so this test reads the sheet.
+test('the secondary and job-page disclosure markers are drawn, not typed', () => {
+  const rules = parseRules(cssText())
+  const markers = [
+    { selector: '.secondary > summary::before', axis: 'border-left' },
+    { selector: '.secondary[open] > summary::before', axis: 'border-top' },
+    { selector: '.job-more > summary::before', axis: 'border-left' },
+    { selector: '.job-detail > summary::before', axis: 'border-left' },
+    { selector: '.job-more[open] > summary::before', axis: 'border-top' },
+    { selector: '.job-detail[open] > summary::before', axis: 'border-top' },
+  ] as const
+  for (const marker of markers) {
+    const declarations = declarationsFor(rules, marker.selector, 1280)
+    assert.ok(declarations.length > 0, `${marker.selector} still exists in the sheet`)
+    assert.equal(lastValue(rules, marker.selector, 'content', 1280), "''", `${marker.selector} generates no text`)
+    // Deleting the marker must not satisfy the test: the mark is still drawn, in
+    // the accent colour, and the closed and open states still point differently.
+    const axis = declarations.filter((entry) => entry.property === marker.axis)
+    const edges = axis.map((entry) => entry.value).join(' ')
+    assert.match(edges, /var\(--accent\)/, `${marker.selector} draws the ${marker.axis} edge in the accent colour`)
+    const opposite = marker.axis === 'border-left' ? 'border-top' : 'border-left'
+    assert.match(
+      declarations.filter((entry) => entry.property === opposite).map((entry) => entry.value).join(' '),
+      /transparent/,
+      `${marker.selector} keeps its ${opposite} edge invisible`,
+    )
+  }
+
+  // No rule anywhere in the sheet may type a single symbol as its `content`:
+  // today exactly the four marker declarations did, and this catches the next one.
+  for (const rule of rules) {
+    for (const declaration of rule.declarations) {
+      if (declaration.property !== 'content') continue
+      assert.doesNotMatch(
+        declaration.value.trim(),
+        /^['"][^\p{L}\p{N}\s]['"]$/u,
+        `${rule.selectors.join(', ')} types a symbol as content: ${declaration.value}`,
+      )
+    }
+  }
+})

@@ -450,6 +450,13 @@ and the accessibility contract are fixed:
   `/settings`, `/dashboard` and the shell and fails on any control whose whole
   visible content is one of those characters, so the next component does not
   type one again.
+- The disclosure marker follows the same rule one layer down: a `<summary>`'s
+  `::before` carries `content: ''` and draws its triangle from border geometry in
+  `var(--accent)` (`.secondary`, `.job-more`, `.job-detail`), because generated
+  `content` text can join the summary's accessible name and is set in whatever
+  fallback face the platform picks. The sheet may not type a symbol as `content`
+  anywhere, and `test/layout.test.ts` reads the stylesheet for that — the markup
+  guard above cannot see generated content, which is not in `textContent`.
 - The dashboard's decision queue (`#decisions`, `src/views/pages.ts`) is one row
   per repository, and a row carries at most one action: an answer, the
   repository's most urgent alert, or its newest failed job, ranked in that order

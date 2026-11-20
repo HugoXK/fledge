@@ -3346,7 +3346,14 @@ newest tags therefore still knows its real previous release; capping the walk to
 the ten newest tags before the ancestry test did not, and it silently skipped
 both "nothing to release" and "not higher" for such a target, so a downgrade
 passed. The walk costs one compare per tag newer than the previous release, and
-the destructive class limit on the route is what paces repeats. Both routes that
+the destructive class limit on the route is what paces repeats. A walk that keeps
+no candidate at all means the target is older than every tag, and that is refused
+as `target_before_releases` (#946) instead of falling through to the first-release
+branch: a repository that already shipped `v1.20.0` has a previous release, it is
+simply not an ancestor of this commit, so it can never declare a first release
+and no free version name may be attached to an older tree. The refusal names the
+newest tag the target never reaches. Only a repository with no SemVer tag at all
+reaches the first-release branch. Both routes that
 write a tag — this release POST and the readiness page's tag button — take the
 destructive class limit and a fresh GitHub confirmation; the release POST is
 filed under the destructive route class, beside the other ref writes. On the

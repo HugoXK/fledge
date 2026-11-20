@@ -604,6 +604,51 @@ jobs:
           # these together with #80's fix to daily-release.yml.
           flags: '-ignore SC2010 -ignore SC2126 -ignore SC2016'
 
+  # #963: a check run's name is its job id, or the job's `name:` when it has
+  # one, and branch protection matches that string plus the Actions app id. A
+  # pull request could therefore add any workflow whose job is called `ci-ok`
+  # and publish the required context from its own tree; the aggregate reads only
+  # the `needs` of the run it executes inside, so it never saw the second check.
+  # The scanner is policy and comes from the base tree; the workflows are the
+  # head's data, the same split as `action-pins` above.
+  reserved-contexts:
+    name: reserved-contexts
+    needs: changes
+    if: needs.changes.outputs.workflows == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # #640: the gate is policy, so its code comes from the base branch and
+          # never from the pull request it judges. `path: base` keeps it beside
+          # the checkout that supplies the data under test.
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha || github.event.repository.default_branch }}
+          path: base
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # No `npm ci`: the scanner is plain node and reads only the workflow
+      # files, so a floating tag fails before any dependency install can run.
+      - name: Reject a job that publishes a required context outside its own workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          # #640: the scanner is policy, so the base tree's copy decides and the
+          # workflows stay the head's data. The pull request that introduces the
+          # scanner runs against a base that predates it; there the head copy is
+          # the only one that exists, and the log says so. From the next pull
+          # request on, only `base/` runs — the same bootstrap as gate-integrity.
+          if [ -f base/scripts/reserved-contexts.mjs ]; then
+            node base/scripts/reserved-contexts.mjs --workflows .github/workflows
+          else
+            echo "::notice::reserved-contexts is not on the base branch yet; this change introduces it, so the head copy runs this once"
+            node scripts/reserved-contexts.mjs --workflows .github/workflows
+          fi
+
   # gitleaks runs as a checksum-pinned binary rather than an action: the action
   # is licence-gated and chooses its own scan range, and this job has to prove a
   # range. fetch-depth: 0 is the point — a secret committed on the branch and
@@ -808,7 +853,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, mock-check, deploy-check]
+    needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, reserved-contexts, secret-scan, codeql-required, mock-check, deploy-check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -856,7 +901,7 @@ jobs:
   main-health:
     name: main-health
     if: always() && github.ref == 'refs/heads/main'
-    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, secret-scan, codeql-required, mock-check, deploy-check]
+    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, reserved-contexts, secret-scan, codeql-required, mock-check, deploy-check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
