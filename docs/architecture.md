@@ -500,7 +500,10 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   disclaimer and information-security agreement moves them to `pending` and
   emails the administrator. The status page shows the live queue position and
   rejects a second submission. Approvals create two single-use random tokens
-  (approve/reject), stored as hashes, valid for 7 days.
+  (approve/reject), stored as hashes, valid for 7 days. The approval link names
+  the submission instant (`application_submitted_at`, falling back to the account
+  creation time) — the same value the queue position and the admin's pending
+  table order by, because an account can exist days before its application.
 - **Roles**: platform roles are `user`, `admin` and super admin (`superadmin`). The
   primary `GITHUB_ADMIN_LOGIN` is promoted to owner on startup. Admins get the
   normal product UI plus a scoped management page for themselves and normal

@@ -3362,11 +3362,15 @@ export function approvalPage(input: { config: Config; locale: Locale; user: User
   const { config, locale, user, action, token, error } = input
   const t = translator(locale)
   const verb = action === 'approve' ? t('批准', 'Approve') : t('拒绝', 'Reject')
+  // #1088: the approver reads the instant the queue orders by. An account is
+  // created at the first sign-in and can apply days later, so the creation time
+  // is only the fallback for rows that predate `application_submitted_at`.
+  const appliedAt = user.application_submitted_at ?? user.created_at
   const body = `<section class="card narrow">
     <div class="eyebrow">${escapeHtml(t('申请审批', 'Application review'))}</div>
     <h1>${escapeHtml(t(`${verb} @${user.login} 的申请？`, `${verb} @${user.login}'s application?`))}</h1>
     <p>${escapeHtml(user.name ?? '')} · ${escapeHtml(user.email ?? t('未公开邮箱', 'No public email'))} · <a href="https://github.com/${escapeHtml(user.login)}" target="_blank" rel="noreferrer">GitHub</a></p>
-    <p class="muted">${escapeHtml(t(`申请时间 ${humanTimeShort(user.created_at)}。这个链接只能使用一次。`, `Applied ${humanTimeShort(user.created_at)}. This link can be used once.`))}</p>
+    <p class="muted">${escapeHtml(t(`申请时间 ${humanTimeShort(appliedAt)}。这个链接只能使用一次。`, `Applied ${humanTimeShort(appliedAt)}. This link can be used once.`))}</p>
     <form method="post" action="/approve/${escapeHtml(token)}">
       <button class="btn ${action === 'reject' ? 'btn-danger' : ''}" type="submit">${escapeHtml(verb)}</button>
       <a class="btn btn-ghost" href="/admin">${escapeHtml(t('去 Admin', 'Open Admin'))}</a>
