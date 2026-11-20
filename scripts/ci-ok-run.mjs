@@ -15,6 +15,21 @@
 // from the API: the job list, the head, the event, the pull requests. No file is
 // read, so nothing a file holds can become part of a request.
 //
+// #1108: the job list alone cannot prove a required job did its work. It reports
+// the job's *name* and its conclusion, so a head can keep the name `mock-check`
+// and make the body `run: true`. A pull request run is therefore also compared
+// against the default branch's copy of `.github/workflows/ci.yml` — every key of
+// every required job, with `scripts/lib/gate-compare.mjs` deciding — and a
+// mismatch is a refusal that names the job and the key. Both workflow texts are
+// read through the contents API at the head sha and the default branch, not from
+// the checkouts, for the same reason the run id is: a file read whose bytes end
+// up in the check-run body is the `js/file-access-to-http` shape alert 140
+// removed, and the checkouts stay data that nothing here reads.
+//
+// A push or a merge-queue entry is not compared: the queue head's tree already
+// contains the reviewed change and carries no label, and a push has no base range
+// at all.
+//
 // A superseded (`cancelled`) run is skipped: a newer run for the same head is
 // the one whose verdict counts.
 //
@@ -31,6 +46,7 @@ import { REQUIRED_JOBS } from './ci-ok.mjs'
 import { policyIdentity } from './lib/ci-ok-refresh.mjs'
 import { allGateChanges } from './lib/ciChanges.mjs'
 import { checkRunPayload, runIdFrom, shouldPublish, verdict } from './lib/ci-ok-run.mjs'
+import { GATE_COMPARE_FILE, WORKFLOW_CHANGE_LABEL, compareGate } from './lib/gate-compare.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -158,6 +174,44 @@ function failingResult(message) {
   return { needs: {}, lines: [], problems: [message], ok: false }
 }
 
+// #1108: the workflow text at a ref, as bytes the contents API serves. Anything
+// else — a missing file, a symlink, a file past the API's 1 MB limit — is a
+// reason to refuse rather than a reason to assume the gate is intact.
+async function workflowText(ref) {
+  const body = await api(`/repos/${REPO}/contents/${GATE_COMPARE_FILE}?ref=${encodeURIComponent(ref)}`)
+  if (body === null || body.encoding !== 'base64' || typeof body.content !== 'string') {
+    throw new Error(`${GATE_COMPARE_FILE} at ${ref} is not served as file content, so the comparison cannot be made`)
+  }
+  return Buffer.from(body.content, 'base64').toString('utf8')
+}
+
+// The only label that can sanction a required-job rewrite. A run that names no
+// single pull request has no label, and that is the fail-closed reading.
+async function labelledWorkflowChange(run) {
+  if (run.event !== 'pull_request') return false
+  const pulls = Array.isArray(run.pull_requests) ? run.pull_requests : []
+  const numbers = new Set(pulls.map((pull) => pull?.number).filter((number) => Number.isSafeInteger(number) && number > 0))
+  if (numbers.size !== 1) return false
+  const [number] = [...numbers]
+  const labels = await api(`/repos/${REPO}/issues/${String(number)}/labels?per_page=100`)
+  return Array.isArray(labels) && labels.some((label) => label?.name === WORKFLOW_CHANGE_LABEL)
+}
+
+async function gateComparison(run) {
+  const headSha = String(run.head_sha)
+  if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error('the finished run names no 40-character head sha')
+  const defaultBranch = run.repository?.default_branch ?? run.head_repository?.default_branch
+  if (typeof defaultBranch !== 'string' || defaultBranch === '') {
+    throw new Error('the finished run names no default branch, so the base workflow is unknown')
+  }
+  const [base, head, labelled] = await Promise.all([
+    workflowText(defaultBranch),
+    workflowText(headSha),
+    labelledWorkflowChange(run),
+  ])
+  return compareGate({ base, head, required: REQUIRED_JOBS, labelled })
+}
+
 async function publish(payload) {
   if (DRY_RUN) {
     console.log(JSON.stringify(payload, null, 2))
@@ -183,6 +237,19 @@ async function main() {
     const from = range(run)
     const changes = changesFor(run, from)
     result = verdict({ jobs, eventName: run.event, changes })
+    // #1108: the job list proves a job with a required *name* succeeded. The
+    // workflow text is what says the job still does the required thing, so a
+    // pull request run is refused when a required job's definition differs from
+    // the base tree. Silence never passes: `ok` is the conjunction.
+    if (run.event === 'pull_request') {
+      const comparison = await gateComparison(run)
+      result = {
+        needs: result.needs,
+        lines: [...result.lines, ...comparison.lines],
+        problems: [...result.problems, ...comparison.problems],
+        ok: result.ok && comparison.ok,
+      }
+    }
   } catch (error) {
     result = failingResult(`ci-ok could not be computed from run ${String(run.id)}: ${error.message}`)
   }

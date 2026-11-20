@@ -440,6 +440,26 @@ reported missing by name, which is red — the same answer as dropping it from
 the run that replaced it owns the verdict, and a run whose evidence cannot be
 read publishes `failure` with the reason rather than silence.
 
+A job that keeps its required name and changes what it does is a separate hole
+(#1108): the publisher matches names, so a head could leave `mock-check` in place
+and make its body `run: true`, or add `continue-on-error: true` to the step so a
+failing job reports `success`. A pull request run is therefore also compared with
+the default branch's copy of `.github/workflows/ci.yml` — both texts read through
+the contents API, so the publisher still reads no file — and every key of every
+required job must match. `name:` and `timeout-minutes:` are allowlisted because
+neither can flip a conclusion; everything else is a refusal, named by job and
+key. The `ci-ok` job's `needs` may grow but not shrink, and its step must still be
+exactly `node base/scripts/ci-ok.mjs` with the gate checked out under
+`path: base`. The comparator is `scripts/lib/gate-compare.mjs`, and it fails
+closed: a duplicated job, a duplicated key or a line it cannot read is a refusal,
+never a skipped comparison. `ci-workflow-change` (owner-applied) records a
+reviewed workflow change, but it does not turn the verdict green: the publisher
+cannot verify a PASS, so such a change stays red and is a T3 decision made
+outside this check. The residual is explicit — a head that renames `name: CI`
+produces no publisher run, so nothing here compares it; `ci-ok-refresh.yml`
+(#1116) is the out-of-band path that closes that trigger, and this comparator
+adds no second scanner.
+
 The trigger reaches the script as one integer: `ci-ok-publish.yml` passes
 `CI_OK_RUN_ID` from `github.event.workflow_run.id`, and `runIdFrom` accepts
 digits only before the value can enter a request path. Every other fact about the
