@@ -1,0 +1,4 @@
+before 1280 zh: banner="" box=null runNow=1 runNowBox={"x":82,"y":575.078125,"width":1116,"height":24} overflow={"doc":1280,"win":1280,"bannerScroll":null,"bannerClient":null}
+before 1280 en: banner="" box=null runNow=1 runNowBox={"x":82,"y":570.6875,"width":1116,"height":21.796875} overflow={"doc":1280,"win":1280,"bannerScroll":null,"bannerClient":null}
+before 390 zh: banner="" box=null runNow=1 runNowBox={"x":16,"y":830.953125,"width":358,"height":24.25} overflow={"doc":390,"win":390,"bannerScroll":null,"bannerClient":null}
+before 390 en: banner="" box=null runNow=1 runNowBox={"x":16,"y":848.4375,"width":358,"height":46.5} overflow={"doc":390,"win":390,"bannerScroll":null,"bannerClient":null}
