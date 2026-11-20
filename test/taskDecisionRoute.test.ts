@@ -308,6 +308,36 @@ test('a related decision on a task that did run still writes the task and one re
   }
 })
 
+// #1113: the "may not decide" answer belongs to the shared mutating guard, not
+// to a branch written inside this route: `ownedRepo` already answers 404 for a
+// non-member and 403 for a viewer, so a check of its own could never run. This
+// case keeps the refusal on the record instead of on an unreachable line.
+test('a viewer member posting a decision is refused by the shared write guard', async () => {
+  const f = await fixture('viewer')
+  try {
+    const viewer = makeUser(f.store, { login: 'decision-route-viewer', status: 'approved' })
+    f.store.addRepoMember({ repoId: f.repoId, userId: viewer.id, role: 'viewer', grantedBy: f.user.id })
+    assert.equal(f.store.memberRoleFor(f.repoId, viewer.id), 'viewer')
+    const before = f.store.listWorkItems(f.repoId).length
+    const session = sessionFor(f.built, viewer)
+    const response = await f.built.app.inject({
+      method: 'POST',
+      url: `/repos/${f.repoId}/jobs/${f.verifyId}/decision`,
+      headers: { 'content-type': 'application/x-www-form-urlencoded', cookie: `${session.cookie}; fledge_lang=en` },
+      payload: formBody({ csrf: session.csrf, ...good, kind: 'new', title: 'a viewer cannot decide' }),
+    })
+    assert.equal(response.statusCode, 403, 'a viewer is refused before the decision is read')
+    assert.equal(f.store.listWorkItems(f.repoId).length, before, 'a refused viewer writes no task')
+    assert.equal(
+      f.store.listAudit(200).some((entry) => entry.action.startsWith('task.decision_')),
+      false,
+      'and no decision audit row',
+    )
+  } finally {
+    await f.close()
+  }
+})
+
 // #1113: a repository connected before any upstream role was recorded keeps
 // `repo_role` NULL, and the page already offers the decision there because the
 // page reads the actor's role (#1081). The route read the upstream column

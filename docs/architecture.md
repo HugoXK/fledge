@@ -588,10 +588,12 @@ recorded". `scripts/restore-drill.mjs --status-file` is the writer.
   that can only come back as a refusal. The role is the actor's role on this
   repository, the same `ownedRepo` answer the red-test control uses;
   `repo.repo_role` declares Fledge's upstream access and is not the source for
-  who may press. The route answers that same question from that same role, so a
-  repository connected before its upstream access was ever checked — where
-  `repo.repo_role` is still NULL — accepts a decision from an owner the page
-  already offered it to, instead of drawing a form and refusing the write.
+  who may press. The route carries no role check of its own: it takes the write
+  behind that same guard, so a repository connected before its upstream access
+  was ever checked — where `repo.repo_role` is still NULL — accepts a decision
+  from an owner the page already offered it to, and a viewer or a non-member is
+  refused by the guard itself (403, 404) rather than by a second answer that
+  could never run.
 - **No worker process**: a 60-second tick chooses the next job for a due repo.
   With open work it follows up the highest-priority item (or reviews its PR when
   a maintainer reviewer is due); with no open work it **stays idle** unless the
