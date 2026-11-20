@@ -360,3 +360,35 @@ test('a document marker and a step name are read without inventing a finding', a
   const stepName = ['jobs:', '  build:', '    runs-on: ubuntu-latest', '    steps:', '      - name: ci-ok', '        run: "true"', ''].join('\n')
   assert.deepEqual(scanWorkflowText(stepName, 'shadow.yml'), [], 'a step name is not the check-run name')
 })
+
+test('a job-level name: whose value is on the next line is refused, not read as empty', async () => {
+  const { scanWorkflowText } = await lib()
+  const continuation = ['jobs:', '  publish:', '    name:', '      ci-ok', '    runs-on: ubuntu-latest', ''].join('\n')
+  const findings = scanWorkflowText(continuation, 'shadow.yml')
+  assert.equal(findings.length, 1, `exactly one refusal expected, got ${JSON.stringify(findings)}`)
+  assert.equal(findings[0]?.kind, 'unsupported')
+  assert.equal(findings[0]?.line, 3)
+  assert.match(String(findings[0]?.reason), /no value on its line/)
+  const commented = [
+    'jobs:',
+    '  publish:',
+    '    name: # the required context',
+    '      ci-ok',
+    '    runs-on: ubuntu-latest',
+    '',
+  ].join('\n')
+  const fromComment = scanWorkflowText(commented, 'shadow.yml')
+  assert.equal(fromComment.length, 1, `exactly one refusal expected, got ${JSON.stringify(fromComment)}`)
+  assert.equal(fromComment[0]?.kind, 'unsupported')
+  assert.equal(fromComment[0]?.line, 3)
+  const directory = fixture({ 'shadow.yml': continuation })
+  await assert.rejects(
+    async () => execFileAsync(process.execPath, [cliPath, '--workflows', directory], { encoding: 'utf8' }),
+    (error: NodeJS.ErrnoException & { code?: number; stderr?: string }) => {
+      assert.equal(error.code, 1, 'YAML reads the continuation as ci-ok, so the gate must be red')
+      assert.match(String(error.stderr ?? ''), /shadow\.yml:3/)
+      assert.match(String(error.stderr ?? ''), /cannot be resolved into a check-run name/)
+      return true
+    },
+  )
+})

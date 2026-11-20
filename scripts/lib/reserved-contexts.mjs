@@ -29,9 +29,10 @@
 //  - a job-level `name:` that is not a plain literal — a backslash escape, a
 //    block scalar, a tag, an anchor, a flow collection, an unquoted tab — is an
 //    `unsupported` finding, because a value this parser cannot resolve could
-//    still resolve to a reserved context in YAML. The same holds for a job id
-//    that is not a plain or simple-quoted key, and for a `jobs:` block whose
-//    first line is not a job id.
+//    still resolve to a reserved context in YAML. The same holds for a
+//    `name:` with no value on its line (its value may be on the next line), a
+//    job id that is not a plain or simple-quoted key, and a `jobs:` block
+//    whose first line is not a job id.
 //
 // Dialect: the YAML GitHub Actions reads. Job ids are block-mapping keys; the
 // check-run name is a scalar on the job's `name:` key.
@@ -89,7 +90,12 @@ function readKey(body) {
 // collection is refused for the same reason.
 function readScalar(text) {
   const value = String(text ?? '').trim()
-  if (value === '') return { ok: true, value: '' }
+  // A job-level `name:` with nothing on its line is not a null name: YAML reads
+  // an indented continuation as the scalar, so `name:` then `      ci-ok` is the
+  // required context. Only a scalar written on this line can be proved.
+  if (value === '' || value.startsWith('#')) {
+    return { ok: false, reason: 'a name: with no value on its line (its value may be on the next line)' }
+  }
   if (value.startsWith('"')) {
     let body = ''
     for (let index = 1; index < value.length; index += 1) {
