@@ -70,10 +70,11 @@ export interface BackupStatus {
 
 /**
  * Whether a drill proved the copy's encrypted columns still open. `'skipped'`
- * means the run carried no key; `null` means the file predates the field, which
- * is not the same claim as "the check ran and was not attempted".
+ * means the run carried no key, `'not-reached'` means it carried one and failed
+ * before the check, and `null` means the file predates the field, which is not
+ * the same claim as "the check ran and was not attempted".
  */
-export type RestoreDrillColumnCheck = 'pass' | 'fail' | 'skipped'
+export type RestoreDrillColumnCheck = 'pass' | 'fail' | 'skipped' | 'not-reached'
 
 export interface RestoreDrillStatus {
   at: string
@@ -86,7 +87,7 @@ export interface RestoreDrillStatus {
 }
 
 function columnCheckOf(value: unknown): RestoreDrillColumnCheck | null {
-  return value === 'pass' || value === 'fail' || value === 'skipped' ? value : null
+  return value === 'pass' || value === 'fail' || value === 'skipped' || value === 'not-reached' ? value : null
 }
 
 /**

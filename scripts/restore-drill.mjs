@@ -23,9 +23,13 @@ const USAGE = 'usage: node scripts/restore-drill.mjs [--db <path>] [--backup-dir
 // reads. CI and unit runs with neither write nothing.
 let statusTarget = null
 
-// The column check is a recorded verdict, never console text: `skipped` until a
-// run is given a key, then `pass` or `fail`. `columnErrors` keeps the failing
-// column names, so the card can say which credential is unreadable.
+// The column check is a recorded verdict, never console text: `skipped` when the
+// run carried no key, `not-reached` when it carried one and died before the
+// check, then `pass` or `fail`. The two no-verdict states stay apart because
+// `skipped` tells the card "no key given", and a keyed run that failed early
+// would then send the operator looking for a flag they had already passed.
+// `columnErrors` keeps the failing column names, so the card can say which
+// credential is unreadable.
 let columnCheck = 'skipped'
 let columnErrors = []
 
@@ -415,6 +419,9 @@ async function main() {
     process.stdout.write(`${USAGE}\n`)
     return
   }
+  // A keyed run starts as `not-reached`, not `skipped`: if it dies on a bad copy
+  // the record must say the check never got its turn, not that no key was given.
+  if (args.secretKeyFile !== undefined) columnCheck = 'not-reached'
   const dbPath = resolve(args.db ?? process.env.DB_PATH ?? join(process.env.DATA_DIR ?? './data', 'fledge.db'))
   const backupDir = resolve(args.backupDir ?? process.env.BACKUP_DIR ?? join(process.env.DATA_DIR ?? './data', 'backups'))
   const dataDir = resolve(process.env.DATA_DIR ?? './data')

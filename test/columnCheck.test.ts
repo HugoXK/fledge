@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { randomBytes } from 'node:crypto'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -176,6 +176,37 @@ test('without the flag the status file says skipped and the run output is unchan
   }
 })
 
+test('a keyed run that dies before the check records not-reached, never skipped', () => {
+  // A copy that is not a database: the drill refuses it before it reaches the
+  // column check. The record must then say the check never got its turn, because
+  // `skipped` means "no key given" and the operator did pass one — sending them
+  // to look for a flag they already have.
+  const corrupt = (input: ReturnType<typeof fixture>): void => {
+    mkdirSync(input.backupDir, { recursive: true, mode: 0o700 })
+    writeFileSync(join(input.backupDir, 'fledge-2026-11-20T00-00-00-000Z.db'), 'not a database\n', { mode: 0o600 })
+  }
+  const keyed = fixture({ key: KEY_A, keyFile: 'single' })
+  const plain = fixture({ key: KEY_A })
+  try {
+    corrupt(keyed)
+    const keyedRun = run(drillArgs(keyed, keyed.keyFile))
+    assert.notEqual(keyedRun.code, 0, 'a copy that is not a database must not pass the drill')
+    const keyedRecord = statusOf(keyed.statusFile)
+    assert.equal(keyedRecord.ok, false)
+    assert.equal(keyedRecord.columnCheck, 'not-reached', `a keyed run that failed before the check must not record "no key given", got: ${JSON.stringify(keyedRecord)}`)
+
+    // The same failure without the flag stays `skipped`: the two states are told
+    // apart by the flag that was given, not by the fact that the run failed.
+    corrupt(plain)
+    const plainRun = run(drillArgs(plain, null))
+    assert.notEqual(plainRun.code, 0, 'the copy is corrupt with or without a key file')
+    assert.equal(statusOf(plain.statusFile).columnCheck, 'skipped')
+  } finally {
+    rmSync(keyed.root, { recursive: true, force: true })
+    rmSync(plain.root, { recursive: true, force: true })
+  }
+})
+
 test('readRestoreDrill reads the column check the drill wrote and null for a file that predates it', () => {
   const input = fixture({ key: KEY_A, keyFile: 'single' })
   try {
@@ -186,6 +217,12 @@ test('readRestoreDrill reads the column check the drill wrote and null for a fil
     // `'skipped'` arrives as the union value: no parenthetical, no normalisation.
     assert.equal(status.columnCheck, 'skipped')
     assert.deepEqual(status.columnErrors, [])
+
+    // A record from a keyed run that failed early carries its own union value;
+    // reading it as `null` would read as "not recorded" and hide the reason.
+    const unreached = join(input.root, 'unreached-drill.json')
+    writeFileSync(unreached, `${JSON.stringify({ at: '2026-11-20T00:00:00.000Z', ok: false, detail: 'cannot open restored copy', columnCheck: 'not-reached', columnErrors: [] })}\n`)
+    assert.equal(readRestoreDrill(unreached)?.columnCheck, 'not-reached')
 
     const legacy = join(input.root, 'legacy-drill.json')
     writeFileSync(legacy, `${JSON.stringify({ at: '2026-01-01T00:00:00.000Z', ok: true, detail: 'old' })}\n`)
@@ -247,8 +284,39 @@ test('the admin row renders pass, skipped and fail as three different readings',
   const notRecorded = drillRow(renderAdmin('en', { ...base, columnCheck: null }))
   assert.match(notRecorded, /column check: not recorded/)
 
+  // A keyed run that died before the check has its own reading, and it is never
+  // the "no key given" one: that is the sentence this state exists to stop.
+  const notReached = drillRow(renderAdmin('en', { ...base, ok: false, columnCheck: 'not-reached', detail: 'cannot open restored copy' }))
+  assert.match(notReached, /column check: not reached \(the run failed before it\)/)
+  assert.doesNotMatch(notReached, /no key given/, `an operator who passed the flag must not be told they passed none, got: ${notReached}`)
+  assert.doesNotMatch(notReached, /· ok(?: ·|$)/, `an unreached check must not read as a bare success, got: ${notReached}`)
+  // Only `pass` earns an unqualified `ok`, even beside a contradictory record.
+  const notReachedOk = drillRow(renderAdmin('en', { ...base, ok: true, columnCheck: 'not-reached' }))
+  assert.match(notReachedOk, /failed \(column check not reached\)/)
+
   const zh = drillRow(renderAdmin('zh', { ...base, columnCheck: 'skipped' }))
   assert.match(zh, /列检查：未运行（未提供密钥）/)
+  const zhNotReached = drillRow(renderAdmin('zh', { ...base, ok: false, columnCheck: 'not-reached' }))
+  assert.match(zhNotReached, /列检查：未到达（本次运行在检查前失败）/)
+  assert.doesNotMatch(zhNotReached, /未提供密钥/)
+})
+
+test('every runbook block that hands the drill a column key removes that key file', () => {
+  const blocks = [...readFileSync(deployDoc, 'utf8').matchAll(/```sh\n([\s\S]*?)```/g)]
+    .flatMap((match) => (match[1] === undefined ? [] : [match[1]]))
+  const keyed = blocks.filter((block) => block.includes('--secret-key-file'))
+  assert.equal(keyed.length, 2, `expected the drill and the restore-for-real blocks, found ${keyed.length}`)
+  for (const block of keyed) {
+    for (const match of block.matchAll(/--secret-key-file\s+([^\s`;]+)/g)) {
+      const path = match[1]
+      assert.ok(path !== undefined, 'the flag must name a path in the runbook')
+      const literal = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+      // The file holds the key the copy's credentials open with: a block that
+      // writes it and never removes it is a key left on disk, whatever the
+      // comment beside it says.
+      assert.match(block, new RegExp(`rm -f ${literal}`), `the block that passes ${path} must remove it, got:\n${block}`)
+    }
+  }
 })
 
 test('both documented restore invocations pass a column key', () => {

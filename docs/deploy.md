@@ -1307,18 +1307,25 @@ writes `${DATA_DIR}/backup-drill.json` when `DATA_DIR` is set (or the path passe
 with `--status-file`), and the card shows that record's time, `ok`/`failed`,
 RTO/RPO and the column check as its own row — `列检查：通过 / column check:
 passed`, `列检查：未运行（未提供密钥） / not run (no key given)` when the run
-carried no key, `列检查：失败 / failed` with the column names, or `列检查：未记录
-/ not recorded` for a record written before the field existed. A drill whose
-column check did not pass never reads as an unqualified `成功 / ok`: the success
-word carries the qualification. It says `none recorded` only when that file is
-absent or unreadable, so the card never shows a green it cannot prove.
+carried no key, `列检查：未到达（本次运行在检查前失败） / not reached (the run
+failed before it)` when it carried a key and died first, `列检查：失败 / failed`
+with the column names, or `列检查：未记录 / not recorded` for a record written
+before the field existed. A drill whose column check did not pass never reads as
+an unqualified `成功 / ok`: the success word carries the qualification. It says
+`none recorded` only when that file is absent or unreadable, so the card never
+shows a green it cannot prove.
 
 The same two readers publish five series on `/metrics` at scrape time, so the
 backup can page without somebody opening the card: `fledge_backup_age_hours`,
 `fledge_backup_copies`, `fledge_backup_encrypted_copies`,
 `fledge_restore_drill_age_hours` and `fledge_restore_drill_ok` (`1` only for a
 successful drill inside the expected interval; a fresh install reads `0` and no
-age series). Two rules in `deploy/prometheus/fledge-alerts.yml` use them:
+age series). The drill gauge follows the card's column check: a record whose
+`columnCheck` is `fail` or `not-reached` reads `0` even beside an `ok: true`,
+because that record is not a passing drill on the page either; `skipped` keeps
+reading `1`, since a host with no column key configured has not failed a drill
+and paging it on every scrape would be the wrong alarm. Two rules in
+`deploy/prometheus/fledge-alerts.yml` use them:
 `FledgeBackupStale` at `fledge_backup_age_hours > 26` — raise that number in the
 rule if you raise `BACKUP_EXPECTED_HOURS` — and `FledgeRestoreDrillFailing` at
 `fledge_restore_drill_ok == 0`. The platform also raises one in-app ops alert per
@@ -1342,9 +1349,13 @@ Prove that the newest copy still restores, without touching the live database:
 
 ```sh
 # The column key lives in the root-only env file. Derive it into an owner-only
-# file so it never appears on a command line, and remove the file after the run.
+# file so it never appears on a command line, and remove it when the run ends:
+# a drill that refuses a bad copy exits non-zero, so a plain `rm` after it would
+# be skipped exactly when the key matters most. The subshell's EXIT trap runs on
+# success and on every failure.
 sudo sh -c 'umask 077; sed -n "s/^TOKEN_ENCRYPTION_KEY=//p" /etc/fledge/fledge.env > /var/tmp/fledge-column.key'
-npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json" --secret-key-file /var/tmp/fledge-column.key
+( trap 'sudo rm -f /var/tmp/fledge-column.key' EXIT
+  npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json" --secret-key-file /var/tmp/fledge-column.key )
 # a keyring host passes the JSON file TOKEN_ENCRYPTION_KEYS_FILE names instead
 # encrypted copy: prefix with BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key
 # manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
@@ -1379,10 +1390,13 @@ How it works and how to read it:
   already uses, so a `v2:<id>:…` payload passes with the id it names and fails
   naming that id when the file does not carry it. The drill records
   `columnCheck: pass`, `fail` (with the failing `table.column` entries in
-  `columnErrors`, exit non-zero), or `skipped` when the flag is absent — the
-  previous verdict and exit code are unchanged, and an unrun check is never
+  `columnErrors`, exit non-zero), `skipped` when the flag is absent, or
+  `not-reached` when the flag was given but the run died before the check — the
+  last two are different facts, and only the first of them means "no key given".
+  The previous verdict and exit code are unchanged, and an unrun check is never
   reported as a pass. The drill never reads the key from its own environment and
-  never imports the application's config; remove the key file when the run ends.
+  never imports the application's config; the block above removes the key file
+  with an `EXIT` trap, so a refused copy does not leave it behind.
 - **An encrypted copy is decrypted with the configured key before the database
   checks.** The `.db.enc` extension selects the encrypted path; the ciphertext is
   checked against the manifest first, then decrypted with

@@ -217,11 +217,12 @@ under the 4 MiB cap, gives a row only to a copy that differs or whose manifest
 cannot be read, and reports the drill record rather than a fixed "none
 recorded". `scripts/restore-drill.mjs --status-file` is the writer. The record's
 `columnCheck` (the drill's proof that the copy's encrypted columns still open)
-has its own row — `passed`, `not run (no key given)`, `failed` with the column
-names, or `not recorded` for a file written before the field existed — and an
-`ok` whose check did not pass carries the qualification, so a green row and a
-skipped check never read the same. `scripts/restore-drill.mjs --secret-key-file`
-is what fills it.
+has its own row — `passed`, `not run (no key given)`, `not reached (the run
+failed before it)` when a key was given and the drill died first, `failed` with
+the column names, or `not recorded` for a file written before the field existed —
+and an `ok` whose check did not pass carries the qualification, so a green row
+and a skipped check never read the same. The writer of that field is the drill's
+`--secret-key-file` flag.
 
 ## Components
 
