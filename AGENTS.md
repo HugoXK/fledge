@@ -193,6 +193,25 @@ A `hold` label plus a comment `Record only — do not merge` blocks the queue. T
 label alone is a marker; the pair is the record. Never edit or delete an earlier
 PASS to change history.
 
+**Commit identity.** Every commit on a PR tip is authored by an admitted identity
+— one of the names in `authors` in `.github/agent/review-policy.json`: `HugoXK
+<ke.xu@zju.edu.cn>` when the tip is pushed with the owner token (`01e1e5db`,
+`eb4c4388` and `c11a16e5` are authored this way), or the Dev's own bot identity,
+e.g. `Fledge Platform Dev-4 <dev4@fledge.invalid>` (`7e2b847`).
+`hugo2001xk@gmail.com` is never an author address: GitHub resolves it to the
+`HugoXK-bot` login, and a tip whose author resolves to a reviewer identity can
+never receive a PASS. `reviewerAuthoredCommit` (`scripts/lib/review-gate.mjs:169-188`)
+reads `commit.author.login` and falls back to `commit.commit.author.email` only
+when that login is empty, and `review-gate` refuses the tip at `:431-434`. The
+pre-push check stays `git log -1 --format='%an <%ae> | %cn <%ce>'`: the author half
+is the gate's decision and the committer half is hygiene — the gate reads the
+author, not the committer, so a reviewer-address committer is corrected but never
+refused. A branch whose tip carries a reviewer-authored commit is rebuilt, never
+force-pushed: new branch, byte-identical tree, `supersedes #<old> — same tree
+<sha>, author-identity fix only` in the new PR body, and the old PR closed only
+after the replacement exists and links it, on the Lead's approval. The ruling is
+the team playbook's "Commit identity (Chief ruling 2026-11-15)".
+
 ## Changelog
 
 - One file per user-visible change: `changelog.d/<issue-or-slug>.<kind>.md`.
