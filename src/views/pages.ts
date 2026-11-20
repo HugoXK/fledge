@@ -4654,6 +4654,57 @@ export function automationHealthCard(locale: Locale, summary: AutomationHealthSu
   </section>`
 }
 
+// #470: one daily series as an inline SVG. The svg carries no width or height,
+// only a viewBox, so it scales to whatever the card gives it at 360 instead of
+// forcing a scroll; the figure is repeated as text and in the aria-label because
+// shape and colour are not the only signal. A series that recorded nothing in the
+// window draws a flat baseline, never a trend line, so a quiet week cannot read
+// as movement.
+function dailySparkline(input: {
+  t: Translate
+  series: 'jobs' | 'succeeded' | 'failed' | 'merged'
+  name: string
+  label: string
+  values: number[]
+  days: string[]
+  windowDays: number
+}): string {
+  const { t, series, name, label, values, days, windowDays } = input
+  const total = values.reduce((sum, value) => sum + value, 0)
+  const peak = values.length === 0 ? 0 : Math.max(...values)
+  const peakIndex = values.indexOf(peak)
+  const peakDay = days[peakIndex] ?? ''
+  const recorded = days.length
+  const accessible = peak === 0
+    ? t(
+        `${label}：${windowDays} 天窗口里记录了 ${recorded} 天，共 ${total}，没有活动。`,
+        `${label}: ${recorded} recorded ${recorded === 1 ? 'day' : 'days'} of ${windowDays}, ${total} in total, no activity.`,
+      )
+    : t(
+        `${label}：${windowDays} 天窗口里记录了 ${recorded} 天，共 ${total}，最高 ${peak}（${peakDay}）。`,
+        `${label}: ${recorded} recorded ${recorded === 1 ? 'day' : 'days'} of ${windowDays}, ${total} in total, peak ${peak} on ${peakDay}.`,
+      )
+  const width = 100
+  const top = 2
+  const baseline = 26
+  const x = (index: number): number => (values.length <= 1 ? width / 2 : (index / (values.length - 1)) * width)
+  const y = (value: number): number => (peak === 0 ? baseline : baseline - (value / peak) * (baseline - top))
+  const points = values.map((value, index) => `${x(index).toFixed(2)},${y(value).toFixed(2)}`).join(' ')
+  const chart = peak === 0
+    ? `<line class="spark-axis" x1="0" y1="${String(baseline)}" x2="${String(width)}" y2="${String(baseline)}" />`
+    : values.length === 1
+      ? `<line class="spark-path" x1="${(x(0) - 6).toFixed(2)}" y1="${y(values[0] ?? 0).toFixed(2)}" x2="${(x(0) + 6).toFixed(2)}" y2="${y(values[0] ?? 0).toFixed(2)}" />`
+      : `<polyline class="spark-path" points="${points}" />`
+  const caption = peak === 0
+    ? t('窗口内没有活动。', 'No activity in the window.')
+    : t(`最高 ${peak}（${peakDay}）`, `Peak ${peak} on ${peakDay}`)
+  return `<div class="spark" data-series="${series}">
+      <div class="spark-head"><span class="spark-name">${escapeHtml(name)}</span><strong class="spark-total">${total}</strong></div>
+      <svg class="spark-line${peak === 0 ? ' spark-quiet' : ''}" role="img" aria-label="${escapeHtml(accessible)}" viewBox="0 0 100 28" preserveAspectRatio="none" focusable="false">${chart}</svg>
+      <p class="fine">${escapeHtml(caption)}</p>
+    </div>`
+}
+
 export function metricsPage(input: {
   config: Config
   locale: Locale
@@ -4714,6 +4765,13 @@ export function metricsPage(input: {
   const eventRows = metrics.events.length === 0
     ? stateCell(2, { kind: 'empty', title: t('还没有事件。', 'No events yet.'), body: t('任务开始后会记录每一次状态变化。', 'Every state change is recorded once the job starts.'), action: { href: '#', label: t('等第一个任务运行后回来看。', 'Come back after the first job runs.') } })
     : metrics.events.map((event) => `<tr><td><code>${escapeHtml(event.name)}</code></td><td>${event.n}</td></tr>`).join('')
+  const sparkDays = daily.map((row) => row.day)
+  const trendSparks = daily.length === 0 ? '' : `<div class="spark-grid" data-spark-window="${String(windowDays)}">${[
+    dailySparkline({ t, series: 'jobs', name: t('任务', 'Jobs'), label: t('每日任务数', 'Jobs per day'), values: daily.map((row) => row.jobs), days: sparkDays, windowDays }),
+    dailySparkline({ t, series: 'succeeded', name: t('成功', 'Succeeded'), label: t('每日成功数', 'Succeeded per day'), values: daily.map((row) => row.succeeded), days: sparkDays, windowDays }),
+    dailySparkline({ t, series: 'failed', name: t('失败', 'Failed'), label: t('每日失败数', 'Failed per day'), values: daily.map((row) => row.failed), days: sparkDays, windowDays }),
+    dailySparkline({ t, series: 'merged', name: t('已合并 PR', 'Merged PRs'), label: t('每日合并 PR 数', 'Merged PRs per day'), values: daily.map((row) => row.merged), days: sparkDays, windowDays }),
+  ].join('')}</div>`
   const body = `<section class="card">
     <div class="row between">
       <div>
@@ -4796,6 +4854,7 @@ export function metricsPage(input: {
   </section>
   <section class="card">
     <h2>${escapeHtml(t('每日趋势', 'Daily trend'))}</h2>
+    ${trendSparks}
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('日期', 'Day'))}</th><th>${escapeHtml(t('任务', 'Jobs'))}</th><th>${escapeHtml(t('成功', 'Succeeded'))}</th><th>${escapeHtml(t('失败', 'Failed'))}</th><th>${escapeHtml(t('已合并 PR', 'Merged PRs'))}</th></tr></thead><tbody>${daily.length === 0 ? stateCell(5, { kind: 'empty', title: t('还没有每日数据。', 'No daily data yet.'), body: t('窗口内没有任务。', 'No jobs in this window.'), action: { href: '/dashboard#jobs', label: t('查看任务', 'View jobs') } }) : daily.map((row) => `<tr><td>${escapeHtml(row.day)}</td><td>${row.jobs}</td><td>${row.succeeded}</td><td>${row.failed}</td><td>${row.merged}</td></tr>`).join('')}</tbody></table></div>
   </section>
   <section class="card">

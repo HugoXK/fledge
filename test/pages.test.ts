@@ -3040,3 +3040,106 @@ test('every in-app fragment link lands on an element that exists', async () => {
     await built.close()
   }
 })
+
+// #470: the daily card draws the four series it already receives as inline SVG —
+// one `role="img"` per series, the same figure repeated as text — and a quiet
+// window keeps the existing empty state instead of drawing a false zero line.
+function sparkMetricsPage(input: {
+  daily: Array<{ day: string; jobs: number; succeeded: number; failed: number; merged: number }>
+  windowDays?: number
+  locale?: 'en' | 'zh'
+}): string {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'metrics-sparklines', status: 'approved', superadmin: true })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf' }
+    return metricsPage({
+      config,
+      locale: input.locale ?? 'en',
+      viewer,
+      metrics: { users: 1, approved: 1, repos: 1, jobs: 7, succeeded: 6, failed: 1, usersWithJobs: 1, usersWithPr: 1, costUsd: 0.4, events: [{ name: 'job_enqueued', n: 2 }], firstMerge: { repositories: 1, samples: 1, medianMs: 86_400_000 }, readyWait: { samples: 1, medianMs: 3_600_000 } },
+      team: { jobs: 1, avgRoles: 2, leadOnly: 0, roles: [{ role: 'lead', calls: 3, jobs: 1 }] },
+      workItems: { total: 1, open: 0, merged: 1, closed: 0 },
+      attribution: { unattributedCount: 0, unattributedUsd: 0, attributedUsd: 0.4 },
+      stages: { scope: 0, verify: 0, iterate: 1, review: 1, leadOnly: 0, grounded: 1 },
+      delivery: { jobs: 7, succeeded: 6, failed: 1, successRate: 86, prs: 3, merged: 3, mergeRate: 100, changesRequested: 0, reviewAverage: 82, reviewCount: 1, medianJobMs: 600_000, medianMergeMs: 3_600_000, medianReviewMs: 120_000 },
+      daily: input.daily,
+      repoCosts: [{ repoId: 'r1', label: 'o/r', costUsd: 0.4, calls: 3 }],
+      modelCosts: [{ model: 'model-a', costUsd: 0.4, calls: 3 }],
+      currency: { buckets: [{ currency: 'USD', amount: 0.4, requests: 3 }], unknownRequests: 0, semantics: 'exact' },
+      alerts: [],
+      windowDays: input.windowDays ?? 7,
+      failures: [],
+      since: '2026-01-01T00:00:00.000Z',
+      automation: { idleWithWork: [], queueDepth: 0, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3 },
+    })
+  } finally {
+    store.close()
+  }
+}
+
+function sparkTiles(page: string): Map<string, string> {
+  const start = page.indexOf('<div class="spark-grid"')
+  assert.ok(start !== -1, 'the daily card draws the sparkline grid')
+  const grid = page.slice(start, page.indexOf('<div class="table-scroll">', start))
+  const tiles = new Map<string, string>()
+  for (const part of grid.split('<div class="spark" data-series="').slice(1)) {
+    const key = part.slice(0, part.indexOf('"'))
+    tiles.set(key, part.slice(0, part.indexOf('</p>') + '</p>'.length))
+  }
+  return tiles
+}
+
+test('the admin metrics daily card draws one labelled sparkline per series', () => {
+  const daily = [
+    { day: '2026-01-01', jobs: 1, succeeded: 1, failed: 0, merged: 0 },
+    { day: '2026-01-02', jobs: 4, succeeded: 3, failed: 1, merged: 2 },
+    { day: '2026-01-03', jobs: 2, succeeded: 2, failed: 0, merged: 1 },
+  ]
+  const page = sparkMetricsPage({ daily })
+  const tiles = sparkTiles(page)
+  assert.deepEqual([...tiles.keys()], ['jobs', 'succeeded', 'failed', 'merged'], 'one tile per daily series, in the series order the table uses')
+  const totals = { jobs: 7, succeeded: 6, failed: 1, merged: 3 }
+  for (const [series, total] of Object.entries(totals)) {
+    const tile = tiles.get(series) ?? ''
+    // The graphic is one inline SVG with a role and a label, and it carries no
+    // fixed width, so the card cannot overflow at 360.
+    assert.match(tile, /<svg [^>]*role="img"[^>]*aria-label="[^"]+"/, `${series} has no labelled svg`)
+    assert.match(tile, /viewBox="0 0 100 28"/, `${series} does not scale through a viewBox`)
+    assert.doesNotMatch(tile, /\swidth=/, `${series} pins a width and would overflow at 360`)
+    assert.match(tile, new RegExp(`class="spark-total">${String(total)}<`), `${series} does not repeat its figure as text`)
+    const label = /aria-label="([^"]+)"/.exec(tile)?.[1] ?? ''
+    assert.ok(label.includes(String(total)), `${series} aria-label does not carry the figure: ${label}`)
+    assert.match(tile, /<polyline class="spark-path" points="/, `${series} draws no line`)
+  }
+  // The graphic sits above the table it summarises, inside the same card.
+  assert.ok(page.indexOf('spark-grid') < page.indexOf('2026-01-03</td>'), 'the sparklines come after the table they summarise')
+  // Nothing external and nothing executable: the SVG is the whole asset.
+  const grid = page.slice(page.indexOf('<div class="spark-grid"'), page.indexOf('</svg>', page.indexOf('<div class="spark-grid"')))
+  assert.doesNotMatch(grid, /<script|<link|<img/, 'the grid adds no script, stylesheet or bitmap')
+})
+
+test('a quiet daily window keeps the empty state and draws no zero line', () => {
+  const page = sparkMetricsPage({ daily: [] })
+  assert.doesNotMatch(page, /class="spark"/, 'an empty window draws a sparkline')
+  assert.match(page, /No daily data yet\./, 'the existing empty state is gone')
+})
+
+test('a series with no activity in the window says so instead of drawing a line', () => {
+  const page = sparkMetricsPage({ daily: [{ day: '2026-01-01', jobs: 2, succeeded: 2, failed: 0, merged: 0 }], windowDays: 30 })
+  const merged = sparkTiles(page).get('merged') ?? ''
+  assert.match(merged, /class="spark-line spark-quiet"/, 'an all-zero series still draws a trend line')
+  assert.doesNotMatch(merged, /<polyline/, 'an all-zero series draws a line')
+  const label = /aria-label="([^"]+)"/.exec(merged)?.[1] ?? ''
+  assert.ok(label.includes('0'), `the quiet series does not say zero: ${label}`)
+})
+
+test('the sparkline labels follow the page language', () => {
+  const daily = [{ day: '2026-01-01', jobs: 2, succeeded: 2, failed: 0, merged: 0 }]
+  const zh = sparkMetricsPage({ daily, locale: 'zh' })
+  const en = sparkMetricsPage({ daily, locale: 'en' })
+  assert.match(zh, /每日任务|任务<\/span>/, 'no Chinese series name')
+  assert.match(en, /Jobs<\/span>/, 'no English series name')
+  assert.notEqual(zh, en)
+})
