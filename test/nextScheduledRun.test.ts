@@ -213,7 +213,12 @@ test('a disabled repository says so on both surfaces instead of a happy time', (
   const { dashboard, page } = renderBoth({ repoEnabled: false, activeJob: false })
   const line = repoLine(page)
   assert.equal(line, 'Repository disabled; no automatic run starts')
-  assert.equal(dashboardLine(dashboard), line)
+  // #655: the card is the account's lock, not the all-clear, and it must not
+  // promise a run for a repository that cannot start.
+  const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard)?.[0] ?? ''
+  assert.match(section, /data-next-action="locked"/)
+  assert.match(section, /disabled/, 'the card names the lock instead of an invented time')
+  assert.doesNotMatch(section, /Next automatic run/, 'a disabled repository gets no next-run sentence')
 })
 
 test('a running job says it is after the active job on both surfaces', () => {
@@ -396,8 +401,9 @@ test('with only paused repositories the dashboard says runs are paused and names
     const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
     assert.equal(dashboard.statusCode, 200)
     const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
-    assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card')
-    assert.match(section, /自动运行暂停：acme\/paused · 仓库已停用，自动运行不会开始/, 'the card says why nothing runs')
+    // #655: a repository that cannot run is the card's lock, not the all-clear.
+    assert.match(section, /data-next-action="locked"/, 'a repository that cannot run is a lock, not the all-clear')
+    assert.match(section, /所有仓库都已停用/, 'the card says why nothing runs')
     assert.doesNotMatch(section, /\d{2}:\d{2}/, 'no instant is printed for a paused repository')
   } finally {
     await built.app.close()
@@ -486,8 +492,9 @@ test('with every schedule paused the dashboard card says the schedule is paused 
     const dashboard = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: session.cookie } })
     assert.equal(dashboard.statusCode, 200)
     const section = /<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/.exec(dashboard.body)?.[0] ?? ''
-    assert.match(section, /data-next-action="clear"/, 'the fixture reaches the all-clear card')
-    assert.match(section, /排期已暂停/, 'the card says the schedule is paused')
+    // #655: an account whose every schedule is paused is a lock, not the all-clear.
+    assert.match(section, /data-next-action="locked"/, 'a paused account is a lock, not the all-clear')
+    assert.match(section, /所有仓库的排期都已暂停/, 'the card says the schedules are paused')
     assert.doesNotMatch(section, /下次自动运行/, 'the card does not promise a run')
     assert.doesNotMatch(section, /\d{2}:\d{2}/, 'no instant is printed for a paused schedule')
   } finally {

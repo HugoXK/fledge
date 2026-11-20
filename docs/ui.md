@@ -466,6 +466,14 @@ and the accessibility contract are fixed:
   account-level card above the queue keeps the page's only primary button, so the
   queue never competes with it; each row's action is a link with a 44px target,
   and rows stack rather than scroll at 360 px.
+- A repository that cannot run is **not** calm, and neither is an account whose
+  every repository cannot run (#655). `data-decision="locked"` names the lock —
+  disabled, automatic work off, a paused schedule, or a workspace that is not
+  ready — states what lifts it, and links the settings that do. The account card
+  takes `data-next-action="locked"` in the same situation and points at
+  `#repositories`, because the all-clear sentence was being printed over
+  repositories that would never start on their own. `locked` marks no loop stage
+  as current: a stopped loop is not standing on a step.
 - The empty state's action comes from the page that renders it: a repository
   page offers that repository's own `Run now`, the dashboard offers
   `Add repository`, Settings offers `Add provider`. No page inherits another

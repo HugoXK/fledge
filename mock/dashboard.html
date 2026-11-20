@@ -7,7 +7,7 @@
   <meta name="theme-color" content="#eef1ea" media="(prefers-color-scheme: light)" />
   <meta name="theme-color" content="#0b100e" media="(prefers-color-scheme: dark)" />
   <title>仓库 · Fledge</title>
-  <link rel="stylesheet" href="assets/app.css?v=e4d6e6e9c122" />
+  <link rel="stylesheet" href="assets/app.css?v=073ed6fc39e0" />
   <link rel="stylesheet" href="assets/fledge-deepwiki.css?v=bb0e58c9f3fd" />
 </head>
 <body data-fledge-auth="in" data-fledge-locale="zh" data-fledge-path="/dashboard">
@@ -69,7 +69,7 @@
   <section class="card" id="decisions" aria-labelledby="decisions-title">
     <div class="eyebrow">下一步</div>
     <h2 id="decisions-title">每个仓库，一件事</h2>
-    <p class="muted">按影响排序：先回答问题，再看失败的任务，最后是现在不需要你的仓库。</p>
+    <p class="muted">按影响排序：先回答问题，再看失败的任务，然后是等待解锁的仓库，最后是现在不需要你的仓库。</p>
     <ol class="decision-list"><li class="decision-row" data-decision="alert" data-decision-repo="repo_fledge">
         <div class="decision-main">
           <a class="decision-repo" href="repository.html">HugoXK/fledge</a>
@@ -77,13 +77,13 @@
           <p class="muted">这个 PR 在等你处理。</p>
         </div>
         <a class="link" data-decision-action href="https://github.com/HugoXK/fledge/pull/742">打开 PR</a>
-      </li><li class="decision-row" data-decision="growing" data-decision-repo="repo_demo">
+      </li><li class="decision-row" data-decision="locked" data-decision-repo="repo_demo">
         <div class="decision-main">
           <a class="decision-repo" href="repository-demo.html">HugoXK/demo-app</a>
-          <p class="decision-title">这个仓库现在不需要你。</p>
-          <p class="muted">下次自动运行：自动工作已关闭 还没有运行过。</p>
+          <p class="decision-title">这个仓库只在你手动开始时运行。</p>
+          <p class="muted">打开自动迭代后，平台会自己继续。</p>
         </div>
-        
+        <a class="link" data-decision-action href="repository-demo.html#repo-settings">打开设置</a>
       </li></ol>
   </section>
   <details class="secondary" data-secondary>
