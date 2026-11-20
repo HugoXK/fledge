@@ -2,12 +2,12 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
-import { loadConfig } from '../src/config.js'
+import { loadConfig, type Config } from '../src/config.js'
 import { adminPage } from '../src/views/pages.js'
 import { makeUser, testConfig } from './helpers.js'
 
@@ -171,12 +171,8 @@ test('--json carries the same decision for the console and a script', () => {
   }
 })
 
-test('the admin backup card shows the same count the dry run would take', () => {
-  const { dir } = makeFixture()
-  const config = {
-    ...testConfig(),
-    backup: { dir, expectedIntervalHours: 26, keepPlaintext: 1, keepEncrypted: 30 },
-  }
+/** The `/admin` backup card, rendered against a fixture config. */
+function adminBackupCard(config: Config): string {
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'backup-prune-admin', status: 'approved', superadmin: true })
@@ -195,10 +191,41 @@ test('the admin backup card shows the same count the dry run would take', () => 
     })
     const card = /<section[^>]*id="backups"[\s\S]*?<\/section>/.exec(html)
     assert.ok(card !== null, 'the admin page has no backup card')
-    assert.match(card[0], /Expired copies/)
-    assert.match(card[0], /4 \(dry run\)/)
+    return card[0]
   } finally {
     store.close()
+  }
+}
+
+test('the admin backup card shows the same count the dry run would take', () => {
+  const { dir } = makeFixture()
+  const card = adminBackupCard({
+    ...testConfig(),
+    backup: { dir, expectedIntervalHours: 26, keepPlaintext: 1, keepEncrypted: 30 },
+  })
+  assert.match(card, /Expired copies/)
+  assert.match(card, /4 \(dry run\)/)
+})
+
+test('an unreadable backup directory is a row on the card, not a 500', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dir = join(root, 'backups')
+  mkdirSync(dir)
+  writeCopy(dir, 0, 'plaintext', 1)
+  chmodSync(dir, 0o000)
+  try {
+    // The same `/admin` request that read `200` before this slice: the strict
+    // scan still throws, but the page renders the errno and the policy counts it
+    // would apply instead of failing the whole request.
+    const card = adminBackupCard({
+      ...testConfig(),
+      backup: { dir, expectedIntervalHours: 26, keepPlaintext: 1, keepEncrypted: 30 },
+    })
+    assert.match(card, /scan failed: EACCES/)
+    assert.match(card, /keep 1 plaintext \/ 30 encrypted/)
+    assert.match(card, /Copies/)
+  } finally {
+    chmodSync(dir, 0o755)
   }
 })
 

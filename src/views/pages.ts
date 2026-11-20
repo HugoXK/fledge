@@ -3079,6 +3079,15 @@ function pager(path: string, pageParam: string, page: number, total: number, per
   return `<div class="pager">${prev}<span class="pager-info">${page} / ${pages} · ${total}</span>${next}</div>`
 }
 
+/**
+ * #692: the errno code behind a failed retention scan, for the one row the admin
+ * card prints. A throw without a code still has to read as a failure, never blank.
+ */
+function scanErrorCode(error: unknown): string {
+  const code = error !== null && typeof error === 'object' && 'code' in error ? (error as { code?: unknown }).code : undefined
+  return typeof code === 'string' && code !== '' ? code : 'unknown'
+}
+
 /** One row of the admin retention card: an age window and what it would delete now. */
 export interface RetentionRow {
   id: RetentionId | 'settingsMarkers' | 'sessions' | 'api_tokens'
@@ -3138,11 +3147,22 @@ export function adminPage(input: {
   const { config, locale, viewer, users, jobs, jobsPage, jobsTotal, audit, auditPage, auditTotal, perPage, activity, notice, error } = input
   const release = input.release ?? releaseSurface()
   const backup = input.backup ?? readBackupStatus({ dir: config.backup.dir, expectedHours: config.backup.expectedIntervalHours })
-  const expiry = input.expiry ?? planBackupExpiry({
-    dir: config.backup.dir,
-    keepPlaintext: config.backup.keepPlaintext,
-    keepEncrypted: config.backup.keepEncrypted,
-  })
+  // #692: an unreadable backup directory is exactly when an operator needs this
+  // card, so a failed scan is one row on the page instead of a 500. The CLI
+  // keeps the strict throw; only this read-only surface renders the failure.
+  let expiry: BackupExpiryPlan | null = input.expiry ?? null
+  let expiryError: string | null = null
+  if (input.expiry === undefined) {
+    try {
+      expiry = planBackupExpiry({
+        dir: config.backup.dir,
+        keepPlaintext: config.backup.keepPlaintext,
+        keepEncrypted: config.backup.keepEncrypted,
+      })
+    } catch (error) {
+      expiryError = scanErrorCode(error)
+    }
+  }
   const drill = input.drill === undefined ? readRestoreDrill(`${config.dataDir}/backup-drill.json`) : input.drill
   const mailFailedUsers = input.mailFailedUsers ?? new Set<string>()
   const superadmin = input.superadmin === true
@@ -3366,10 +3386,14 @@ export function adminPage(input: {
     .join(' · ')
   // #692: the same scan the dry run prints, read-only. The number is what the
   // next run with the configured counts would take, never a record of a delete:
-  // this tip has no `--apply`, so the card says "dry run" beside it.
-  const expiredText = expiry.expiredCopies === 1
-    ? t(`1 (试运行) · 保留 ${expiry.keep.plaintext} 明文 / ${expiry.keep.encrypted} 加密`, `1 (dry run) · keep ${expiry.keep.plaintext} plaintext / ${expiry.keep.encrypted} encrypted`)
-    : t(`${expiry.expiredCopies} (试运行) · 保留 ${expiry.keep.plaintext} 明文 / ${expiry.keep.encrypted} 加密`, `${expiry.expiredCopies} (dry run) · keep ${expiry.keep.plaintext} plaintext / ${expiry.keep.encrypted} encrypted`)
+  // this tip has no `--apply`, so the card says "dry run" beside it. A scan that
+  // failed says so and keeps the configured counts, so the operator still sees
+  // the policy on the page that reports the broken directory.
+  const keep = expiry?.keep ?? { plaintext: config.backup.keepPlaintext, encrypted: config.backup.keepEncrypted }
+  const keepText = t(`保留 ${keep.plaintext} 明文 / ${keep.encrypted} 加密`, `keep ${keep.plaintext} plaintext / ${keep.encrypted} encrypted`)
+  const expiredText = expiry === null
+    ? `${t(`扫描失败：${expiryError ?? 'unknown'}`, `scan failed: ${expiryError ?? 'unknown'}`)} · ${keepText}`
+    : `${expiry.expiredCopies === 1 ? t('1 (试运行)', '1 (dry run)') : t(`${expiry.expiredCopies} (试运行)`, `${expiry.expiredCopies} (dry run)`)} · ${keepText}`
   const drillText = drill === null
     ? t('没有记录', 'none recorded')
     : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`

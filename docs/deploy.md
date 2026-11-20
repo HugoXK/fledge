@@ -1178,6 +1178,13 @@ so the operator sees what the next run would take without opening a copy. This
 tip has no `--apply`: confirm the counts first, and the first real deletion stays
 the owner's.
 
+The scan stays strict where it decides: `node scripts/backup-prune.mjs` exits
+non-zero on a directory it cannot read, because a permission accident must not
+read as "nothing to prune". The card is the surface an operator opens when
+backups are already broken, so a failed scan there is a row —
+`scan failed: <errno>` beside the configured counts — instead of a failed
+`/admin` request; the copy counts the page can still read are shown as usual.
+
 ### Backup encryption
 
 Backups stay plaintext by default, so existing schedules keep working. Set one
