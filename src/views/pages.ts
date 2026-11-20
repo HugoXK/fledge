@@ -4245,8 +4245,15 @@ export function jobPage(input: {
     ? null
     : readContextBundle(input.previousJob.context_bundle_json)
   const contextBundleChanges = contextBundle === null ? [] : diffContextBundles(previousBundle, contextBundle)
+  // #1129: `context_bundle_state` is the callback's claim, while the verdict
+  // above is this page's own check of the stored bytes. The echo sentence may
+  // only read as a confirmation when both agree; beside a failed byte verdict it
+  // has to say whose claim it is instead of confirming a run this page refuses.
+  const contextBundleVerified = contextBundleVerdict.state === 'verified'
   const contextBundleEcho = job.context_bundle_state === 'verified'
-    ? t('回调回传了同一个哈希。', 'The callback echoed the same hash.')
+    ? contextBundleVerified
+      ? t('回调回传了同一个哈希。', 'The callback echoed the same hash.')
+      : t('回调报告了与记录相同的哈希；存储的字节未能通过校验，所以这项报告不能作为证据。', 'The callback reported the same hash as the record; the stored bytes do not verify, so this report is not evidence about them.')
     : job.context_bundle_state === 'mismatch'
       ? t('回调回传的是另一个包的哈希，这次运行与记录的政策不一致。', 'The callback echoed a different bundle hash; this run and the recorded policy disagree.')
       : job.context_bundle_state === 'missing'
@@ -4264,11 +4271,15 @@ export function jobPage(input: {
       : `<p class="fine" data-context-bundle-mismatch><strong>${escapeHtml(t('记录与字节不一致，不能当作已验证。', 'The record and the bytes disagree, so this is not verified.'))}</strong> ${escapeHtml(contextBundleVerdict.detail)}</p>`}
     <p class="fine">${escapeHtml(t('包哈希', 'Bundle hash'))}: <code>${escapeHtml(job.context_bundle_hash)}</code></p>
     <p class="fine">${escapeHtml(contextBundleEcho)}</p>
-    ${contextBundleChanges.length === 0
-      ? `<p class="fine">${escapeHtml(previousBundle === null
-        ? t('这是这个仓库记录的第一个上下文包。', 'This is the first bundle recorded for the repository.')
-        : t('与上一个任务记录的包相同。', 'Identical to the previous job’s bundle.'))}</p>`
-      : `<h3 class="mt-16">${escapeHtml(t('与上一个任务的包相比', 'Changed since the previous bundle'))}</h3>
+    ${contextBundle === null
+      ? `<p class="fine">${escapeHtml(t('无法从存储的字节中读出上下文包，因此没有可比较的内容。', 'No bundle could be read from the stored bytes, so there is nothing to compare.'))}</p>`
+      : contextBundleChanges.length === 0
+        ? `<p class="fine">${escapeHtml(previousBundle === null
+          ? t('这是这个仓库记录的第一个上下文包。', 'This is the first bundle recorded for the repository.')
+          : t('与上一个任务记录的包相同。', 'Identical to the previous job’s bundle.'))}</p>`
+        : `<h3 class="mt-16">${escapeHtml(contextBundleVerified
+          ? t('与上一个任务的包相比', 'Changed since the previous bundle')
+          : t('与上一个任务的包相比（读自未能通过校验的存储字节）', 'Changed since the previous bundle, read from the stored bytes that did not verify'))}</h3>
         <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('字段', 'Field'))}</th><th>${escapeHtml(t('之前', 'Before'))}</th><th>${escapeHtml(t('之后', 'After'))}</th></tr></thead><tbody>${contextBundleChanges.map((change) => `<tr><td><code>${escapeHtml(change.field)}</code></td><td>${escapeHtml(change.before)}</td><td>${escapeHtml(change.after)}</td></tr>`).join('')}</tbody></table></div>`}
   </section>`
 
