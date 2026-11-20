@@ -41,7 +41,7 @@ contexts:
 `build`, `visual` (UI diffs), `docker` (image builds, scans and
 starts), `audit` (runtime and full graph), `changelog`, `version`, `risk`,
 `restore-drill`, `dependency-review`, `action-pins`, `workflow-lint`,
-`secret-scan`, `codeql-required`, `deploy-check` (the `deploy/` files, when the
+`reserved-contexts`, `secret-scan`, `codeql-required`, `deploy-check` (the `deploy/` files, when the
 diff reaches them). The list asserted by the gate is
 `REQUIRED_JOBS` in `scripts/ci-ok.mjs`, and `test/ciOk.test.ts` fails when it and
 `needs:` in `ci.yml` drift apart. The publisher matches these names against the
