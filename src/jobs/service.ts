@@ -1520,7 +1520,15 @@ export class Jobs {
         // number. The text is the one this dispatch sends, so #1118's contract
         // names the instructions rather than the rules commit; `rules.hash` is
         // still recorded on the job and its event below.
-        playbook: { version: null, text: playbookFor(flybot?.role ?? 'lead', teamLabelFor(repo.upstream_name), goal) },
+        //
+        // The goal here is the repository's, not the job's: `ensurePlaybook` above
+        // applied `playbookFor(role, team, repo.goal)` (`instances.ts:714`, `:731`),
+        // and a job's own goal is the kind prompt for review/discover/triage/scope/
+        // verify and carries the preflight and carry-over tail for a follow-up. The
+        // section the text calls authoritative is the repository goal, so recording
+        // the job goal would seal a text the team was never given — and the
+        // repository page (`app.ts:2536`) hashes `repo.goal` for the same reason.
+        playbook: { version: null, text: playbookFor(flybot?.role ?? 'lead', teamLabelFor(repo.upstream_name), repo.goal) },
         contextFiles: rules.files.map((file) => ({ path: file.path, sha: file.sha256 })),
         paths: { allow: splitPathPatterns(repo.allow_paths), deny: splitPathPatterns(repo.deny_paths) },
         branch: { base: baseBranch, name: null },

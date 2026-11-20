@@ -3670,10 +3670,15 @@ recorded value is the SHA-256 of the protocol, the role text, the team label and
 the goal the team read. `playbookFingerprint` is `sha256('v8:' + goal)` and says
 nothing about the other three, so two repositories with different team labels, or
 two roles in one repository, are the same value there and different contracts
-here. The repository page prints the first twelve characters of the text hash
-under the goal form, so an edit at an unchanged `PLAYBOOK_VERSION` moves the
-number a maintainer sees. The sealed bundle of #369 carries the same value; the
-rules commit hash is still recorded on the job and in its event.
+here. The goal in that text is the repository's goal, not the job's: the dispatch
+seals what `ensurePlaybook` applied, and a job's own goal is the kind prompt for
+review, discover, triage, scope and verify and carries the preflight and
+carry-over tail for a follow-up, so recording it would seal a text the team was
+never given. The repository page prints the first twelve characters of the same
+text hash under the goal form, so an edit at an unchanged `PLAYBOOK_VERSION`
+moves the number a maintainer sees and the page and the record cannot disagree.
+The sealed bundle of #369 carries the same value; the rules commit hash is still
+recorded on the job and in its event.
 
 `evaluateAdherence` then answers one clause at a time from what a callback
 reports: `contract.hash`, `branch.base`, `paths.denied`, `paths.allowed`,
