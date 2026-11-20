@@ -16,11 +16,13 @@ import {
 } from '../scripts/lib/gate-compare.mjs'
 
 // #1108: the publisher matches a required job by name, so a head could keep the
-// name and replace the body (`run: true`), or add a job-level `continue-on-error`
-// so a failing required job reports `success`. These tests drive the comparator
-// over the real checked-in workflow and over two synthetic texts, and they pin
-// the refusal messages: a red that names the job and the key is the evidence a
-// reviewer needs, and a silent pass is the bug.
+// name and replace the body (`run: true`), add a job-level `continue-on-error`
+// so a failing required job reports `success`, rename a required job while a
+// stub takes its old display name, or neuter every `run:` step through a
+// top-level `defaults:`/`env:`. These tests drive the comparator over the real
+// checked-in workflow and over synthetic texts, and they pin the refusal
+// messages: a red that names the job and the key is the evidence a reviewer
+// needs, and a silent pass is the bug.
 
 const read = (path: string): string => readFileSync(fileURLToPath(new URL(`../${path}`, import.meta.url)), 'utf8')
 const ci = read(GATE_COMPARE_FILE)
@@ -50,6 +52,13 @@ function editJob(text: string, id: string, edit: (block: string[]) => string[]):
   return [...lines.slice(0, start), ...edit(lines.slice(start, end)), ...lines.slice(end)].join('\n')
 }
 
+// A job added to the head, immediately before the aggregate.
+function withJob(text: string, id: string, body: string[]): string {
+  return text.replace(`  ${AGGREGATE_JOB}:\n`, [`  ${id}:`, ...body, '', `  ${AGGREGATE_JOB}:`, ''].join('\n'))
+}
+
+const STUB_ROWS = ['    runs-on: ubuntu-latest', '    steps:', '      - run: true']
+
 // Acceptance 1: the job keeps its name and its body becomes a no-op.
 function stubbedRequiredJob(): string {
   return editJob(ci, 'mock-check', (block) => {
@@ -59,6 +68,15 @@ function stubbedRequiredJob(): string {
     assert.notEqual(after, -1)
     return [...block.slice(0, at), '        run: true', ...block.slice(after)]
   })
+}
+
+// Security's PoC: the real job is renamed and a stub takes the name the
+// publisher matches against the required list.
+function renamedAndSubstituted(): string {
+  const renamed = editJob(ci, 'mock-check', (block) =>
+    block.map((line) => (line === '    name: mock-check' ? '    name: mock-check (real)' : line)),
+  )
+  return withJob(renamed, 'mock-check-stub', ['    name: mock-check', ...STUB_ROWS])
 }
 
 // Acceptance 2: the aggregate's own step stops running the base evaluator.
@@ -148,36 +166,94 @@ test('acceptance 3a: a step-level `continue-on-error: true` is refused, and the 
   assert.match(result.problems.join('\n'), /`mock-check`/, 'the key is named together with the job it would hide')
 })
 
-test('acceptance 3b: only `timeout-minutes:` (and `name:`) may change, and the allowlist is exact', () => {
-  const head = editJob(ci, 'mock-check', (block) =>
-    block.map((line) => {
-      if (line === '    timeout-minutes: 5') return '    timeout-minutes: 9'
-      if (line === '    name: mock-check') return '    name: mock-check (verbose)'
-      return line
-    }),
+test('only `timeout-minutes:` may change: the display name is pinned and the allowlist is exact', () => {
+  const slower = editJob(ci, 'mock-check', (block) =>
+    block.map((line) => (line === '    timeout-minutes: 5' ? '    timeout-minutes: 9' : line)),
   )
-  assert.notEqual(head, ci, 'the fixture changed the allowlisted keys')
-  const result = compareGate({ base: ci, head })
-  assert.equal(result.ok, true, result.problems.join('\n'))
-  assert.deepEqual([...GATE_COMPARE_ALLOWED_KEYS], ['name', 'timeout-minutes'], 'widening the allowlist must break this test')
+  assert.equal(compareGate({ base: ci, head: slower }).ok, true, 'a longer timeout cannot flip a conclusion')
+
+  const renamed = editJob(ci, 'mock-check', (block) =>
+    block.map((line) => (line === '    name: mock-check' ? '    name: mock-check (verbose)' : line)),
+  )
+  const refused = compareGate({ base: ci, head: renamed })
+  assert.equal(refused.ok, false, '`name:` is what the publisher matches, so it is compared, not allowlisted')
+  assert.match(refused.problems.join('\n'), /changes `name:`/)
+
+  assert.deepEqual([...GATE_COMPARE_ALLOWED_KEYS], ['timeout-minutes'], 'widening the allowlist must break this test')
 })
 
-test('acceptance 4: a labelled workflow change is still a refusal that names the T3 path', () => {
-  const head = stepLevelContinueOnError()
-  const result = compareGate({ base: ci, head, labelled: true })
+test('security: renaming a required job and substituting a stub under its old name is refused', () => {
+  const head = renamedAndSubstituted()
+  assert.notEqual(head, ci)
+  const result = compareGate({ base: ci, head })
+  assert.equal(result.ok, false, 'the rename plus a same-named stub must not be a pass')
+  const text = result.problems.join('\n')
+  assert.match(text, /changes `name:`/, 'the rename is refused by key')
+  assert.match(
+    text,
+    /lets job `mock-check-stub` claim the display name of required job `mock-check`/,
+    'and the substituted name is refused as a collision',
+  )
+})
+
+test('security: an extra job claiming a required display name is refused even when the real job is intact', () => {
+  const head = withJob(ci, 'mock-check-stub', ['    name: mock-check', ...STUB_ROWS])
+  const result = compareGate({ base: ci, head })
+  assert.equal(result.ok, false)
+  assert.match(
+    result.problems.join('\n'),
+    /lets job `mock-check-stub` claim the display name of required job `mock-check`/,
+  )
+})
+
+test('security: a matrix-shaped required name cannot be claimed by a new leg', () => {
+  const head = withJob(ci, 'test-docs', ['    name: test (docs)', ...STUB_ROWS])
+  const result = compareGate({ base: ci, head })
+  assert.equal(result.ok, false)
+  assert.match(result.problems.join('\n'), /claim the display name of required job `test`/)
+})
+
+test('two jobs with one display name are refused, because the publisher would merge their results', () => {
+  const head = withJob(ci, 'twin-a', ['    name: twin', ...STUB_ROWS]).replace(
+    `  ${AGGREGATE_JOB}:\n`,
+    ['  twin-b:', '    name: twin', ...STUB_ROWS, '', `  ${AGGREGATE_JOB}:`, ''].join('\n'),
+  )
+  const result = compareGate({ base: ci, head })
+  assert.equal(result.ok, false)
+  assert.match(result.problems.join('\n'), /gives jobs `twin-a` and `twin-b` the same display name/)
+})
+
+test('every refusal names the reviewed-change path, and the verdict stays red', () => {
+  const result = compareGate({ base: ci, head: stepLevelContinueOnError() })
   assert.equal(result.ok, false, 'the label is a record, not a pass: the verdict stays red')
   const text = result.problems.join('\n')
-  assert.match(text, new RegExp(`\`${WORKFLOW_CHANGE_LABEL}\` is set`))
+  assert.match(text, new RegExp(`\`${WORKFLOW_CHANGE_LABEL}\``))
   assert.match(text, /T3 path/)
   assert.match(text, /`Security:`/)
-  assert.doesNotMatch(text, /merge the base branch into the head/, 'the labelled wording is the reviewed one; the unlabelled one tells a stale head to merge the base')
+  assert.match(text, /stays red/)
+  assert.match(text, /merge the base branch into the head/, 'a stale head is told to merge the base tree')
 })
 
-test('an unlabelled refusal tells a stale head to merge the base tree, and names the label door', () => {
-  const result = compareGate({ base: ci, head: stepLevelContinueOnError() })
-  const text = result.problems.join('\n')
-  assert.match(text, /merge the base branch into the head/)
-  assert.match(text, new RegExp(`the owner applies \`${WORKFLOW_CHANGE_LABEL}\``))
+test('no top-level block may change, be added or be lost', () => {
+  const defaults = ci.replace(/^jobs:\n/m, 'defaults:\n  run:\n    shell: "true {0}"\njobs:\n')
+  const environment = ci.replace(/^jobs:\n/m, 'env:\n  NODE_OPTIONS: --require ./x.js\njobs:\n')
+  const permissions = ci.replace('permissions:\n  contents: read', 'permissions:\n  contents: write')
+  const noOn = mini((text) => text.replace('on:\n  pull_request:\n', ''))
+
+  for (const [label, head, expected] of [
+    ['added defaults', defaults, /gains a top-level `defaults:` block/],
+    ['added env', environment, /gains a top-level `env:` block/],
+    ['changed permissions', permissions, /changes the top-level `permissions:` block/],
+    ['lost on', noOn, /loses the top-level `on:` block/],
+  ] as const) {
+    const result = compareGate({ base: label === 'lost on' ? MINI : ci, head, required: label === 'lost on' ? ['build'] : REQUIRED_JOBS })
+    assert.equal(result.ok, false, `${label} must be refused`)
+    assert.match(result.problems.join('\n'), expected, label)
+  }
+
+  const text = compareGate({ base: ci, head: defaults }).problems.join('\n')
+  assert.doesNotMatch(text, /true \{0\}/, 'a top-level value is not echoed into the refusal')
+  assert.doesNotMatch(text, /NODE_OPTIONS|--require/, 'an env value is not echoed into the refusal')
 })
 
 test('a required job missing from `ci-ok.needs` is refused, naming the dependency', () => {
@@ -202,6 +278,7 @@ test('acceptance 5: a duplicated job, a duplicated key or an unreadable line is 
   const badIndent = mini((text) => text.replace('    name: build\n', '   name: build\n'))
   const noJobs = mini((text) => text.replace(/jobs:[\s\S]*$/, 'permissions:\n  contents: read\n'))
   const emptyMapping = mini((text) => text.replace(/jobs:[\s\S]*$/, 'jobs:\n'))
+  const duplicateTopKey = mini((text) => `${text}name: CI again\n`)
   const empty = ''
 
   for (const [label, text, expected] of [
@@ -210,6 +287,7 @@ test('acceptance 5: a duplicated job, a duplicated key or an unreadable line is 
     ['unreadable line', badIndent, /cannot read/],
     ['no jobs mapping', noJobs, /no top-level `jobs:` mapping/],
     ['empty mapping', emptyMapping, /mapping is empty/],
+    ['duplicate top-level key', duplicateTopKey, /declares `name:` at the top level twice/],
     ['empty text', empty, /no top-level `jobs:` mapping/],
   ] as const) {
     const result = compareGate({ base: MINI, head: text, required: ['build'] })
@@ -254,7 +332,7 @@ test('the parser reads the real workflow into the required jobs it names', () =>
   assert.deepEqual(keyNames, ['name', 'needs', 'runs-on', 'timeout-minutes', 'permissions', 'steps'])
 })
 
-test('the publisher runs the comparison for pull requests only, and reads both texts through the API', () => {
+test('the publisher runs the comparison for pull requests only, reads both texts through the API, and reads no label', () => {
   const cli = read('scripts/ci-ok-run.mjs')
   assert.match(cli, /if \(run\.event === 'pull_request'\) \{/, 'only a pull request has a head and a base to compare')
   assert.match(cli, /gateComparison\(run\)/)
@@ -264,11 +342,11 @@ test('the publisher runs the comparison for pull requests only, and reads both t
   // every pull request. The repository endpoint answers with the branch.
   assert.match(cli, /api\(`\/repos\/\$\{REPO\}`\)/, 'the base ref comes from the repository API')
   assert.doesNotMatch(cli, /run\.repository\?\.default_branch|run\.head_repository\?\.default_branch/, 'the run object has no default_branch to read')
-  // The label is read from the pull request the run names (`pull-requests:
-  // read`), only after the comparison has refused, and a failed read keeps the
-  // unlabelled wording instead of turning the verdict green.
-  assert.match(cli, /api\(`\/repos\/\$\{REPO\}\/pulls\/\$\{String\(number\)\}`\)/, 'the label is read from the named pull request')
-  assert.match(cli, /if \(comparison\.ok\) return comparison/, 'the label is not read when the workflow already matches')
-  assert.match(cli, /labelled = false/, 'a failed label read is "not labelled", not a pass')
+  // The `ci-workflow-change` label only changed the wording of a refusal, so
+  // the publisher does not read it: reading a pull request needs a scope, and a
+  // sentence is not worth one.
+  assert.doesNotMatch(cli, /\/pulls\/\$\{String\(number\)\}/, 'a pull request scope is not requested for wording')
   assert.doesNotMatch(cli, /readFileSync/, 'no checkpoint text is read from a file, so a file byte cannot reach the request')
+  const publish = read('.github/workflows/ci-ok-publish.yml')
+  assert.doesNotMatch(publish, /pull-requests: read|issues: read/, 'the comparator adds no permission for wording')
 })

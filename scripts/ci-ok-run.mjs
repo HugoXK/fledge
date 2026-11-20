@@ -29,10 +29,9 @@
 // The default branch is read from the repository API, not from the run object:
 // the run's slim `repository` has no `default_branch` key (run 44670966564 is
 // the proof), so reading it there refuses every pull request. The
-// `ci-workflow-change` label is read from the pull request the run names, and
-// only after the comparison has already refused: the label chooses the wording
-// of a red verdict, never its conclusion, so a failed label read is "not
-// labelled" and never a pass.
+// `ci-workflow-change` label is not read at all: it only changed the wording of
+// a refusal, never its conclusion, so reading it would add a permission for a
+// sentence. Every refusal names the reviewed-change path instead.
 //
 // A push or a merge-queue entry is not compared: the queue head's tree already
 // contains the reviewed change and carries no label, and a push has no base range
@@ -54,7 +53,7 @@ import { REQUIRED_JOBS } from './ci-ok.mjs'
 import { policyIdentity } from './lib/ci-ok-refresh.mjs'
 import { allGateChanges } from './lib/ciChanges.mjs'
 import { checkRunPayload, runIdFrom, shouldPublish, verdict } from './lib/ci-ok-run.mjs'
-import { GATE_COMPARE_FILE, WORKFLOW_CHANGE_LABEL, compareGate } from './lib/gate-compare.mjs'
+import { GATE_COMPARE_FILE, compareGate } from './lib/gate-compare.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -206,36 +205,12 @@ async function baseBranch() {
   return branch
 }
 
-// The only label that can sanction a required-job rewrite. A run that names no
-// single pull request has no label, and that is the fail-closed reading. The
-// label is only read once the comparison has refused, and a read that fails
-// keeps the unlabelled wording: it cannot turn a red verdict green.
-async function labelledWorkflowChange(run) {
-  if (run.event !== 'pull_request') return false
-  const pulls = Array.isArray(run.pull_requests) ? run.pull_requests : []
-  const numbers = new Set(pulls.map((pull) => pull?.number).filter((number) => Number.isSafeInteger(number) && number > 0))
-  if (numbers.size !== 1) return false
-  const [number] = [...numbers]
-  const pull = await api(`/repos/${REPO}/pulls/${String(number)}`)
-  const labels = Array.isArray(pull?.labels) ? pull.labels : []
-  return labels.some((label) => label?.name === WORKFLOW_CHANGE_LABEL)
-}
-
 async function gateComparison(run) {
   const headSha = String(run.head_sha)
   if (!/^[0-9a-f]{40}$/.test(headSha)) throw new Error('the finished run names no 40-character head sha')
   const branch = await baseBranch()
   const [base, head] = await Promise.all([workflowText(branch), workflowText(headSha)])
-  const comparison = compareGate({ base, head, required: REQUIRED_JOBS })
-  if (comparison.ok) return comparison
-  // Already red. The label changes only which door the refusal names.
-  let labelled = false
-  try {
-    labelled = await labelledWorkflowChange(run)
-  } catch (error) {
-    console.error(`ci-ok-run: could not read the ${WORKFLOW_CHANGE_LABEL} label (${error.message}); the refusal keeps the unlabelled wording`)
-  }
-  return labelled ? compareGate({ base, head, required: REQUIRED_JOBS, labelled: true }) : comparison
+  return compareGate({ base, head, required: REQUIRED_JOBS })
 }
 
 async function publish(payload) {

@@ -14,7 +14,6 @@ export interface GateCompareInput {
   base?: string
   head?: string
   required?: readonly string[] | string[]
-  labelled?: boolean
 }
 
 export interface GateCompareResult {
@@ -24,7 +23,7 @@ export interface GateCompareResult {
 }
 
 export declare const GATE_COMPARE_FILE: string
-export declare const GATE_COMPARE_ALLOWED_KEYS: readonly ['name', 'timeout-minutes']
+export declare const GATE_COMPARE_ALLOWED_KEYS: readonly ['timeout-minutes']
 export declare const REQUIRED_EVALUATOR: string
 export declare const AGGREGATE_JOB: string
 export declare const WORKFLOW_CHANGE_LABEL: string
