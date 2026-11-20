@@ -39,6 +39,7 @@ export declare function repositoryOf(value: string): string
 // will not guess at (an `on:` value, a `jobs:` block, a header or a permission).
 export type ActorGateProblem =
   | 'missing-association-gate'
+  | 'missing-head-repository-gate'
   | 'unknown-event'
   | 'no-readable-trigger'
   | 'missing-trigger-block'

@@ -1209,9 +1209,12 @@ test('every checkout in this workflow is pinned to a base ref, never the pull re
   assert.ok(checked >= 3, `expected at least three checkouts, found ${checked}`)
 })
 
-test('actions: write is granted only to the two jobs that re-run a workflow run', () => {
+test('actions: write is granted only to the jobs that re-run a workflow run', () => {
+  // Three since #1169: the retrigger wakes on a settled `pr-lint` and hands the
+  // head to the same repair script, so it needs the scope and nothing else does.
+  const reRunners = ['review-gate-repair', 'review-gate-comment', 'review-gate-retrigger']
   for (const [name, body] of sections(workflow)) {
-    if (name === 'review-gate-repair' || name === 'review-gate-comment') assert.match(body, /actions: write/, `${name} needs actions: write`)
+    if (reRunners.includes(name)) assert.match(body, /actions: write/, `${name} needs actions: write`)
     else assert.doesNotMatch(body, /actions: write/, `${name} must not hold actions: write`)
   }
 })

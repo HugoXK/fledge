@@ -146,6 +146,32 @@ test('every workflow in this repository gates its actions: write jobs on the act
   assert.ok(report.checked >= 2, `only ${report.checked} actions: write jobs were checked`)
 })
 
+test('a privileged job on a finished run must name the head repository', () => {
+  // #1169: `workflow_run` sits in SAFE_EVENTS because the runs a stranger starts
+  // here need write access — but the *event* is reachable from a fork, and a job
+  // holding `actions: write` on it can POST a re-run against this repository on
+  // someone else's branch. The head-repository comparison is the missing gate, so
+  // it is a finding here rather than a sentence in the docs.
+  const guarded = workflow(
+    '  workflow_run:',
+    privilegedJob('retrigger', `github.event_name == 'workflow_run' && github.event.workflow_run.head_repository.full_name == github.repository`),
+  )
+  assert.deepEqual(checkActorGates(guarded, 'fixture.yml'), [], 'the head-repository test clears a privileged job on a finished run')
+
+  const unguarded = workflow('  workflow_run:', privilegedJob('retrigger', null))
+  assert.deepEqual(checkActorGates(unguarded, 'fixture.yml'), [
+    { file: 'fixture.yml', line: 5, job: 'retrigger', event: 'workflow_run', problem: 'missing-head-repository-gate' },
+  ])
+
+  // It has to compare this repository's name: a guard written against the run's
+  // own `repository` field says nothing about where the head lives.
+  const wrongField = workflow(
+    '  workflow_run:',
+    privilegedJob('retrigger', `github.event.workflow_run.repository.full_name == github.repository`),
+  )
+  assert.deepEqual(checkActorGates(wrongField, 'fixture.yml').map((finding) => finding.problem), ['missing-head-repository-gate'])
+})
+
 function jobWith(header: string, lines: string[]): string {
   return [`  ${header}:`, ...lines, ''].join('\n')
 }

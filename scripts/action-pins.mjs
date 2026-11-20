@@ -58,6 +58,8 @@ function gateHint(finding) {
       return `job ${finding.job} holds actions: write on ${finding.event} without testing author_association; add contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), <association expression for ${finding.event}>) to its if:`
     case 'unknown-event':
       return `job ${finding.job} holds actions: write on ${finding.event}, an event this gate cannot classify; test author_association for it, or add it to SAFE_EVENTS in scripts/lib/action-pins.mjs if an outside account cannot trigger it`
+    case 'missing-head-repository-gate':
+      return `job ${finding.job} holds actions: write on ${finding.event}, which a fork's pull request can wake; add github.event.workflow_run.head_repository.full_name == github.repository (and github.event.workflow_run.event == 'pull_request') to its if:`
     case 'no-readable-trigger':
       return `job ${finding.job} holds actions: write but the workflow's on: triggers could not be read, so the job cannot be judged; name every event in a block mapping or a flow mapping`
     default:

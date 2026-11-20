@@ -137,8 +137,14 @@ test('no other workflow answers an edited body, so a body edit cannot restart ci
 
 test('the review gate keeps its own triggers', () => {
   const events = triggers(read('review-gate.yml', 'the review gate must keep its own triggers'), 'review-gate.yml')
-  assert.deepEqual([...events.keys()], ['pull_request', 'pull_request_review', 'merge_group', 'issue_comment'])
+  // #1169 added `workflow_run` on `pr-lint`: a lint that settles after the gate
+  // has finished is the one verdict path no person-triggered event covered, and
+  // the retrigger job is the path that event belongs to. The gate's own job still
+  // refuses it (see test/retrigger.test.ts), so the list grows by that one event
+  // and no other.
+  assert.deepEqual([...events.keys()], ['pull_request', 'pull_request_review', 'merge_group', 'issue_comment', 'workflow_run'])
   assert.equal(events.get('pull_request')?.types, null, 'a body edit must not start the gate, so pull_request stays typeless')
   assert.deepEqual(events.get('pull_request_review')?.types, ['submitted'])
   assert.deepEqual(events.get('issue_comment')?.types, ['created'])
+  assert.deepEqual(events.get('workflow_run')?.types, ['completed'])
 })
