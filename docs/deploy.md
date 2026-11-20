@@ -324,10 +324,13 @@ a real run would have done.
 #### Superadmin one-click release (#897)
 
 The Admin page has a superadmin-only release action. It reads the live GitHub
-state and shows the current `main`, latest tag, commits/fixes/features/fragments
-since that tag, the computed next version, `ci-ok` and the exact reason a release
-is blocked. The action is enabled only when the normal rule is met, no release
-PR/branch/tag is in flight and `ci-ok` is green.
+state and shows the current `main`, latest tag, the planner's merged-pull-request
+and feature counts since that tag with the pending fragment count, the computed
+next version, `ci-ok` and the exact reason a release is blocked. The counts and
+the verdict come from the same `planRelease` the nightly run calls (#985), so the
+button cannot refuse a release the night would make and the numbers a maintainer
+reads are the rule's. The action is enabled only when the normal rule is met, no
+release PR/branch/tag is in flight and `ci-ok` is green.
 
 The submit button requires `RELEASE <version>` to be typed, a CSRF token, a
 recent GitHub re-authentication, the destructive rate-limit class and an audit

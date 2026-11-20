@@ -3139,7 +3139,9 @@ export function adminPage(input: {
       return `<p class="fine" data-release-dispatch>${escapeHtml(t('一键发布未配置：设置 RELEASE_DISPATCH_TOKEN 后可用。', 'One-click release is not configured: set RELEASE_DISPATCH_TOKEN to enable it.'))}</p>`
     }
     const preview = releaseDispatch
-    const counts = `${escapeHtml(t('领先', 'ahead'))} ${preview.aheadCommits} · ${escapeHtml(t('修复', 'fix'))} ${preview.fixes} · ${escapeHtml(t('功能', 'feat'))} ${preview.features} · ${escapeHtml(t('其他', 'other'))} ${preview.others} · ${escapeHtml(t('片段', 'fragments'))} ${preview.fragments}`
+    // The rule's own numbers, in the rule's own words: merged pull requests and
+    // feature merges since the last tag, never a count of commit messages.
+    const counts = `${escapeHtml(t('合并 PR', 'merged PRs'))} ${preview.aheadMerges} · ${escapeHtml(t('功能', 'feat'))} ${preview.features} · ${escapeHtml(t('片段', 'fragments'))} ${preview.fragments}`
     const facts = `<p class="fine" data-release-dispatch-facts>${escapeHtml(t('当前', 'current'))} <code>${escapeHtml(preview.mainSha.slice(0, 12))}</code> · ${escapeHtml(t('最新标签', 'latest tag'))} <code>${escapeHtml(preview.latestTag || '—')}</code> · ${counts} · <code>ci-ok ${escapeHtml(preview.ciOk)}</code></p>`
     if (!preview.eligible) {
       return `<div class="list-row" data-release-dispatch><div class="list-main"><strong>${escapeHtml(t('一键发布当前不可用', 'One-click release is not available'))}</strong><small>${facts}</small><small>${escapeHtml(preview.reason)}</small></div><div class="row"><span class="badge busy">${escapeHtml(t('不可用', 'blocked'))}</span></div></div>`
