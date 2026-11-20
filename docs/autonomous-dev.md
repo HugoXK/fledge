@@ -988,12 +988,25 @@ triggers an outside account cannot start (`push`, `schedule`,
 `workflow_dispatch`, `workflow_call`, `workflow_run`, `merge_group`, `release`,
 `create`, `delete`, `repository_dispatch`, `deployment`, `deployment_status`,
 `page_build`, `status`, `registry_package`, `branch_protection_rule`, `public`) —
-any other event name reds until someone classifies it. The association list must
+any other event name reds until someone classifies it. `workflow_run` is the one
+entry in that list with a guard per job: a fork's pull request produces a finished
+run too, so a privileged job on it must name
+`github.event.workflow_run.head_repository.full_name == github.repository` in its
+`if:`, and one that does not is a `missing-head-repository-gate` finding instead of
+a job a fork's commit can drive. The association list must
 be exactly `OWNER`, `MEMBER` and `COLLABORATOR`: an extra role, a missing role or
 a role-name substring is a finding.
 A PASS that arrives after a rejection at the same SHA keeps the
-check red until the repair step re-runs the failed run at that SHA; that now
-happens without a hand step. A run above the attempt cap (attempt 3, after
+check red until the repair step re-runs the failed run at that SHA. That now
+happens without a hand step on two triggers: the verdict itself
+(`pull_request_review` and `issue_comment`), and a `pr-lint` run that settled
+after the gate had finished — the `review-gate-retrigger` workflow, a
+`workflow_run` on `pr-lint` that resolves the pull request from the finished run's
+head SHA and hands it to the same repair. It lives in its own file, so the only
+path it offers is that event, and its job is skipped for a run from another
+repository or one no pull request started — before it can use `actions: write`.
+A run above
+the attempt cap (attempt 3, after
 two automatic re-runs) is repainted once when the red it owns predates the newest
 verdict, and otherwise needs a new commit to move the tip; the step says which by
 name instead of exiting quietly.

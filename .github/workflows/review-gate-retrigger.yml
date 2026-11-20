@@ -1,0 +1,78 @@
+name: Review gate retrigger
+
+# #1169: `review-gate-repair` runs on a submitted review and `review-gate-comment`
+# on a posted comment, so a `pr-lint` run that settles *after* the gate has
+# finished is the one verdict path no event covers. The head then keeps a red check
+# that only a hand step can repaint — #1141 was cancelled and re-run twice for it,
+# and the wait branch in `scripts/lib/gate-repair.mjs` already promised that "the
+# trigger after it settles decides again".
+#
+# This file is that trigger and nothing else. It is separate from `review-gate.yml`
+# on purpose: a workflow whose only trigger is `workflow_run` gives the required
+# `action-pins` job no stranger-reachable path to judge, and the copy of that check
+# which rules on the pull request adding this file runs from the *base* branch —
+# that copy reads a quoted `'pull_request'` anywhere in a job's condition as "this
+# job serves pull_request" and demands an association gate a `workflow_run` payload
+# cannot satisfy (base job 136344245360 on PR #1176). Keeping the full guard in one
+# condition and the trigger in its own file satisfies both readers.
+#
+# GitHub always loads a `workflow_run` workflow from the default branch, so a pull
+# request cannot edit its own retrigger, and the event fires seconds after the lint
+# settles instead of on a schedule.
+
+on:
+  workflow_run:
+    workflows: [pr-lint]
+    types: [completed]
+
+# Default-deny for the file; the one job widens only what it needs.
+permissions:
+  contents: read
+
+jobs:
+  review-gate-retrigger:
+    name: review-gate-retrigger
+    # The guard, in order: this event, a run started by a pull request, and a run
+    # whose head repository is this one. A `workflow_run` fires for a fork's pull
+    # request too, and this job holds `actions: write`, so the head-repository test
+    # has to be here rather than in a script: a fork's completion skips the job
+    # before the permission can be used, and no step, checkout or API write happens.
+    if: github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+      actions: write
+    # One repair per head. `cancel-in-progress: false` because a cancelled repair
+    # would leave the red it was sent to repaint, and the completion behind it would
+    # have to start again.
+    concurrency:
+      group: review-gate-retrigger-${{ github.event.workflow_run.head_sha }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The gate and the repair are read from the default branch: this workflow
+          # is loaded from it, and a pull request must never be the thing that
+          # judges its own tip.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Resolve the pull request the finished lint run belongs to
+        id: finished
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/retrigger.mjs
+      - name: Repaint the head SHA the lint settled at
+        if: steps.finished.outputs.number != ''
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Passed through the environment, never written into the shell text: both
+          # values come from a payload.
+          PULL_REQUEST: ${{ steps.finished.outputs.number }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: node scripts/gate-repair.mjs --pr "$PULL_REQUEST" --sha "$HEAD_SHA"

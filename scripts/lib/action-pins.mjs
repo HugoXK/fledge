@@ -188,6 +188,24 @@ const SAFE_EVENTS = new Set([
   'public',
 ])
 
+// #1169: `workflow_run` is in that list for the run it *waits for* — settling a
+// run here needs write access — but the event itself is reachable from a fork's
+// pull request: a fork's lint run completes and wakes this workflow with
+// `head_repository` = the fork. A job holding `actions: write` on it could then
+// POST a re-run against this repository on someone else's branch, so the event is
+// safe for a privileged job only when the job names this repository as the head.
+// It is the one SAFE_EVENTS entry with a per-job guard, and the guard is a
+// comparison rather than an association list because no account is involved: the
+// fork's own commit is what must be refused.
+const WORKFLOW_RUN_HEAD_REPOSITORY = 'github.event.workflow_run.head_repository.full_name == github.repository'
+
+function headRepositoryGate(condition) {
+  // The `if:` may be written as a folded block, so the comparison is looked for
+  // after collapsing whitespace; the exact field and the exact comparison are
+  // still required, because `...repository.full_name` is a different fact.
+  return condition.replace(/\s+/g, ' ').includes(WORKFLOW_RUN_HEAD_REPOSITORY)
+}
+
 function indentOf(line) {
   return /^(\s*)/.exec(line)?.[1]?.length ?? 0
 }
@@ -450,6 +468,18 @@ function associationGate(condition, expression) {
   return roles.size === ASSOCIATION_ROLES.length && ASSOCIATION_ROLES.every((role) => roles.has(role))
 }
 
+// A job names its events through `github.event_name`; every other quoted word in
+// an `if:` is some payload field's value. `github.event.workflow_run.event ==
+// 'pull_request'` is the one that matters here: it names a property of the
+// finished run, not the event that started this job, so a substring test read it
+// as the job serving `pull_request` and demanded an association gate for a
+// trigger the job cannot see (#1169). Both `==` and `!=` count, because a `!=`
+// still says which event the job is about.
+function eventNameTest(condition, event) {
+  const quoted = `['"]${event.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}['"]`
+  return new RegExp(`github\\.event_name\\s*[!=]=\\s*${quoted}`).test(condition)
+}
+
 // Returns one finding per privileged job that a stranger could start on an event
 // whose association it never tests, plus one per job, `on:` value or
 // `permissions:` value the parser could not read. A job whose `if:` names its
@@ -481,12 +511,21 @@ export function checkActorGates(text, file) {
       findings.push({ file, line: job.line, job: String(job.name), event: '', problem: 'no-readable-trigger' })
       continue
     }
-    const named = triggers.filter((event) => facts.condition.includes(`'${event}'`) || facts.condition.includes(`"${event}"`))
+    const named = triggers.filter((event) => eventNameTest(facts.condition, event))
     const reachable = named.length > 0 ? named : triggers
     for (const event of reachable) {
       const expression = STRANGER_EVENT_ASSOCIATION[event]
       if (expression === undefined) {
-        if (SAFE_EVENTS.has(event)) continue
+        if (SAFE_EVENTS.has(event)) {
+          // A finished run is the one safe event a job has to narrow itself: the
+          // run behind it may belong to a fork, so a privileged job must name this
+          // repository as the head. Absent, the fork's completion would drive the
+          // write; the finding is reported per job, like an association gate.
+          if (event === 'workflow_run' && !headRepositoryGate(facts.condition)) {
+            findings.push({ file, line: job.line, job: String(job.name), event, problem: 'missing-head-repository-gate' })
+          }
+          continue
+        }
         findings.push({ file, line: job.line, job: String(job.name), event, problem: 'unknown-event' })
         continue
       }
