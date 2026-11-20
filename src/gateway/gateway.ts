@@ -14,6 +14,7 @@ import { parseProviderAllowlist, providerPolicyRefusal } from './modelUrl.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import type { ModelAttempt, ModelFallback } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
+import { incCounter } from '../lib/metrics.js'
 import { GATEWAY_SCOPE } from '../lib/tokens.js'
 import { authenticateApiToken, type ApiTokenAuth } from '../lib/apiToken.js'
 
@@ -143,10 +144,30 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
     ? reply.code(403).send({ error: { type: 'insufficient_scope', message: 'This Fledge API token is not allowed to use the model gateway' } })
     : reply.code(401).send({ error: { type: 'invalid_api_key', message: 'Missing or invalid Fledge API token' } })
 
+  // #464: off is today. On adds a measurement and the bucket's refill time; it
+  // never changes the key, the window or the number of requests admitted,
+  // because a per-tenant bucket would be the cap this slice does not ship.
+  const tenantMetering = config.gatewayTenantMetering === 'on'
+  const refusedRate = (reply: FastifyReply, bucket: string): FastifyReply => {
+    const error: { type: string; message: string; retryAt?: number } = { type: 'rate_limited', message: 'Too many gateway requests' }
+    if (tenantMetering) {
+      const resetAt = limiter.resetAt(bucket)
+      if (resetAt !== null) error.retryAt = resetAt
+    }
+    return reply.code(429).send({ error })
+  }
+  const meter = (auth: ApiTokenAuth & { kind: 'ok' }): void => {
+    if (!tenantMetering) return
+    incCounter('fledge_gateway_requests_total', { tenant: `user:${auth.user.id}` }, 1, 'Gateway requests by metered tenant')
+    if (auth.token.repo_id !== null) incCounter('fledge_gateway_requests_total', { tenant: `repo:${auth.token.repo_id}` }, 1, 'Gateway requests by metered tenant')
+  }
+
   app.get('/v1/models', async (request, reply) => {
-    if (!limiter.take(`gateway-ip:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
+    const bucket = `gateway-ip:${rateLimitKey(request)}`
+    if (!limiter.take(bucket)) return refusedRate(reply, bucket)
     const auth = authenticate(request)
     if (auth.kind !== 'ok') return refuse(reply, auth)
+    meter(auth)
     const repoModels = auth.token.repo_id === null ? [] : store.listRepoModelSelection(auth.token.repo_id)
     if (repoModels.length > 0) {
       return {
@@ -169,9 +190,11 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
   })
 
   app.post('/v1/chat/completions', { bodyLimit: MAX_BODY }, async (request, reply) => {
-    if (!limiter.take(`gateway-chat:${rateLimitKey(request)}`)) return reply.code(429).send({ error: { type: 'rate_limited', message: 'Too many gateway requests' } })
+    const bucket = `gateway-chat:${rateLimitKey(request)}`
+    if (!limiter.take(bucket)) return refusedRate(reply, bucket)
     const auth = authenticate(request)
     if (auth.kind !== 'ok') return refuse(reply, auth)
+    meter(auth)
     // Captured once: a closure below must not lose the narrowing of the union.
     const authed = auth
     // #481: a job token is a `kind`, never a name. `src/app.ts` lets any approved

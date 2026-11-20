@@ -13,6 +13,15 @@ import { RETENTION_CLASSES, retentionDefaultWindows, retentionWindow, type Reten
 export type RunnerMode = 'mock' | 'flybot'
 export type MailTransport = 'console' | 'smtp'
 
+// #464: whether the gateway meters each request by tenant. Only `on` turns it
+// on; an unknown value is `off`, so a typo cannot start a new metric series or
+// add a field to a 429 body on a deployment that did not ask for it.
+export type TenantMetering = 'off' | 'on'
+
+export function parseTenantMetering(raw: string): TenantMetering {
+  return raw.trim().toLowerCase() === 'on' ? 'on' : 'off'
+}
+
 export interface Config {
   env: 'development' | 'production' | 'test'
   port: number
@@ -70,6 +79,10 @@ export interface Config {
   // #540: how far the console adapters go for commands added after slice 1.
   // `off` (the default) is the route that existed before the contract.
   managementService: ManagementServiceMode
+  // #464: `off` keeps the gateway's limiter and 429 bodies as they were; `on`
+  // adds a per-tenant counter and `retryAt` to those 429s. It never splits the
+  // bucket, so a typo cannot change who is admitted.
+  gatewayTenantMetering: TenantMetering
   tokenEncryptionKey: string
   github: {
     clientId: string
@@ -507,6 +520,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
         .filter((name) => name !== ''),
     },
     managementService: parseManagementService(text('MANAGEMENT_SERVICE', 'off')),
+    gatewayTenantMetering: parseTenantMetering(text('GATEWAY_TENANT_METERING', 'off')),
     tokenEncryptionKey: encryptionKey,
     github: {
       clientId: text('GITHUB_CLIENT_ID'),

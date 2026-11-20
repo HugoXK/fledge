@@ -254,9 +254,18 @@ test('the destructive routes ask the route-level limiter for their bucket, on th
 
 test('the gateway throttles join the normalized key instead of raw request.ip', () => {
   const source = readFileSync(new URL('../src/gateway/gateway.ts', import.meta.url), 'utf8')
-  const takes = source.split('\n').map((line) => line.trim()).filter((line) => line.includes('.take('))
+  const lines = source.split('\n').map((line) => line.trim())
+  const takes = lines.filter((line) => line.includes('.take('))
   assert.equal(takes.length, 2, `the gateway limiter call count changed: ${takes.length}`)
   for (const line of takes) {
+    assert.ok(line.includes('limiter.take(bucket)'), `a gateway limiter call does not take the route's bucket: ${line}`)
+    assert.ok(!line.includes('${request.ip}'), `a gateway limiter keys on raw request.ip: ${line}`)
+  }
+  // #464: the two throttles name their bucket one line above the take, so the
+  // guard follows the variable rather than losing the normalizer check.
+  const buckets = lines.filter((line) => line.startsWith('const bucket ='))
+  assert.equal(buckets.length, 2, `the gateway bucket definitions changed: ${buckets.length}`)
+  for (const line of buckets) {
     assert.ok(line.includes('rateLimitKey(request)'), `a gateway limiter key skips the normalizer: ${line}`)
     assert.ok(!line.includes('${request.ip}'), `a gateway limiter keys on raw request.ip: ${line}`)
   }
