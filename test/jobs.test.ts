@@ -9,6 +9,7 @@ import { buildCarryOver, buildRunDigest, classifyOutput, decideNextJob, failureS
 import type { CarryOverLinkState, CarryOverReader, SchedulerState } from '../src/jobs/continuity.js'
 import type { Runner, RunnerContext } from '../src/jobs/runner.js'
 import { encryptSecret, sha256Hex } from '../src/lib/secrets.js'
+import { compileContextBundle } from '../src/lib/contextBundle.js'
 import { metricsSnapshot } from '../src/lib/metrics.js'
 import { REVIEW_INSTRUCTION_MAX, REVIEW_INSTRUCTION_LABEL } from '../src/lib/followUpInstruction.js'
 import { nextTime } from '../src/schedules/next.js'
@@ -4081,6 +4082,130 @@ test('an override records the decision it overturned — job, review, score, mod
     assert.equal(parsed.model, 'model-980', 'the model that answered the review')
     assert.equal(parsed.tip, tip, 'the tip that review covered')
     assert.match(parsed.reason, /changes_requested|review gate/i, 'the reason still names the block')
+  } finally {
+    store.close()
+    await github.close()
+  }
+})
+
+test('a job that violates its sealed instruction contract is refused the merge', async () => {
+  const merges: string[] = []
+  const github = await startFakeServer((request, response) => {
+    const method = request.method ?? 'GET'
+    const url = request.url ?? ''
+    if (method === 'GET' && url === '/repos/o/r/pulls/1') {
+      json(response, 200, { number: 1, html_url: 'https://github.com/o/r/pull/1', title: 'fix', state: 'open', head: { ref: 'fledge/fix', sha: 'abc' }, base: { ref: 'main' }, mergeable: true, mergeable_state: 'clean', draft: false, merged: false })
+      return
+    }
+    // The changed path is one the *contract* denies, while the repository itself
+    // has no path rules — so the path guard passes and only the contract can
+    // refuse this change.
+    if (method === 'GET' && url.startsWith('/repos/o/r/pulls/1/files')) {
+      json(response, 200, [{ filename: 'src/secret.ts', status: 'modified', additions: 1, deletions: 0 }])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/check-runs?per_page=100') {
+      json(response, 200, { check_runs: [{ name: 'ci', status: 'completed', conclusion: 'success' }] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/commits/abc/status') {
+      json(response, 200, { state: 'success', statuses: [] })
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/pulls/1/reviews?per_page=100') {
+      json(response, 200, [])
+      return
+    }
+    if (method === 'GET' && url === '/repos/o/r/branches/main/protection') {
+      json(response, 200, { required_status_checks: { contexts: ['ci'] }, required_pull_request_reviews: { required_approving_review_count: 0 } })
+      return
+    }
+    if (method === 'PUT' && url === '/repos/o/r/pulls/1/merge') {
+      merges.push('merge')
+      json(response, 200, { merged: true, sha: 'def' })
+      return
+    }
+    json(response, 404, { message: 'Not Found' })
+  })
+  const base = testConfig()
+  const config = testConfig({ github: { ...base.github, apiBase: github.url } })
+  const store = new Store(':memory:')
+  const jobs = new Jobs(store, config, { name: 'noop', async run() { return { status: 'running' } } }, new MemoryMailer())
+  try {
+    const user = makeUser(store, { login: 'adherence-merge-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_adherence', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: encryptSecret('gh-token', config.tokenEncryptionKey), permission: 'admin', repoRole: 'maintainer', autoMerge: true, upstreamHtmlUrl: 'https://github.com/o/r', forkHtmlUrl: 'https://github.com/o/r', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { bundle, hash } = compileContextBundle({
+      repo: { id: repo.id, fullName: 'o/r', defaultBranch: 'main' },
+      goal: 'fix it',
+      playbook: { version: '8', hash: 'a'.repeat(40) },
+      contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
+      paths: { allow: [], deny: ['src/secret.ts'] },
+      branch: { base: 'main', name: 'fledge/fix' },
+      required: { evidence: [], sections: [] },
+      forbidden: [],
+      carryOver: [],
+      model: { provider: 'deepseek', name: 'DeepSeek-V4.1-Flash-1017' },
+      role: 'developer',
+    })
+    const secret = 'adherence-secret'
+    store.createJob({ id: 'job_adherence_merge', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', contextBundle: { hash, json: JSON.stringify(bundle) } })
+    store.updateJob('job_adherence_merge', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString(), context_bundle_state: 'verified' })
+    const result = await jobs.handleCallback('job_adherence_merge', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', contextBundleHash: hash, summary: 'done' })
+    assert.equal(result.ok, true)
+    assert.equal(merges.length, 0, 'a violated clause blocks the merge request itself')
+    const row = store.getJob('job_adherence_merge')!
+    assert.equal(row.adherence_status, 'violation')
+    assert.match(row.adherence_json ?? '', /paths\.denied/)
+    assert.ok(store.listAudit().some((entry) => entry.action === 'job.adherence_violation'))
+
+    // A second job with the same contract but no denied change still merges: the
+    // refusal is about the clause, not about having a contract at all.
+    const clean = compileContextBundle({
+      repo: { id: repo.id, fullName: 'o/r', defaultBranch: 'main' },
+      goal: 'fix it',
+      playbook: { version: '8', hash: 'a'.repeat(40) },
+      contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
+      paths: { allow: [], deny: ['deploy/'] },
+      branch: { base: 'main', name: 'fledge/fix' },
+      required: { evidence: [], sections: [] },
+      forbidden: [],
+      carryOver: [],
+      model: { provider: 'deepseek', name: 'DeepSeek-V4.1-Flash-1017' },
+      role: 'developer',
+    })
+    // The fake serves one changed path for every pull request, so a contract
+    // that does not deny it is the control.
+    store.createJob({ id: 'job_adherence_merge_ok', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', contextBundle: { hash: clean.hash, json: JSON.stringify(clean.bundle) } })
+    store.updateJob('job_adherence_merge_ok', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString(), context_bundle_state: 'verified' })
+    await jobs.handleCallback('job_adherence_merge_ok', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', contextBundleHash: clean.hash, summary: 'done' })
+    assert.equal(merges.length, 1, 'a clean contract still merges')
+    assert.equal(store.getJob('job_adherence_merge_ok')?.adherence_status, 'pass')
+
+    // The observation is what Fledge actually saw, not what the contract asks
+    // for: a contract that requires evidence Fledge does not audit is
+    // `unverifiable`, never `violation`, and an unverifiable clause does not
+    // block the merge. This is the difference between `null` (not observed) and
+    // an empty array (observed nothing).
+    const strict = compileContextBundle({
+      repo: { id: repo.id, fullName: 'o/r', defaultBranch: 'main' },
+      goal: 'fix it',
+      playbook: { version: '8', hash: 'a'.repeat(40) },
+      contextFiles: [{ path: 'AGENTS.md', sha: 'b'.repeat(40) }],
+      paths: { allow: [], deny: [] },
+      branch: { base: 'main', name: 'fledge/fix' },
+      required: { evidence: ['npm run check'], sections: ['Ran:'] },
+      forbidden: [],
+      carryOver: [],
+      model: { provider: 'deepseek', name: 'DeepSeek-V4.1-Flash-1017' },
+      role: 'developer',
+    })
+    store.createJob({ id: 'job_adherence_merge_unobserved', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: sha256Hex(secret), platformTokenHash: '', kind: 'iterate', baseBranch: 'main', contextBundle: { hash: strict.hash, json: JSON.stringify(strict.bundle) } })
+    store.updateJob('job_adherence_merge_unobserved', { status: 'running', branch: 'fledge/fix', started_at: new Date().toISOString(), context_bundle_state: 'verified' })
+    await jobs.handleCallback('job_adherence_merge_unobserved', secret, { status: 'succeeded', prUrl: 'https://github.com/o/r/pull/1', contextBundleHash: strict.hash, summary: 'done' })
+    const unobserved = store.getJob('job_adherence_merge_unobserved')!
+    assert.equal(unobserved.adherence_status, 'unverifiable', 'a requirement Fledge cannot observe is unverifiable, not a violation')
+    assert.match(unobserved.adherence_json ?? '', /evidence\.required/)
+    assert.equal(merges.length, 2, 'an unverifiable clause does not block the merge')
   } finally {
     store.close()
     await github.close()

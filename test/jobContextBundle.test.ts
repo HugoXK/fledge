@@ -53,3 +53,21 @@ test('the bundle state is written back on the job it belongs to', () => {
   assert.equal(store.getJob(job.id)?.context_bundle_state, 'mismatch')
   store.close()
 })
+
+test('a job records the adherence verdict written by the merge gate', () => {
+  const store = new Store(':memory:')
+  const { userId, repoId } = fixture(store)
+  const job = store.createJob({
+    id: 'job_adherence_1', repoId, userId, trigger: 'manual', goal: 'g',
+    callbackHash: 'cbh_a1', platformTokenHash: '',
+    contextBundle: { hash: HASH, json: '{"version":1}' },
+  })
+  // NULL is "no gate has evaluated this job", which a page must not read as a pass.
+  assert.equal(job.adherence_status, null)
+  assert.equal(job.adherence_json, null)
+  const record = JSON.stringify({ status: 'violation', hashVerified: true, clauses: [{ id: 'paths.denied', status: 'violation', detail: 'changed a denied path: src/secret.ts' }] })
+  store.updateJob(job.id, { adherence_status: 'violation', adherence_json: record })
+  assert.equal(store.getJob(job.id)?.adherence_status, 'violation')
+  assert.equal(store.getJob(job.id)?.adherence_json, record)
+  store.close()
+})

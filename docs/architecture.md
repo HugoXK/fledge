@@ -3668,6 +3668,35 @@ and after, ordered by the contract's own field order. A reader therefore sees th
 policy change itself, not only that a hash differs, and a mismatch prints as a
 plain refusal rather than a green badge.
 
+## The contract's clauses are audited at the merge gate (#364)
+
+The bundle says which policy the job ran under; the audit says whether the
+delivery honoured it. `evaluateAdherence` in `src/lib/instructions.ts` answers one
+status per clause id — `contract.hash`, `branch.base`, `paths.denied`,
+`paths.allowed`, `evidence.required`, `sections.required`, `actions.forbidden` —
+and the merge gate is where it runs, because that is the only place in the
+process that holds the pull request the contract is about.
+
+The observation is what the gate can actually see, not what the runner says: the
+echo state the callback established, the pull request's own base branch, and the
+changed-file list the path guard already walked (listed for the audit when the
+job had no rule context to walk). An unobserved field is `null` and the clause it
+feeds is `unverifiable`, never `pass`; the record keeps `pass`, `violation` and
+`unverifiable` distinct because "not checked" is the case a governance gap hides
+in. The verdict is stored as `adherence_status` and `adherence_json` on the job
+row, so the page reads the record rather than recomputing it, and NULL means no
+gate has evaluated the job yet.
+
+A `violation` blocks the merge request itself. The refusal sits in `tryMerge`,
+before `client.mergePullRequest`, which is the single request the auto-merge call,
+the poller and the manual maintainer command all take and the request a merge
+queue is entered by — so a queue-entered merge is refused by the same line.
+Without a queue, `pr-merge` runs on the default branch after the merge and cannot
+enforce anything, which is why the refusal is not written there. A maintainer
+merging on GitHub by hand stays outside Fledge's control. The job page prints the
+verdict, each clause with its status and detail, and whether the callback's echo
+matched; `unverifiable` is printed as its own outcome rather than as a pass.
+
 ## One decision, one action id (#633)
 
 The `actions` table holds one row per decision a maintainer has to make, keyed by

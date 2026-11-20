@@ -85,7 +85,9 @@ import {
 } from '../lib/skillBundle.js'
 // #369: the sealed policy a dispatch runs under, and the echo check that decides
 // whether the runner and the row agree about which policy that was.
-import { compileContextBundle, verifyContextBundleEcho } from '../lib/contextBundle.js'
+import { compileContextBundle, readContextBundle, verifyContextBundleEcho } from '../lib/contextBundle.js'
+// #364: the contract's clauses, evaluated against what this process can observe.
+import { evaluateAdherence, type AdherenceRecord } from '../lib/instructions.js'
 import type { TeamRole } from '../flybot/playbook.js'
 import type { JobKind, RepoRef, Runner } from './runner.js'
 import type { InstanceManager } from '../flybot/instances.js'
@@ -2357,6 +2359,59 @@ export class Jobs {
     return out
   }
 
+  // #364: the clauses of the contract this job ran under, evaluated against the
+  // pull request the merge gate is holding. Only what this process can see is
+  // passed as an observation: the recorded echo, the pull request's own base, and
+  // the changed-file list the path guard already walked. The evidence, section and
+  // action clauses are answered by the contract itself (it names no required
+  // evidence or sections and forbids nothing today), and `actions: null` keeps a
+  // clause there `unverifiable` rather than a pass this process cannot see.
+  private adherenceFor(job: JobRow, baseBranch: string, changedFiles: string[]): AdherenceRecord | null {
+    const bundle = readContextBundle(job.context_bundle_json)
+    if (bundle === null) return null
+    return evaluateAdherence(bundle.contract, {
+      // The clause compares the *contract* hash, while the callback echoes the
+      // bundle hash. A verified bundle is exactly a bundle whose bytes and whose
+      // inner contract hash were both recomputed, so its `contractHash` is what a
+      // verified echo proves the runner read; a mismatch or a missing echo proves
+      // nothing and stays `unverifiable`.
+      contractHash: job.context_bundle_state === 'verified' ? bundle.contractHash : null,
+      baseBranch,
+      changedPaths: changedFiles,
+      // `null` is "the runner did not observe this", and an empty array would be
+      // "it observed nothing" — which is a real answer a required-evidence clause
+      // would record as a violation. Fledge does not audit the run's evidence list
+      // here, so the honest observation is that it did not observe one.
+      evidence: null,
+      sections: null,
+      actions: null,
+    })
+  }
+
+  // The path guard lists the changed files only when the job loaded a rule
+  // context, so a job with no rules would otherwise be audited against an empty
+  // list and read as clean. Adherence asks for the list itself in that case: it
+  // is the input the `paths.*` clauses are about.
+  private async adherenceFiles(
+    client: GithubClient,
+    owner: string,
+    name: string,
+    number: number,
+    reportedFiles: number,
+    known: string[],
+  ): Promise<string[]> {
+    if (known.length > 0) return known
+    const listed = await client.listPullRequestFiles(owner, name, number, reportedFiles).catch(() => null)
+    return listed === null ? known : listed.files.map((file) => file.filename)
+  }
+
+  private static adherenceDetail(record: AdherenceRecord): string {
+    return record.clauses
+      .filter((clause) => clause.status === 'violation')
+      .map((clause) => `${clause.id}: ${clause.detail}`)
+      .join('; ')
+  }
+
   // A truncated walk and a protected-path violation are different refusals. A
   // notification that names the path when the list was merely cut off accuses
   // the change of something it did not do, so the phrase follows `truncated`.
@@ -2448,6 +2503,21 @@ export class Jobs {
         if (!acknowledged) reasons.push('Pull request changes Fledge rules or skills; a maintainer must acknowledge the rule change.')
         verification.reasons = reasons
         verification.ok = reasons.length === 0
+      }
+      // #364: evaluate the contract's clauses on the pull request this gate is
+      // about to merge, and store the record even when it passes so the job page
+      // can print which clauses were checked and which could not be. A violation
+      // is a verification reason, so the merge is refused below by the same
+      // `verification.ok` the panel reads.
+      const adherence = this.adherenceFor(job, pr.base, await this.adherenceFiles(client, owner, name, number, pr.changedFiles, guard.files))
+      if (adherence !== null) {
+        this.store.updateJob(job.id, { adherence_status: adherence.status, adherence_json: JSON.stringify(adherence) })
+        if (adherence.status === 'violation') {
+          reasons.push(`Instruction contract violation: ${Jobs.adherenceDetail(adherence)}`)
+          this.store.audit(job.user_id, 'job.adherence_violation', `${job.id}: ${Jobs.adherenceDetail(adherence)}`.slice(0, 300))
+          verification.reasons = reasons
+          verification.ok = false
+        }
       }
       this.store.updateJob(job.id, { verification_json: JSON.stringify(verification), path_guard_json: JSON.stringify(guard) })
       if (!guard.ok) {
@@ -2845,6 +2915,20 @@ export class Jobs {
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: path guard ${detail}`)
         this.store.notify(job.user_id, 'job', `任务 ${job.id} 的 PR ${Jobs.pathGuardRefusal(guard)}，已阻止合并：${detail}`)
         return { ok: false, message: guard.truncated ? `改动的文件列表不完整，无法确认路径约束：${detail}` : `改动包含受保护路径：${detail}` }
+      }
+      // #364: a violated clause blocks the merge request itself. The auto-merge
+      // call, the poller and the manual merge command all arrive at this one
+      // function, and the merge-queue entry is this same request, so the refusal
+      // is written once rather than beside each caller.
+      const adherence = this.adherenceFor(job, pr.base, await this.adherenceFiles(client, owner, name, number, pr.changedFiles, guard.files))
+      if (adherence !== null) {
+        this.store.updateJob(job.id, { adherence_status: adherence.status, adherence_json: JSON.stringify(adherence) })
+        if (adherence.status === 'violation') {
+          const detail = Jobs.adherenceDetail(adherence)
+          this.store.audit(job.user_id, 'job.adherence_violation', `${job.id}: ${detail}`.slice(0, 300))
+          this.store.notify(job.user_id, 'job', `任务 ${job.id} 违反了它运行的指令契约，已阻止合并：${detail.slice(0, 300)}`)
+          return { ok: false, message: `任务违反了它运行的指令契约，已阻止合并：${detail}` }
+        }
       }
       if (pr.mergeable === false || ['blocked', 'dirty', 'behind', 'unknown'].includes(pr.mergeableState)) {
         this.store.audit(job.user_id, 'job.merge_skipped', `${job.id}: PR ${number} is ${pr.mergeableState}`)
