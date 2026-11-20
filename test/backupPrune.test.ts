@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -355,4 +355,74 @@ test('the writer prunes each class at the counts the console reports', () => {
     'a card number that no run will take is the false report this test exists to stop',
   )
   assert.match(plaintextRun.stdout, /^retention=keep:plaintext=1,encrypted=30 pruned=20 intermediates=0$/m)
+})
+
+test('a copy with a future mtime never outranks the copy the run writes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seedDatabase(dbPath)
+  const dir = join(root, 'plaintext')
+  mkdirSync(dir)
+
+  // A clock stepped back, or a set restored with `cp -a`, leaves a copy whose
+  // mtime is ahead of the copy this run writes. Sorting by mtime alone puts that
+  // stale copy first and the writer prunes its own backup while printing a
+  // `backup=` path that no longer exists.
+  const stale = writeCopy(dir, 0, 'plaintext', 1)
+  const future = (Date.now() + 3_600_000) / 1000
+  utimesSync(stale.path, future, future)
+
+  const run = runBackup(['--db', dbPath, '--backup-dir', dir])
+  assert.equal(run.code, 0, run.stderr)
+  const written = /^backup=(.+)$/m.exec(run.stdout)?.[1]
+  assert.ok(written !== undefined, `the run printed no backup path\n${run.stdout}`)
+  assert.ok(existsSync(written), `the run reported a backup it had already pruned: ${written}`)
+  assert.ok(!existsSync(stale.path), 'the future-dated copy should have been the one pruned')
+  assert.equal(copiesOf(dir, 'plaintext').length, 1)
+  assert.match(run.stdout, /pruned=1\b/)
+
+  const plan = runPrune(['--backup-dir', dir, '--json'])
+  assert.equal(plan.code, 0, plan.stderr)
+  assert.equal(
+    (JSON.parse(plan.stdout) as { expiredCopies: number }).expiredCopies,
+    0,
+    'the plan after the run must be empty when one copy was kept',
+  )
+})
+
+test('an explicitly empty keep override is refused, not treated as absent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seedDatabase(dbPath)
+  const dir = join(root, 'plaintext')
+  mkdirSync(dir)
+  // Three planted plaintext copies the defaults would prune to one.
+  for (let index = 1; index <= 3; index += 1) writeCopy(dir, index, 'plaintext', index)
+  const before = snapshot(dir)
+
+  // A wrapper whose variable expands empty must not fall through to the
+  // defaults and delete: the value was passed, so it is validated.
+  for (const run of [
+    runBackup(['--db', dbPath, '--backup-dir', dir, '--keep', '']),
+    runBackup(['--db', dbPath, '--backup-dir', dir], { BACKUP_KEEP: '' }),
+  ]) {
+    assert.equal(run.code, 2, run.stderr)
+    assert.match(run.stderr, /--keep must be a positive whole number, got/)
+    assert.doesNotMatch(run.stdout, /^backup=/m)
+  }
+  assert.equal(snapshot(dir), before, 'a refused override must delete nothing')
+})
+
+test('an accepted keep override still prints the override marker', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seedDatabase(dbPath)
+  const dir = join(root, 'plaintext')
+  mkdirSync(dir)
+  for (let index = 1; index <= 3; index += 1) writeCopy(dir, index, 'plaintext', index)
+
+  const run = runBackup(['--db', dbPath, '--backup-dir', dir, '--keep', '2'])
+  assert.equal(run.code, 0, run.stderr)
+  assert.match(run.stdout, /^retention=keep:plaintext=2,encrypted=2 override=--keep pruned=2 intermediates=0$/m)
+  assert.equal(copiesOf(dir, 'plaintext').length, 2)
 })

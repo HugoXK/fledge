@@ -1141,8 +1141,9 @@ npm run db:backup
 # every copy is checked with PRAGMA integrity_check and pruned to its class's
 # write-time count — BACKUP_KEEP_PLAINTEXT (default 1) plaintext copies,
 # BACKUP_KEEP_ENCRYPTED (default 30) encrypted copies; --keep / BACKUP_KEEP
-# overrides both for one run; a copy that fails the check is deleted and the run
-# exits non-zero, so a failed backup never leaves a usable-looking file
+# overrides both for one run (an empty value is refused); a copy that fails the
+# check is deleted and the run exits non-zero, so a failed backup never leaves a
+# usable-looking file
 # each copy gets a <copy>.json manifest: size, sha256, schema version and
 # per-table row counts, written 0600 and deleted together with its copy
 # plaintext is the default; with a backup key this writes fledge-<timestamp>.db.enc
@@ -1161,7 +1162,10 @@ and the dry run applies: `npm run db:backup` prunes plaintext copies to
 do not consume the plaintext copy the restore drill reads. `--keep` /
 `BACKUP_KEEP` is an explicit override of both counts for that one run — the
 `retention=` line prints `override=--keep` beside the two counts it applied —
-not a second policy:
+not a second policy. An explicitly supplied but empty value (`--keep ""` or
+`BACKUP_KEEP=""`) is refused with exit 2 instead of being treated as absent, and
+the copy a run writes is always among the copies its class keeps, even when an
+older copy carries a future mtime:
 
 | Env | Default | What the scan keeps |
 |---|---|---|

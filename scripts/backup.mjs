@@ -53,13 +53,16 @@ function parseArgs(argv) {
 // than clamped — `0` would erase every copy of that class. Same rule and same
 // wording as `scripts/backup-prune.mjs` and `loadConfig`.
 function keepCount(name, raw, fallback) {
-  if (raw === undefined || raw === '') return fallback
+  if (raw === undefined || raw === '') {
+    if (fallback !== undefined) return fallback
+    fail(2, `${name} must be a positive whole number, got ${raw === '' ? 'an empty value' : 'no value'}`)
+  }
   const value = Number(raw)
   if (!Number.isInteger(value) || value < 1) fail(2, `${name} must be a positive whole number, got ${raw}`)
   return value
 }
 
-function prune(dir, keep) {
+function prune(dir, keep, target) {
   const entries = readdirSync(dir).map((name) => ({ name, path: join(dir, name) }))
   // A `.plaintext.tmp` here is a crash leftover from a tip that took the copy
   // inside the backup directory. It is a readable database, so it is collected
@@ -91,6 +94,15 @@ function prune(dir, keep) {
   let pruned = 0
   for (const kind of ['plaintext', 'encrypted']) {
     const sorted = copies[kind].sort((left, right) => right.mtime - left.mtime)
+    // The copy this run just wrote is kept by path, not by position. A copy with
+    // a future mtime (a clock stepped back, or a set restored with `cp -a`) sorts
+    // ahead of it; pruning on mtime alone would then delete the backup this run
+    // reports. Pinning it first still keeps the class at its configured count.
+    const own = sorted.findIndex((copy) => copy.path === target)
+    if (own !== -1) {
+      const [written] = sorted.splice(own, 1)
+      sorted.unshift(written)
+    }
     for (const copy of sorted.slice(keep[kind])) {
       rmSync(copy.path, { force: true })
       // A manifest describes exactly one copy, so it goes with it.
@@ -107,8 +119,12 @@ const outDir = resolve(args.backupDir ?? process.env.BACKUP_DIR ?? join(process.
 // `--keep` / `BACKUP_KEEP` is an explicit override of both classes for one run,
 // not a second policy. Without it the write-time counts are the same per-class
 // counts `loadConfig`, the dry run and the console report, from one definition.
-const override = args.keep ?? process.env.BACKUP_KEEP
-const overridden = override === undefined || override === '' ? null : keepCount('--keep', override)
+// A value that was supplied is validated even when it is empty: a wrapper whose
+// variable expands empty must be refused, not fall through to the defaults and
+// delete at counts nobody asked for.
+const flagGiven = Object.hasOwn(args, 'keep')
+const supplied = flagGiven || process.env.BACKUP_KEEP !== undefined
+const overridden = supplied ? keepCount('--keep', flagGiven ? args.keep : process.env.BACKUP_KEEP) : null
 const keep =
   overridden === null
     ? {
@@ -206,7 +222,11 @@ if (encrypt) {
 // before pruning may delete this copy.
 const manifest = await writeManifest(target, { facts, encryption })
 
-const pruned = prune(outDir, keep)
+const pruned = prune(outDir, keep, target)
+// The written copy is pinned into the kept set, so it survives; if it is gone
+// anyway the `backup=` line and `backup: OK` would name a file no reader can
+// open, and this run refuses instead of reporting success.
+if (!existsSync(target)) fail(1, `the backup this run wrote is missing after pruning: ${target}`)
 process.stdout.write(`backup=${target}\n`)
 process.stdout.write(`manifest=${manifest}\n`)
 process.stdout.write('integrity=ok\n')
