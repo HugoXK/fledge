@@ -165,7 +165,9 @@ test('#1116: a legacy verdict missing a required job is the stale answer and nam
   assert.equal(decision.publish, true)
   assert.equal(decision.reason, 'stale-policy')
   assert.match(decision.detail, /mock-check/, 'the detail names the job the legacy verdict never ran')
-  assert.match(decision.detail, /lists 19 of the 20 jobs required now/)
+  // The counts move with REQUIRED_JOBS; the fixture is derived from it, so a new
+  // required job must not turn this into a red herring about the sentence.
+  assert.match(decision.detail, new RegExp(`lists ${String(BEFORE.length)} of the ${String(REQUIRED_JOBS.length)} jobs required now`))
   // The aggregate is newer than the verdict and still decides nothing: it lists no
   // job, so it cannot outrank the verdict it shadows.
   assert.equal(jobsOf(aggregate().output.summary).length, 0)

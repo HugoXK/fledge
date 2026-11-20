@@ -292,6 +292,7 @@ renames it to `ci-ok-head`. See
 - `dependency-review` (no new high-severity advisory in the pull request diff)
 - `action-pins` (every `uses:` is a 40-hex commit pin with its tag comment)
 - `workflow-lint` (actionlint over the workflow tree, plus the template-injection check)
+- `reserved-contexts` (no job id or `name:` publishes the required `ci-ok`, `review-gate` or `pr-lint` context from a workflow that is not its producer)
 - `secret-scan` (gitleaks over the commit range, full history on `main`)
 - `codeql-required` (the CodeQL analysis for this event's commit exists and is green)
 - `deploy-check` (the `deploy/` worker, alert rules, the nginx sample against a real `nginx -t`, and the systemd sample through a static unit parser, when the diff reaches `deploy/` or a script the sample contract delegates to)
@@ -314,7 +315,7 @@ and are skipped **before a runner starts**, not after an install:
 | `deps` | `audit` |
 | `db` | `restore-drill` |
 | `docker` | `docker` |
-| `workflows` | `action-pins`, `workflow-lint` |
+| `workflows` | `action-pins`, `workflow-lint`, `reserved-contexts` |
 | `deploy` | `deploy-check` |
 | `codeql` | `codeql-required` (and the CodeQL workflow's own docs/deploy/Dockerfile path filter) |
 
@@ -399,6 +400,7 @@ the base branch into `base/` and executed from there:
 | `risk` | `node base/scripts/risk-gate.mjs --repo . --base <ref>` |
 | `action-pins` | `node base/scripts/action-pins.mjs --workflows .github/workflows` |
 | `workflow-lint` | `node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json` |
+| `reserved-contexts` | `node base/scripts/reserved-contexts.mjs --workflows .github/workflows` |
 | `codeql-required` | `node base/scripts/codeql-required.mjs` |
 | `ci-ok` (the in-run aggregate, until the follow-up renames it) | `node base/scripts/ci-ok.mjs` |
 | `ci-ok` (the publisher's verdict) | `node base/scripts/ci-ok-run.mjs`, run by `ci-ok-publish.yml` |
@@ -605,6 +607,26 @@ body is well-formed at every level actionlint checks and still executes text
 whoever opened the pull request wrote. An expression string that must appear in
 a shell script goes in
 `.github/agent/workflow-injection-allowlist.json` with a reason.
+
+`reserved-contexts` covers the one thing neither of those checks can see: a
+check run's name is its job id, or the job's `name:` when it has one, and branch
+protection matches that string plus the Actions app id. A pull request could add
+any workflow whose job is called `ci-ok` — or `review-gate`, or `pr-lint` — and
+publish the required context from its own tree, while the aggregate reads only
+the `needs` of the run it executes inside and never notices the second check.
+`scripts/lib/reserved-contexts.mjs` allows `ci-ok` only from `ci.yml` and
+`ci-ok-publish.yml` (the in-run aggregate and the publisher, both canonical),
+`review-gate` only from `review-gate.yml` and `pr-lint` only from `pr-lint.yml`;
+it reads both spellings, takes the job indent from the first key under `jobs:`
+rather than assuming two spaces, and a workflow file it cannot read fails the
+job. So does a job id or `name:` it cannot resolve into a literal — a backslash
+escape, a block scalar, a tag, an anchor, a tab, or a `name:` with no value on
+its line (YAML reads the indented next line as the scalar) — because YAML could
+still resolve that shape to a reserved context, and a check that cannot tell is
+not a check that passes.
+The pull request that introduces the scanner is the one case with no base
+copy: that job prints a notice and runs the head copy once, so the check
+takes effect from the next pull request on without skipping silently.
 
 `secret-scan` runs gitleaks as a checksum-pinned binary with `fetch-depth: 0`
 and a commit range (`pull_request`, `merge_group`, `push`, whole history

@@ -38,6 +38,12 @@ export const REQUIRED_JOBS = [
   'dependency-review',
   'action-pins',
   'workflow-lint',
+  // #963: a job id or `name:` value is the check run's name, so a workflow the
+  // pull request adds could publish the required `ci-ok`/`review-gate`/`pr-lint`
+  // context itself. The scanner is static and reads the head's workflows from
+  // base-tree policy; a diff that cannot produce a shadow (no workflow change)
+  // skips it like the other workflow checks.
+  'reserved-contexts',
   'secret-scan',
   // #644: deploy/ is not code, but it ships the worker, the alert rules and the
   // nginx/systemd samples, so a deploy-only diff gets its own syntax gate
@@ -87,6 +93,7 @@ export const SKIP_WHEN = {
   'restore-drill': 'db',
   'action-pins': 'workflows',
   'workflow-lint': 'workflows',
+  'reserved-contexts': 'workflows',
   'codeql-required': 'codeql',
   'deploy-check': 'deploy',
 }
