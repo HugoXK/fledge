@@ -144,9 +144,8 @@ export interface ScheduleConsoleState {
   kind: 'none' | 'unreadable' | 'cron' | 'interval'
   /**
    * #544 slice 9: `none` when there is no row, otherwise the stored state. A
-   * paused schedule still answers `nextAt` — the instant the planner would use —
-   * but nothing fires until it is resumed, and the page says so rather than
-   * promising a run.
+   * paused schedule has no next run: `nextAt` is `null` until it is resumed, and
+   * the page prints `unknown` rather than promising a run nothing will make.
    */
   status: 'none' | 'active' | 'paused'
   /** The instant the schedule was paused, or null while it is active or absent. */
@@ -156,7 +155,10 @@ export interface ScheduleConsoleState {
   misfire: string | null
   /** #544 slice 5: how late a due instant may be dispatched; null is unbounded. */
   graceMs: number | null
-  /** The next instant the planner answers for `now`; null when it cannot answer. */
+  /**
+   * The next instant the planner answers for `now`; null when the schedule
+   * cannot run — absent, unreadable or paused.
+   */
   nextAt: number | null
   /** The newest decided instant, whatever it decided. */
   last: OccurrenceView | null
