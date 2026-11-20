@@ -42,6 +42,9 @@ interface Fixture {
   omitNumber?: boolean
   maintainerCanModify?: boolean
   omitMaintainerCanModify?: boolean
+  // The reuse path re-reads the pull request it is about to adopt (#1183), so a
+  // fixture needs to answer for the reused number as well as the created one.
+  pullReadback?: Record<number, { status?: number; maintainerCanModify?: boolean; omitMaintainerCanModify?: boolean }>
   login?: string
   userStatus?: number
 }
@@ -101,10 +104,21 @@ function makeServer(fixture: Fixture = {}) {
     }
     // `omitMaintainerCanModify` exists so one case can drop the key outright: the
     // `?? false` default would otherwise fill it back in and the missing-field
-    // shape could never be exercised.
-    if (method === 'GET' && route === `/pulls/${pullNumber}`) {
-      if (fixture.omitMaintainerCanModify === true) return json({ number: pullNumber })
-      return json({ number: pullNumber, maintainer_can_modify: fixture.maintainerCanModify ?? false })
+    // shape could never be exercised. The per-number map serves the reuse path,
+    // which reads back a pull request the run did not create (#1183).
+    if (method === 'GET' && /^\/pulls\/\d+$/.test(route)) {
+      const number = Number(route.slice('/pulls/'.length))
+      const readback = fixture.pullReadback?.[number]
+      if (readback !== undefined) {
+        if (readback.status !== undefined) return json({ message: 'Server Error' }, readback.status)
+        if (readback.omitMaintainerCanModify === true) return json({ number })
+        return json({ number, maintainer_can_modify: readback.maintainerCanModify ?? false })
+      }
+      if (number === pullNumber) {
+        if (fixture.omitMaintainerCanModify === true) return json({ number: pullNumber })
+        return json({ number: pullNumber, maintainer_can_modify: fixture.maintainerCanModify ?? false })
+      }
+      return json({ message: `unexpected ${method} ${route}` }, 500)
     }
     return json({ message: `unexpected ${method} ${route}` }, 500)
   }
@@ -205,11 +219,86 @@ test('opens exactly one pull request from the verified branch and asserts what i
 
 test('reuses an open pull request at the same head sha and writes nothing', async () => {
   const { result, calls } = await run({ artifact: artifact({ shouldRelease: false }) }, {
-    openPrs: [{ number: 201, title: `release: v${VERSION}`, head: { ref: BRANCH, sha: SHA } }],
+    openPrs: [{ number: 201, title: `release: v${VERSION}`, head: { ref: BRANCH, sha: SHA, repo: { full_name: REPO } } }],
+    pullReadback: { 201: { maintainerCanModify: false } },
   })
   assert.equal(result.status, 'reused')
   assert.equal(result.pr, 201)
   assert.match(result.reason, /#201/)
+  assert.equal(posts(calls).length, 0)
+})
+
+// #1183: the reuse branch answered before the pull request was read back, so a
+// head the create path would refuse was adopted green. These four rows pin the
+// reuse path as the create path's equal: a fork head is refused, a head that
+// cannot be re-read is refused, and the two shapes the create path accepts
+// (`false` and an omitted flag) still reuse.
+
+test('refuses to reuse a pull request whose readback says its head is a fork', async () => {
+  const { result, calls } = await run({}, {
+    openPrs: [{ number: 201, title: `release: v${VERSION}`, head: { ref: BRANCH, sha: SHA, repo: { full_name: REPO } } }],
+    pullReadback: { 201: { maintainerCanModify: true } },
+  })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /maintainer_can_modify/)
+  assert.equal(result.pr, 201)
+  assert.equal(exitCodeFor(result), 1)
+  // The plan releases tonight, so a fix that quietly dropped the candidate out of
+  // `sameBranch` instead of refusing would fall through and open a second pull
+  // request on the same branch. This assertion is what makes that regression red.
+  assert.equal(posts(calls).length, 0)
+})
+
+test('refuses to reuse a pull request whose head lives in another repository', async () => {
+  const { result, calls } = await run({}, {
+    openPrs: [{ number: 201, title: `release: v${VERSION}`, head: { ref: BRANCH, sha: SHA, repo: { full_name: 'someone-else/fledge' } } }],
+    pullReadback: { 201: { maintainerCanModify: false } },
+  })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /#201/)
+  assert.match(result.reason, /someone-else\/fledge/)
+  assert.match(result.reason, /fork/)
+  assert.equal(result.pr, 201)
+  assert.equal(exitCodeFor(result), 1)
+  // The list item already names the head repository, so the refusal costs no
+  // readback request: the fork case is priced out of the free list payload.
+  assert.equal(calls.filter((call) => call.method === 'GET' && call.route === '/pulls/201').length, 0)
+  assert.equal(posts(calls).length, 0)
+})
+
+test('reuses when the readback still reports a same-repo head', async () => {
+  const { result, calls } = await run({}, {
+    openPrs: [{ number: 201, title: `release: v${VERSION}`, head: { ref: BRANCH, sha: SHA, repo: { full_name: REPO } } }],
+    pullReadback: { 201: { maintainerCanModify: false } },
+  })
+  assert.equal(result.status, 'reused', `a same-repo head was refused: ${result.status === 'refused' ? result.reason : ''}`)
+  assert.equal(result.pr, 201)
+  assert.equal(exitCodeFor(result), 0)
+  assert.equal(posts(calls).length, 0)
+})
+
+test('reuses when the readback omits maintainer_can_modify entirely', async () => {
+  // #575: only `true` is a fork head, so the omitted key stays non-fatal on the
+  // reuse path exactly as it does on the create path.
+  const { result, calls } = await run({}, {
+    openPrs: [{ number: 201, title: `release: v${VERSION}`, head: { ref: BRANCH, sha: SHA, repo: { full_name: REPO } } }],
+    pullReadback: { 201: { omitMaintainerCanModify: true } },
+  })
+  assert.equal(result.status, 'reused')
+  assert.equal(result.pr, 201)
+  assert.equal(exitCodeFor(result), 0)
+  assert.equal(posts(calls).length, 0)
+})
+
+test('refuses to reuse a pull request whose readback cannot be read', async () => {
+  const { result, calls } = await run({}, {
+    openPrs: [{ number: 201, title: `release: v${VERSION}`, head: { ref: BRANCH, sha: SHA, repo: { full_name: REPO } } }],
+    pullReadback: { 201: { status: 500 } },
+  })
+  assert.equal(result.status, 'refused')
+  assert.match(result.reason, /GET \/pulls\/201 answered 500/)
+  assert.equal(result.pr, 201)
+  assert.equal(exitCodeFor(result), 1)
   assert.equal(posts(calls).length, 0)
 })
 
