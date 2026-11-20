@@ -210,8 +210,18 @@ test('ci.yml runs the base-tree scanner over the head workflows and ci-ok requir
   assert.match(block, /path: base/, 'the scanner is policy and comes from the base tree')
   assert.match(
     block,
-    /run: node base\/scripts\/reserved-contexts\.mjs --workflows \.github\/workflows/,
+    /\[ -f base\/scripts\/reserved-contexts\.mjs \]/,
+    'the bootstrap is guarded on the base copy, so the pull request that introduces the scanner still runs',
+  )
+  assert.match(
+    block,
+    /node base\/scripts\/reserved-contexts\.mjs --workflows \.github\/workflows/,
     'the base copy of the scanner reads the head workflows, which is the only split that can see the shadow',
+  )
+  assert.match(
+    block,
+    /node scripts\/reserved-contexts\.mjs --workflows \.github\/workflows/,
+    'while the base tree predates the scanner, the introducing pull request runs the head copy once',
   )
 
   const { REQUIRED_JOBS } = (await import('../scripts/ci-ok.mjs')) as { REQUIRED_JOBS: string[] }

@@ -618,6 +618,9 @@ the `needs` of the run it executes inside and never notices the second check.
 `ci-ok-publish.yml` (the in-run aggregate and the publisher, both canonical),
 `review-gate` only from `review-gate.yml` and `pr-lint` only from `pr-lint.yml`;
 it reads both spellings, and a workflow file it cannot read fails the job.
+The pull request that introduces the scanner is the one case with no base
+copy: that job prints a notice and runs the head copy once, so the check
+takes effect from the next pull request on without skipping silently.
 
 `secret-scan` runs gitleaks as a checksum-pinned binary with `fetch-depth: 0`
 and a commit range (`pull_request`, `merge_group`, `push`, whole history

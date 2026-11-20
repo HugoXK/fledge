@@ -634,7 +634,20 @@ jobs:
       # No `npm ci`: the scanner is plain node and reads only the workflow
       # files, so a floating tag fails before any dependency install can run.
       - name: Reject a job that publishes a required context outside its own workflow
-        run: node base/scripts/reserved-contexts.mjs --workflows .github/workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          # #640: the scanner is policy, so the base tree's copy decides and the
+          # workflows stay the head's data. The pull request that introduces the
+          # scanner runs against a base that predates it; there the head copy is
+          # the only one that exists, and the log says so. From the next pull
+          # request on, only `base/` runs — the same bootstrap as gate-integrity.
+          if [ -f base/scripts/reserved-contexts.mjs ]; then
+            node base/scripts/reserved-contexts.mjs --workflows .github/workflows
+          else
+            echo "::notice::reserved-contexts is not on the base branch yet; this change introduces it, so the head copy runs this once"
+            node scripts/reserved-contexts.mjs --workflows .github/workflows
+          fi
 
   # gitleaks runs as a checksum-pinned binary rather than an action: the action
   # is licence-gated and chooses its own scan range, and this job has to prove a
