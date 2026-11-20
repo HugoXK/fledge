@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import type { Config } from '../config.js'
-import type { JobRow, RepoRow, ScheduleOccurrenceRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
+import type { AlertView, JobRow, RepoRow, ScheduleOccurrenceRow, SecurityFindingWrite, Store, UserRow } from '../db.js'
 import { formatReviewOutcomeDetail, formatReviewOverrideDetail } from '../db.js'
 import type { Mailer, MailMessage } from '../email/mailer.js'
 import { QuotaNotifier } from '../gateway/notifier.js'
@@ -28,6 +28,7 @@ import { actionIdFor, projectJobAction } from '../lib/actionsNeeded.js'
 import { nextRunFor, type NextRunFor } from '../lib/nextRunFor.js'
 import { duplicateOutcome, issueNumberFromText } from '../lib/duplicates.js'
 import { incCounter, observeHistogram, setGauge } from '../lib/metrics.js'
+import { readBackupReadings } from '../lib/backupMetrics.js'
 import { checkStage, parseStageMode } from '../lib/stages.js'
 import { checkPathGuard, splitPathPatterns, type PathGuardResult } from '../lib/pathGuard.js'
 import { levelFromRank, priorityRank, validatePriorityClaim, type PriorityLevel } from '../lib/priority.js'
@@ -3731,6 +3732,11 @@ export class Jobs {
         })
       }
     }
+    // #693: a night that stopped backing up, or a drill that failed, is a fact on
+    // the host's disk that nobody reads until they open /admin. It rides the same
+    // cooldown, event row and `ops.alert` webhook as every other alert, and names
+    // its recipient because a backup is not about a repository (#282).
+    alerts.push(...this.backupAlerts())
     const current = new Set<string>()
     let sent = 0
     for (const alert of alerts) {
@@ -3764,6 +3770,44 @@ export class Jobs {
     }
     setGauge('fledge_ops_alerts_open', alerts.length, {}, 'Open operational alerts')
     return sent
+  }
+
+  private backupAlerts(): AlertView[] {
+    const admin = this.store.userByLogin(this.config.github.adminLogin)
+    if (admin === undefined) return []
+    const readings = readBackupReadings({
+      dir: this.config.backup.dir,
+      drillPath: `${this.config.dataDir}/backup-drill.json`,
+      expectedHours: this.config.backup.expectedIntervalHours,
+    })
+    const alerts: AlertView[] = []
+    const newest = readings.backup.newest
+    // A platform that has never written a copy is a fresh install, not an outage:
+    // the card says "no copy recorded yet" and the rule stays quiet.
+    if (newest !== null && readings.backup.stale && newest.ageHours !== null) {
+      alerts.push({
+        kind: 'backup_stale',
+        level: 'warning',
+        userId: admin.id,
+        hours: Math.round(newest.ageHours),
+        message: `backup: the newest copy is ${Math.round(newest.ageHours * 10) / 10} hours old (expected under ${readings.backup.expectedHours})`,
+      })
+    }
+    if (readings.drill !== null) {
+      if (!readings.drill.ok) {
+        alerts.push({ kind: 'restore_drill', level: 'critical', userId: admin.id, state: 'failed', message: 'restore drill: the last run failed' })
+      } else if (readings.drillAgeHours !== null && readings.drillAgeHours > readings.backup.expectedHours) {
+        alerts.push({
+          kind: 'restore_drill',
+          level: 'warning',
+          userId: admin.id,
+          state: 'stale',
+          hours: Math.round(readings.drillAgeHours),
+          message: `restore drill: the last run is ${Math.round(readings.drillAgeHours * 10) / 10} hours old (expected under ${readings.backup.expectedHours})`,
+        })
+      }
+    }
+    return alerts
   }
 
   // #544 slice 7: a notification is queued, not sent inline. The key names the

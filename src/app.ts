@@ -70,6 +70,7 @@ import { untrustedAuditDetail, untrustedIssueGoal, untrustedMeta, type Untrusted
 import { scanUntrusted, UNTRUSTED_EVENT_KIND } from './lib/firewall.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
+import { publishBackupMetrics } from './lib/backupMetrics.js'
 import { automationHealth } from './jobs/automationHealth.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import { previewRelease, previewAndDispatch, type ReleaseDispatchPreview } from './lib/releaseDispatch.js'
@@ -1159,6 +1160,15 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const skewSeconds = githubApp.clockSkewSeconds()
     if (skewSeconds === null) clearGauge('fledge_clock_skew_seconds')
     else setGauge('fledge_clock_skew_seconds', skewSeconds, {}, 'Seconds the process clock is ahead of GitHub time')
+    // #693: the backup and drill facts are files on the host. The scrape is the
+    // one reader that runs without somebody opening /admin, so the same two
+    // readers publish them here; the ops-alert pass reads them a second time for
+    // the page nobody is looking at.
+    publishBackupMetrics({
+      dir: config.backup.dir,
+      drillPath: join(config.dataDir, 'backup-drill.json'),
+      expectedHours: config.backup.expectedIntervalHours,
+    })
     return reply.type('text/plain; version=0.0.4; charset=utf-8').send(renderMetrics())
   })
 

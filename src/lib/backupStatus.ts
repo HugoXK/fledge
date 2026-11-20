@@ -212,6 +212,12 @@ export function readBackupStatus(input: {
   /** Injectable so a test can pin the age instead of racing the clock. */
   now?: number
   expectedHours?: number
+  /**
+   * Defaults to true. `#693` passes false from `/metrics`: a scrape publishes the
+   * age and the counts, never the manifest verdict, so it must not read a copy's
+   * bytes on every scrape the way the card reads them once per render.
+   */
+  verifyNewest?: boolean
 }): BackupStatus {
   const now = input.now ?? Date.now()
   const expectedHours = input.expectedHours ?? DEFAULT_EXPECTED_HOURS
@@ -248,7 +254,7 @@ export function readBackupStatus(input: {
     // read sorts last rather than claiming to be the freshest.
     .sort((left, right) => (left.copy.ageHours ?? Number.POSITIVE_INFINITY) - (right.copy.ageHours ?? Number.POSITIVE_INFINITY))
   const newest = inspected[0] ?? null
-  if (newest !== null) resolveHash(newest)
+  if (newest !== null && input.verifyNewest !== false) resolveHash(newest)
   const copies = inspected.map((entry) => entry.copy)
   return {
     dir: input.dir,

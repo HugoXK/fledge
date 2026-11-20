@@ -1259,6 +1259,19 @@ with `--status-file`), and the card shows that record's time, `ok`/`failed` and
 RTO/RPO. It says `none recorded` only when that file is absent or unreadable, so
 the card never shows a green it cannot prove.
 
+The same two readers publish five series on `/metrics` at scrape time, so the
+backup can page without somebody opening the card: `fledge_backup_age_hours`,
+`fledge_backup_copies`, `fledge_backup_encrypted_copies`,
+`fledge_restore_drill_age_hours` and `fledge_restore_drill_ok` (`1` only for a
+successful drill inside the expected interval; a fresh install reads `0` and no
+age series). Two rules in `deploy/prometheus/fledge-alerts.yml` use them:
+`FledgeBackupStale` at `fledge_backup_age_hours > 26` — raise that number in the
+rule if you raise `BACKUP_EXPECTED_HOURS` — and `FledgeRestoreDrillFailing` at
+`fledge_restore_drill_ok == 0`. The platform also raises one in-app ops alert per
+problem through `OPS_ALERT_COOLDOWN_MINUTES`: a stale copy, a failed drill, or a
+drill older than the expected interval. A platform that has never written a copy
+raises nothing; the card's `no backup copy recorded yet` is the answer there.
+
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.
