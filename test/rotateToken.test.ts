@@ -113,7 +113,7 @@ test('rotate-github-token refuses a non-GitHub API origin before it opens the to
     const result = await runRotate(['--token-file', absent], { SECRETS_PATH: secrets.path, GITHUB_API_URL: 'http://evil.example' })
     assert.equal(result.code, 1)
     assert.match(result.stderr, /evil\.example/, 'the refusal names the origin it refused')
-    assert.match(result.stderr, /api\.github\.com/, 'and the one origin it accepts')
+    assert.ok(result.stderr.includes('api.github.com'), 'and the one origin it accepts')
     assert.match(result.stderr, /loopback/i, 'and the loopback exception the fake-server cases rely on')
     assert.doesNotMatch(result.stderr, /cannot read|ENOENT/, 'the token file was never opened')
     assert.equal(secrets.value(), 'old-token')
@@ -145,7 +145,7 @@ test('rotate-github-token refuses an unparseable GITHUB_API_URL with the same me
     const result = await runRotate(['--token-file', absent], { SECRETS_PATH: secrets.path, GITHUB_API_URL: 'not a url' })
     assert.equal(result.code, 1)
     assert.match(result.stderr, /not a url/, 'the refusal quotes the value it could not parse')
-    assert.match(result.stderr, /api\.github\.com/)
+    assert.ok(result.stderr.includes('api.github.com'))
     assert.doesNotMatch(result.stderr, /cannot read|ENOENT/, 'the token file was never opened')
   } finally {
     secrets.cleanup()
