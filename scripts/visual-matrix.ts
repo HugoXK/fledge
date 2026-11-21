@@ -385,13 +385,13 @@ function parseShare(argv: readonly string[]): ShareRequest | null {
 }
 
 /**
- * One share per core, capped at four. The runner has four cores and each share
- * is a browser plus a server, so more shares than cores only adds context
- * switches; VISUAL_SHARDS overrides it for a measurement.
+ * Two shares per core, capped at eight. A share spends most of its time waiting
+ * on the browser rather than on the CPU, so a second process per core keeps the
+ * core busy; VISUAL_SHARDS overrides it for a measurement.
  */
 function shardCount(cells: number): number {
   const requested = Number(process.env.VISUAL_SHARDS ?? '')
-  const wanted = Number.isInteger(requested) && requested > 0 ? requested : Math.min(4, availableParallelism())
+  const wanted = Number.isInteger(requested) && requested > 0 ? requested : Math.min(8, availableParallelism() * 2)
   return Math.max(1, Math.min(wanted, cells))
 }
 
