@@ -30,7 +30,8 @@ import { diffContextBundles, readContextBundle, verifyContextBundle } from '../l
 import type { AdherenceRecord, AdherenceStatus, ClauseStatus, ClauseResult } from '../lib/instructions.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
-import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
+import { ATTRIBUTION_FIELDS, parseAttributionGroundJson, parseAttributionJson } from '../lib/attribution.js'
+import type { AttributionGround, AttributionGroundState, AttributionKey } from '../lib/attribution.js'
 import { followUpLinks, summariseDeliveries, type DeliveryOutcomeRow } from '../lib/deliveryOutcome.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { planPacketHash } from '../lib/planDecision.js'
@@ -499,16 +500,63 @@ function jobTeamStats(job: JobRow): Array<{ role: string; label: string; calls: 
   }
 }
 
+// #368: what the job claimed and what the instance observed are two facts, and the
+// page must not print the first as the second. A stored ground record answers per
+// attribution key. A row written before that column exists needs the same answer
+// reconstructed: `captureTeamStats` used to write the observation over
+// `attribution_json`, so a row carrying team stats holds the observed half there
+// (grounded, unmarked) and a row without them holds a claim nothing checked.
+const GROUND_STATE_ORDER: Record<AttributionGroundState, number> = { grounded: 0, unobserved: 1, 'no-observation': 2 }
+
+function attributionGroundFor(job: JobRow): AttributionGround | null {
+  const stored = parseAttributionGroundJson(job.attribution_ground_json)
+  if (stored !== null) return stored
+  const recorded = parseAttributionJson(job.attribution_json)
+  if (recorded === null) return null
+  const observedOnly = job.team_stats_json !== null
+  return {
+    steps: ATTRIBUTION_FIELDS
+      .filter((field) => recorded[field.key] !== undefined)
+      .map((field) => ({
+        key: field.key,
+        claimed: observedOnly ? null : (recorded[field.key] as string),
+        observed: recorded[field.key] as string,
+        state: observedOnly ? 'grounded' as const : 'no-observation' as const,
+      })),
+  }
+}
+
 function jobAttribution(t: Translate, job: JobRow): string {
-  return attributionJourney(parseAttributionJson(job.attribution_json))
-    .map(({ role, keys }) => {
-      const labels = keys.map((key) => {
-        const field = ATTRIBUTION_FIELDS.find((entry) => entry.key === key)
-        return field === undefined ? key : t(field.zh, field.en)
-      })
-      return `${role} ${labels.join(' + ')}`
+  const ground = attributionGroundFor(job)
+  if (ground === null) return ''
+  const byRole = new Map<string, { role: string; keys: AttributionKey[]; state: AttributionGroundState }>()
+  const add = (role: string, key: AttributionKey, state: AttributionGroundState): void => {
+    const entry = byRole.get(role) ?? { role, keys: [], state }
+    entry.keys.push(key)
+    // One ungrounded key speaks for the role: a seat seen on one kind of work and
+    // not on another is not a grounded seat.
+    if (GROUND_STATE_ORDER[state] > GROUND_STATE_ORDER[entry.state]) entry.state = state
+    byRole.set(role, entry)
+  }
+  for (const step of ground.steps) {
+    if (step.claimed !== null) add(step.claimed, step.key, step.state)
+    // An observation that did not name the claimed seat is printed beside it,
+    // unmarked, because it is what the server saw rather than what the job said.
+    if (step.observed !== null && step.observed !== step.claimed) add(step.observed, step.key, 'grounded')
+  }
+  return [...byRole.values()].map(({ role, keys, state }) => {
+    // "wrote" and "implemented" stay one contribution when one role did both, the
+    // same rule `attributionJourney` applies.
+    const shown = keys.includes('implementedBy') ? keys.filter((key) => key !== 'writtenBy') : keys
+    const labels = shown.map((key) => {
+      const field = ATTRIBUTION_FIELDS.find((entry) => entry.key === key)
+      return field === undefined ? key : t(field.zh, field.en)
     })
-    .join(' · ')
+    const marker = state === 'unobserved'
+      ? t('声称，未观察', 'claimed, not observed')
+      : state === 'no-observation' ? t('声称，未核实', 'claimed, not verified') : ''
+    return `${role} ${labels.join(' + ')}${marker === '' ? '' : ` · ${marker}`}`
+  }).join(' · ')
 }
 
 function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): { full: string; short: string } {
@@ -4602,7 +4650,7 @@ function readAdherence(json: string | null): AdherenceRecord | null {
       ${budgetStop === '' ? '' : renderState({ kind: 'error', title: t('已达单任务预算', 'Per-job budget reached'), body: budgetStop, action: { href: `/repos/${repo.id}#repo-settings`, label: t('提高单任务预算', 'Raise the per-job budget') } })}
       ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(redact(job.error))}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
-      ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
+      ${attribution === '' ? '' : `<p class="fine" data-attribution>${escapeHtml(attribution)}</p>`}
       ${modelLine}
       ${untrustedLine}
       ${providerLine}
