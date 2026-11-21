@@ -2,9 +2,9 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { chmodSync, mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { Store } from '../src/db.js'
 import { loadConfig, type Config } from '../src/config.js'
@@ -36,6 +36,42 @@ function runPrune(args: string[], env: Record<string, string> = {}): RunResult {
     const failure = error as { status?: number | null; stdout?: string; stderr?: string }
     return { code: failure.status ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
   }
+}
+
+// #1188: the writer is the only program that deletes, so the agreement this
+// file asserts is between the writer and the plan the console shows — not
+// between two scans.
+const backupScript = fileURLToPath(new URL('../scripts/backup.mjs', import.meta.url))
+
+function runBackup(args: string[], env: Record<string, string> = {}): RunResult {
+  // The key variables decide which class a run writes; a fixture that seeds one
+  // class has to run with neither of them set.
+  const clean: Record<string, string | undefined> = { ...process.env, ...env }
+  delete clean.BACKUP_ENCRYPTION_KEY
+  delete clean.BACKUP_ENCRYPTION_KEY_FILE
+  delete clean.BACKUP_ENCRYPTION_REQUIRED
+  try {
+    const stdout = execFileSync(process.execPath, [backupScript, ...args], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: clean as NodeJS.ProcessEnv,
+    })
+    return { code: 0, stdout, stderr: '' }
+  } catch (error) {
+    const failure = error as { status?: number | null; stdout?: string; stderr?: string }
+    return { code: failure.status ?? -1, stdout: failure.stdout ?? '', stderr: failure.stderr ?? '' }
+  }
+}
+
+/** A real SQLite file: the writer refuses a source it cannot open. */
+function seedDatabase(dbPath: string): void {
+  mkdirSync(dirname(dbPath), { recursive: true })
+  const store = new Store(dbPath)
+  store.close()
+}
+
+function copiesOf(dir: string, kind: 'plaintext' | 'encrypted'): string[] {
+  return readdirSync(dir).filter((name) => (kind === 'encrypted' ? name.endsWith('.db.enc') : name.endsWith('.db')))
 }
 
 function stamp(index: number): string {
@@ -275,4 +311,118 @@ test('the keep counts default to 1 plaintext / 30 encrypted and refuse zero', ()
     if (saved.encrypted === undefined) delete process.env.BACKUP_KEEP_ENCRYPTED
     else process.env.BACKUP_KEEP_ENCRYPTED = saved.encrypted
   }
+})
+
+test('the writer prunes each class at the counts the console reports', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seedDatabase(dbPath)
+
+  // Encrypted half: the plan reports keep 1 plaintext / 30 encrypted, so twenty
+  // encrypted copies are inside the policy and a writer run must leave twenty.
+  // Before this fix the writer pruned the merged list to its own 14 and left 13 —
+  // seven copies the console said were kept were deleted.
+  const encryptedDir = join(root, 'encrypted')
+  mkdirSync(encryptedDir)
+  for (let index = 1; index <= 20; index += 1) writeCopy(encryptedDir, index, 'encrypted', index)
+  const encryptedRun = runBackup(['--db', dbPath, '--backup-dir', encryptedDir])
+  assert.equal(encryptedRun.code, 0, encryptedRun.stderr)
+  assert.equal(copiesOf(encryptedDir, 'encrypted').length, 20, 'the writer deleted encrypted copies the reported policy keeps')
+  const encryptedPlan = runPrune(['--backup-dir', encryptedDir, '--json'])
+  assert.equal(encryptedPlan.code, 0, encryptedPlan.stderr)
+  assert.equal(
+    (JSON.parse(encryptedPlan.stdout) as { expiredCopies: number }).expiredCopies,
+    0,
+    'after a writer run at the reported counts the plan must be empty',
+  )
+  // The log line is the operator's only account of which policy ran, so it names
+  // both counts; an override run adds `override=--keep` beside them.
+  assert.match(encryptedRun.stdout, /^retention=keep:plaintext=1,encrypted=30 pruned=0 intermediates=0$/m)
+
+  // Plaintext half: keep 1, so the run leaves the copy it just wrote and takes
+  // the twenty fixture copies, and the plan afterwards agrees with it.
+  const plaintextDir = join(root, 'plaintext')
+  mkdirSync(plaintextDir)
+  for (let index = 1; index <= 20; index += 1) writeCopy(plaintextDir, index, 'plaintext', index)
+  const plaintextRun = runBackup(['--db', dbPath, '--backup-dir', plaintextDir])
+  assert.equal(plaintextRun.code, 0, plaintextRun.stderr)
+  assert.equal(copiesOf(plaintextDir, 'plaintext').length, 1, 'the write-time plaintext count is 1, not the merged 14')
+  const plaintextPlan = runPrune(['--backup-dir', plaintextDir, '--json'])
+  assert.equal(plaintextPlan.code, 0, plaintextPlan.stderr)
+  assert.equal(
+    (JSON.parse(plaintextPlan.stdout) as { expiredCopies: number }).expiredCopies,
+    0,
+    'a card number that no run will take is the false report this test exists to stop',
+  )
+  assert.match(plaintextRun.stdout, /^retention=keep:plaintext=1,encrypted=30 pruned=20 intermediates=0$/m)
+})
+
+test('a copy with a future mtime never outranks the copy the run writes', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seedDatabase(dbPath)
+  const dir = join(root, 'plaintext')
+  mkdirSync(dir)
+
+  // A clock stepped back, or a set restored with `cp -a`, leaves a copy whose
+  // mtime is ahead of the copy this run writes. Sorting by mtime alone puts that
+  // stale copy first and the writer prunes its own backup while printing a
+  // `backup=` path that no longer exists.
+  const stale = writeCopy(dir, 0, 'plaintext', 1)
+  const future = (Date.now() + 3_600_000) / 1000
+  utimesSync(stale.path, future, future)
+
+  const run = runBackup(['--db', dbPath, '--backup-dir', dir])
+  assert.equal(run.code, 0, run.stderr)
+  const written = /^backup=(.+)$/m.exec(run.stdout)?.[1]
+  assert.ok(written !== undefined, `the run printed no backup path\n${run.stdout}`)
+  assert.ok(existsSync(written), `the run reported a backup it had already pruned: ${written}`)
+  assert.ok(!existsSync(stale.path), 'the future-dated copy should have been the one pruned')
+  assert.equal(copiesOf(dir, 'plaintext').length, 1)
+  assert.match(run.stdout, /pruned=1\b/)
+
+  const plan = runPrune(['--backup-dir', dir, '--json'])
+  assert.equal(plan.code, 0, plan.stderr)
+  assert.equal(
+    (JSON.parse(plan.stdout) as { expiredCopies: number }).expiredCopies,
+    0,
+    'the plan after the run must be empty when one copy was kept',
+  )
+})
+
+test('an explicitly empty keep override is refused, not treated as absent', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seedDatabase(dbPath)
+  const dir = join(root, 'plaintext')
+  mkdirSync(dir)
+  // Three planted plaintext copies the defaults would prune to one.
+  for (let index = 1; index <= 3; index += 1) writeCopy(dir, index, 'plaintext', index)
+  const before = snapshot(dir)
+
+  // A wrapper whose variable expands empty must not fall through to the
+  // defaults and delete: the value was passed, so it is validated.
+  for (const run of [
+    runBackup(['--db', dbPath, '--backup-dir', dir, '--keep', '']),
+    runBackup(['--db', dbPath, '--backup-dir', dir], { BACKUP_KEEP: '' }),
+  ]) {
+    assert.equal(run.code, 2, run.stderr)
+    assert.match(run.stderr, /--keep must be a positive whole number, got/)
+    assert.doesNotMatch(run.stdout, /^backup=/m)
+  }
+  assert.equal(snapshot(dir), before, 'a refused override must delete nothing')
+})
+
+test('an accepted keep override still prints the override marker', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-prune-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  seedDatabase(dbPath)
+  const dir = join(root, 'plaintext')
+  mkdirSync(dir)
+  for (let index = 1; index <= 3; index += 1) writeCopy(dir, index, 'plaintext', index)
+
+  const run = runBackup(['--db', dbPath, '--backup-dir', dir, '--keep', '2'])
+  assert.equal(run.code, 0, run.stderr)
+  assert.match(run.stdout, /^retention=keep:plaintext=2,encrypted=2 override=--keep pruned=2 intermediates=0$/m)
+  assert.equal(copiesOf(dir, 'plaintext').length, 2)
 })

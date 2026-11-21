@@ -69,3 +69,56 @@ export function attributionSentence(attribution: Attribution | null): string {
     .map(({ role, keys }) => `${role} ${keys.map((key) => ATTRIBUTION_FIELDS.find((field) => field.key === key)?.verb ?? key).join(' + ')}`)
     .join(' · ')
 }
+
+// #368: the job says who did what and the server can see which seats actually
+// worked, and those are two different facts. `attribution_json` holds the first,
+// this record holds both per attribution key, so a claim is never overwritten by
+// an observation and a page can mark the difference:
+//
+// - `grounded` — the observation names the claimed seat, or the observation names
+//   a seat nobody claimed (presence is all the call counts prove).
+// - `unobserved` — an observation ran and did not see the claimed seat work.
+// - `no-observation` — no instance observed this job at all, so the claim is
+//   unverified rather than false.
+export type AttributionGroundState = 'grounded' | 'unobserved' | 'no-observation'
+
+export interface AttributionGroundStep {
+  key: AttributionKey
+  claimed: string | null
+  observed: string | null
+  state: AttributionGroundState
+}
+
+export interface AttributionGround {
+  steps: AttributionGroundStep[]
+}
+
+const GROUND_STATES: readonly AttributionGroundState[] = ['grounded', 'unobserved', 'no-observation']
+
+export function parseAttributionGround(value: unknown): AttributionGround | null {
+  if (value === null || typeof value !== 'object') return null
+  const raw = (value as { steps?: unknown }).steps
+  if (!Array.isArray(raw)) return null
+  const steps: AttributionGroundStep[] = []
+  for (const entry of raw) {
+    if (entry === null || typeof entry !== 'object') continue
+    const record = entry as Record<string, unknown>
+    const key = ATTRIBUTION_FIELDS.find((field) => field.key === record.key)?.key
+    if (key === undefined) continue
+    const claimed = typeof record.claimed === 'string' && record.claimed.trim() !== '' ? cleanRole(record.claimed) : null
+    const observed = typeof record.observed === 'string' && record.observed.trim() !== '' ? cleanRole(record.observed) : null
+    const state = GROUND_STATES.find((candidate) => candidate === record.state)
+    if (state === undefined || (claimed === null && observed === null)) continue
+    steps.push({ key, claimed, observed, state })
+  }
+  return steps.length === 0 ? null : { steps }
+}
+
+export function parseAttributionGroundJson(value: string | null): AttributionGround | null {
+  if (value === null || value === '') return null
+  try {
+    return parseAttributionGround(JSON.parse(value))
+  } catch {
+    return null
+  }
+}
