@@ -11,20 +11,31 @@ import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:pat
 import { decryptBackupFile, encryptBackupFile, loadBackupKey } from './lib/backup-crypto.mjs'
 import { databaseFacts, manifestPath, readManifest, sha256File, writeManifest } from './lib/backup-manifest.mjs'
 import { backupWorkRoot, createPlaintextWorkDir, removeWorkDir } from './lib/backup-plaintext.mjs'
+import { decryptColumnPayload, readSecretKeyFile } from './lib/secret-payload.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
 
-const USAGE = 'usage: node scripts/restore-drill.mjs [--db <path>] [--backup-dir <dir>] [--work-dir <dir>] [--status-file <path>] [--fresh] [--keep]'
+const USAGE = 'usage: node scripts/restore-drill.mjs [--db <path>] [--backup-dir <dir>] [--work-dir <dir>] [--status-file <path>] [--secret-key-file <path>] [--fresh] [--keep]'
 
 // Where the last drill result is recorded for `/admin`. The host passes an
 // explicit path; with only DATA_DIR set, the default is the same file the card
 // reads. CI and unit runs with neither write nothing.
 let statusTarget = null
 
+// The column check is a recorded verdict, never console text: `skipped` when the
+// run carried no key, `not-reached` when it carried one and died before the
+// check, then `pass` or `fail`. The two no-verdict states stay apart because
+// `skipped` tells the card "no key given", and a keyed run that failed early
+// would then send the operator looking for a flag they had already passed.
+// `columnErrors` keeps the failing column names, so the card can say which
+// credential is unreadable.
+let columnCheck = 'skipped'
+let columnErrors = []
+
 function writeDrillStatus(ok, detail) {
   if (statusTarget === null) return
-  const record = { at: new Date().toISOString(), ok, detail: String(detail).slice(0, 500) }
+  const record = { at: new Date().toISOString(), ok, detail: String(detail).slice(0, 500), columnCheck, columnErrors }
   const temp = `${statusTarget}.tmp`
   mkdirSync(dirname(statusTarget), { recursive: true, mode: 0o700 })
   writeFileSync(temp, `${JSON.stringify(record)}\n`, { mode: 0o600 })
@@ -56,6 +67,11 @@ function parseArgs(argv) {
     else if (arg === '--backup-dir') { index += 1; parsed.backupDir = argv[index] }
     else if (arg === '--work-dir') { index += 1; parsed.workDir = argv[index] }
     else if (arg === '--status-file') { index += 1; parsed.statusFile = argv[index] }
+    else if (arg === '--secret-key-file') {
+      index += 1
+      parsed.secretKeyFile = argv[index]
+      if (parsed.secretKeyFile === undefined || parsed.secretKeyFile === '') fail(2, '--secret-key-file needs a path')
+    }
     else fail(2, `unknown argument ${arg}\n${USAGE}`)
   }
   return parsed
@@ -297,6 +313,66 @@ function verifyManifestDatabase(manifest, backupPath, restored, restoredTables, 
   if (failures.length > 0) fail(1, `corrupt or incomplete copy ${backupPath}: restored copy does not match its manifest\n${failures.join('\n')}`)
 }
 
+// The credentials a copy carries, as `encryptSecret` wrote them. A copy taken
+// before a column existed simply does not have it; that is not a failure, and
+// the column is skipped rather than guessed at.
+const SECRET_COLUMNS = [
+  ['users', 'github_token_enc'],
+  ['users', 'own_llm_key_enc'],
+  ['repos', 'token_enc'],
+  ['jobs', 'callback_secret_enc'],
+  ['jobs', 'platform_token_enc'],
+  ['repo_instances', 'bridge_token_enc'],
+  ['user_models', 'key_enc'],
+  ['model_providers', 'key_enc'],
+]
+
+function tableColumns(db, table) {
+  try {
+    return new Set(db.prepare(`PRAGMA table_info("${table}")`).all().map((row) => String(row.name)))
+  } catch {
+    return new Set()
+  }
+}
+
+// One payload per ciphertext column, decrypted with the key the caller passed.
+// The key is never read from the environment and never written anywhere: the
+// drill runs with `--secret-key-file <path>` or it records that the check did
+// not run. A column whose payload does not open is a failure, because the next
+// job that reaches for that credential dies with nothing pointing at the copy.
+function checkColumns(db, keyFile) {
+  let keys
+  try {
+    keys = readSecretKeyFile(keyFile)
+  } catch (error) {
+    fail(2, error instanceof Error ? error.message : String(error))
+  }
+  const problems = []
+  for (const [table, column] of SECRET_COLUMNS) {
+    if (!tableColumns(db, table).has(column)) continue
+    let row
+    try {
+      row = db.prepare(`SELECT "${column}" AS value FROM "${table}" WHERE "${column}" IS NOT NULL AND "${column}" != '' LIMIT 1`).all()[0]
+    } catch (error) {
+      problems.push(`${table}.${column}: ${error instanceof Error ? error.message : String(error)}`)
+      continue
+    }
+    if (row === undefined) continue
+    try {
+      decryptColumnPayload(String(row.value), keys)
+    } catch (error) {
+      problems.push(`${table}.${column}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  if (problems.length > 0) {
+    columnCheck = 'fail'
+    columnErrors = problems
+    fail(1, `the restored copy holds encrypted columns that do not open with the key given\n${problems.join('\n')}\npass --secret-key-file with the key (or the keyring file) this copy was written under: an unrun check is not a pass`)
+  }
+  columnCheck = 'pass'
+  columnErrors = []
+}
+
 // 3. The live source only informs. A serving instance writes after the copy is
 // taken, and a migration may add a table, so neither is a failure: a red drill
 // must mean "this backup is bad", never "the database moved on".
@@ -343,6 +419,9 @@ async function main() {
     process.stdout.write(`${USAGE}\n`)
     return
   }
+  // A keyed run starts as `not-reached`, not `skipped`: if it dies on a bad copy
+  // the record must say the check never got its turn, not that no key was given.
+  if (args.secretKeyFile !== undefined) columnCheck = 'not-reached'
   const dbPath = resolve(args.db ?? process.env.DB_PATH ?? join(process.env.DATA_DIR ?? './data', 'fledge.db'))
   const backupDir = resolve(args.backupDir ?? process.env.BACKUP_DIR ?? join(process.env.DATA_DIR ?? './data', 'backups'))
   const dataDir = resolve(process.env.DATA_DIR ?? './data')
@@ -451,6 +530,7 @@ async function main() {
     }
     const restoredCounts = new Map(restoredTables.map((table) => [table, rowCount(restored, table)]))
     if (manifest !== null) verifyManifestDatabase(manifest, backupPath, restored, restoredTables, restoredCounts)
+    if (args.secretKeyFile !== undefined) checkColumns(restored, resolve(args.secretKeyFile))
     reportSourceDrift(dbPath, restoredTables, restoredCounts)
     const rtoSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9
     process.stdout.write(`backup=${backupPath}\n`)

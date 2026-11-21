@@ -3447,9 +3447,34 @@ export function adminPage(input: {
   const expiredText = expiry === null
     ? `${t(`扫描失败：${expiryError ?? 'unknown'}`, `scan failed: ${expiryError ?? 'unknown'}`)} · ${keepText}`
     : `${expiry.expiredCopies === 1 ? t('1 (试运行)', '1 (dry run)') : t(`${expiry.expiredCopies} (试运行)`, `${expiry.expiredCopies} (dry run)`)} · ${keepText}`
+  // #463: a drill that did not prove the copy's encrypted columns may not read
+  // as an unqualified success. The `ok` word carries the qualification and the
+  // next row names the check as its own state, so the green and the skipped
+  // cannot share one reading. A `fail` or `not-reached` renders as a failure
+  // even beside a malformed or older `ok: true`: the card trusts the field it
+  // renders, and only a check that ran and passed earns a bare `ok`.
+  const drillOkText = (): string => {
+    if (drill === null) return ''
+    if (!drill.ok) return t('失败', 'failed')
+    if (drill.columnCheck === 'pass') return t('成功', 'ok')
+    if (drill.columnCheck === 'skipped') return t('成功（列检查未运行）', 'ok (column check not run)')
+    if (drill.columnCheck === 'fail') return t('失败（列检查失败）', 'failed (column check failed)')
+    if (drill.columnCheck === 'not-reached') return t('失败（列检查未到达）', 'failed (column check not reached)')
+    return t('成功（列检查未记录）', 'ok (column check not recorded)')
+  }
+  const drillColumnText = (): string => {
+    if (drill === null) return ''
+    const zh = drill.columnErrors.length === 0 ? '' : `（${drill.columnErrors.join('；')}）`
+    const en = drill.columnErrors.length === 0 ? '' : ` (${drill.columnErrors.join('; ')})`
+    if (drill.columnCheck === 'pass') return t('列检查：通过', 'column check: passed')
+    if (drill.columnCheck === 'skipped') return t('列检查：未运行（未提供密钥）', 'column check: not run (no key given)')
+    if (drill.columnCheck === 'not-reached') return t('列检查：未到达（本次运行在检查前失败）', 'column check: not reached (the run failed before it)')
+    if (drill.columnCheck === 'fail') return t(`列检查：失败${zh}`, `column check: failed${en}`)
+    return t('列检查：未记录', 'column check: not recorded')
+  }
   const drillText = drill === null
     ? t('没有记录', 'none recorded')
-    : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`
+    : `${humanTimeShort(drill.at)} · ${drillOkText()}${drill.detail === null ? '' : ` · ${drill.detail}`}`
   const backupCard = `<section class="card" id="backups">
     <h2>${escapeHtml(t('备份', 'Backups'))}</h2>
     <div class="list">
@@ -3460,6 +3485,7 @@ export function adminPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
       ${problemRows}
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(drillText)}</small></div></div>
+      ${drill === null ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('列检查', 'Column check'))}</strong><small>${escapeHtml(drillColumnText())}</small></div></div>`}
     </div>
     <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('只列出真正不符或无法读取的副本；旧副本只按大小核对，sha256 只核对最新副本。', 'Only copies that differ or cannot be read are listed; older copies are compared by size, and sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
