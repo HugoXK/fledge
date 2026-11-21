@@ -1647,8 +1647,8 @@ export function dashboardPage(input: {
       <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', `repositor${reposTotal === 1 ? 'y' : 'ies'}`))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', `job${jobsTotal === 1 ? '' : 's'}`))}</span><span><b>${openWorkItems}</b> ${escapeHtml(t('个未完成工作项', `open work item${openWorkItems === 1 ? '' : 's'}`))}</span></div>
     </div>
     ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
-  </section>
-  ${clockAlert === null ? '' : `<div class="banner bad" id="clock-fail" role="alert"><strong>${escapeHtml(t('平台时钟未通过校验', 'The platform clock failed its check'))}</strong> ${escapeHtml(alertText(t, clockAlert))}</div>`}
+  </section>${clockAlert === null ? '' : `
+  <div class="banner bad" id="clock-fail" role="alert"><strong>${escapeHtml(t('平台时钟未通过校验', 'The platform clock failed its check'))}</strong> ${escapeHtml(alertText(t, clockAlert))}</div>`}
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}
   ${repoDecisionsSection(decisions, t)}
