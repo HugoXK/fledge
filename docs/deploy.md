@@ -1312,8 +1312,10 @@ The same two readers publish five series on `/metrics` at scrape time, so the
 backup can page without somebody opening the card: `fledge_backup_age_hours`,
 `fledge_backup_copies`, `fledge_backup_encrypted_copies`,
 `fledge_restore_drill_age_hours` and `fledge_restore_drill_ok` (`1` only for a
-successful drill inside the expected interval; a fresh install reads `0` and no
-age series). Two rules in `deploy/prometheus/fledge-alerts.yml` use them:
+successful drill inside the expected interval; with no drill record at all the
+scrape publishes neither the verdict nor the age, so a fresh install cannot trip
+the rule, while a drill that ran and failed or aged out reads `0` beside its age
+series). Two rules in `deploy/prometheus/fledge-alerts.yml` use them:
 `FledgeBackupStale` at `fledge_backup_age_hours > 26` — raise that number in the
 rule if you raise `BACKUP_EXPECTED_HOURS` — and `FledgeRestoreDrillFailing` at
 `fledge_restore_drill_ok == 0`. The platform also raises one in-app ops alert per

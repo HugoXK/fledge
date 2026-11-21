@@ -102,7 +102,10 @@ test('a stale copy flips the age series, and a fresh install publishes zero copi
     resetMetrics()
     const empty = await scrape(fx)
     assert.equal(metricValue(empty, 'fledge_backup_copies'), 0, 'a fresh install reports zero copies')
-    assert.equal(metricValue(empty, 'fledge_restore_drill_ok'), 0, 'no drill record is not a passing drill')
+    // #1199: a deployment that has never run a drill knows nothing about the
+    // drill, so the verdict is absent rather than a 0 that the shipped
+    // `fledge_restore_drill_ok == 0` rule reads as a failed drill and pages on.
+    assert.equal(metricValue(empty, 'fledge_restore_drill_ok'), null, 'no drill record is unknown, not a zero verdict')
     assert.equal(metricValue(empty, 'fledge_backup_age_hours'), null, 'no copy is unknown, not a zero age')
 
     writeCopy(fx, new Date(Date.now() - 34 * HOUR))
@@ -110,6 +113,34 @@ test('a stale copy flips the age series, and a fresh install publishes zero copi
     const age = metricValue(stale, 'fledge_backup_age_hours')
     assert.ok(age !== null && age > 26, `a 34-hour-old copy must read over the interval, got ${String(age)}`)
     assert.equal(metricValue(stale, 'fledge_backup_copies'), 1)
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true })
+    resetMetrics()
+  }
+})
+
+test('a drill that ran and failed, or aged out, still publishes the 0 the rule pages on', async () => {
+  const fx = fixture()
+  try {
+    writeCopy(fx, new Date(Date.now() - HOUR))
+    // A record that exists and says no: the shipped rule must keep firing for
+    // this, which is the case #1199 must not weaken while silencing a fresh
+    // install. The record carries an age series, which is what distinguishes it
+    // from "never drilled".
+    writeDrill(fx, { at: new Date(Date.now() - HOUR), ok: false })
+    resetMetrics()
+    const failed = await scrape(fx)
+    assert.equal(metricValue(failed, 'fledge_restore_drill_ok'), 0, 'a failed drill must read 0')
+    assert.ok(metricValue(failed, 'fledge_restore_drill_age_hours') !== null, 'a failed drill still has an age')
+
+    // A drill that passed but is older than the expected interval: the same 0,
+    // and still an age series, so `FledgeRestoreDrillFailing` keeps catching a
+    // drill that stopped running.
+    writeDrill(fx, { at: new Date(Date.now() - 40 * HOUR), ok: true })
+    resetMetrics()
+    const aged = await scrape(fx)
+    assert.equal(metricValue(aged, 'fledge_restore_drill_ok'), 0, 'an aged-out drill must read 0')
+    assert.ok(metricValue(aged, 'fledge_restore_drill_age_hours') !== null, 'an aged-out drill still has an age')
   } finally {
     rmSync(fx.root, { recursive: true, force: true })
     resetMetrics()

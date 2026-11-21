@@ -63,9 +63,13 @@ Core series:
   scrape and the page can never disagree. The scrape reads names, counts and
   ages only, so it never hashes a copy the way the card does once per render. A
   platform with no copy publishes no
-  `fledge_backup_age_hours` series rather than a zero age; `fledge_backup_copies 0`
-  and `fledge_restore_drill_ok 0` are real observations, and the alert rules are
-  written so a fresh install still says nothing.
+  `fledge_backup_age_hours` series rather than a zero age, and a platform with no
+  drill record publishes neither `fledge_restore_drill_ok` nor
+  `fledge_restore_drill_age_hours` rather than a zero verdict — an absent series
+  is "never measured", 0 is "measured and not passing", and
+  `FledgeRestoreDrillFailing` reads the 0 as a drill that ran and failed.
+  `fledge_backup_copies 0` stays a real observation ("no copy on disk") because
+  `FledgeBackupStale` reads the age series, so a fresh install still says nothing.
 - `fledge_clock_skew_seconds` — the last measured offset against GitHub's `Date`
   header, positive when the process clock is ahead. The series is **absent** when
   nothing has been measured, so an empty panel means "unknown", not "aligned"; a
@@ -178,8 +182,9 @@ GitHub 429s, clock skew, backup staleness, the restore drill and open operationa
 alerts, each with a runbook link. `FledgeBackupStale` pages at
 `fledge_backup_age_hours > 26` (the default `BACKUP_EXPECTED_HOURS`), and
 `FledgeRestoreDrillFailing` at `fledge_restore_drill_ok == 0`, which covers a
-failed drill and one that stopped running; both name `docs/deploy.md` as the
-runbook because the fix is a host command.
+failed drill and one that stopped running; a deployment that never recorded a
+drill has no such series, so the rule cannot select it; both name `docs/deploy.md`
+as the runbook because the fix is a host command.
 `FledgeClockSkewHigh` pages at `abs(fledge_clock_skew_seconds) > 120` sustained
 for ten minutes; its runbook is [`docs/deploy.md`](deploy.md), because the action
 is on the host rather than in the application.
