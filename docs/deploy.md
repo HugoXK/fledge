@@ -495,8 +495,8 @@ copies of those scripts), refuses when `main` moved since the plan or the diff
 leaves `CHANGELOG.md`, `README.md`, `README.zh.md`, `changelog.d/`,
 `docker-compose.yml`, `package-lock.json` and `package.json`, reuses an open pull
 request at the same commit — after re-reading its head, the same check a freshly
-opened pull request gets, so a head in another repository, a flag that does not
-read back, or a readback that cannot be made is a refusal rather than a reuse —
+opened pull request gets, so a head in another repository, a flag that reads back
+`true`, or a readback that cannot be made is a refusal rather than a reuse —
 instead of opening a second one, and prints the JSON it acted on. It writes that
 one pull request and nothing else, and it carries no tag endpoint: the tag stays
 in the workflow. A `POST /pulls` that answers non-201, or answers no pull request
