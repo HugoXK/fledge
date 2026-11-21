@@ -1391,7 +1391,14 @@ for example with a single consented repository. Every exported string passes
 through `redact()`, and the exporter reads only repositories that opted in
 through the audited `evolution.consent` command; consent is off by default.
 `--report` prints the baseline and the manifest's own split counts; the export
-does not write to the database.
+does not write to the database. Each record carries both halves of the
+attribution: `attribution` is the stored claim as written, and
+`attributionGround` is the per-key `{key, claimed, observed, state}` record the
+job page shows, reconstructed for rows written before the ground column and
+`null` when nothing was recorded. The record shape is `schemaVersion: 2`; a
+version-1 dataset still verifies against its own manifest. The exporter refuses
+a database without `attribution_ground_json` instead of writing a record that
+cannot carry the observation.
 
 The held-out shadow harness (#372) answers what the ledger could not: how one
 playbook, model or router does on tasks the team has not seen, and whether a

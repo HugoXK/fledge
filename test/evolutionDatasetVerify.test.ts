@@ -1,4 +1,5 @@
 import test from 'node:test'
+import { readFileSync } from 'node:fs'
 import assert from 'node:assert/strict'
 import { buildDataset, verifyDataset, type EvolutionRow } from '../src/lib/evolution/dataset.js'
 
@@ -16,6 +17,7 @@ function row(input: Partial<EvolutionRow> & { jobId: string; repo: string; finis
     reviewScore: null,
     evidence: null,
     attribution: null,
+    attributionGround: null,
     teamStats: null,
     checkpoint: null,
     costUsd: 0,
@@ -46,6 +48,16 @@ test('a written dataset verifies by recomputing the hash and the id', () => {
   const verdict = verifyDataset(payload)
   assert.equal(verdict.ok, true)
   assert.equal(verdict.ok === true ? verdict.manifest.id : '', payload.manifest.id)
+})
+
+test('a version-1 dataset exported before the ground field still verifies', () => {
+  // The record shape changed in #1194; a file already on disk must keep checking
+  // out, because the version travels inside its own hashed projection.
+  const payload = JSON.parse(readFileSync(new URL('./fixtures/evolution-dataset-v1.json', import.meta.url), 'utf8')) as { manifest: { schemaVersion: number } }
+  assert.equal(payload.manifest.schemaVersion, 1)
+  const verdict = verifyDataset(payload)
+  assert.equal(verdict.ok, true, verdict.ok ? '' : `${verdict.code}: ${verdict.detail}`)
+  assert.equal(verdict.ok === true ? verdict.manifest.schemaVersion : 0, 1)
 })
 
 test('a moved split id is refused as SPLIT_MISMATCH even before the hash is consulted', () => {

@@ -133,7 +133,16 @@ is repository-disjoint first: the newest time tail only chooses which
 repositories are held out, a repository spanning the cut moves all of its rows,
 and `trainRows`/`holdoutRows` record the effective sizes. An export whose
 holdout would take every row is refused with `NO_TRAINING_ROWS`, and
-`--verify` recomputes a written dataset's hash and id.
+`--verify` recomputes a written dataset's hash and id. Each record carries the
+claim and the observation under separate names: `attribution` is the stored
+object exactly as written, and `attributionGround` is the per-key
+`{key, claimed, observed, state}` record the job page reads — reconstructed by
+that same rule for rows written before the ground column, and `null` when
+nothing was recorded. The record shape is dataset schema version 2; a dataset
+exported as version 1 still verifies against its own manifest. A database
+without `jobs.attribution_ground_json` is refused by name
+(`MISSING_JOB_COLUMNS`) rather than exporting records that cannot carry the
+observation.
 
 ## Security and privacy
 
