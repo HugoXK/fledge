@@ -242,3 +242,106 @@ test('the drill --fresh path keeps the plaintext copy out of the backup director
   assert.deepEqual(observed, [], `the drill held a plaintext intermediate in the backup directory at ${observed.join(', ')}`)
   assert.deepEqual(sqliteNames(backupDir), [], 'the drill must not leave a readable database in the backup directory')
 })
+
+// #1196 symptom A: two runs in one backup directory. The writer assumed it was
+// the only writer, so each run pruned the other's copy and each could die on a
+// `statSync`, `chmodSync` or `writeManifest` against a copy the other had just
+// deleted. A run that exits 0 must leave the file it printed; a run that cannot
+// must refuse on one `backup: ` line — never an uncaught stack.
+interface CheckedRun extends ChildResult {
+  reported: string | null
+  existedAtExit: boolean | null
+}
+
+function runWriter(args: string[], env: Record<string, string>, onClose?: (path: string) => void): Promise<CheckedRun> {
+  const child = spawn(process.execPath, [backupScript, ...args], { stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(env) })
+  let stdout = ''
+  let stderr = ''
+  child.stdout.setEncoding('utf8').on('data', (chunk: string) => { stdout += chunk })
+  child.stderr.setEncoding('utf8').on('data', (chunk: string) => { stderr += chunk })
+  return new Promise((resolve) => {
+    child.on('close', (code, signal) => {
+      const reported = /^backup=(.+)$/m.exec(stdout)?.[1] ?? null
+      // Read at the moment this run ends, not after both end: a later run
+      // pruning an older copy is the retention policy working, not this defect.
+      const existedAtExit = reported === null ? null : existsSync(reported)
+      if (reported !== null) onClose?.(reported)
+      resolve({ code, signal, stdout, stderr, reported, existedAtExit })
+    })
+  })
+}
+
+// The barrier the other suites use: the first writer exists once its copy is on
+// disk, which is the point from which the second one can prune it.
+async function waitForCopy(dir: string, timeoutMs = 20000): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (names(dir).some((name) => name.startsWith('fledge-') && name.endsWith('.db'))) return
+    await new Promise((resolve) => setTimeout(resolve, 2))
+  }
+  throw new Error('the first writer never put a copy in the directory')
+}
+
+function assertHonestRun(label: string, result: CheckedRun): void {
+  assert.doesNotMatch(result.stderr, /\n\s+at /, `${label} died with an uncaught stack instead of a backup: line: ${result.stderr}`)
+  if (result.code === 0) {
+    assert.ok(result.reported, `${label} exited 0 without a backup= line: ${result.stdout}`)
+    assert.equal(result.existedAtExit, true, `${label} reported a copy that no longer exists: ${result.reported ?? ''}`)
+  } else {
+    assert.match(result.stderr, /^backup: /m, `${label} exited ${String(result.code)} without a backup: line: ${result.stderr}`)
+    assert.ok(result.code === 1 || result.code === 2, `${label} exited ${String(result.code)}; a refusal is exit 1 or 2`)
+  }
+}
+
+test('a backup refuses to share the directory with a run that holds it', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-plaintext-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+  // This process is alive, so its lock is live: a second run must refuse instead
+  // of pruning beside it.
+  writeFileSync(join(backupDir, '.fledge-backup.lock'), String(process.pid), { mode: 0o600 })
+
+  const run = runToCompletionSync(backupScript, ['--db', dbPath, '--backup-dir', backupDir, '--keep', '1'], {})
+
+  assert.equal(run.code, 1, `a locked directory must refuse, got exit ${String(run.code)}: ${run.stdout}`)
+  assert.match(run.stderr, /^backup: another backup run holds /m, `the refusal must name the reason, got: ${run.stderr}`)
+  assert.doesNotMatch(run.stderr, /\n\s+at /, `a refusal must not carry an uncaught stack: ${run.stderr}`)
+  assert.deepEqual(names(backupDir).filter((name) => name.startsWith('fledge-')), [], 'a refused run must not write a copy')
+  assert.equal(existsSync(join(backupDir, '.fledge-backup.lock')), true, 'a refused run must not remove the holder\'s lock')
+})
+
+test('a lock left by a run that is gone does not block the next backup', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-plaintext-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+  // 2147483647 is outside the kernel's pid range on Linux, so it is a pid that
+  // cannot be alive: the shape a SIGKILLed run leaves.
+  writeFileSync(join(backupDir, '.fledge-backup.lock'), '2147483647', { mode: 0o600 })
+
+  const run = runToCompletionSync(backupScript, ['--db', dbPath, '--backup-dir', backupDir, '--keep', '1'], {})
+
+  assert.equal(run.code, 0, run.stderr)
+  assert.match(run.stdout, /^backup=/m)
+  assert.equal(names(backupDir).includes('.fledge-backup.lock'), false, 'the run must release the lock it took over')
+})
+
+test('two overlapping writers never report a copy that is gone and never crash', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-plaintext-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  const args = ['--db', dbPath, '--backup-dir', backupDir, '--keep', '1']
+
+  for (let round = 1; round <= 10; round += 1) {
+    const first = runWriter(args, {})
+    await waitForCopy(backupDir)
+    const second = runWriter(args, {})
+    const [a, b] = await Promise.all([first, second])
+    assertHonestRun(`round ${round}: the first writer`, a)
+    assertHonestRun(`round ${round}: the second writer`, b)
+  }
+})

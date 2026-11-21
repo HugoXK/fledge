@@ -109,7 +109,11 @@ export function copyKind(name) {
   return match[1] === undefined ? 'plaintext' : 'encrypted'
 }
 
-function statOrNull(path) {
+// One classifier for "this entry is a copy file", shared by the reader
+// (`planBackupExpiry`, the drill) and the writer's prune. A directory named like
+// a copy, a sidecar, a symlink or an entry that vanished between `readdir` and
+// `stat` is `null`; the writer may never delete what this returns `null` for.
+export function statOrNull(path) {
   try {
     const stat = statSync(path)
     return stat.isFile() ? stat : null

@@ -1153,6 +1153,27 @@ npm run db:backup
 # outside the backup directory; BACKUP_WORK_DIR moves it (default: the temp dir)
 ```
 
+### One writer per backup directory
+
+A run takes the directory for its own length: `npm run db:backup` creates
+`${BACKUP_DIR}/.fledge-backup.lock` exclusively before it writes anything and
+removes it however the run ends. A second run started while the first holds the
+directory — a cron tick meeting a manual backup — refuses instead of pruning
+beside it:
+
+```
+backup: another backup run holds /data/backups (pid 4242); refusing to share the backup directory
+```
+
+That is exit 1, one line, and no copy is written or deleted. The lock is not a
+wait: if the holder is gone (a `SIGKILL`, a host reboot) the next run takes the
+lock over and proceeds; a lock file that exists but cannot be read is only taken
+over once it is a minute old, so a run that is mid-creation is never robbed. The
+directory is also read as a directory of files: an entry that is not a regular
+file (a directory or a symlink named like a copy) is never treated as a copy and
+is never deleted — the writer and the dry run now use the same classifier, so a
+copy the console counts is a copy the writer may prune.
+
 ### Backup retention and the dry run
 
 The write-time counts are per class, and they are the counts the console reports

@@ -2,7 +2,7 @@
 // Online SQLite backup; safe to run while Fledge is serving. Every copy is
 // verified with integrity_check before it is reported, then old copies are
 // pruned to the retention count.
-import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { encryptBackupFile, loadBackupKey } from './lib/backup-crypto.mjs'
@@ -12,6 +12,7 @@ import {
   copyKind,
   databaseFacts,
   manifestPath,
+  statOrNull,
   writeManifest,
 } from './lib/backup-manifest.mjs'
 import { INTERMEDIATE_GRACE_MS, backupWorkRoot, createPlaintextWorkDir, isPlaintextIntermediate, removeWorkDir } from './lib/backup-plaintext.mjs'
@@ -89,7 +90,14 @@ function prune(dir, keep, target) {
   for (const entry of entries) {
     const kind = copyKind(entry.name)
     if (kind === null) continue
-    copies[kind].push({ path: entry.path, mtime: statSync(entry.path).mtimeMs })
+    // #1196: an entry is a copy only when it is a regular file. A directory (or a
+    // symlink) named like a copy used to sort into the class and reach `rmSync`,
+    // which threw EISDIR out of the process; an entry that vanished between
+    // `readdir` and `stat` threw ENOENT there. Both are `null` here and are left
+    // alone — this writer only deletes files it is allowed to delete.
+    const stat = statOrNull(entry.path)
+    if (stat === null) continue
+    copies[kind].push({ path: entry.path, mtime: stat.mtimeMs })
   }
   let pruned = 0
   for (const kind of ['plaintext', 'encrypted']) {
@@ -111,6 +119,62 @@ function prune(dir, keep, target) {
     }
   }
   return { pruned, intermediates }
+}
+
+// One run per backup directory (#1196). A cron tick and a manual
+// `npm run db:backup` used to prune each other's copies: whichever pruned second
+// deleted a copy the other had just written and reported. The lock is the shape
+// `deploy/fledge-deploy-tag.sh` uses — an exclusive lock file, never a wait —
+// except that node has no `flock`, so the file carries the holder's pid and a
+// lock whose holder is gone is taken over instead of blocking every later run.
+const LOCK_NAME = '.fledge-backup.lock'
+// A lock file created but not yet written (its pid lands a moment later) looks
+// the same as one left by a run that died inside those two calls. Only an old
+// unreadable lock is taken over, so a concurrent run refuses rather than stealing
+// a live lock.
+const LOCK_UNREADABLE_GRACE_MS = 60_000
+
+function readLockPid(lockPath) {
+  try {
+    const pid = Number(readFileSync(lockPath, 'utf8').trim())
+    return Number.isInteger(pid) && pid > 0 ? pid : null
+  } catch {
+    return null
+  }
+}
+
+function lockIsStale(lockPath, pid) {
+  if (pid === null) {
+    const stat = statOrNull(lockPath)
+    return stat !== null && Date.now() - stat.mtimeMs > LOCK_UNREADABLE_GRACE_MS
+  }
+  try {
+    process.kill(pid, 0)
+    return false
+  } catch (error) {
+    // ESRCH: no such process, so the lock outlived its holder. EPERM: the process
+    // exists under another account, which is still a holder.
+    return error?.code === 'ESRCH'
+  }
+}
+
+function acquireLock(dir) {
+  const lockPath = join(dir, LOCK_NAME)
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      // O_CREAT|O_EXCL: the first run to create the entry holds the directory.
+      writeFileSync(lockPath, String(process.pid), { flag: 'wx', mode: 0o600 })
+      return lockPath
+    } catch (error) {
+      if (error?.code !== 'EEXIST') fail(2, `cannot lock the backup directory: ${error instanceof Error ? error.message : String(error)}`)
+      const pid = readLockPid(lockPath)
+      if (!lockIsStale(lockPath, pid)) {
+        fail(1, `another backup run holds ${dir} (pid ${pid === null ? 'unknown' : String(pid)}); refusing to share the backup directory`)
+      }
+      rmSync(lockPath, { force: true })
+    }
+  }
+  fail(1, `cannot take the backup lock ${lockPath}`)
 }
 
 const args = parseArgs(process.argv.slice(2))
@@ -148,6 +212,20 @@ const encrypt = key !== null
 
 mkdirSync(outDir, { recursive: true, mode: 0o700 })
 chmodSync(outDir, 0o700)
+// The lock is taken before anything is written, so the rest of the run is the
+// only writer in this directory: the copy it writes cannot be pruned by another
+// run, and the copy it reports cannot be deleted under it.
+const lockPath = acquireLock(outDir)
+// Released however the process ends, including every `fail()` below; a run that
+// is killed outright leaves the file, and the next run takes it over by pid.
+process.on('exit', () => {
+  try {
+    if (readLockPid(lockPath) === process.pid) rmSync(lockPath, { force: true })
+  } catch {
+    // A lock that cannot be released must not change this run's exit code; the
+    // next run recognises the stale pid.
+  }
+})
 const stamp = new Date().toISOString().replace(/[:.]/g, '-')
 const target = join(outDir, `fledge-${stamp}.db${encrypt ? '.enc' : ''}`)
 // While encrypting, the plaintext copy is a second copy of everything the
