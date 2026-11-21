@@ -109,9 +109,10 @@ groups:
       - alert: FledgeRestoreDrillFailing
         # #693: `fledge_restore_drill_ok` reads 0 for a failed drill and for a
         # drill older than the expected interval, so this rule covers "the drill
-        # stopped running" as well as "the drill said no". A missing record reads
-        # 0 like a fresh install does; the ops alert, which only fires on a record
-        # that exists, is the one that separates the two.
+        # stopped running" as well as "the drill said no". #1199: a deployment
+        # with no drill record publishes no series at all, so `== 0` cannot
+        # select a fresh install; absence is "never drilled" and 0 is "drilled
+        # and not passing", which is the case this rule exists for.
         expr: fledge_restore_drill_ok == 0
         for: 30m
         labels:
