@@ -8,6 +8,7 @@ import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { nextRun, type NextRun, type NextRunState } from '../lib/nextRun.js'
+import type { ClockState } from '../repos/app.js'
 import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
 import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
@@ -245,6 +246,14 @@ function alertText(t: Translate, alert: AlertView): string {
         `30 天已用 ${quotaMoney(alert.spentCny ?? 0)} / ${quotaMoney(alert.budgetCny ?? 0)}`,
         `spent ${quotaMoney(alert.spentCny ?? 0)} of ${quotaMoney(alert.budgetCny ?? 0)} in 30 days`,
       )
+    // #1198: the admission guard refuses every job while the clock is `fail`,
+    // and the sentence names the number the guard compared, so a reader can
+    // tell a 28-minute host drift from a threshold they need to look up.
+    case 'clock_skew':
+      return t(
+        `进程时钟与 GitHub 时间相差 ${alert.skewSeconds ?? '?'} 秒，超过 ${alert.thresholdSeconds ?? '?'} 秒阈值，所有任务都会被拒绝。修正主机时间（timedatectl set-ntp true）后，/readyz 会在一个测量窗口内恢复 200。`,
+        `The process clock is ${alert.skewSeconds ?? '?'} seconds from GitHub time, past the ${alert.thresholdSeconds ?? '?'}-second threshold, so every job is refused. Correct the host clock (timedatectl set-ntp true) and /readyz returns 200 within one measurement window.`,
+      )
     default:
       return alert.message
   }
@@ -265,6 +274,22 @@ function alertRows(t: Translate, alerts: AlertView[]): string {
       : href === '' ? '' : `<a class="link" href="${escapeHtml(href)}">${escapeHtml(t('打开', 'Open'))}</a>`
     return `<tr><td><span class="badge ${alert.level === 'critical' ? 'bad' : alert.level === 'warning' ? 'busy' : ''}">${escapeHtml(level)}</span></td><td>${escapeHtml(alert.kind)}</td><td>${escapeHtml(alert.repoLabel ?? '')}${alert.repoLabel === undefined || alert.repoLabel === '' ? '' : ' · '}${escapeHtml(alertText(t, alert))}</td><td>${link}</td></tr>`
   }).join('')
+}
+
+// #1198: `fail` is the only clock verdict a user has to act on, and it is read
+// from the same object `/readyz` and `Jobs.enqueue` read. It renders as a banner
+// above the collapsed secondary section rather than as a row in the alert table:
+// the table lives inside that collapsed section, and a refused job is not a
+// detail a user should have to expand "More" to discover.
+function clockFailAlert(clock: ClockState | undefined): AlertView | null {
+  if (clock === undefined || clock.state !== 'fail') return null
+  return {
+    kind: 'clock_skew',
+    level: 'critical',
+    message: '',
+    skewSeconds: clock.skewSeconds ?? 0,
+    thresholdSeconds: clock.thresholdSeconds,
+  }
 }
 
 function failureHref(action: FailureAction, repoId: string): string {
@@ -1543,6 +1568,11 @@ export function dashboardPage(input: {
   // still paused. Absent means the caller did not read the fact; the banner
   // keeps its pre-#1104 answer.
   platformFunded?: boolean
+  // #1198: the same `clockState()` the admission guard and `/readyz` read. Only
+  // `fail` is news to a user — `unknown` covers a young process and a GitHub
+  // outage, `not-configured` is a deployment with no App, and neither is a clock
+  // verdict, so neither may paint a permanent banner.
+  clock?: ClockState
   notice?: string
   error?: string
 }): string {
@@ -1553,6 +1583,7 @@ export function dashboardPage(input: {
   const openWorkItems = personal?.openWorkItems ?? 0
   const windowDays = input.windowDays ?? 7
   const alerts = input.alerts ?? []
+  const clockAlert = clockFailAlert(input.clock)
   const reposPage = input.reposPage ?? 1
   const reposTotal = input.reposTotal ?? repos.length
   const jobsPage = input.jobsPage ?? 1
@@ -1664,7 +1695,8 @@ export function dashboardPage(input: {
       <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', `repositor${reposTotal === 1 ? 'y' : 'ies'}`))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', `job${jobsTotal === 1 ? '' : 's'}`))}</span><span><b>${openWorkItems}</b> ${escapeHtml(t('个未完成工作项', `open work item${openWorkItems === 1 ? '' : 's'}`))}</span></div>
     </div>
     ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
-  </section>
+  </section>${clockAlert === null ? '' : `
+  <div class="banner bad" id="clock-fail" role="alert"><strong>${escapeHtml(t('平台时钟未通过校验', 'The platform clock failed its check'))}</strong> ${escapeHtml(alertText(t, clockAlert))}</div>`}
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}
   ${repoDecisionsSection(decisions, t)}
