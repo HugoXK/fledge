@@ -6,14 +6,20 @@ import { chmodSync, existsSync, mkdirSync, readdirSync, rmSync, statSync } from 
 import { createRequire } from 'node:module'
 import { join, resolve } from 'node:path'
 import { encryptBackupFile, loadBackupKey } from './lib/backup-crypto.mjs'
-import { databaseFacts, manifestPath, writeManifest } from './lib/backup-manifest.mjs'
+import {
+  DEFAULT_KEEP_ENCRYPTED,
+  DEFAULT_KEEP_PLAINTEXT,
+  copyKind,
+  databaseFacts,
+  manifestPath,
+  writeManifest,
+} from './lib/backup-manifest.mjs'
 import { INTERMEDIATE_GRACE_MS, backupWorkRoot, createPlaintextWorkDir, isPlaintextIntermediate, removeWorkDir } from './lib/backup-plaintext.mjs'
 
 const require = createRequire(import.meta.url)
 const { DatabaseSync, backup } = require('node:sqlite')
 
 const USAGE = 'usage: node scripts/backup.mjs [--db <path>] [--backup-dir <dir>] [--keep <n>]'
-const DEFAULT_KEEP = 14
 
 function fail(code, message) {
   process.stderr.write(`backup: ${message}\n`)
@@ -43,7 +49,20 @@ function parseArgs(argv) {
   return parsed
 }
 
-function prune(dir, keep) {
+// A keep count decides what gets deleted, so an invalid one is refused rather
+// than clamped — `0` would erase every copy of that class. Same rule and same
+// wording as `scripts/backup-prune.mjs` and `loadConfig`.
+function keepCount(name, raw, fallback) {
+  if (raw === undefined || raw === '') {
+    if (fallback !== undefined) return fallback
+    fail(2, `${name} must be a positive whole number, got ${raw === '' ? 'an empty value' : 'no value'}`)
+  }
+  const value = Number(raw)
+  if (!Number.isInteger(value) || value < 1) fail(2, `${name} must be a positive whole number, got ${raw}`)
+  return value
+}
+
+function prune(dir, keep, target) {
   const entries = readdirSync(dir).map((name) => ({ name, path: join(dir, name) }))
   // A `.plaintext.tmp` here is a crash leftover from a tip that took the copy
   // inside the backup directory. It is a readable database, so it is collected
@@ -62,25 +81,57 @@ function prune(dir, keep) {
       // Vanished between readdir and removal; nothing to collect.
     }
   }
-  const copies = entries
-    .filter((entry) => entry.name.startsWith('fledge-') && (entry.name.endsWith('.db') || entry.name.endsWith('.db.enc')))
-    .map((entry) => ({ path: entry.path, mtime: statSync(entry.path).mtimeMs }))
-    .sort((left, right) => right.mtime - left.mtime)
-  const stale = copies.slice(keep)
-  for (const copy of stale) {
-    rmSync(copy.path, { force: true })
-    // A manifest describes exactly one copy, so it goes with it.
-    rmSync(manifestPath(copy.path), { force: true })
+  // #1188: prune each class at its own count. The console and the dry run report
+  // `BACKUP_KEEP_PLAINTEXT` / `BACKUP_KEEP_ENCRYPTED`, so one merged list pruned to
+  // one number would delete copies the displayed policy says to keep — and keep
+  // plaintext copies the displayed policy says to take.
+  const copies = { plaintext: [], encrypted: [] }
+  for (const entry of entries) {
+    const kind = copyKind(entry.name)
+    if (kind === null) continue
+    copies[kind].push({ path: entry.path, mtime: statSync(entry.path).mtimeMs })
   }
-  return { pruned: stale.length, intermediates }
+  let pruned = 0
+  for (const kind of ['plaintext', 'encrypted']) {
+    const sorted = copies[kind].sort((left, right) => right.mtime - left.mtime)
+    // The copy this run just wrote is kept by path, not by position. A copy with
+    // a future mtime (a clock stepped back, or a set restored with `cp -a`) sorts
+    // ahead of it; pruning on mtime alone would then delete the backup this run
+    // reports. Pinning it first still keeps the class at its configured count.
+    const own = sorted.findIndex((copy) => copy.path === target)
+    if (own !== -1) {
+      const [written] = sorted.splice(own, 1)
+      sorted.unshift(written)
+    }
+    for (const copy of sorted.slice(keep[kind])) {
+      rmSync(copy.path, { force: true })
+      // A manifest describes exactly one copy, so it goes with it.
+      rmSync(manifestPath(copy.path), { force: true })
+      pruned += 1
+    }
+  }
+  return { pruned, intermediates }
 }
 
 const args = parseArgs(process.argv.slice(2))
 const dbPath = resolve(args.db ?? process.env.DB_PATH ?? join(process.env.DATA_DIR ?? './data', 'fledge.db'))
 const outDir = resolve(args.backupDir ?? process.env.BACKUP_DIR ?? join(process.env.DATA_DIR ?? './data', 'backups'))
-const rawKeep = args.keep ?? process.env.BACKUP_KEEP ?? String(DEFAULT_KEEP)
-const keep = Number(rawKeep)
-if (!Number.isInteger(keep) || keep < 1) fail(2, `--keep must be a positive whole number, got ${rawKeep}`)
+// `--keep` / `BACKUP_KEEP` is an explicit override of both classes for one run,
+// not a second policy. Without it the write-time counts are the same per-class
+// counts `loadConfig`, the dry run and the console report, from one definition.
+// A value that was supplied is validated even when it is empty: a wrapper whose
+// variable expands empty must be refused, not fall through to the defaults and
+// delete at counts nobody asked for.
+const flagGiven = Object.hasOwn(args, 'keep')
+const supplied = flagGiven || process.env.BACKUP_KEEP !== undefined
+const overridden = supplied ? keepCount('--keep', flagGiven ? args.keep : process.env.BACKUP_KEEP) : null
+const keep =
+  overridden === null
+    ? {
+        plaintext: keepCount('BACKUP_KEEP_PLAINTEXT', process.env.BACKUP_KEEP_PLAINTEXT, DEFAULT_KEEP_PLAINTEXT),
+        encrypted: keepCount('BACKUP_KEEP_ENCRYPTED', process.env.BACKUP_KEEP_ENCRYPTED, DEFAULT_KEEP_ENCRYPTED),
+      }
+    : { plaintext: overridden, encrypted: overridden }
 if (!existsSync(dbPath)) fail(2, `source database not found: ${dbPath}`)
 
 let key
@@ -171,7 +222,11 @@ if (encrypt) {
 // before pruning may delete this copy.
 const manifest = await writeManifest(target, { facts, encryption })
 
-const pruned = prune(outDir, keep)
+const pruned = prune(outDir, keep, target)
+// The written copy is pinned into the kept set, so it survives; if it is gone
+// anyway the `backup=` line and `backup: OK` would name a file no reader can
+// open, and this run refuses instead of reporting success.
+if (!existsSync(target)) fail(1, `the backup this run wrote is missing after pruning: ${target}`)
 process.stdout.write(`backup=${target}\n`)
 process.stdout.write(`manifest=${manifest}\n`)
 process.stdout.write('integrity=ok\n')
@@ -180,5 +235,7 @@ if (encrypt) {
 } else {
   process.stdout.write('encryption=none\n')
 }
-process.stdout.write(`retention=keep:${keep} pruned=${pruned.pruned} intermediates=${pruned.intermediates}\n`)
+process.stdout.write(
+  `retention=keep:plaintext=${keep.plaintext},encrypted=${keep.encrypted}${overridden === null ? '' : ' override=--keep'} pruned=${pruned.pruned} intermediates=${pruned.intermediates}\n`,
+)
 process.stdout.write('backup: OK\n')
