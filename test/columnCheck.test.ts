@@ -301,22 +301,107 @@ test('the admin row renders pass, skipped and fail as three different readings',
   assert.doesNotMatch(zhNotReached, /未提供密钥/)
 })
 
-test('every runbook block that hands the drill a column key removes that key file', () => {
-  const blocks = [...readFileSync(deployDoc, 'utf8').matchAll(/```sh\n([\s\S]*?)```/g)]
-    .flatMap((match) => (match[1] === undefined ? [] : [match[1]]))
-  const keyed = blocks.filter((block) => block.includes('--secret-key-file'))
+const escapeRegExp = (value: string): string => value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+
+const keyedFences = (text: string): string[] => [...text.matchAll(/```sh\n([\s\S]*?)```/g)]
+  .flatMap((match) => (match[1] === undefined ? [] : [match[1]]))
+  .filter((block) => block.includes('--secret-key-file'))
+
+// #1192: the old guard asked only whether `rm -f <path>` appeared anywhere in the
+// block, and a removal on the success path answered that. The block that leaves
+// the key on disk when the drill refuses passed. This ratchet reads the two
+// documented fences as text and accepts two shapes only: the removal sits in the
+// `else` branch that stops the block, or a trap removes the file *and* the block
+// propagates the subshell's status before it copies anything in. A subshell trap
+// alone is rejected: its `exit 1` ends the subshell, so the parent would go on to
+// copy an unverified database over the live one.
+function keyCleanupProblem(block: string, path: string): string | null {
+  const rm = new RegExp(`rm\\s+-f\\s+${escapeRegExp(path)}`)
+  // The closing tokens are read as whole lines: an `else` or `fi` inside a
+  // comment or a backticked sentence is prose, not shell structure.
+  const failureBranches = [...block.matchAll(/^[ \t]*else[ \t]*$([\s\S]*?)^[ \t]*fi[ \t]*$/gm)].map((match) => match[1] ?? '')
+  if (failureBranches.some((branch) => rm.test(branch))) return null
+  const trapRemoves = new RegExp(`trap\\s+['"][^'"]*rm\\s+-f\\s+${escapeRegExp(path)}['"]`).test(block)
+  // A block that puts anything on the live instance after the drill must also stop
+  // when the drill refuses; a block that only reports a drill result copies nothing.
+  const rollsForward = /\bsudo cp\b|\bsystemctl start\b/.test(block)
+  const propagates = /\$\?\s*-ne\s+0/.test(block)
+  if (trapRemoves) {
+    if (!rollsForward || propagates) return null
+    return 'a trap inside a subshell removes the key, but the block never propagates the subshell status, so a refused drill would still copy the database'
+  }
+  if (!/\bexit\s+1\b/.test(block)) return 'the block neither removes the key on a refusal nor stops when the drill refuses'
+  return 'the key is removed only outside the failure branch, so a refused drill leaves it on disk'
+}
+
+// The restore-for-real fence exactly as it stood before this fix (main
+// `044c7515`, the same text as `#1187`'s tip `2d88f5a7`): the `rm` sits after
+// `fi`, so `exit 1` leaves the key in `/var/tmp/fledge-restore`.
+const REFUSAL_LEAK_BLOCK = `sudo systemctl stop fledge
+sudo install -d -m 700 /var/tmp/fledge-restore
+sudo sh -c 'umask 077; sed -n "s/^TOKEN_ENCRYPTION_KEY=//p" /etc/fledge/fledge.env > /var/tmp/fledge-restore/column.key'
+if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore --secret-key-file /var/tmp/fledge-restore/column.key; then
+  echo "restore-drill: OK"
+else
+  echo "drill failed; do not restore from this copy" >&2
+  exit 1
+fi
+# the column key was only needed for the check above
+sudo rm -f /var/tmp/fledge-restore/column.key
+# a failed drill renames the copy to restored.db.failed, so only a fresh, verified
+# restored.db can be copied in the next step
+sudo rm -f "$DB_PATH-wal" "$DB_PATH-shm"
+sudo cp /var/tmp/fledge-restore/restored.db "$DB_PATH"
+sudo systemctl start fledge
+curl -fsS http://127.0.0.1:8080/healthz`
+
+test('every runbook block that hands the drill a column key removes it on the refusal path', () => {
+  const keyed = keyedFences(readFileSync(deployDoc, 'utf8'))
   assert.equal(keyed.length, 2, `expected the drill and the restore-for-real blocks, found ${keyed.length}`)
   for (const block of keyed) {
     for (const match of block.matchAll(/--secret-key-file\s+([^\s`;]+)/g)) {
       const path = match[1]
       assert.ok(path !== undefined, 'the flag must name a path in the runbook')
-      const literal = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
       // The file holds the key the copy's credentials open with: a block that
-      // writes it and never removes it is a key left on disk, whatever the
-      // comment beside it says.
+      // writes it and leaves it behind when it refuses the copy is a key left on
+      // disk, whatever the comment beside it says.
+      const literal = escapeRegExp(path)
       assert.match(block, new RegExp(`rm -f ${literal}`), `the block that passes ${path} must remove it, got:\n${block}`)
+      const problem = keyCleanupProblem(block, path)
+      assert.equal(problem, null, `the block that passes ${path} must remove it on every exit, got: ${problem}\n${block}`)
     }
   }
+})
+
+test('the key-cleanup ratchet rejects the refusal leak and a trap without status propagation', () => {
+  const path = '/var/tmp/fledge-restore/column.key'
+  assert.match(
+    keyCleanupProblem(REFUSAL_LEAK_BLOCK, path) ?? '',
+    /removed only outside the failure branch/,
+    'the pinned block that leaked on a refusal must fail the ratchet',
+  )
+  const subshellTrap = [
+    'sudo systemctl stop fledge',
+    `( trap 'sudo rm -f ${path}' EXIT`,
+    `  npm run db:restore-drill -- --db "$DB_PATH" --secret-key-file ${path} || exit 1 )`,
+    'sudo cp /var/tmp/fledge-restore/restored.db "$DB_PATH"',
+  ].join('\n')
+  assert.match(
+    keyCleanupProblem(subshellTrap, path) ?? '',
+    /never propagates the subshell status/,
+    'a trap inside a subshell must not pass unless the block stops on the subshell status',
+  )
+  const propagatedTrap = [
+    'sudo systemctl stop fledge',
+    `( trap 'sudo rm -f ${path}' EXIT`,
+    `  npm run db:restore-drill -- --db "$DB_PATH" --secret-key-file ${path} )`,
+    'if [ $? -ne 0 ]; then',
+    '  echo "drill failed" >&2',
+    '  exit 1',
+    'fi',
+    'sudo cp /var/tmp/fledge-restore/restored.db "$DB_PATH"',
+  ].join('\n')
+  assert.equal(keyCleanupProblem(propagatedTrap, path), null, 'a trap plus an explicit status stop is one of the two accepted shapes')
 })
 
 test('both documented restore invocations pass a column key', () => {
