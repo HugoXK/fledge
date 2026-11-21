@@ -262,12 +262,90 @@ test('a failed build restores the release the source copy already replaced', () 
   releaseIsBack(h)
 })
 
+// #1193: this wait used to spawn `flock -n <lock> true` once per iteration and
+// give up after a hard 5 s. A loaded runner can spend that whole budget without
+// ever seeing the holder (measured: 5,223 ms and 5,235 ms on CI against 3-5 ms
+// here), and the give-up then said only that the holder "never took the lock" —
+// a conclusion drawn from an absence. Readiness now arrives on the holder's own
+// stdout, which costs no process per iteration; the deadline is the constant
+// below; and the give-up probes once so its message can report what it saw.
+const LOCK_READY_TIMEOUT_MS = 20_000
+const LOCK_READY_TICK_MS = 10
+
+interface LockWaitOptions {
+  timeoutMs?: number
+  tickMs?: number
+  now?: () => number
+  probe?: (lock: string) => number
+}
+
+// The only probe on the readiness path, and only after the deadline: `flock -n`
+// refusing means something holds the lock, exit 0 means nothing does. It is not
+// called per iteration, which is the defect this replaced.
+function probeLock(lock: string): number {
+  return spawnSync('flock', ['-n', lock, 'true'], { stdio: 'ignore' }).status ?? -1
+}
+
+function waitForLockReady(
+  holder: ReturnType<typeof spawn>,
+  lock: string,
+  options: LockWaitOptions = {},
+): Promise<{ elapsedMs: number; polls: number }> {
+  const timeoutMs = options.timeoutMs ?? LOCK_READY_TIMEOUT_MS
+  const tickMs = options.tickMs ?? LOCK_READY_TICK_MS
+  const now = options.now ?? Date.now
+  const probe = options.probe ?? probeLock
+  const startedAt = now()
+  return new Promise((resolve, reject) => {
+    let settled = false
+    let polls = 0
+    let seen = ''
+    let timer: ReturnType<typeof setInterval> | undefined
+    const finish = (settle: () => void): void => {
+      if (settled) return
+      settled = true
+      if (timer !== undefined) clearInterval(timer)
+      holder.stdout?.off('data', onData)
+      settle()
+    }
+    const onData = (chunk: Buffer): void => {
+      seen += chunk.toString()
+      if (!seen.includes('ready')) return
+      const elapsedMs = now() - startedAt
+      finish(() => resolve({ elapsedMs, polls }))
+    }
+    holder.stdout?.on('data', onData)
+    holder.on('error', (error: Error) => finish(() => reject(error)))
+    timer = setInterval(() => {
+      polls += 1
+      if (holder.exitCode !== null) {
+        finish(() => reject(new Error(`the lock holder exited ${String(holder.exitCode)} without taking the lock`)))
+        return
+      }
+      if (now() - startedAt > timeoutMs) {
+        const elapsedMs = now() - startedAt
+        const status = String(probe(lock))
+        const pid = String(holder.pid)
+        const state = holder.exitCode === null ? 'alive' : `exited ${String(holder.exitCode)}`
+        finish(() =>
+          reject(
+            new Error(
+              `the lock holder never signalled readiness after ${String(polls)} poll(s) in ${String(elapsedMs)} ms; ` +
+                `last probe status ${status}, holder pid ${pid} ${state}`,
+            ),
+          ),
+        )
+      }
+    }, tickMs)
+  })
+}
+
 // #943: the deploy lock is the one path the script does not derive from
 // FLEDGE_APP_DIR, so a tick that could not take it exited 0 without doing
 // anything, and the cases above read that as "the rollout was refused" or as a
 // restore that never ran. A host now owns its lock; production keeps the fixed
 // path, where that guard is the point.
-test('a host owns its deploy lock, so another tick cannot silence the case', () => {
+test('a host owns its deploy lock, so another tick cannot silence the case', async () => {
   assert.match(deploy, /LOCK=\$\{FLEDGE_DEPLOY_LOCK:-\/tmp\/fledge-deploy-tag\.lock\}/)
   const first = host()
   const second = host()
@@ -277,20 +355,15 @@ test('a host owns its deploy lock, so another tick cannot silence the case', () 
   // Hold the first host's lock the way a second cron tick on that host would,
   // and only then run anything: no sleeping to reach the state. The path stays
   // an argument to `flock` and never enters a shell string, so nothing
-  // interprets it, and "the lock is held" is read from a non-blocking attempt
-  // of our own rather than from a marker the holder writes.
+  // interprets it; the holder announces the lock it took on its own stdout, and
+  // the wait reads that one line (#1193: the old loop probed with a new process
+  // per iteration until its 5 s budget ran out).
   const lock = String(first.env.FLEDGE_DEPLOY_LOCK)
-  const holder = spawn('flock', ['-n', lock, 'sleep', '30'], { stdio: 'ignore' })
+  const holder = spawn('flock', ['-n', lock, 'sh', '-c', 'printf "ready\n"; exec sleep 30'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
   try {
-    const deadline = Date.now() + 5_000
-    for (;;) {
-      const probe = spawnSync('flock', ['-n', lock, 'true'], { stdio: 'ignore' })
-      if (probe.status === 1) break // refused: the holder owns the lock
-      if (probe.status !== 0) throw new Error(`the lock probe exited ${String(probe.status)}`)
-      if (holder.exitCode !== null) throw new Error(`the lock holder exited ${String(holder.exitCode)} without taking the lock`)
-      if (Date.now() > deadline) throw new Error('the lock holder never took the lock')
-      execFileSync('sleep', ['0.05'])
-    }
+    await waitForLockReady(holder, lock)
 
     // The host whose lock is held is silenced, and that is the failure the
     // flake produced: exit 0, nothing logged, nothing done.
@@ -309,6 +382,79 @@ test('a host owns its deploy lock, so another tick cannot silence the case', () 
     assert.match(unaffected.log, /rollout refused for v9\.9\.9/)
   } finally {
     holder.kill()
+  }
+})
+
+test('the deploy lock wait reads the holder instead of probing it, and names what it saw', async () => {
+  const h = host()
+  const lock = String(h.env.FLEDGE_DEPLOY_LOCK)
+
+  // 1. A slow holder still passes. It announces readiness only once `flock`
+  //    owns the lock, and the injected clock moves 500 ms per read, so the wait
+  //    sees far more than the old 5 s budget pass and still ends on readiness
+  //    rather than on a timeout.
+  const slow = spawn('flock', ['-n', lock, 'sh', '-c', 'sleep 0.15; printf "ready\n"; exec sleep 30'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    let fake = 0
+    const waited = await waitForLockReady(slow, lock, {
+      now: () => (fake += 500),
+      probe: () => {
+        throw new Error('a holder that becomes ready must not be probed')
+      },
+    })
+    assert.ok(waited.elapsedMs > 5_000, `the wait must outlast the old 5 s budget, reported ${waited.elapsedMs} ms`)
+    const silenced = tick(h)
+    assert.equal(silenced.code, 0, 'a tick that cannot take its lock exits 0 without running')
+    assert.equal(silenced.log, '', 'a tick that cannot take its lock logs nothing')
+  } finally {
+    slow.kill()
+  }
+
+  // 2. A real timeout names what it saw: elapsed time, poll iterations, the
+  //    probe's last status, the holder's pid, and whether it was alive.
+  const silent = spawn('sleep', ['30'], { stdio: ['ignore', 'pipe', 'pipe'] })
+  try {
+    let probes = 0
+    await assert.rejects(
+      waitForLockReady(silent, lock, {
+        timeoutMs: 40,
+        tickMs: 5,
+        probe: () => {
+          probes += 1
+          return 0
+        },
+      }),
+      (error: Error) => {
+        assert.match(error.message, /after \d+ poll\(s\) in \d+ ms; last probe status \d+, holder pid \d+ (alive|exited \d+)/)
+        return true
+      },
+    )
+    assert.equal(probes, 1, 'the give-up path probes once, not once per iteration')
+  } finally {
+    silent.kill()
+  }
+
+  // 3. A holder that is already ready costs no probe at all: readiness is read
+  //    from the holder's own line, so the wait spawns no child per poll. This
+  //    holder gets its own path: a kill that has not landed yet must not decide
+  //    the case that follows it.
+  const readyLock = join(dirname(lock), 'ready.lock')
+  const ready = spawn('flock', ['-n', readyLock, 'sh', '-c', 'printf "ready\n"; exec sleep 30'], {
+    stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  try {
+    let probes = 0
+    await waitForLockReady(ready, readyLock, {
+      probe: () => {
+        probes += 1
+        return 1
+      },
+    })
+    assert.equal(probes, 0, 'a readiness wait on a ready holder must not spawn a probe')
+  } finally {
+    ready.kill()
   }
 })
 
