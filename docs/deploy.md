@@ -684,6 +684,32 @@ branches` ruleset (`bypass_actors: []`), and relaxing that is a ruleset edit, no
 a commit. The runbook is still: delete or adopt the branch after adding the
 identity to the ruleset bypass, then let the next run tag the merge.
 
+### Naming the changes a release carried but its notes did not (#1207)
+
+A release's notes are assembled once, when the release pull request is built:
+`node scripts/changelog.mjs release` folds every fragment it can see and deletes
+it, and nothing reads `changelog.d/` again before the tag is written. Every
+change merged into `main` while that pull request waited for its merge click is
+therefore carried by the tag and missing from the notes the tag publishes —
+v0.4.5 shipped three that way while its pull request body said "changelog
+fragments: 22".
+
+The publish run now checks the checkout at the tag before it builds anything. A
+fragment still present in `changelog.d/` there is by construction a change the
+release does not name, so `scripts/release-stranded-notes.mjs` appends one
+section to the assembled body that lists each of them and says why it arrived
+late; the three chain lines (`Image:`, `SBOM:`, `Attestation:`) are appended
+after it and read exactly as before. The step fails, and the image is never
+built, when `changelog.d` cannot be read: a body that reads complete without the
+release's own changes is worse than no body. The fragment names are then said on
+#80 by a separate job that holds `issues: write` and nothing else, so the release
+log and the published notes agree.
+
+Nothing else moves: the same tag, image and `CHANGELOG.md`; no push to `main`,
+no second release, no re-tag. A stranded fragment is still folded into the next
+release's section, so a change can be named twice until the fold itself is
+reworked.
+
 ### Automatic tag deployment and verification
 
 The release plan → release pull request → tag half lives in
