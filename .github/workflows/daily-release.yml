@@ -131,6 +131,23 @@ jobs:
           # live in scripts/lib/release-state.mjs, where a test executes them.
           gh api --paginate "repos/${REPO}/pulls?state=closed&per_page=100&sort=updated" | jq -s . > "$RUNNER_TEMP/prs.json"
           gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" | jq -s . > "$RUNNER_TEMP/open.json"
+          # #1204: a night held by an open release pull request must say whether
+          # that pull request is red, and the answer lives on its own head. The
+          # head is picked by the same predicate `buildState` uses, so the state
+          # below and this read can never disagree about which pull request is
+          # meant; with no head the answer is an empty page, never a guessed green.
+          OPEN_HEAD="$(node --input-type=module -e '
+            import { readFileSync } from "node:fs"
+            import { selectedOpenPr } from "./scripts/lib/release-state.mjs"
+            const TMP = process.env.RUNNER_TEMP ?? "/tmp"
+            const pages = JSON.parse(readFileSync(TMP + "/open.json", "utf8"))
+            process.stdout.write(String(selectedOpenPr(pages)?.head?.sha ?? ""))
+          ')"
+          if [ -n "$OPEN_HEAD" ]; then
+            gh api "repos/${REPO}/commits/${OPEN_HEAD}/check-runs?per_page=100" > "$RUNNER_TEMP/open-checks.json"
+          else
+            printf '{"total_count":0,"check_runs":[]}\n' > "$RUNNER_TEMP/open-checks.json"
+          fi
           # #567: ask for the named check. An unfiltered page holds the newest
           # 100 runs, and four comment-triggered runs per issue comment push a
           # green `ci-ok` onto page 2, where the planner reported it missing.
@@ -152,10 +169,10 @@ jobs:
           TAGS="$(jq -c . "$RUNNER_TEMP/tags.json")"
           node scripts/release-state.mjs \
             --prs "$RUNNER_TEMP/prs.json" --open "$RUNNER_TEMP/open.json" --checks "$RUNNER_TEMP/checks.json" \
-            --branches "$RUNNER_TEMP/branches.json" \
+            --branches "$RUNNER_TEMP/branches.json" --open-checks "$RUNNER_TEMP/open-checks.json" \
             --tag "$TAG" --tag-time "$TAG_TIME" --version "$VERSION" \
             --fragments "$FRAGMENTS" --tags-json "$TAGS" --dry-run "$DRY_RUN" > "$RUNNER_TEMP/state.json"
-          jq '{lastTag, packageVersion, fragments, ciOk, dryRun, orphanBranches, openPr: (.openPr | {number, title} // null), lastMerged: (.lastMerged | {number, title} // null)}' "$RUNNER_TEMP/state.json"
+          jq '{lastTag, packageVersion, fragments, ciOk, dryRun, orphanBranches, openPr: (.openPr | {number, title} // null), openPrCiOk, openPrFailedChecks, lastMerged: (.lastMerged | {number, title} // null)}' "$RUNNER_TEMP/state.json"
 
       - name: Plan
         id: plan
@@ -319,9 +336,18 @@ jobs:
               now: new Date().toISOString(),
               tags: state.tags,
               branches,
+              // #1204: the held reason names the head and the conclusion the
+              // collect step read, so a night that says nothing new still says
+              // whether the pull request holding it is red.
               openReleasePullRequests: open === null || open === undefined
                 ? []
-                : [{ number: Number(open.number ?? 0), branch: String(open.head?.ref ?? "") }],
+                : [{
+                    number: Number(open.number ?? 0),
+                    branch: String(open.head?.ref ?? ""),
+                    headSha: String(open.head?.sha ?? ""),
+                    ciOk: String(state.openPrCiOk?.conclusion ?? ""),
+                    failedChecks: Array.isArray(state.openPrFailedChecks) ? state.openPrFailedChecks : [],
+                  }],
               nextVersion: String(process.env.NEXT_VERSION ?? ""),
               lastTagCommittedAt: state.lastTagCommittedAt,
               guardsPass: process.env.GUARDS_PASS === "true",
@@ -482,47 +508,86 @@ jobs:
           PUSHED: ${{ steps.push.outputs.pushed }}
           BRANCH: ${{ steps.push.outputs.branch }}
           MAIN_SHA: ${{ steps.state.outputs.main_sha }}
+          TRIGGER_REASON: ${{ steps.trigger.outputs.reason }}
           OPEN_STATE: ${{ steps.open.outputs.state }}
           OPEN_DETAIL: ${{ steps.open.outputs.detail }}
         run: |
           set -euo pipefail
-          if [ -z "$PUSHED" ]; then
-            echo "no pushed branch, so nothing to say on #80" >> "$GITHUB_STEP_SUMMARY"
-            exit 0
-          fi
           REPO="$GITHUB_REPOSITORY"
-          PLAN_TOTAL="$(jq -r '.total' "$RUNNER_TEMP/plan.json")"
-          PLAN_FEATURES="$(jq -r '.features' "$RUNNER_TEMP/plan.json")"
-          PLAN_FRAGMENTS="$(jq -r '.fragments' "$RUNNER_TEMP/plan.json")"
-          PLAN_NEXT="$(jq -r '.nextVersion' "$RUNNER_TEMP/plan.json")"
-          LAST_TAG="$(jq -r '.lastTag' "$RUNNER_TEMP/state.json")"
-          CI_OK="$(jq -r '.ciOk' "$RUNNER_TEMP/state.json")"
-          # The marker is version plus pushed sha: a night that pushes nothing new
-          # repeats nothing here, so the issue does not get a line every day.
-          OPEN_STATE="${OPEN_STATE:-not-run}"
-          OPEN_DETAIL="${OPEN_DETAIL:-the opener did not run, so no pull request state is recorded}"
-          MARKER="<!-- daily-release:v${PLAN_NEXT}:${PUSHED}:${OPEN_STATE} -->"
           LAST_LINE="$(gh api --paginate "repos/${REPO}/issues/80/comments?per_page=100" \
             | jq -s -r 'flatten | map(.body | split("\n") | first) | map(select(startswith("<!-- daily-release:"))) | last // ""')"
+          # #1204: a night held by an open release pull request pushes nothing, so
+          # the pushed-branch path below cannot report it — and that night is
+          # exactly the one a person needs to read. It gets its own line, keyed by
+          # the pull request, its head and its `ci-ok` conclusion, so it repeats
+          # only when one of those changes. The refusal itself is unchanged: this
+          # run pushes nothing, opens no second pull request, merges nothing and
+          # re-runs nothing.
+          TRIGGER_REASON="${TRIGGER_REASON:-}"
+          if [ -z "${PUSHED:-}" ] && [[ "$TRIGGER_REASON" == open-pr:* ]]; then
+            PR_NUMBER="$(jq -r '.openPr.number // ""' "$RUNNER_TEMP/state.json")"
+            PR_HEAD="$(jq -r '.openPr.head.sha // ""' "$RUNNER_TEMP/state.json")"
+            PR_CI_OK="$(jq -r '.openPrCiOk.conclusion // "missing"' "$RUNNER_TEMP/state.json")"
+            PR_FAILED="$(jq -r '(.openPrFailedChecks // []) | join(", ")' "$RUNNER_TEMP/state.json")"
+            LAST_TAG="$(jq -r '.lastTag' "$RUNNER_TEMP/state.json")"
+            PR_SHORT="${PR_HEAD:0:7}"
+            HELD_MARKER="<!-- daily-release:held:#${PR_NUMBER}:${PR_SHORT}:${PR_CI_OK} -->"
+            if [ "$PR_CI_OK" = 'success' ]; then
+              HELD_STATE="its \`ci-ok\` is **success**, so the night waits for that pull request to be merged"
+            else
+              HELD_STATE="its \`ci-ok\` is **${PR_CI_OK}**, so the night cannot release until that pull request is fixed and merged"
+            fi
+            FAILED_LINE=""
+            if [ -n "$PR_FAILED" ]; then FAILED_LINE=" — failing: ${PR_FAILED}"; fi
+            BODY="$(printf '%s\n' \
+              "$HELD_MARKER" \
+              "Written-by: HugoXK" \
+              "" \
+              "The daily minor release is **held** by the open release pull request [#${PR_NUMBER}](${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/pull/${PR_NUMBER}) at \`${PR_HEAD}\`: ${HELD_STATE}." \
+              "" \
+              "- release pull request: **#${PR_NUMBER}** at \`${PR_SHORT}\`" \
+              "- its \`ci-ok\`: **${PR_CI_OK}**${FAILED_LINE}" \
+              "- latest tag: ${LAST_TAG:-the first release}" \
+              "" \
+              "The slot is not planned while that pull request is open (\`scripts/lib/release-trigger.mjs\`): one slot, one release pull request. This run pushed nothing, opened nothing, merged nothing and re-ran nothing; clearing the block is a person's decision. This line repeats only when the pull request, its head or its \`ci-ok\` conclusion changes.")"
+            MARKER="$HELD_MARKER"
+          elif [ -z "$PUSHED" ]; then
+            echo "no pushed branch, so nothing to say on #80" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          else
+            PLAN_TOTAL="$(jq -r '.total' "$RUNNER_TEMP/plan.json")"
+            PLAN_FEATURES="$(jq -r '.features' "$RUNNER_TEMP/plan.json")"
+            PLAN_FRAGMENTS="$(jq -r '.fragments' "$RUNNER_TEMP/plan.json")"
+            PLAN_NEXT="$(jq -r '.nextVersion' "$RUNNER_TEMP/plan.json")"
+            LAST_TAG="$(jq -r '.lastTag' "$RUNNER_TEMP/state.json")"
+            CI_OK="$(jq -r '.ciOk' "$RUNNER_TEMP/state.json")"
+            # The marker is version plus pushed sha: a night that pushes nothing new
+            # repeats nothing here, so the issue does not get a line every day.
+            OPEN_STATE="${OPEN_STATE:-not-run}"
+            OPEN_DETAIL="${OPEN_DETAIL:-the opener did not run, so no pull request state is recorded}"
+            MARKER="<!-- daily-release:v${PLAN_NEXT}:${PUSHED}:${OPEN_STATE} -->"
+            BODY="$(printf '%s\n' \
+              "$MARKER" \
+              "Written-by: HugoXK" \
+              "" \
+              "The daily minor release **v${PLAN_NEXT}** is on \`${BRANCH}\` at \`${PUSHED}\`, planned from \`main\` \`${MAIN_SHA}\`." \
+              "" \
+              "- merged PRs since ${LAST_TAG:-the first release}: **${PLAN_TOTAL}** (need 10)" \
+              "- features among them: **${PLAN_FEATURES}** (need 5)" \
+              "- changelog fragments released: **${PLAN_FRAGMENTS}** (need 1)" \
+              "- latest \`ci-ok\` on \`main\`: **${CI_OK}** (rule 4)" \
+              "- release pull request: **${OPEN_STATE}** — ${OPEN_DETAIL}" \
+              "" \
+              "The branch carries only the mechanical release set, defined in one place: \`scripts/lib/mechanical-release.mjs\`. The pull request is opened by the team token above and is never merged here; the tag follows the merge on \`main\`, through the Git data API." \
+              "" \
+              "Compare: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${LAST_TAG:-HEAD}...${BRANCH}")"
+          fi
+          # One post for both shapes: a pushed night reports the branch, and a
+          # night held by an open release pull request reports the block (#1204).
           if [ "$LAST_LINE" = "$MARKER" ]; then
             echo "already commented ${MARKER}" >> "$GITHUB_STEP_SUMMARY"
             exit 0
           fi
-          BODY="$(printf '%s\n' \
-            "$MARKER" \
-            "Written-by: HugoXK" \
-            "" \
-            "The daily minor release **v${PLAN_NEXT}** is on \`${BRANCH}\` at \`${PUSHED}\`, planned from \`main\` \`${MAIN_SHA}\`." \
-            "" \
-            "- merged PRs since ${LAST_TAG:-the first release}: **${PLAN_TOTAL}** (need 10)" \
-            "- features among them: **${PLAN_FEATURES}** (need 5)" \
-            "- changelog fragments released: **${PLAN_FRAGMENTS}** (need 1)" \
-            "- latest \`ci-ok\` on \`main\`: **${CI_OK}** (rule 4)" \
-            "- release pull request: **${OPEN_STATE}** — ${OPEN_DETAIL}" \
-            "" \
-            "The branch carries only the mechanical release set, defined in one place: \`scripts/lib/mechanical-release.mjs\`. The pull request is opened by the team token above and is never merged here; the tag follows the merge on \`main\`, through the Git data API." \
-            "" \
-            "Compare: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/compare/${LAST_TAG:-HEAD}...${BRANCH}")"
           gh issue comment 80 --body "$BODY"
           echo "commented ${MARKER} on #80" >> "$GITHUB_STEP_SUMMARY"
 
