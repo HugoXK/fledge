@@ -122,3 +122,53 @@ export function parseAttributionGroundJson(value: string | null): AttributionGro
     return null
   }
 }
+
+// #368/#1190: one reconstruction of the ground record, shared by every reader of
+// the claim. A row written before `attribution_ground_json` exists carries the
+// observation in `attribution_json` itself when team stats were recorded (the
+// old writer overwrote the claim), and a claim nothing checked otherwise. The
+// reconstruction is a rule, not a guess: a stored record always wins.
+export function attributionGroundFor(input: {
+  groundJson: string | null
+  attributionJson: string | null
+  teamStatsJson: string | null
+}): AttributionGround | null {
+  const stored = parseAttributionGroundJson(input.groundJson)
+  if (stored !== null) return stored
+  const recorded = parseAttributionJson(input.attributionJson)
+  if (recorded === null) return null
+  const observedOnly = input.teamStatsJson !== null
+  return {
+    steps: ATTRIBUTION_FIELDS
+      .filter((field) => recorded[field.key] !== undefined)
+      .map((field) => ({
+        key: field.key,
+        claimed: observedOnly ? null : (recorded[field.key] as string),
+        observed: recorded[field.key] as string,
+        state: observedOnly ? 'grounded' as const : 'no-observation' as const,
+      })),
+  }
+}
+
+const CLAIM_STATE_ORDER: Record<AttributionGroundState, number> = { grounded: 0, unobserved: 1, 'no-observation': 2 }
+
+/**
+ * How the record judges the seat's claim on `role`, or null when the role is not
+ * claimed at all (an observation-only seat). The worst state among the claiming
+ * steps speaks for the role, the same rule `jobAttribution` applies to one seat
+ * on several kinds of work: a seat seen on one kind of work and not on another
+ * is not a grounded seat.
+ */
+export function claimedRoleState(
+  ground: AttributionGround | null,
+  role: string | null,
+  keys: readonly AttributionKey[] = ['writtenBy', 'implementedBy'],
+): AttributionGroundState | null {
+  if (ground === null || role === null || role === '') return null
+  let worst: AttributionGroundState | null = null
+  for (const step of ground.steps) {
+    if (step.claimed !== role || !keys.includes(step.key)) continue
+    if (worst === null || CLAIM_STATE_ORDER[step.state] > CLAIM_STATE_ORDER[worst]) worst = step.state
+  }
+  return worst
+}

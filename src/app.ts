@@ -123,6 +123,7 @@ import {
   agentWorkspacePage,
   settingsPage,
   inboxSection,
+  jobAttribution,
   errorPage,
   type InboxQuestion,
   type ScheduledNext,
@@ -1063,7 +1064,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     // #793: which model and role did the work is on the job row, so it is read
     // here rather than from the pull request body. The row can be read even when
     // GitHub cannot, which is why every branch below carries it.
-    const attribution = changeStoryAttribution({ modelJson: job.model_json, attributionJson: job.attribution_json })
+    const attribution = changeStoryAttribution({
+      modelJson: job.model_json,
+      attributionJson: job.attribution_json,
+      // #1190: the record decides whether the claim was observed, and the same
+      // reconstruction the job page uses keeps a pre-#1186 row honest.
+      groundJson: job.attribution_ground_json,
+      teamStatsJson: job.team_stats_json,
+    })
     const parsed = parsePrUrl(repo, job.pr_url, config.github.apiBase)
     let story: ChangeStory
     let tip: PullTip | null = null
@@ -3580,7 +3588,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     requireAdvanced(viewer)
     try {
       const state = await instances.teamState(repo.id, 15_000)
-      return { ...state, jobs: localizedJobs(store.listJobsForRepo(repo.id).slice(0, 5), request.locale ?? 'zh') }
+      const t = translator(request.locale ?? 'zh')
+      // #1190: the poll and the stream must agree about a marked claim, so both
+      // carry the same rendered `attributionText`.
+      return {
+        ...state,
+        jobs: localizedJobs(store.listJobsForRepo(repo.id).slice(0, 5), request.locale ?? 'zh')
+          .map((job) => ({ ...job, attributionText: jobAttribution(t, job) })),
+      }
     } catch (error) {
       return reply.code(503).send({ error: error instanceof Error ? error.message : String(error) })
     }
@@ -3850,19 +3865,27 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
             remainingCny: quota.remainingCny,
             exhausted: quota.exhausted,
           },
-          jobs: localizedJobs(store.listJobsForRepo(repo.id, 5), request.locale ?? 'zh').map((job) => ({
-            id: job.id,
-            kind: job.kind,
-            status: job.status,
-            summary: job.summary,
-            error: job.error,
-            issueUrl: job.issue_url,
-            prUrl: job.pr_url,
-            reviewScore: job.review_score,
-            attribution: parseAttributionJson(job.attribution_json),
-            createdAt: job.created_at,
-            finishedAt: job.finished_at,
-          })),
+          jobs: (() => {
+            const t = translator(request.locale ?? 'zh')
+            return localizedJobs(store.listJobsForRepo(repo.id, 5), request.locale ?? 'zh').map((job) => ({
+              id: job.id,
+              kind: job.kind,
+              status: job.status,
+              summary: job.summary,
+              error: job.error,
+              issueUrl: job.issue_url,
+              prUrl: job.pr_url,
+              reviewScore: job.review_score,
+              attribution: parseAttributionJson(job.attribution_json),
+              // #1190: the server-rendered text is what the console shows, so the
+              // first tick cannot replace a marked claim with the bare seat. The
+              // structured field keeps its type; the script contains no marker
+              // vocabulary of its own.
+              attributionText: jobAttribution(t, job),
+              createdAt: job.created_at,
+              finishedAt: job.finished_at,
+            }))
+          })(),
         }
         const text = JSON.stringify(snapshot)
         if (text !== last) {

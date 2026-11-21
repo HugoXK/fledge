@@ -30,7 +30,7 @@ import { diffContextBundles, readContextBundle, verifyContextBundle } from '../l
 import type { AdherenceRecord, AdherenceStatus, ClauseStatus, ClauseResult } from '../lib/instructions.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
-import { ATTRIBUTION_FIELDS, parseAttributionGroundJson, parseAttributionJson } from '../lib/attribution.js'
+import { ATTRIBUTION_FIELDS, attributionGroundFor } from '../lib/attribution.js'
 import type { AttributionGround, AttributionGroundState, AttributionKey } from '../lib/attribution.js'
 import { followUpLinks, summariseDeliveries, type DeliveryOutcomeRow } from '../lib/deliveryOutcome.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
@@ -501,33 +501,21 @@ function jobTeamStats(job: JobRow): Array<{ role: string; label: string; calls: 
 }
 
 // #368: what the job claimed and what the instance observed are two facts, and the
-// page must not print the first as the second. A stored ground record answers per
-// attribution key. A row written before that column exists needs the same answer
-// reconstructed: `captureTeamStats` used to write the observation over
-// `attribution_json`, so a row carrying team stats holds the observed half there
-// (grounded, unmarked) and a row without them holds a claim nothing checked.
+// page must not print the first as the second. The reconstruction of a row that
+// predates the ground column lives in `attributionGroundFor` (#1190), shared with
+// the change-story row and the console so the three cannot answer differently.
 const GROUND_STATE_ORDER: Record<AttributionGroundState, number> = { grounded: 0, unobserved: 1, 'no-observation': 2 }
 
-function attributionGroundFor(job: JobRow): AttributionGround | null {
-  const stored = parseAttributionGroundJson(job.attribution_ground_json)
-  if (stored !== null) return stored
-  const recorded = parseAttributionJson(job.attribution_json)
-  if (recorded === null) return null
-  const observedOnly = job.team_stats_json !== null
-  return {
-    steps: ATTRIBUTION_FIELDS
-      .filter((field) => recorded[field.key] !== undefined)
-      .map((field) => ({
-        key: field.key,
-        claimed: observedOnly ? null : (recorded[field.key] as string),
-        observed: recorded[field.key] as string,
-        state: observedOnly ? 'grounded' as const : 'no-observation' as const,
-      })),
-  }
+function groundOf(job: JobRow): AttributionGround | null {
+  return attributionGroundFor({
+    groundJson: job.attribution_ground_json,
+    attributionJson: job.attribution_json,
+    teamStatsJson: job.team_stats_json,
+  })
 }
 
-function jobAttribution(t: Translate, job: JobRow): string {
-  const ground = attributionGroundFor(job)
+export function jobAttribution(t: Translate, job: JobRow): string {
+  const ground = groundOf(job)
   if (ground === null) return ''
   const byRole = new Map<string, { role: string; keys: AttributionKey[]; state: AttributionGroundState }>()
   const add = (role: string, key: AttributionKey, state: AttributionGroundState): void => {
@@ -4197,6 +4185,8 @@ export function jobPage(input: {
           capped: t('读不到：改动文件超过读取上限', 'not available: the file list exceeded the read cap'),
           duplicate: t('标题重复，显示最后一处', 'a repeated heading; the last one is shown'),
           files: (count) => t(`${count} 个文件`, `${count} files`),
+          claimedNotObserved: t('声称，未观察', 'claimed, not observed'),
+          claimedNotVerified: t('声称，未核实', 'claimed, not verified'),
         }).map((fact) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(changeStoryLabel(t, fact.key))}</strong><small class="job-report">${escapeHtml(fact.value)}</small>${fact.note === '' ? '' : `<small class="muted">${escapeHtml(fact.note)}</small>`}</div></div>`).join('')}
       </div>
     </section></details>`
