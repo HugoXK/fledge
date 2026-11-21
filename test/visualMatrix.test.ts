@@ -2,7 +2,19 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import * as visualMatrix from '../src/lib/visualMatrix.js'
-import { VISUAL_PATHS, VISUAL_WIDTHS, overflowFailure, pageSlug, viewportHeight } from '../src/lib/visualMatrix.js'
+import {
+  GATE_SCHEMES,
+  GATE_WIDTHS,
+  VISUAL_LOCALES,
+  VISUAL_NARROW_CASES,
+  VISUAL_PATHS,
+  VISUAL_WIDTHS,
+  cellLabel,
+  overflowFailure,
+  pageSlug,
+  viewportHeight,
+  visualWorkload,
+} from '../src/lib/visualMatrix.js'
 
 test('the matrix covers phones, tablets and desktop widths', () => {
   assert.deepEqual([...VISUAL_WIDTHS], [360, 390, 430, 640, 768, 1024, 1280, 1440, 1920])
@@ -39,12 +51,23 @@ test('the matrix renders the console at 320, below the sweep that starts at 360'
 })
 
 test('the runner turns a narrow case into a failure, not a screenshot', () => {
+  const workload = visualWorkload()
+  const narrow = workload.filter((cell) => cell.kind === 'narrow')
+  assert.equal(
+    narrow.length,
+    VISUAL_NARROW_CASES.length * VISUAL_LOCALES.length,
+    'every narrow case is measured in both locales',
+  )
+  for (const locale of VISUAL_LOCALES) {
+    const consoleNarrow = narrow.find((cell) => cell.locale === locale && cell.path === '/console' && cell.width === 320)
+    assert.ok(consoleNarrow !== undefined, `the ${locale} pass has to measure /console at 320`)
+    assert.equal(cellLabel(consoleNarrow), `${locale} 320px /console`, 'a narrow case reports locale, width and path like every other row')
+  }
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
-  assert.match(script, /for \(const narrow of VISUAL_NARROW_CASES\)/, 'the runner must visit each narrow case')
   assert.match(
     script,
-    /failures\.push\(`\$\{locale\} \$\{narrow\.width\}px \$\{narrow\.path\}: /,
-    'a narrow case has to report locale, width and path like every other row',
+    /await checkPage\(page, cell\.locale, cell\.width, cell\.path\)/,
+    'a narrow case goes through the same overflow walk as every other row, so its failure is a failure and not a screenshot',
   )
 })
 
@@ -82,14 +105,27 @@ test('overflow is named by its width or its element', () => {
 // page that had no anchor and no link target. Both are structural, so they are
 // pinned here rather than only in the browser job.
 test('the matrix captures the landing page signed out, before the development login', () => {
+  const workload = visualWorkload()
+  const landing = workload.filter((cell) => cell.kind === 'sweep' && cell.path === '/')
+  assert.equal(landing.length, VISUAL_WIDTHS.length * VISUAL_LOCALES.length, 'every width is captured for the landing page')
+  const signedInSweep = workload.filter((cell) => cell.kind === 'sweep' && cell.path !== '/')
+  assert.equal(
+    signedInSweep.length,
+    (VISUAL_PATHS.length - 1) * VISUAL_WIDTHS.length * VISUAL_LOCALES.length,
+    'the signed-in sweep covers every path except the landing page, at every width',
+  )
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
-  const landing = script.indexOf('/lang/${locale}?next=/`')
-  const login = script.indexOf('/auth/dev')
-  assert.ok(landing !== -1, 'the matrix must visit the landing page')
-  assert.ok(login !== -1, 'the matrix must still sign in for the owner surfaces')
-  assert.ok(landing < login, 'the landing page redirects to /dashboard once signed in, so it has to be captured first')
-  assert.match(script, /for \(const path of SIGNED_IN_PATHS\)/, 'the signed-in pass must not revisit the landing page as the dashboard')
-  assert.match(script, /const SIGNED_IN_PATHS = VISUAL_PATHS\.filter/, 'the signed-in set has to stay derived from VISUAL_PATHS')
+  assert.match(script, /const signedIn = cell\.path !== '\/'/, 'the landing page is the one cell that stays signed out')
+  assert.match(
+    script,
+    /if \(options\.signedIn\) await page\.goto\(`\$\{base\}\/auth\/dev`/,
+    'the development login runs only for a signed-in cell, and before the page it measures',
+  )
+  assert.match(
+    script,
+    /next=\$\{options\.signedIn \? '\/dashboard' : '\/'\}/,
+    'the landing cell lands on /, and the signed-in cells land on the dashboard',
+  )
 })
 
 test('a missing #tokens anchor fails the matrix instead of skipping the assertion', () => {
@@ -265,11 +301,34 @@ test('the leftover gate names every raw-template hit it finds', () => {
 })
 
 test('the runner drives the gate from the two constants and chooses a scheme per context', () => {
+  const gate = visualWorkload().filter((cell) => cell.kind === 'gate')
+  assert.equal(
+    gate.length,
+    GATE_WIDTHS.length * GATE_SCHEMES.length * VISUAL_PATHS.length * VISUAL_LOCALES.length,
+    'the gate workload is the gate widths by schemes by every swept path, in both locales',
+  )
+  for (const path of VISUAL_PATHS) {
+    assert.ok(gate.some((cell) => cell.path === path), `every swept path has to go through the gate: ${path}`)
+  }
+  for (const width of GATE_WIDTHS) {
+    for (const scheme of GATE_SCHEMES) {
+      assert.ok(
+        gate.some((cell) => cell.width === width && cell.scheme === scheme),
+        `the gate has to measure ${String(width)} in ${scheme}`,
+      )
+    }
+  }
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
-  assert.match(script, /for \(const width of GATE_WIDTHS\)/, 'the gate pass has to iterate GATE_WIDTHS')
-  assert.match(script, /for \(const scheme of GATE_SCHEMES\)/, 'the gate pass has to iterate GATE_SCHEMES')
-  assert.match(script, /colorScheme: scheme/, 'each gate context has to ask the browser for the scheme it measures')
-  assert.match(script, /for \(const path of VISUAL_PATHS\)/, 'every swept path has to go through the gate')
+  assert.match(
+    script,
+    /scheme: cell\.kind === 'gate' \? cell\.scheme : undefined/,
+    'each gate context has to ask the browser for the scheme it measures',
+  )
+  assert.match(
+    script,
+    /await checkGatePage\(page, cell\.locale, cell\.width, cell\.scheme, cell\.path\)/,
+    'a gate cell is measured by the gate check, not the screenshot walk',
+  )
   assert.match(script, /data-compact-target/, 'the script has to read the documented compact opt-out')
 })
 

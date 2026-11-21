@@ -1,35 +1,35 @@
 /// <reference lib="dom" />
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import type { ChildProcess } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
-import { tmpdir } from 'node:os'
+import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 import {
-  GATE_SCHEMES,
-  GATE_WIDTHS,
-  VISUAL_NARROW_CASES,
-  VISUAL_PATHS,
-  VISUAL_WIDTHS,
+  cellLabel,
   focusFailures,
   leftoverFailures,
   nameFailures,
   overflowFailure,
   pageSlug,
+  partitionWorkload,
+  shardFailures,
   touchFailures,
   viewportHeight,
+  visualWorkload,
 } from '../src/lib/visualMatrix.js'
-import type { FocusStyle } from '../src/lib/visualMatrix.js'
+import type { FocusStyle, VisualCell, VisualLocale, VisualShardResult } from '../src/lib/visualMatrix.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const port = Number(process.env.VISUAL_PORT ?? '18180')
 const base = `http://127.0.0.1:${port}`
 const outDir = process.env.VISUAL_OUT ?? join(root, 'visual-matrix')
-const dataDir = mkdtempSync(join(tmpdir(), 'fledge-visual-'))
 const failures: string[] = []
-// `/` is captured signed out above; every other path needs the development login.
-const SIGNED_IN_PATHS = VISUAL_PATHS.filter((path) => path !== '/')
+// A share owns one server and one temp database; the coordinator never starts
+// either, so the directory is created on first use.
+let dataDir: string | null = null
 
 function startServer(): ReturnType<typeof spawn> {
   const child = spawn(process.execPath, [join(root, 'dist/index.js')], {
@@ -40,8 +40,8 @@ function startServer(): ReturnType<typeof spawn> {
       HOST: '127.0.0.1',
       PORT: String(port),
       BASE_URL: base,
-      DATA_DIR: dataDir,
-      DB_PATH: join(dataDir, 'fledge.db'),
+      DATA_DIR: ensureDataDir(),
+      DB_PATH: join(ensureDataDir(), 'fledge.db'),
       SESSION_SECRET: randomBytes(32).toString('hex'),
       TOKEN_ENCRYPTION_KEY: randomBytes(32).toString('base64'),
       ALLOW_TOKEN_LOGIN_ONLY: 'true',
@@ -195,88 +195,6 @@ async function checkPage(page: import('playwright').Page, locale: string, width:
   }
 }
 
-async function main(): Promise<void> {
-  mkdirSync(outDir, { recursive: true })
-  const child = startServer()
-  let browser: import('playwright').Browser | null = null
-  try {
-    await waitForServer()
-    browser = await chromium.launch()
-    for (const locale of ['zh', 'en'] as const) {
-      mkdirSync(join(outDir, locale), { recursive: true })
-      // The landing page only exists for a signed-out visitor: src/app.ts answers
-      // `/` with a 302 to /dashboard once a session exists, so signing in first
-      // photographed the dashboard twice and called one copy "landing" (#453).
-      const guest = await browser.newContext({
-        viewport: { width: 1280, height: 900 },
-        locale: locale === 'en' ? 'en-US' : 'zh-CN',
-      })
-      const guestPage = await guest.newPage()
-      await guestPage.goto(`${base}/lang/${locale}?next=/`, { waitUntil: 'domcontentloaded' })
-      for (const width of VISUAL_WIDTHS) {
-        await guestPage.setViewportSize({ width, height: viewportHeight(width) })
-        try {
-          await checkPage(guestPage, locale, width, '/')
-        } catch (error) {
-          failures.push(`${locale} ${width}px /: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-      await guest.close()
-
-      const context = await browser.newContext({
-        viewport: { width: 1280, height: 900 },
-        locale: locale === 'en' ? 'en-US' : 'zh-CN',
-      })
-      const page = await context.newPage()
-      await page.goto(`${base}/auth/dev`, { waitUntil: 'domcontentloaded' })
-      await page.goto(`${base}/lang/${locale}?next=/dashboard`, { waitUntil: 'domcontentloaded' })
-      for (const width of VISUAL_WIDTHS) {
-        await page.setViewportSize({ width, height: viewportHeight(width) })
-        for (const path of SIGNED_IN_PATHS) {
-          try {
-            await checkPage(page, locale, width, path)
-          } catch (error) {
-            failures.push(`${locale} ${width}px ${path}: ${error instanceof Error ? error.message : String(error)}`)
-          }
-        }
-      }
-      // #950: a page whose narrowest layout needs a width below the sweep is
-      // measured here, so a 320-only overflow reaches a failure instead of a
-      // clean run because the width was never rendered.
-      for (const narrow of VISUAL_NARROW_CASES) {
-        await page.setViewportSize({ width: narrow.width, height: viewportHeight(narrow.width) })
-        try {
-          await checkPage(page, locale, narrow.width, narrow.path)
-        } catch (error) {
-          failures.push(`${locale} ${narrow.width}px ${narrow.path}: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      }
-      await context.close()
-      // #870: the measured gate runs after the screenshot sweep, so a screenshot
-      // failure and a gate failure are still one job with one list.
-      await runGatePass(browser, locale)
-    }
-  } finally {
-    await browser?.close()
-    await stopServer(child)
-    rmSync(dataDir, { recursive: true, force: true })
-  }
-  if (failures.length > 0) {
-    console.error(`visual matrix: ${failures.length} failure(s)`)
-    for (const failure of failures) console.error(`- ${failure}`)
-    process.exitCode = 1
-    return
-  }
-  console.log(`visual matrix: ${VISUAL_PATHS.length} pages x ${VISUAL_WIDTHS.length} widths x 2 locales + ${String(VISUAL_NARROW_CASES.length)} narrow case(s) clean`)
-  console.log(`visual gate: ${VISUAL_PATHS.length} pages x ${GATE_WIDTHS.length} widths x ${GATE_SCHEMES.length} schemes x 2 locales, touch/focus/name/leftover clean`)
-  console.log(`screenshots: ${outDir}`)
-}
-
-// #870: the gate pass. Nine widths stay the screenshot sweep; the measured
-// matrix is three widths by two schemes, because a colour scheme the host
-// happened to carry is not a decision the matrix made. Every failure names the
-// four coordinates and the control, so a red job points at one row of the board
-// instead of a screenshot nobody can diff.
 async function checkGatePage(
   page: import('playwright').Page,
   locale: string,
@@ -439,51 +357,216 @@ async function checkExplicitTheme(
   }
 }
 
-async function runGatePass(browser: import('playwright').Browser, locale: string): Promise<void> {
-  for (const width of GATE_WIDTHS) {
-    for (const scheme of GATE_SCHEMES) {
-      const signedIn = await browser.newContext({
-        viewport: { width, height: viewportHeight(width) },
-        locale: locale === 'en' ? 'en-US' : 'zh-CN',
-        colorScheme: scheme,
-      })
-      try {
-        const page = await signedIn.newPage()
-        await page.goto(`${base}/auth/dev`, { waitUntil: 'domcontentloaded' })
-        await page.goto(`${base}/lang/${locale}?next=/dashboard`, { waitUntil: 'domcontentloaded' })
-        for (const path of VISUAL_PATHS) {
-          // `/` answers 302 to /dashboard once a session exists; the guest
-          // context below is the only place it can be measured.
-          if (path === '/') continue
-          try {
-            await checkGatePage(page, locale, width, scheme, path)
-          } catch (error) {
-            failures.push(`${locale} width=${String(width)} scheme=${scheme} ${path}: ${error instanceof Error ? error.message : String(error)}`)
-          }
-        }
-      } finally {
-        await signedIn.close()
-      }
-      // The landing page only exists for a signed-out visitor (#453).
-      const guest = await browser.newContext({
-        viewport: { width, height: viewportHeight(width) },
-        locale: locale === 'en' ? 'en-US' : 'zh-CN',
-        colorScheme: scheme,
-      })
-      try {
-        const page = await guest.newPage()
-        await page.goto(`${base}/lang/${locale}?next=/`, { waitUntil: 'domcontentloaded' })
-        try {
-          await checkGatePage(page, locale, width, scheme, '/')
-        } catch (error) {
-          failures.push(`${locale} width=${String(width)} scheme=${scheme} /: ${error instanceof Error ? error.message : String(error)}`)
-        }
-      } finally {
-        await guest.close()
-      }
+function ensureDataDir(): string {
+  dataDir ??= mkdtempSync(join(tmpdir(), 'fledge-visual-'))
+  return dataDir
+}
+
+interface ShareRequest {
+  readonly index: number
+  readonly total: number
+}
+
+/** `--share 2/4`, or `null` for the coordinator that spawns the shares. */
+function parseShare(argv: readonly string[]): ShareRequest | null {
+  const at = argv.findIndex((arg) => arg === '--share' || arg.startsWith('--share='))
+  if (at === -1) return null
+  const flag = argv[at]
+  if (flag === undefined) return null
+  const raw = flag === '--share' ? argv[at + 1] : flag.slice('--share='.length)
+  const match = raw === undefined ? null : /^(\d+)\/(\d+)$/.exec(raw)
+  if (match === null) throw new Error('--share takes I/N, for example --share 2/4')
+  const index = Number(match[1])
+  const total = Number(match[2])
+  if (!Number.isInteger(total) || total < 1 || index < 1 || index > total) {
+    throw new Error(`--share ${String(raw)} is not a share of that split`)
+  }
+  return { index, total }
+}
+
+/**
+ * One share per core, capped at four. The runner has four cores and each share
+ * is a browser plus a server, so more shares than cores only adds context
+ * switches; VISUAL_SHARDS overrides it for a measurement.
+ */
+function shardCount(cells: number): number {
+  const requested = Number(process.env.VISUAL_SHARDS ?? '')
+  const wanted = Number.isInteger(requested) && requested > 0 ? requested : Math.min(4, availableParallelism())
+  return Math.max(1, Math.min(wanted, cells))
+}
+
+interface PooledPage {
+  readonly context: import('playwright').BrowserContext
+  readonly page: import('playwright').Page
+}
+
+/**
+ * One page per locale and mode, reused across the cells of a share: the viewport
+ * changes per width, the signed-in session and the forced colour scheme do not.
+ */
+async function pageFor(
+  browser: import('playwright').Browser,
+  pool: Map<string, PooledPage>,
+  key: string,
+  locale: VisualLocale,
+  options: { readonly scheme?: 'light' | 'dark'; readonly signedIn: boolean },
+): Promise<import('playwright').Page> {
+  const pooled = pool.get(key)
+  if (pooled !== undefined) return pooled.page
+  const context = await browser.newContext({
+    viewport: { width: 1280, height: 900 },
+    locale: locale === 'en' ? 'en-US' : 'zh-CN',
+    ...(options.scheme === undefined ? {} : { colorScheme: options.scheme }),
+  })
+  const page = await context.newPage()
+  if (options.signedIn) await page.goto(`${base}/auth/dev`, { waitUntil: 'domcontentloaded' })
+  await page.goto(`${base}/lang/${locale}?next=${options.signedIn ? '/dashboard' : '/'}`, { waitUntil: 'domcontentloaded' })
+  pool.set(key, { context, page })
+  return page
+}
+
+/** Measure one cell. Every failure keeps the cell's label, which is its identity. */
+async function runCell(
+  browser: import('playwright').Browser,
+  pool: Map<string, PooledPage>,
+  cell: VisualCell,
+): Promise<void> {
+  const prefix = cellLabel(cell)
+  try {
+    if (cell.kind === 'theme') {
+      await checkExplicitTheme(browser, cell.locale, cell.width)
+      return
     }
-    await checkExplicitTheme(browser, locale, width)
+    const signedIn = cell.path !== '/'
+    const mode = cell.kind === 'gate' ? `gate-${cell.scheme}` : 'sweep'
+    const page = await pageFor(browser, pool, `${cell.locale}|${mode}|${signedIn ? 'in' : 'guest'}`, cell.locale, {
+      scheme: cell.kind === 'gate' ? cell.scheme : undefined,
+      signedIn,
+    })
+    await page.setViewportSize({ width: cell.width, height: viewportHeight(cell.width) })
+    if (cell.kind === 'gate') await checkGatePage(page, cell.locale, cell.width, cell.scheme, cell.path)
+    else await checkPage(page, cell.locale, cell.width, cell.path)
+  } catch (error) {
+    failures.push(`${prefix}: ${error instanceof Error ? error.message : String(error)}`)
   }
 }
 
-void main()
+function shardResultPath(dir: string, share: number): string {
+  return join(dir, `shard-${String(share)}.json`)
+}
+
+async function runShare(share: ShareRequest): Promise<void> {
+  const parts = partitionWorkload(visualWorkload(), share.total)
+  const cells = parts[share.index - 1] ?? []
+  const resultDir = join(outDir, 'shares')
+  mkdirSync(resultDir, { recursive: true })
+  for (const locale of new Set(cells.map((cell) => cell.locale))) mkdirSync(join(outDir, locale), { recursive: true })
+  const visited: string[] = []
+  const child = startServer()
+  let browser: import('playwright').Browser | null = null
+  try {
+    await waitForServer()
+    browser = await chromium.launch()
+    const pool = new Map<string, PooledPage>()
+    try {
+      for (const cell of cells) {
+        // Recorded before it runs: a cell that throws is still a cell this share
+        // measured, and its failure names it.
+        visited.push(cellLabel(cell))
+        await runCell(browser, pool, cell)
+      }
+    } finally {
+      for (const pooled of pool.values()) await pooled.context.close()
+    }
+  } catch (error) {
+    failures.push(
+      `share ${String(share.index)}/${String(share.total)} stopped: ${error instanceof Error ? error.message : String(error)}`,
+    )
+  } finally {
+    await browser?.close()
+    await stopServer(child)
+    if (dataDir !== null) rmSync(dataDir, { recursive: true, force: true })
+  }
+  const result: VisualShardResult = { share: share.index, cells: visited, failures }
+  writeFileSync(shardResultPath(resultDir, share.index), `${JSON.stringify(result, null, 2)}\n`)
+  report(`share ${String(share.index)}/${String(share.total)} measured ${String(visited.length)} cell(s)`)
+}
+
+/** Read one share's result; anything unreadable counts as a result that never arrived. */
+function readShardResult(dir: string, share: number): VisualShardResult | null {
+  try {
+    const parsed: unknown = JSON.parse(readFileSync(shardResultPath(dir, share), 'utf8'))
+    if (typeof parsed !== 'object' || parsed === null) return null
+    const record = parsed as { cells?: unknown; failures?: unknown }
+    if (!Array.isArray(record.cells) || !Array.isArray(record.failures)) return null
+    if (!record.cells.every((cell) => typeof cell === 'string')) return null
+    if (!record.failures.every((failure) => typeof failure === 'string')) return null
+    return { share, cells: record.cells as string[], failures: record.failures as string[] }
+  } catch {
+    return null
+  }
+}
+
+function spawnShare(share: ShareRequest): ChildProcess {
+  // Each share owns a port and a temp database: two servers on one port would
+  // measure whichever booted first, and a shared database is a write conflict.
+  return spawn(process.execPath, ['--import', 'tsx', 'scripts/visual-matrix.ts', '--share', `${String(share.index)}/${String(share.total)}`], {
+    cwd: root,
+    env: { ...process.env, VISUAL_PORT: String(port + share.index), VISUAL_OUT: outDir },
+    stdio: ['ignore', 'inherit', 'inherit'],
+  })
+}
+
+function exitCode(child: ChildProcess): Promise<number | null> {
+  return new Promise((resolve) => {
+    if (child.exitCode !== null) {
+      resolve(child.exitCode)
+      return
+    }
+    child.once('exit', (code, signal) => resolve(code ?? (signal === null ? null : 1)))
+  })
+}
+
+function report(summary: string): void {
+  if (failures.length === 0) {
+    console.log(`visual matrix: ${summary} clean`)
+    return
+  }
+  console.error(`visual matrix: ${String(failures.length)} failure(s)`)
+  for (const failure of failures) console.error(`- ${failure}`)
+  process.exitCode = 1
+}
+
+async function runCoordinator(): Promise<void> {
+  const workload = visualWorkload()
+  const shares = shardCount(workload.length)
+  const resultDir = join(outDir, 'shares')
+  mkdirSync(resultDir, { recursive: true })
+  // A result left by an earlier run in the same checkout would answer for a
+  // share that never ran this time.
+  for (const file of readdirSync(resultDir)) {
+    if (/^shard-\d+\.json$/.test(file)) rmSync(join(resultDir, file), { force: true })
+  }
+  const requests: ShareRequest[] = []
+  for (let index = 1; index <= shares; index += 1) requests.push({ index, total: shares })
+  const children = requests.map((request) => spawnShare(request))
+  const codes = await Promise.all(children.map((child) => exitCode(child)))
+  const results = requests.map((request) => readShardResult(resultDir, request.index))
+  const problems = shardFailures(workload, shares, results)
+  codes.forEach((code, position) => {
+    const result = results[position] ?? null
+    if (code !== 0 && (result === null || result.failures.length === 0)) {
+      problems.push(
+        `share ${String(position + 1)}/${String(shares)} exited ${String(code)} without naming a failure: its cells are unverified`,
+      )
+    }
+  })
+  failures.push(...problems)
+  report(`${String(workload.length)} cell(s) over ${String(shares)} share(s)`)
+}
+
+const share = parseShare(process.argv.slice(2))
+void (share === null ? runCoordinator() : runShare(share)).catch((error: unknown) => {
+  console.error(`visual matrix: ${error instanceof Error ? error.stack ?? error.message : String(error)}`)
+  process.exitCode = 1
+})

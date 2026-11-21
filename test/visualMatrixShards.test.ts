@@ -53,6 +53,13 @@ function exported<T>(name: keyof ShardApi): T {
 
 const LOCALES = ['zh', 'en'] as const
 
+/** `noUncheckedIndexedAccess` is on; an index this test indexes had better exist. */
+function at<T>(list: readonly T[], index: number): T {
+  const value = list[index]
+  assert.ok(value !== undefined, `expected an entry at index ${String(index)}`)
+  return value
+}
+
 /** The cross-product the serial runner visits today, rebuilt from the same lists. */
 function expectedLabels(): string[] {
   const labels: string[] = []
@@ -120,7 +127,7 @@ test('a share assigned no cells fails instead of reporting success', () => {
 
   const shares = workload.length + 1
   const parts = partition(workload, shares)
-  assert.equal(parts[shares - 1].length, 0, 'the extra share is the empty one this test is about')
+  assert.equal(at(parts, shares - 1).length, 0, 'the extra share is the empty one this test is about')
   const results = parts.map((part, index) =>
     part.length === 0 ? null : { share: index, cells: part.map(label), failures: [] },
   )
@@ -156,7 +163,7 @@ test('a share whose results are missing fails the aggregate', () => {
     cells: index === 1 ? part.slice(1).map(label) : part.map(label),
     failures: [],
   }))
-  const dropped = label(parts[1][0])
+  const dropped = label(at(at(parts, 1), 0))
   const missing = problems(workload, 4, short)
   assert.ok(
     missing.some((failure) => failure.includes(dropped)),
@@ -173,7 +180,7 @@ test('a failing cell in a later share reaches the job output verbatim', () => {
   )
 
   const parts = partition(workload, 4)
-  const failing = `${label(parts[1][0])}: element outside the viewport: div.card`
+  const failing = `${label(at(at(parts, 1), 0))}: element outside the viewport: div.card`
   const results = parts.map((part, index) => ({
     share: index,
     cells: part.map(label),
