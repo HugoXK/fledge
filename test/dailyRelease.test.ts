@@ -371,6 +371,22 @@ test('the #80 comment carries the open state, and still posts after a refusal', 
   assert.match(step, /release pull request: \*\*\$\{OPEN_STATE\}\*\*/)
 })
 
+// #1204: a night held by an open release pull request pushed nothing, so the
+// empty-push exit said nothing on #80 — exactly the night a person needed to
+// read. The held night now has its own path to #80, keyed by the pull request,
+// its head and its `ci-ok` conclusion, evaluated before the empty-push exit can
+// swallow it.
+test('#1204: a held night reports the open release pull request instead of exiting silently', () => {
+  const step = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
+  const held = step.indexOf('open-pr')
+  const emptyPushExit = step.indexOf('no pushed branch')
+  assert.notEqual(held, -1, 'the open-pr reason has a path of its own')
+  assert.notEqual(emptyPushExit, -1, 'the pushed-only path still exists')
+  assert.ok(held < emptyPushExit, 'the held path runs before the empty-push exit, so a held night cannot exit silently')
+  assert.match(step, /daily-release:held:/, 'the held line carries its own marker, keyed by the pull request state')
+  assert.match(step, /openPrCiOk/, 'the line reads the conclusion the collect step recorded')
+})
+
 test('the comment is posted only when the pushed sha or the plan changed', () => {
   const commentStep = between('      - name: Comment on #80', '      - name: Keep the plan artifact')
   assert.match(commentStep, /issues\/80\/comments/)

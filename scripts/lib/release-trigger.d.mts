@@ -3,6 +3,12 @@
 export interface TriggerOpenPullRequest {
   number: number
   branch?: string
+  /** The pull request head, so a held night can name the commit it is held at. */
+  headSha?: string
+  /** The latest `ci-ok` conclusion at that head; empty when it was not collected. */
+  ciOk?: string
+  /** Names of the checks that are not green, for the held line on #80 (#1204). */
+  failedChecks?: string[]
 }
 
 export interface TriggerBranchEntry {
