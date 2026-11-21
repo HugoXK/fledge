@@ -1,6 +1,6 @@
 /// <reference lib="dom" />
 import { spawn } from 'node:child_process'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -9,18 +9,23 @@ import { chromium } from 'playwright'
 import {
   GATE_SCHEMES,
   GATE_WIDTHS,
+  VISUAL_LOCALES,
   VISUAL_NARROW_CASES,
   VISUAL_PATHS,
   VISUAL_WIDTHS,
+  caseCoverage,
+  caseKey,
+  expectedCaseKeys,
   focusFailures,
   leftoverFailures,
   nameFailures,
   overflowFailure,
   pageSlug,
+  summaryMarkdown,
   touchFailures,
   viewportHeight,
 } from '../src/lib/visualMatrix.js'
-import type { FocusStyle } from '../src/lib/visualMatrix.js'
+import type { FocusStyle, VisualCaseResult } from '../src/lib/visualMatrix.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const port = Number(process.env.VISUAL_PORT ?? '18180')
@@ -28,6 +33,56 @@ const base = `http://127.0.0.1:${port}`
 const outDir = process.env.VISUAL_OUT ?? join(root, 'visual-matrix')
 const dataDir = mkdtempSync(join(tmpdir(), 'fledge-visual-'))
 const failures: string[] = []
+// #787: the same run also records one row per case, so the job summary names
+// every page, viewport and scheme with its own result.
+const cases: VisualCaseResult[] = []
+const recordedKeys = new Set<string>()
+
+/**
+ * A case is whatever failures appeared while it ran: the counts are taken
+ * around the call, so the row cannot disagree with the list that decides the
+ * exit code. A case whose key is already recorded is a red run, not a second
+ * row: two cases that share a key write one screenshot, so one of them would
+ * pass on the other's picture.
+ */
+function record(locale: string, width: number, scheme: string, path: string, from: number): void {
+  const key = caseKey({ locale, width, scheme, path })
+  if (recordedKeys.has(key)) {
+    failures.push(`visual matrix: case ${key} ran twice; its screenshot would overwrite another case's`)
+    return
+  }
+  recordedKeys.add(key)
+  cases.push({ locale, width, scheme, path, ok: failures.length === from, detail: failures.slice(from) })
+}
+
+/**
+ * What ran has to be what the matrix promised: a page, width or scheme missing
+ * from `cases` is a dropped case, and the job fails instead of publishing a
+ * shorter table that reads green. Checked before the exit code is decided.
+ */
+function checkCoverage(): void {
+  const coverage = caseCoverage(expectedCaseKeys(), [...recordedKeys])
+  if (coverage.missing.length > 0) {
+    failures.push(
+      `visual matrix: ${String(coverage.missing.length)} promised case(s) never ran — a page, width or scheme was dropped: ${coverage.missing.slice(0, 3).join(', ')}`,
+    )
+  }
+  if (coverage.duplicated.length > 0) {
+    failures.push(`visual matrix: case key reused, so one case overwrote another: ${coverage.duplicated.slice(0, 3).join(', ')}`)
+  }
+  if (coverage.unexpected.length > 0) {
+    failures.push(
+      `visual matrix: ${String(coverage.unexpected.length)} case(s) ran outside the promised set: ${coverage.unexpected.slice(0, 3).join(', ')}`,
+    )
+  }
+}
+
+/** The summary a reader opens from the run page; absent outside Actions. */
+function writeStepSummary(): void {
+  const target = process.env.GITHUB_STEP_SUMMARY
+  if (target === undefined || target === '') return
+  appendFileSync(target, summaryMarkdown(cases))
+}
 // `/` is captured signed out above; every other path needs the development login.
 const SIGNED_IN_PATHS = VISUAL_PATHS.filter((path) => path !== '/')
 
@@ -202,7 +257,7 @@ async function main(): Promise<void> {
   try {
     await waitForServer()
     browser = await chromium.launch()
-    for (const locale of ['zh', 'en'] as const) {
+    for (const locale of VISUAL_LOCALES) {
       mkdirSync(join(outDir, locale), { recursive: true })
       // The landing page only exists for a signed-out visitor: src/app.ts answers
       // `/` with a 302 to /dashboard once a session exists, so signing in first
@@ -215,11 +270,13 @@ async function main(): Promise<void> {
       await guestPage.goto(`${base}/lang/${locale}?next=/`, { waitUntil: 'domcontentloaded' })
       for (const width of VISUAL_WIDTHS) {
         await guestPage.setViewportSize({ width, height: viewportHeight(width) })
+        const from = failures.length
         try {
           await checkPage(guestPage, locale, width, '/')
         } catch (error) {
           failures.push(`${locale} ${width}px /: ${error instanceof Error ? error.message : String(error)}`)
         }
+        record(locale, width, 'host', '/', from)
       }
       await guest.close()
 
@@ -233,11 +290,13 @@ async function main(): Promise<void> {
       for (const width of VISUAL_WIDTHS) {
         await page.setViewportSize({ width, height: viewportHeight(width) })
         for (const path of SIGNED_IN_PATHS) {
+          const from = failures.length
           try {
             await checkPage(page, locale, width, path)
           } catch (error) {
             failures.push(`${locale} ${width}px ${path}: ${error instanceof Error ? error.message : String(error)}`)
           }
+          record(locale, width, 'host', path, from)
         }
       }
       // #950: a page whose narrowest layout needs a width below the sweep is
@@ -245,21 +304,28 @@ async function main(): Promise<void> {
       // clean run because the width was never rendered.
       for (const narrow of VISUAL_NARROW_CASES) {
         await page.setViewportSize({ width: narrow.width, height: viewportHeight(narrow.width) })
+        const from = failures.length
         try {
           await checkPage(page, locale, narrow.width, narrow.path)
         } catch (error) {
           failures.push(`${locale} ${narrow.width}px ${narrow.path}: ${error instanceof Error ? error.message : String(error)}`)
         }
+        record(locale, narrow.width, 'host', narrow.path, from)
       }
       await context.close()
       // #870: the measured gate runs after the screenshot sweep, so a screenshot
       // failure and a gate failure are still one job with one list.
       await runGatePass(browser, locale)
     }
+    // After both locales: what ran has to equal what the matrix promised.
+    checkCoverage()
   } finally {
     await browser?.close()
     await stopServer(child)
     rmSync(dataDir, { recursive: true, force: true })
+    // Written before the exit code is decided, so a red run still tells the
+    // reader which page, viewport and scheme failed.
+    writeStepSummary()
   }
   if (failures.length > 0) {
     console.error(`visual matrix: ${failures.length} failure(s)`)
@@ -267,8 +333,8 @@ async function main(): Promise<void> {
     process.exitCode = 1
     return
   }
-  console.log(`visual matrix: ${VISUAL_PATHS.length} pages x ${VISUAL_WIDTHS.length} widths x 2 locales + ${String(VISUAL_NARROW_CASES.length)} narrow case(s) clean`)
-  console.log(`visual gate: ${VISUAL_PATHS.length} pages x ${GATE_WIDTHS.length} widths x ${GATE_SCHEMES.length} schemes x 2 locales, touch/focus/name/leftover clean`)
+  console.log(`visual matrix: ${VISUAL_PATHS.length} pages x ${VISUAL_WIDTHS.length} widths x ${String(VISUAL_LOCALES.length)} locales + ${String(VISUAL_NARROW_CASES.length)} narrow case(s) clean`)
+  console.log(`visual gate: ${VISUAL_PATHS.length} pages x ${GATE_WIDTHS.length} widths x ${GATE_SCHEMES.length} schemes x ${String(VISUAL_LOCALES.length)} locales, touch/focus/name/leftover clean`)
   console.log(`screenshots: ${outDir}`)
 }
 
@@ -455,11 +521,13 @@ async function runGatePass(browser: import('playwright').Browser, locale: string
           // `/` answers 302 to /dashboard once a session exists; the guest
           // context below is the only place it can be measured.
           if (path === '/') continue
+          const from = failures.length
           try {
             await checkGatePage(page, locale, width, scheme, path)
           } catch (error) {
             failures.push(`${locale} width=${String(width)} scheme=${scheme} ${path}: ${error instanceof Error ? error.message : String(error)}`)
           }
+          record(locale, width, scheme, path, from)
         }
       } finally {
         await signedIn.close()
@@ -473,16 +541,24 @@ async function runGatePass(browser: import('playwright').Browser, locale: string
       try {
         const page = await guest.newPage()
         await page.goto(`${base}/lang/${locale}?next=/`, { waitUntil: 'domcontentloaded' })
+        const from = failures.length
         try {
           await checkGatePage(page, locale, width, scheme, '/')
         } catch (error) {
           failures.push(`${locale} width=${String(width)} scheme=${scheme} /: ${error instanceof Error ? error.message : String(error)}`)
         }
+        record(locale, width, scheme, '/', from)
       } finally {
         await guest.close()
       }
     }
-    await checkExplicitTheme(browser, locale, width)
+    const from = failures.length
+    try {
+      await checkExplicitTheme(browser, locale, width)
+    } catch (error) {
+      failures.push(`${locale} width=${String(width)} scheme=explicit-dark /dashboard: ${error instanceof Error ? error.message : String(error)}`)
+    }
+    record(locale, width, 'explicit-dark', '/dashboard', from)
   }
 }
 
