@@ -30,7 +30,8 @@ import { diffContextBundles, readContextBundle, verifyContextBundle } from '../l
 import type { AdherenceRecord, AdherenceStatus, ClauseStatus, ClauseResult } from '../lib/instructions.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
-import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
+import { ATTRIBUTION_FIELDS, parseAttributionGroundJson, parseAttributionJson } from '../lib/attribution.js'
+import type { AttributionGround, AttributionGroundState, AttributionKey } from '../lib/attribution.js'
 import { followUpLinks, summariseDeliveries, type DeliveryOutcomeRow } from '../lib/deliveryOutcome.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { planPacketHash } from '../lib/planDecision.js'
@@ -499,16 +500,63 @@ function jobTeamStats(job: JobRow): Array<{ role: string; label: string; calls: 
   }
 }
 
+// #368: what the job claimed and what the instance observed are two facts, and the
+// page must not print the first as the second. A stored ground record answers per
+// attribution key. A row written before that column exists needs the same answer
+// reconstructed: `captureTeamStats` used to write the observation over
+// `attribution_json`, so a row carrying team stats holds the observed half there
+// (grounded, unmarked) and a row without them holds a claim nothing checked.
+const GROUND_STATE_ORDER: Record<AttributionGroundState, number> = { grounded: 0, unobserved: 1, 'no-observation': 2 }
+
+function attributionGroundFor(job: JobRow): AttributionGround | null {
+  const stored = parseAttributionGroundJson(job.attribution_ground_json)
+  if (stored !== null) return stored
+  const recorded = parseAttributionJson(job.attribution_json)
+  if (recorded === null) return null
+  const observedOnly = job.team_stats_json !== null
+  return {
+    steps: ATTRIBUTION_FIELDS
+      .filter((field) => recorded[field.key] !== undefined)
+      .map((field) => ({
+        key: field.key,
+        claimed: observedOnly ? null : (recorded[field.key] as string),
+        observed: recorded[field.key] as string,
+        state: observedOnly ? 'grounded' as const : 'no-observation' as const,
+      })),
+  }
+}
+
 function jobAttribution(t: Translate, job: JobRow): string {
-  return attributionJourney(parseAttributionJson(job.attribution_json))
-    .map(({ role, keys }) => {
-      const labels = keys.map((key) => {
-        const field = ATTRIBUTION_FIELDS.find((entry) => entry.key === key)
-        return field === undefined ? key : t(field.zh, field.en)
-      })
-      return `${role} ${labels.join(' + ')}`
+  const ground = attributionGroundFor(job)
+  if (ground === null) return ''
+  const byRole = new Map<string, { role: string; keys: AttributionKey[]; state: AttributionGroundState }>()
+  const add = (role: string, key: AttributionKey, state: AttributionGroundState): void => {
+    const entry = byRole.get(role) ?? { role, keys: [], state }
+    entry.keys.push(key)
+    // One ungrounded key speaks for the role: a seat seen on one kind of work and
+    // not on another is not a grounded seat.
+    if (GROUND_STATE_ORDER[state] > GROUND_STATE_ORDER[entry.state]) entry.state = state
+    byRole.set(role, entry)
+  }
+  for (const step of ground.steps) {
+    if (step.claimed !== null) add(step.claimed, step.key, step.state)
+    // An observation that did not name the claimed seat is printed beside it,
+    // unmarked, because it is what the server saw rather than what the job said.
+    if (step.observed !== null && step.observed !== step.claimed) add(step.observed, step.key, 'grounded')
+  }
+  return [...byRole.values()].map(({ role, keys, state }) => {
+    // "wrote" and "implemented" stay one contribution when one role did both, the
+    // same rule `attributionJourney` applies.
+    const shown = keys.includes('implementedBy') ? keys.filter((key) => key !== 'writtenBy') : keys
+    const labels = shown.map((key) => {
+      const field = ATTRIBUTION_FIELDS.find((entry) => entry.key === key)
+      return field === undefined ? key : t(field.zh, field.en)
     })
-    .join(' · ')
+    const marker = state === 'unobserved'
+      ? t('声称，未观察', 'claimed, not observed')
+      : state === 'no-observation' ? t('声称，未核实', 'claimed, not verified') : ''
+    return `${role} ${labels.join(' + ')}${marker === '' ? '' : ` · ${marker}`}`
+  }).join(' · ')
 }
 
 function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): { full: string; short: string } {
@@ -3399,9 +3447,34 @@ export function adminPage(input: {
   const expiredText = expiry === null
     ? `${t(`扫描失败：${expiryError ?? 'unknown'}`, `scan failed: ${expiryError ?? 'unknown'}`)} · ${keepText}`
     : `${expiry.expiredCopies === 1 ? t('1 (试运行)', '1 (dry run)') : t(`${expiry.expiredCopies} (试运行)`, `${expiry.expiredCopies} (dry run)`)} · ${keepText}`
+  // #463: a drill that did not prove the copy's encrypted columns may not read
+  // as an unqualified success. The `ok` word carries the qualification and the
+  // next row names the check as its own state, so the green and the skipped
+  // cannot share one reading. A `fail` or `not-reached` renders as a failure
+  // even beside a malformed or older `ok: true`: the card trusts the field it
+  // renders, and only a check that ran and passed earns a bare `ok`.
+  const drillOkText = (): string => {
+    if (drill === null) return ''
+    if (!drill.ok) return t('失败', 'failed')
+    if (drill.columnCheck === 'pass') return t('成功', 'ok')
+    if (drill.columnCheck === 'skipped') return t('成功（列检查未运行）', 'ok (column check not run)')
+    if (drill.columnCheck === 'fail') return t('失败（列检查失败）', 'failed (column check failed)')
+    if (drill.columnCheck === 'not-reached') return t('失败（列检查未到达）', 'failed (column check not reached)')
+    return t('成功（列检查未记录）', 'ok (column check not recorded)')
+  }
+  const drillColumnText = (): string => {
+    if (drill === null) return ''
+    const zh = drill.columnErrors.length === 0 ? '' : `（${drill.columnErrors.join('；')}）`
+    const en = drill.columnErrors.length === 0 ? '' : ` (${drill.columnErrors.join('; ')})`
+    if (drill.columnCheck === 'pass') return t('列检查：通过', 'column check: passed')
+    if (drill.columnCheck === 'skipped') return t('列检查：未运行（未提供密钥）', 'column check: not run (no key given)')
+    if (drill.columnCheck === 'not-reached') return t('列检查：未到达（本次运行在检查前失败）', 'column check: not reached (the run failed before it)')
+    if (drill.columnCheck === 'fail') return t(`列检查：失败${zh}`, `column check: failed${en}`)
+    return t('列检查：未记录', 'column check: not recorded')
+  }
   const drillText = drill === null
     ? t('没有记录', 'none recorded')
-    : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`
+    : `${humanTimeShort(drill.at)} · ${drillOkText()}${drill.detail === null ? '' : ` · ${drill.detail}`}`
   const backupCard = `<section class="card" id="backups">
     <h2>${escapeHtml(t('备份', 'Backups'))}</h2>
     <div class="list">
@@ -3412,6 +3485,7 @@ export function adminPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
       ${problemRows}
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(drillText)}</small></div></div>
+      ${drill === null ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('列检查', 'Column check'))}</strong><small>${escapeHtml(drillColumnText())}</small></div></div>`}
     </div>
     <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('只列出真正不符或无法读取的副本；旧副本只按大小核对，sha256 只核对最新副本。', 'Only copies that differ or cannot be read are listed; older copies are compared by size, and sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
@@ -4602,7 +4676,7 @@ function readAdherence(json: string | null): AdherenceRecord | null {
       ${budgetStop === '' ? '' : renderState({ kind: 'error', title: t('已达单任务预算', 'Per-job budget reached'), body: budgetStop, action: { href: `/repos/${repo.id}#repo-settings`, label: t('提高单任务预算', 'Raise the per-job budget') } })}
       ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(redact(job.error))}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
-      ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
+      ${attribution === '' ? '' : `<p class="fine" data-attribution>${escapeHtml(attribution)}</p>`}
       ${modelLine}
       ${untrustedLine}
       ${providerLine}

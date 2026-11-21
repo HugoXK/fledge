@@ -1,4 +1,5 @@
-import type { Attribution } from './attribution.js'
+import { ATTRIBUTION_FIELDS } from './attribution.js'
+import type { Attribution, AttributionGround, AttributionGroundState, AttributionGroundStep } from './attribution.js'
 
 export interface TeamStat {
   role: string
@@ -23,4 +24,24 @@ export function observedAttribution(stats: TeamStat[]): Attribution | null {
 
 export function observedRoles(stats: TeamStat[]): string[] {
   return stats.filter((entry) => entry.calls > 0).map((entry) => entry.role)
+}
+
+// #368: pair what the job claimed with what the instance saw, per attribution
+// key, and never let one replace the other. `stats === null` means no instance
+// observed this job, which is `no-observation`: the claim is unverified, not
+// false, and not proven. Presence is the whole claim the call counts can carry —
+// they say a seat worked, never that it wrote a file.
+export function groundAttribution(claimed: Attribution | null, stats: TeamStat[] | null): AttributionGround {
+  const observed = stats === null ? null : observedAttribution(stats)
+  const steps: AttributionGroundStep[] = []
+  for (const field of ATTRIBUTION_FIELDS) {
+    const claim = claimed?.[field.key] ?? null
+    const seen = observed?.[field.key] ?? null
+    if (claim === null && seen === null) continue
+    const state: AttributionGroundState = stats === null
+      ? 'no-observation'
+      : seen !== null && (claim === null || seen === claim) ? 'grounded' : 'unobserved'
+    steps.push({ key: field.key, claimed: claim, observed: seen, state })
+  }
+  return { steps }
 }

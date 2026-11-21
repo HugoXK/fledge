@@ -68,10 +68,26 @@ export interface BackupStatus {
   encrypted: number
 }
 
+/**
+ * Whether a drill proved the copy's encrypted columns still open. `'skipped'`
+ * means the run carried no key, `'not-reached'` means it carried one and failed
+ * before the check, and `null` means the file predates the field, which is not
+ * the same claim as "the check ran and was not attempted".
+ */
+export type RestoreDrillColumnCheck = 'pass' | 'fail' | 'skipped' | 'not-reached'
+
 export interface RestoreDrillStatus {
   at: string
   ok: boolean
   detail: string | null
+  /** The column check as the drill recorded it, or null when it recorded none. */
+  columnCheck: RestoreDrillColumnCheck | null
+  /** `${table}.${column}` and why it did not open; empty unless the check failed. */
+  columnErrors: string[]
+}
+
+function columnCheckOf(value: unknown): RestoreDrillColumnCheck | null {
+  return value === 'pass' || value === 'fail' || value === 'skipped' || value === 'not-reached' ? value : null
 }
 
 /**
@@ -84,7 +100,13 @@ export function readRestoreDrill(path: string): RestoreDrillStatus | null {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as Partial<RestoreDrillStatus>
     if (typeof parsed.at !== 'string' || parsed.at === '' || typeof parsed.ok !== 'boolean') return null
-    return { at: parsed.at, ok: parsed.ok, detail: typeof parsed.detail === 'string' ? parsed.detail : null }
+    return {
+      at: parsed.at,
+      ok: parsed.ok,
+      detail: typeof parsed.detail === 'string' ? parsed.detail : null,
+      columnCheck: columnCheckOf(parsed.columnCheck),
+      columnErrors: Array.isArray(parsed.columnErrors) ? parsed.columnErrors.filter((entry): entry is string => typeof entry === 'string') : [],
+    }
   } catch {
     return null
   }

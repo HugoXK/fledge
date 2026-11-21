@@ -215,7 +215,14 @@ them, and `readRestoreDrill()` reads `<dataDir>/backup-drill.json`. The card
 never opens the database or a copy. It hashes only the newest plaintext copy
 under the 4 MiB cap, gives a row only to a copy that differs or whose manifest
 cannot be read, and reports the drill record rather than a fixed "none
-recorded". `scripts/restore-drill.mjs --status-file` is the writer.
+recorded". `scripts/restore-drill.mjs --status-file` is the writer. The record's
+`columnCheck` (the drill's proof that the copy's encrypted columns still open)
+has its own row — `passed`, `not run (no key given)`, `not reached (the run
+failed before it)` when a key was given and the drill died first, `failed` with
+the column names, or `not recorded` for a file written before the field existed —
+and an `ok` whose check did not pass carries the qualification, so a green row
+and a skipped check never read the same. The writer of that field is the drill's
+`--secret-key-file` flag.
 
 ## Components
 
@@ -2347,10 +2354,22 @@ zero row for this purpose: `usageCountForJob` counts only `cost_known = 1`, so
 the per-job budget's unknown refusal (#357) still fires when every call a job
 made was unknown. Only USD-billed rows reach `jobs.cost_usd`, and a retry names
 the attempt it continues in `jobs.retry_of`, so the chain a job inherits is the
-sum of every attempt rather than a fresh budget. The job page shows cost, attribution and
-Team attribution is grounded in the DSH per-role call counts: the job page and the
-PR automation comment use only roles with actual calls, and a claimed role with
-zero calls is recorded as a `team_attribution_grounded` mismatch event.
+sum of every attempt rather than a fresh budget. The job page shows the cost and the
+team journey beside the evidence they rest on.
+
+Team attribution is grounded in the DSH per-role call counts, which prove that a
+seat worked and never that it wrote a file. `jobs.attribution_json` holds what the
+job claimed; `jobs.attribution_ground_json` records the observation beside it, per
+attribution key, as `claimed` / `observed` / `state` (`grounded`, `unobserved`,
+`no-observation`), so an observation never overwrites a claim. The job page and the
+dashboard job row mark a claimed seat the instance did not see as
+`claimed, not observed`, a claim nothing observed as `claimed, not verified`, and
+leave a grounded seat unmarked; a seat only the instance saw is shown from the
+observation. The PR automation comment uses the observed roles and falls back to
+the claim only when there was no observation. None of this blocks a merge: an
+instance exists only where one is configured, so the marker describes the record
+rather than gating it. A claimed role with zero calls still records a
+`team_attribution_grounded` event, whose meta names the per-key states.
 
 structured evidence (`scope`, `acceptance`, `testPlan`, `testRed`, `testGreen`,
 `tests`, `checks`, `files`, `risk`, `rollback`); failed jobs have a one-click

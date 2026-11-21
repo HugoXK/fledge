@@ -42,8 +42,8 @@ function writeCopy(fx: Fixture, at: Date): void {
   writeFileSync(join(fx.backupDir, `fledge-${stamp(at)}.db`), 'backup bytes\n')
 }
 
-function writeDrill(fx: Fixture, record: { at: Date; ok: boolean }): void {
-  writeFileSync(fx.drillPath, JSON.stringify({ at: record.at.toISOString(), ok: record.ok, detail: null }))
+function writeDrill(fx: Fixture, record: { at: Date; ok: boolean; columnCheck?: string }): void {
+  writeFileSync(fx.drillPath, JSON.stringify({ at: record.at.toISOString(), ok: record.ok, detail: null, ...(record.columnCheck === undefined ? {} : { columnCheck: record.columnCheck }) }))
 }
 
 function configFor(fx: Fixture) {
@@ -141,6 +141,42 @@ test('a drill that ran and failed, or aged out, still publishes the 0 the rule p
     const aged = await scrape(fx)
     assert.equal(metricValue(aged, 'fledge_restore_drill_ok'), 0, 'an aged-out drill must read 0')
     assert.ok(metricValue(aged, 'fledge_restore_drill_age_hours') !== null, 'an aged-out drill still has an age')
+  } finally {
+    rmSync(fx.root, { recursive: true, force: true })
+    resetMetrics()
+  }
+})
+
+test('a recorded failing or unreached column check zeroes the drill gauge, while skipped stays a pass', async () => {
+  const fx = fixture()
+  try {
+    writeCopy(fx, new Date(Date.now() - 2 * HOUR))
+    const at = new Date(Date.now() - HOUR)
+    // A contradictory record (ok: true beside a failed check) is not a passing
+    // drill: the card already refuses that reading, and the scrape must not keep
+    // a green the page calls failed.
+    writeDrill(fx, { at, ok: true, columnCheck: 'fail' })
+    resetMetrics()
+    assert.equal(metricValue(await scrape(fx), 'fledge_restore_drill_ok'), 0, 'a failed column check must not read as a passing drill')
+
+    writeDrill(fx, { at, ok: true, columnCheck: 'not-reached' })
+    resetMetrics()
+    assert.equal(metricValue(await scrape(fx), 'fledge_restore_drill_ok'), 0, 'an unreached column check must not read as a passing drill')
+
+    // A host with no column key configured is a legitimate configuration; its
+    // drill did pass, and reading it as 0 would page that host on every scrape.
+    writeDrill(fx, { at, ok: true, columnCheck: 'skipped' })
+    resetMetrics()
+    assert.equal(metricValue(await scrape(fx), 'fledge_restore_drill_ok'), 1, 'an unkeyed host is not a failing drill')
+
+    writeDrill(fx, { at, ok: true, columnCheck: 'pass' })
+    resetMetrics()
+    assert.equal(metricValue(await scrape(fx), 'fledge_restore_drill_ok'), 1, 'a proven drill reads 1')
+
+    // A record written before the field existed still reads its own verdict.
+    writeDrill(fx, { at, ok: true })
+    resetMetrics()
+    assert.equal(metricValue(await scrape(fx), 'fledge_restore_drill_ok'), 1, 'a legacy record is not a failed check')
   } finally {
     rmSync(fx.root, { recursive: true, force: true })
     resetMetrics()

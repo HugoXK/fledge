@@ -20,7 +20,12 @@ export interface BackupReadings {
    * True only for a successful drill that is inside the expected interval. A
    * missing or malformed `backup-drill.json` is not a passing drill, and with no
    * record at all it is not a failing one either — `publishBackupMetrics` then
-   * publishes no verdict series rather than a 0 (#1199).
+   * publishes no verdict series rather than a 0 (#1199). A record that carries a
+   * failed or unreached column check is not a passing drill either, even beside
+   * an `ok: true`, because the card stops calling it one: same record, one
+   * answer. `skipped` stays a pass — a host that configures no column key is a
+   * legitimate configuration, not a failing drill, and reading it as 0 would
+   * page that host on every scrape.
    */
   drillOk: boolean
 }
@@ -53,7 +58,14 @@ export function readBackupReadings(input: BackupMetricsInput): BackupReadings {
   const drill = readRestoreDrill(input.drillPath)
   const drillAt = drill === null ? Number.NaN : Date.parse(drill.at)
   const drillAgeHours = Number.isFinite(drillAt) ? (now - drillAt) / 3_600_000 : null
-  const drillOk = drill !== null && drill.ok && drillAgeHours !== null && drillAgeHours <= input.expectedHours
+  // A recorded `fail` or `not-reached` is never a passing drill, even when the
+  // file says `ok: true`: the card already refuses that reading, and a scrape
+  // that kept the green would page nobody while the page said failed. A keyed
+  // run that dies early also writes `ok: false`, so the two agree by accident
+  // there and by rule here.
+  const columnVerdict = drill?.columnCheck ?? null
+  const columnsOk = columnVerdict !== 'fail' && columnVerdict !== 'not-reached'
+  const drillOk = drill !== null && drill.ok && columnsOk && drillAgeHours !== null && drillAgeHours <= input.expectedHours
   return { backup, drill, drillAgeHours, drillOk }
 }
 
