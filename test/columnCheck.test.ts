@@ -317,7 +317,9 @@ const keyedFences = (text: string): string[] => [...text.matchAll(/```sh\n([\s\S
 // copy an unverified database over the live one.
 function keyCleanupProblem(block: string, path: string): string | null {
   const rm = new RegExp(`rm\\s+-f\\s+${escapeRegExp(path)}`)
-  const failureBranches = [...block.matchAll(/\belse\b([\s\S]*?)\bfi\b/g)].map((match) => match[1] ?? '')
+  // The closing tokens are read as whole lines: an `else` or `fi` inside a
+  // comment or a backticked sentence is prose, not shell structure.
+  const failureBranches = [...block.matchAll(/^[ \t]*else[ \t]*$([\s\S]*?)^[ \t]*fi[ \t]*$/gm)].map((match) => match[1] ?? '')
   if (failureBranches.some((branch) => rm.test(branch))) return null
   const trapRemoves = new RegExp(`trap\\s+['"][^'"]*rm\\s+-f\\s+${escapeRegExp(path)}['"]`).test(block)
   // A block that puts anything on the live instance after the drill must also stop
@@ -363,6 +365,8 @@ test('every runbook block that hands the drill a column key removes it on the re
       // The file holds the key the copy's credentials open with: a block that
       // writes it and leaves it behind when it refuses the copy is a key left on
       // disk, whatever the comment beside it says.
+      const literal = escapeRegExp(path)
+      assert.match(block, new RegExp(`rm -f ${literal}`), `the block that passes ${path} must remove it, got:\n${block}`)
       const problem = keyCleanupProblem(block, path)
       assert.equal(problem, null, `the block that passes ${path} must remove it on every exit, got: ${problem}\n${block}`)
     }

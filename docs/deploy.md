@@ -1540,6 +1540,8 @@ if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill --
   echo "restore-drill: OK"
 else
   echo "drill failed; do not restore from this copy" >&2
+  # remove the key before the block stops: `exit 1` skips every line after `fi`
+  sudo rm -f /var/tmp/fledge-restore/column.key
   exit 1
 fi
 # the column key was only needed for the check above
