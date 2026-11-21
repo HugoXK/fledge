@@ -2361,11 +2361,15 @@ Team attribution is grounded in the DSH per-role call counts, which prove that a
 seat worked and never that it wrote a file. `jobs.attribution_json` holds what the
 job claimed; `jobs.attribution_ground_json` records the observation beside it, per
 attribution key, as `claimed` / `observed` / `state` (`grounded`, `unobserved`,
-`no-observation`), so an observation never overwrites a claim. The job page and the
-dashboard job row mark a claimed seat the instance did not see as
-`claimed, not observed`, a claim nothing observed as `claimed, not verified`, and
-leave a grounded seat unmarked; a seat only the instance saw is shown from the
-observation. The PR automation comment uses the observed roles and falls back to
+`no-observation`), so an observation never overwrites a claim. Every reader of the
+claim marks it with the same vocabulary: the job page and the dashboard job row,
+the job page's change-story `Model and role` row (the marker goes in the row's
+note, because the model half is not what the claim is about), and the console's
+live job rows, whose snapshot and 5-second fallback both carry the server-rendered
+`attributionText` so a stream tick cannot replace a marked seat with the bare
+claim. A claimed seat the instance did not see reads `claimed, not observed`, a
+claim nothing observed reads `claimed, not verified`, and a grounded seat is
+unmarked; a seat only the instance saw is shown from the observation. The PR automation comment uses the observed roles and falls back to
 the claim only when there was no observation. None of this blocks a merge: an
 instance exists only where one is configured, so the marker describes the record
 rather than gating it. A claimed role with zero calls still records a
