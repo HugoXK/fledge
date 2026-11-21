@@ -17,6 +17,7 @@ function row(input: Partial<EvolutionRow> & { jobId: string; repo: string; finis
     reviewScore: null,
     evidence: null,
     attribution: null,
+    attributionGround: null,
     teamStats: null,
     checkpoint: null,
     costUsd: 0,
@@ -58,6 +59,26 @@ test('every exported string passes through the one recogniser and the row is kep
   assert.equal(dataset.records.length, 1, 'the row must be redacted, not dropped')
   assert.match(text, /\[redacted-github-token\]/)
   assert.match(text, /\[redacted-fledge-token\]/)
+})
+
+test('a record carries the observed ground beside the claim, and the schema version moves to 2', () => {
+  const ground = { steps: [{ key: 'writtenBy' as const, claimed: 'Dev-2', observed: 'Dev-1', state: 'unobserved' as const }] }
+  const dataset = buildDataset([
+    row({
+      jobId: 'job_observed',
+      repo: 'a/r',
+      finishedAt: '2026-11-01T00:00:00.000Z',
+      attribution: { writtenBy: 'Dev-2' },
+      attributionGround: ground,
+    }),
+    row({ jobId: 'job_unrecorded', repo: 'a/r', finishedAt: '2026-11-02T00:00:00.000Z', attribution: { writtenBy: 'Dev-2' } }),
+  ], OPTIONS)
+  const observed = dataset.records.find((record) => record.jobId === 'job_observed')
+  const unrecorded = dataset.records.find((record) => record.jobId === 'job_unrecorded')
+  assert.deepEqual(observed?.attribution, { writtenBy: 'Dev-2' }, 'the claim stays the stored object as-is')
+  assert.deepEqual(observed?.attributionGround, ground, 'the record carries the per-key ground beside the claim')
+  assert.equal(unrecorded?.attributionGround, null, 'no recorded ground is null, never a fabricated grounded')
+  assert.equal(dataset.manifest.schemaVersion, 2, 'a record-shape change moves the dataset schema version')
 })
 
 test('the same rows give the same id and hash, in any input order', () => {
@@ -133,10 +154,16 @@ test('a prompt that repeats a holdout entry is refused, and the entry is named',
 })
 
 test('the frozen schema refusal is gone: the guard reads the columns it needs', () => {
-  assert.doesNotThrow(() => assertExportable(['kind', 'evidence_json', 'team_stats_json', 'goal'], 38))
+  assert.doesNotThrow(() => assertExportable(['kind', 'evidence_json', 'team_stats_json', 'attribution_ground_json', 'goal'], 38))
   assert.throws(() => assertExportable(['kind', 'team_stats_json'], 38), /evidence_json/)
   assert.throws(() => assertExportable(['kind', 'evidence_json'], 38), /team_stats_json/)
-  assert.equal(REQUIRED_JOB_COLUMNS.length, 3)
+  // A database written before #1186 has no ground column, so the export refuses
+  // it by name instead of writing records that cannot carry the observation.
+  assert.throws(
+    () => assertExportable(['kind', 'evidence_json', 'team_stats_json'], 38),
+    /attribution_ground_json/,
+  )
+  assert.equal(REQUIRED_JOB_COLUMNS.length, 4)
 })
 
 // The consent gate, end to end: a real Store at a temp path, the exporter's own
@@ -184,6 +211,64 @@ test('an unconsented repository is absent from the dataset, and a consented one 
   }
 })
 
+test('the loader reads the stored ground and reconstructs a legacy row, never guessing grounded', async () => {
+  const { mkdtempSync, rmSync } = await import('node:fs')
+  const { tmpdir } = await import('node:os')
+  const { join } = await import('node:path')
+  const { DatabaseSync } = await import('node:sqlite')
+  const { Store } = await import('../src/db.js')
+  const { loadEvolutionRows } = await import('../src/lib/evolution/export.js')
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-evolution-ground-'))
+  const path = join(dir, 'fledge.db')
+  const store = new Store(path)
+  try {
+    const user = makeUser(store, { login: 'evo', admin: true, superadmin: true, status: 'approved' })
+    // One active job per repository, so the two rows live in two repositories.
+    const storedRepo = store.createRepo({ id: 'repo_stored', userId: user.id, owner: 'o', name: 'stored', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const legacyRepo = store.createRepo({ id: 'repo_legacy', userId: user.id, owner: 'o', name: 'legacy', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const createdAt = new Date().toISOString()
+    store.createJob({ id: 'job_stored', repoId: storedRepo.id, userId: user.id, trigger: 'manual', goal: 'stored', callbackHash: 'h1', platformTokenHash: 'p1', createdAt })
+    store.updateJob('job_stored', {
+      attribution_json: JSON.stringify({ writtenBy: 'Dev-2' }),
+      attribution_ground_json: JSON.stringify({ steps: [{ key: 'writtenBy', claimed: 'Dev-2', observed: 'Dev-1', state: 'unobserved' }] }),
+    })
+    store.createJob({ id: 'job_legacy', repoId: legacyRepo.id, userId: user.id, trigger: 'manual', goal: 'legacy', callbackHash: 'h2', platformTokenHash: 'p2', createdAt })
+    store.updateJob('job_legacy', {
+      attribution_json: JSON.stringify({ writtenBy: 'Dev-1' }),
+      team_stats_json: JSON.stringify([{ role: 'dev1', calls: 2 }]),
+    })
+    store.setRepoEvolutionConsent(storedRepo.id, true, user.id)
+    store.setRepoEvolutionConsent(legacyRepo.id, true, user.id)
+
+    const reader = new DatabaseSync(path, { readOnly: true })
+    try {
+      const rows = loadEvolutionRows(reader, { since: new Date(Date.now() - 86_400_000).toISOString(), limit: 100 })
+      const stored = rows.find((item) => item.jobId === 'job_stored')
+      const legacy = rows.find((item) => item.jobId === 'job_legacy')
+      assert.deepEqual(
+        stored?.attributionGround,
+        { steps: [{ key: 'writtenBy', claimed: 'Dev-2', observed: 'Dev-1', state: 'unobserved' }] },
+        'a stored ground record travels into the export as recorded',
+      )
+      // Before #1186 the observation was written over attribution_json, so a row
+      // that carries team stats holds the observed half there: grounded, and no
+      // claim to print beside it.
+      assert.deepEqual(
+        legacy?.attributionGround,
+        { steps: [{ key: 'writtenBy', claimed: null, observed: 'Dev-1', state: 'grounded' }] },
+        'a pre-#1186 row is reconstructed by the same rule the page uses',
+      )
+      const dataset = buildDataset(rows, { days: 1, now: new Date() })
+      assert.ok(dataset.records.every((record) => 'attributionGround' in record), 'every record carries the field, even when it is null')
+    } finally {
+      reader.close()
+    }
+  } finally {
+    store.close()
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('the manifest records the effective split sizes so nobody counts arrays', () => {
   const dataset = buildDataset(spread(), OPTIONS)
   assert.equal(dataset.manifest.trainRows, 5)
@@ -200,10 +285,10 @@ test('a split that holds out every row is refused by name', () => {
   const dataset = buildDataset(solo, OPTIONS)
   assert.equal(dataset.manifest.trainRows, 0)
   assert.throws(
-    () => assertExportable(['kind', 'evidence_json', 'team_stats_json'], 38, dataset.manifest.trainRows),
+    () => assertExportable(['kind', 'evidence_json', 'team_stats_json', 'attribution_ground_json'], 38, dataset.manifest.trainRows),
     /NO_TRAINING_ROWS/,
   )
-  assert.doesNotThrow(() => assertExportable(['kind', 'evidence_json', 'team_stats_json'], 38, 1))
+  assert.doesNotThrow(() => assertExportable(['kind', 'evidence_json', 'team_stats_json', 'attribution_ground_json'], 38, 1))
 })
 
 test('the manifest records the selection and the exported coverage', () => {
