@@ -211,3 +211,126 @@ export function leftoverFailures(html: string): string[] {
     (leftover) => `rendered HTML contains raw template leftover ${leftover}`,
   )
 }
+
+/**
+ * #787: one row per measured case. The runner writes this table to
+ * `GITHUB_STEP_SUMMARY`, so a red job names the page, viewport and scheme that
+ * failed instead of one line for a whole matrix. `scheme` is `host` for the
+ * screenshot sweep, which uses the runner's own preference, and the palette name
+ * for the measured gate.
+ */
+export interface VisualCaseResult {
+  readonly locale: string
+  readonly width: number
+  readonly scheme: string
+  readonly path: string
+  readonly ok: boolean
+  /** Every failure this case produced, in the order they were recorded. */
+  readonly detail: readonly string[]
+}
+
+/** A cell is safe to interpolate: a reason can carry a `|` of its own. */
+function cell(value: string): string {
+  return value.split('|').join('\\|')
+}
+
+/**
+ * The summary is the record of what ran, so it lists every case — a failure
+ * keeps its reasons and a pass is still a row. A cache hit cannot produce a
+ * green row: the row is written from the assertions this process ran.
+ */
+export function summaryMarkdown(rows: readonly VisualCaseResult[]): string {
+  const passed = rows.filter((row) => row.ok).length
+  const lines = [
+    `visual matrix: ${String(passed)}/${String(rows.length)} case(s) passed`,
+    '',
+    '| locale | viewport | scheme | page | result |',
+    '| --- | --- | --- | --- | --- |',
+  ]
+  for (const row of rows) {
+    const result = row.ok ? 'pass' : `fail: ${row.detail.join('; ')}`
+    lines.push(
+      `| ${cell(row.locale)} | ${String(row.width)}px | ${cell(row.scheme)} | \`${cell(row.path)}\` | ${cell(result)} |`,
+    )
+  }
+  return `${lines.join('\n')}\n`
+}
+
+/** The two locales every matrix runs; the promised set and the loops share it. */
+export const VISUAL_LOCALES = ['zh', 'en'] as const
+
+export type VisualLocale = (typeof VISUAL_LOCALES)[number]
+
+/** The coordinates that name one measured case. */
+export interface VisualCaseCoordinates {
+  readonly locale: string
+  readonly width: number
+  readonly scheme: string
+  readonly path: string
+}
+
+/**
+ * One case, one key. A duplicate key means one case ran twice or one case was
+ * recorded under another page's identity, and its screenshot (`<width>-<slug>.png`)
+ * would overwrite the other case's file — a dropped page hiding behind a picture
+ * that is still there.
+ */
+export function caseKey(coordinates: VisualCaseCoordinates): string {
+  return `${coordinates.locale}|${String(coordinates.width)}|${coordinates.scheme}|${coordinates.path}`
+}
+
+/**
+ * Every case the runner promises to run, built from the same constants the
+ * runner loops over. The runner compares this set against the cases it recorded,
+ * so a page or viewport removed from a loop is a red job, not a shorter summary.
+ * `host` is the screenshot sweep's own colour preference; `explicit-dark` is the
+ * theme the runner pins through the page.
+ */
+export function expectedCaseKeys(locales: readonly string[] = VISUAL_LOCALES): string[] {
+  const keys: string[] = []
+  const signedIn = VISUAL_PATHS.filter((path) => path !== '/')
+  for (const locale of locales) {
+    for (const width of VISUAL_WIDTHS) {
+      keys.push(caseKey({ locale, width, scheme: 'host', path: '/' }))
+      for (const path of signedIn) keys.push(caseKey({ locale, width, scheme: 'host', path }))
+    }
+    for (const narrow of VISUAL_NARROW_CASES) {
+      keys.push(caseKey({ locale, width: narrow.width, scheme: 'host', path: narrow.path }))
+    }
+    for (const width of GATE_WIDTHS) {
+      for (const scheme of GATE_SCHEMES) {
+        keys.push(caseKey({ locale, width, scheme, path: '/' }))
+        for (const path of signedIn) keys.push(caseKey({ locale, width, scheme, path }))
+      }
+      keys.push(caseKey({ locale, width, scheme: 'explicit-dark', path: '/dashboard' }))
+    }
+  }
+  return keys
+}
+
+export interface CaseCoverage {
+  /** Promised cases that never ran: a page, width or scheme was dropped. */
+  readonly missing: readonly string[]
+  /** Keys recorded more than once: the later case overwrote the earlier cell. */
+  readonly duplicated: readonly string[]
+  /** Cases outside the promised set: the matrix ran something it does not name. */
+  readonly unexpected: readonly string[]
+}
+
+/** Compares what ran against what the matrix promised, without trusting order. */
+export function caseCoverage(expected: readonly string[], recorded: readonly string[]): CaseCoverage {
+  const expectedSet = new Set(expected)
+  const seen = new Set<string>()
+  const duplicated: string[] = []
+  for (const key of recorded) {
+    if (seen.has(key)) {
+      if (!duplicated.includes(key)) duplicated.push(key)
+    }
+    seen.add(key)
+  }
+  return {
+    missing: expected.filter((key) => !seen.has(key)),
+    duplicated,
+    unexpected: [...seen].filter((key) => !expectedSet.has(key)),
+  }
+}
