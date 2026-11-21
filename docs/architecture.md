@@ -155,15 +155,19 @@ explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
 a second clock that disagrees.
 
 `/settings` and `/admin` carry a sticky section nav: one chip per `.card[id]`, in
-the order the page draws the cards, so the marker can always name the section on
-screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
-is how a card added without a chip fails the suite instead of quietly leaving
-the previous chip marked. The marker seeds with the first chip, then takes the
-last target whose top has passed the reading band; between cards it stays on the
-last one that passed. `/admin`'s top card has no `id` on purpose — it is the page
-header, not a section — so at the top of that page nothing has passed and
-`#release`, the first chip, is marked. That fallback is the accepted state, not a
-defect.
+the order the page draws the cards, plus a chip for each grouped sub-block that
+keeps an `id` — `#pending` inside `/admin`'s users card, `#release`, `#backups`
+and `#retention` inside its maintenance card, and `#notifications` inside the
+settings account card — ordered by topic rather than document position, so the
+marker can always name the section on screen. `test/sectionNav.test.ts` asserts
+that every card is named by exactly one chip in card order and that every chip
+names a card or a grouped sub-block, which is how a card added without a chip
+fails the suite instead of quietly leaving the previous chip marked. The marker
+seeds with the first chip, then takes the last target whose top has passed the
+reading band; between cards it stays on the last one that passed. `/admin` opens
+with `<header class="page-head">`, not a card, so at the top of that page nothing
+has passed and `#pending`, the first chip, is marked. That fallback is the
+accepted state, not a defect.
 
 `/settings` also carries a Feedback card. The feedback form posts to `/feedback`,
 stores a `feedback` row and mails the address in `FEEDBACK_EMAIL` (falling back to
