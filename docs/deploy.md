@@ -1167,8 +1167,16 @@ backup: another backup run holds /data/backups (pid 4242); refusing to share the
 
 That is exit 1, one line, and no copy is written or deleted. The lock is not a
 wait: if the holder is gone (a `SIGKILL`, a host reboot) the next run takes the
-lock over and proceeds; a lock file that exists but cannot be read is only taken
-over once it is a minute old, so a run that is mid-creation is never robbed. The
+lock over and proceeds, but only once the lock's own mtime is older than ten
+seconds — a lock created milliseconds ago may belong to a run that is one
+instruction from writing its pid, or to one whose exit handler is about to
+release it. The takeover itself is serialised through
+`.fledge-backup.lock.takeover`, an exclusive marker held only across the remove
+and the recreate: several runs that judge the same dead lock stale can therefore
+not delete each other's fresh lock and all write in the directory — the
+concurrent-run defect the lock exists to stop. A lock file that exists but cannot
+be read is only taken over once it is a minute old, so a run that is mid-creation
+is never robbed. The
 directory is also read as a directory of files: an entry that is not a regular
 file (a directory or a symlink named like a copy) is never treated as a copy and
 is never deleted — the writer and the dry run now use the same classifier, so a

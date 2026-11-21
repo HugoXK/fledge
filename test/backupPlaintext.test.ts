@@ -1,10 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, statSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { DatabaseSync } from 'node:sqlite'
 import { Store } from '../src/db.js'
 import { makeUser } from './helpers.js'
 
@@ -45,6 +46,23 @@ function seed(dbPath: string): void {
     store.createRepo({ id: 'repo_plaintext', userId: user.id, owner: 'o', name: 'plaintext', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
   } finally {
     store.close()
+  }
+}
+
+// A backup of a seeded database finishes in a couple of milliseconds, which lets
+// a losing run start again after the winner released its lock and look like a
+// second writer. A round of this test seeds a database with this many megabytes of
+// rows so the holder keeps the directory long enough for every other run in the
+// round to reach the lock while it is held.
+function grow(dbPath: string, megabytes: number): void {
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec('CREATE TABLE IF NOT EXISTS filler (id INTEGER PRIMARY KEY, blob BLOB)')
+    const insert = db.prepare('INSERT INTO filler (blob) VALUES (?)')
+    const chunk = Buffer.alloc(1024 * 1024, 7)
+    for (let index = 0; index < megabytes; index += 1) insert.run(chunk)
+  } finally {
+    db.close()
   }
 }
 
@@ -319,14 +337,64 @@ test('a lock left by a run that is gone does not block the next backup', () => {
   seed(dbPath)
   mkdirSync(backupDir, { recursive: true, mode: 0o700 })
   // 2147483647 is outside the kernel's pid range on Linux, so it is a pid that
-  // cannot be alive: the shape a SIGKILLed run leaves.
+  // cannot be alive: the shape a SIGKILLed run leaves. The file is also aged:
+  // a lock is takeable only once its mtime is older than the takeover grace, so
+  // a file created milliseconds ago is never mistaken for this one (#1196
+  // review).
   writeFileSync(join(backupDir, '.fledge-backup.lock'), '2147483647', { mode: 0o600 })
+  const longAgo = Date.now() / 1000 - 60
+  utimesSync(join(backupDir, '.fledge-backup.lock'), longAgo, longAgo)
 
   const run = runToCompletionSync(backupScript, ['--db', dbPath, '--backup-dir', backupDir, '--keep', '1'], {})
 
   assert.equal(run.code, 0, run.stderr)
   assert.match(run.stdout, /^backup=/m)
   assert.equal(names(backupDir).includes('.fledge-backup.lock'), false, 'the run must release the lock it took over')
+})
+
+// #1196 review: the takeover is guarded, and this is the case that proves it.
+// Every run that judges one dead lock stale used to delete it and create its own,
+// so a second run could delete the fresh `O_EXCL` lock the first had just
+// created and both wrote in the directory. Four runs on one planted dead lock,
+// several rounds: exactly one may report a copy, and every other run must refuse
+// on one `backup: ` line.
+test('runs that judge the same dead lock produce exactly one writer', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-plaintext-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  grow(dbPath, 40)
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+  const args = ['--db', dbPath, '--backup-dir', backupDir, '--keep', '10']
+  const longAgo = Date.now() / 1000 - 60
+
+  for (let round = 1; round <= 6; round += 1) {
+    // Plant the lock inside the round: the first round's winner released its own.
+    const lockPath = join(backupDir, '.fledge-backup.lock')
+    writeFileSync(lockPath, '2147483647', { mode: 0o600 })
+    utimesSync(lockPath, longAgo, longAgo)
+
+    const runs = await Promise.all([1, 2, 3, 4].map(() => runWriter(args, {})))
+    const writers = runs.filter((run) => run.reported !== null)
+    assert.equal(
+      writers.length,
+      1,
+      `round ${round}: ${String(writers.length)} runs wrote a copy into one directory: ${runs
+        .map((run) => `exit ${String(run.code)} ${run.reported ?? run.stderr.trim().split('\n')[0] ?? ''}`)
+        .join(' | ')}`,
+    )
+    for (const run of runs) assertHonestRun(`round ${round}`, run)
+    for (const run of runs.filter((candidate) => candidate.reported === null)) {
+      assert.equal(run.code, 1, `round ${round}: a non-writer is a refusal, got exit ${String(run.code)}: ${run.stderr}`)
+      assert.match(run.stderr, /^backup: another backup run holds /m, `round ${round}: the refusal names the holder: ${run.stderr}`)
+    }
+
+    // Reset the directory for the next round: only the lock and the copies.
+    rmSync(lockPath, { force: true })
+    for (const name of names(backupDir).filter((candidate) => candidate.startsWith('fledge-'))) {
+      rmSync(join(backupDir, name), { force: true })
+    }
+  }
 })
 
 test('two overlapping writers never report a copy that is gone and never crash', async () => {
