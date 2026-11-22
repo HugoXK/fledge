@@ -369,11 +369,11 @@ function runCommentStep(apiJson: string): CommentRun {
 }
 
 test('the #80 job hands gh a repository, so its line can post after the release', () => {
-  const job = jobBlocks(release).get('stranded-log')
-  assert.ok(job !== undefined, 'release.yml carries the stranded-log job')
-  assert.match(job, /^      GH_REPO: \$\{\{ github\.repository \}\}$/m, 'the job names the repository gh must use')
+  // The behaviour first: the body is driven with the job's own env, so a job
+  // that names no repository fails here — on `gh: could not determine base repo`
+  // — instead of on the text assertion below.
   const run = runCommentStep('[]')
-  assert.equal(run.status, 0, `the step body failed with the job's own env: ${run.stderr}`)
+  assert.equal(run.status, 0, `the step body could not post with the job's own env: ${run.stderr}`)
   assert.match(run.commands, /^issue comment 80 --body /m, 'the line is posted')
   assert.equal(
     run.repoSeen.trim(),
@@ -381,6 +381,9 @@ test('the #80 job hands gh a repository, so its line can post after the release'
     'gh received GH_REPO — the API path carries the repository in its URL, the comment call does not',
   )
   assert.match(run.summary, /^commented <!-- stranded-notes:v0\.3\.2:999\.fixed\.md -->/m, 'the summary names what landed')
+  const job = jobBlocks(release).get('stranded-log')
+  assert.ok(job !== undefined, 'release.yml carries the stranded-log job')
+  assert.match(job, /^      GH_REPO: \$\{\{ github\.repository \}\}$/m, 'the job names the repository gh must use')
 })
 
 test('a re-run of one tag posts no second line on #80', () => {
