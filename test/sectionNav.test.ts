@@ -119,21 +119,45 @@ test('a card is any element whose class list contains card, in document order', 
   assert.deepEqual(cardIds('<div class="cardinal" id="no"></div><div class="card"><span id="nested"></span></div>'), [])
 })
 
-test('every card with an id is named by exactly one chip, in document order', () => {
+// #659: a chip may also name a grouped sub-block once two old cards share one
+// card, so the page's cards are no longer one list with the chips. Every card
+// with an id still gets exactly one chip, in the order the page draws its cards,
+// and every chip still resolves to a card or a sub-block. A sub-block chip is
+// deliberately not held to document order: `notifications` is placed as a topic
+// after Models although it sits inside the account card, and `pending` leads the
+// admin page although it sits inside the users card. Only the card chips are one
+// list, so only they are ordered — a chip pointing at nothing stays a failure.
+function subIds(html: string): string[] {
+  const ids: string[] = []
+  for (const tag of html.matchAll(/<([a-zA-Z][\w:-]*)([^<>]*)>/g)) {
+    const attrs = tag[2] ?? ''
+    const classes = (/\sclass="([^"]*)"/.exec(attrs)?.[1] ?? '').split(/\s+/)
+    if (!classes.includes('sub')) continue
+    const id = /\sid="([^"]*)"/.exec(attrs)?.[1]
+    if (id !== undefined) ids.push(id)
+  }
+  return ids
+}
+
+test('every card with an id is named by exactly one chip, in card order', () => {
   for (const picker of ['settings' as const, 'admin' as const]) {
     const html = render(picker)
     const cards = cardIds(html)
     const chips = navTargets(html)
     assert.ok(cards.length > 0, `the ${picker} page has no section.card with an id`)
-    assert.deepEqual(chips, cards, `every ${picker} card must have one chip, in the order the page draws them`)
+    const namingCards = chips.filter((id) => cards.includes(id))
+    assert.deepEqual(namingCards, cards, `every ${picker} card must have one chip, in the order the page draws them`)
     assert.equal(new Set(chips).size, chips.length, `the ${picker} nav must not repeat a chip`)
+    const subs = subIds(html)
+    const dangling = chips.filter((id) => !cards.includes(id) && !subs.includes(id))
+    assert.deepEqual(dangling, [], `a ${picker} chip must name a card or a grouped sub-block, not nothing`)
   }
 })
 
 test('every nav chip resolves to exactly one section in the same rendered page', () => {
   const pages = [
     { picker: 'settings' as const, ids: ['account-access', 'model-providers', 'notifications', 'feedback'] },
-    { picker: 'admin' as const, ids: ['pending', 'users', 'jobs', 'audit', 'release', 'backups', 'retention', 'operations'] },
+    { picker: 'admin' as const, ids: ['pending', 'users', 'jobs', 'audit', 'maintenance', 'release', 'backups', 'retention', 'operations'] },
   ]
   for (const page of pages) {
     const html = render(page.picker)

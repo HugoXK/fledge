@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { Store } from '../src/db.js'
 import { layout } from '../src/views/layout.js'
-import { dashboardPage, settingsPage } from '../src/views/pages.js'
+import { adminPage, dashboardPage, settingsPage } from '../src/views/pages.js'
 import type { SetupState } from '../src/views/checklist.js'
 import { declarationsFor, lastValue, parseRules } from './cssRules.js'
 import { makeUser, testConfig } from './helpers.js'
@@ -549,4 +549,107 @@ test('the secondary and job-page disclosure markers are drawn, not typed', () =>
       )
     }
   }
+})
+
+// #659: the console's density is measured on the exact `class="card"` attribute.
+// The `class="card…"` prefix and the `card` class token would also count the
+// compound classes (`quota-card card`, `card notices`, `card provider-card`), so
+// under either of them a fix could drop a class name and keep the surface.
+// Every base below was rendered at 25d0c459 and re-measured identical at
+// f1c48ed3 with the fixture named beside it, and each ceiling is strictly below
+// its own base.
+function cardCount(html: string): number {
+  return (html.match(/class="card"/g) ?? []).length
+}
+
+test('the console keeps its card count below the measured base on every page', () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  try {
+    const user = makeUser(store, { login: 'card-ceiling-659', status: 'approved', admin: true })
+    const viewer = { user: store.userById(user.id)!, csrfToken: 'csrf-token' }
+    const setup: SetupState = {
+      repos: 0,
+      roleChosen: true,
+      providerConfigured: false,
+      modelConfigured: false,
+      platformAvailable: true,
+      platformQuotaRemainingCny: 10,
+      platformQuotaUnlimited: false,
+      platformQuotaComfortCny: 50,
+      instanceReady: false,
+      jobs: 0,
+      firstJobStatus: null,
+      firstPrUrl: null,
+      repoHref: null,
+    }
+    // `dashboardPage` takes `NotificationRow[]`, not the layout's `{ level, text }`;
+    // the smaller shape never reaches `noticeBlock` and renders no banner. Even
+    // the real banner is `class="card notices"`, which this counter never sees.
+    const notification = {
+      id: 'notice-659',
+      user_id: user.id,
+      kind: 'job',
+      message: 'the job finished',
+      code: null,
+      action_id: null,
+      created_at: '2026-11-20T00:00:00Z',
+      read_at: null,
+    }
+    const action = {
+      id: 'action-659',
+      user_id: user.id,
+      repo_id: 'repo-659',
+      kind: 'review',
+      reason: 'a pull request waits for you',
+      href: '/repos/repo-659',
+      label: 'Review it',
+      urgent: 1,
+      state: 'open',
+      created_at: '2026-11-20T00:00:00Z',
+      updated_at: '2026-11-20T00:00:00Z',
+      resolved_at: null,
+    }
+    const empty = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [], setup })
+    const busy = dashboardPage({ config, locale: 'en', viewer, repos: [], jobs: [], notifications: [notification], setup, actions: [action] })
+    const settings = settingsPage({ config, locale: 'en', viewer, tokens: [], sessions: [], currentSessionHash: '', providers: [] })
+    const admin = adminPage({ config, locale: 'en', viewer, users: [], jobs: [], jobsPage: 1, jobsTotal: 0, audit: [], auditPage: 1, auditTotal: 0, perPage: 10 })
+
+    // Bases: dashboard 5 — four plain cards plus the pending-action queue, since
+    // the notification banner renders `class="card notices"` and the exact
+    // attribute never matches it — settings 4, admin 9. Every ceiling sits below
+    // its own base, and the counts are asserted together so a red run names all.
+    // The fifth card is the queue, so pin that the fixture still renders it: if
+    // `actions` stopped being honoured the busy page would fall to 4 and both the
+    // ceiling and the control would pass on a false green.
+    assert.ok(busy.includes('id="actions-needed"'), 'the busy dashboard must still render the pending-action queue')
+    const counts = { dashboard: cardCount(busy), settings: cardCount(settings), admin: cardCount(admin) }
+    assert.deepEqual(
+      { dashboard: counts.dashboard <= 4, settings: counts.settings <= 3, admin: counts.admin <= 5 },
+      { dashboard: true, settings: true, admin: true },
+      `card ceilings: dashboard ${String(counts.dashboard)}/4, settings ${String(counts.settings)}/3, admin ${String(counts.admin)}/5`,
+    )
+    // The control: the empty dashboard keeps its four real surfaces (setup,
+    // delivery, repositories, jobs). It is 4 before and after, so a fix that only
+    // removes the conditional cards still passes — deleting a real surface does not.
+    assert.equal(cardCount(empty), 4, 'the empty dashboard keeps its four real surfaces')
+  } finally {
+    store.close()
+  }
+})
+
+// #659: the budget is spent by removing the section chrome, not by renaming it.
+// Plain `.card` is a transparent box with a 1px top rule, so a block leaves the
+// card system only when its own rule paints no box: `.band` keeps the single
+// left rule that marks a queue and `.sub` none at all, while `.sub + .sub`
+// carries the stacked rhythm that the removed cards used to give.
+test('grouped blocks carry no card chrome of their own', () => {
+  const rules = parseRules(cssText())
+  const box = (selector: string): string[] =>
+    rules
+      .filter((rule) => rule.selectors.includes(selector))
+      .flatMap((rule) => rule.declarations.map((declaration) => declaration.property))
+      .filter((property) => property === 'background' || property.startsWith('background-') || property === 'box-shadow' || property === 'border' || property.startsWith('border-'))
+  assert.deepEqual(box('.sub'), [], '.sub is a section, not a card: no background and no box')
+  assert.deepEqual(box('.band'), ['border-left'], '.band keeps only its own left rule')
 })

@@ -61,6 +61,28 @@ function no(reason, boundary) {
   return { plan: false, catchUp: false, boundary: boundary ?? null, reason }
 }
 
+// #1204: a night held by an open release pull request has one question worth
+// reporting — is that pull request red? — and the answer lives on its head, so
+// the reason names the head and the `ci-ok` conclusion whenever the caller
+// collected them. A caller that passes only the number keeps the old reason;
+// nothing here may turn a red tip into a green night, it only says what it saw.
+function openPrReason(open) {
+  const number = Number(open?.number ?? 0)
+  const head = String(open?.headSha ?? '')
+  const conclusion = String(open?.ciOk ?? '')
+  const failed = Array.isArray(open?.failedChecks)
+    ? open.failedChecks.map(String).filter((name) => name !== '')
+    : []
+  let reason = `open-pr: #${number} is the open release pull request`
+  if (head === '' && conclusion === '') return reason
+  if (head !== '') reason += ` at ${head.slice(0, 7)}`
+  if (conclusion !== '') reason += `, ci-ok ${conclusion}`
+  if (conclusion !== '' && conclusion !== 'success' && failed.length > 0) {
+    reason += ` (failing: ${failed.join(', ')})`
+  }
+  return reason
+}
+
 /**
  * Decide whether this run plans the night.
  *
@@ -119,7 +141,7 @@ export function decideTrigger(input = {}) {
     ? openReleasePullRequests.find((pr) => pr !== null && pr !== undefined)
     : undefined
   if (open !== undefined) {
-    return no(`open-pr: #${Number(open?.number ?? 0)} is the open release pull request`, boundary)
+    return no(openPrReason(open), boundary)
   }
   const branch = `release/v${version}`
   if (branchNames(branches).includes(branch)) {

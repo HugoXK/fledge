@@ -81,6 +81,13 @@ them; this page only fixes the names and the values.
 | Layout | `--section-gap` | `clamp(24px, 4vw, 48px)` | page and section rhythm |
 | Layout | `--card-pad` | `clamp(18px, 2.4vw, 28px)` | card padding |
 
+The console's card budget is part of that rhythm: counting the exact `class="card"`
+attribute only, `test/layout.test.ts` caps `/dashboard` at 4 (base 5: four plain
+cards plus the pending-action queue — the notification banner renders
+`class="card notices"` and that metric never sees it), `/settings` at 3 (base 4)
+and `/admin` at 5 (base 9). A block leaves the card system by dropping the
+box chrome, not by renaming the class: `.band` and `.sub` paint no panel.
+
 ### Alpha tints
 
 Every rgba() a component rule paints is one of these tokens, so a palette change

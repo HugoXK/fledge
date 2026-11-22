@@ -56,6 +56,44 @@ test('the slurped page shape is flattened, so the open release PR is found', asy
   }
 })
 
+// #1204: the state kept only `{number, title}` of the open release pull request,
+// so a night held by it could name nothing a reader needed. The head and the
+// `ci-ok` conclusion (with the names of the checks that failed) are collected
+// beside it; the workflow feeds the pull request's check-runs through
+// `--open-checks`, and the held line on #80 reads them from here.
+test('the open release pull request carries its head, ci-ok conclusion and failed checks', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'fledge-state-'))
+  try {
+    const open = writeJson(dir, 'open.json', [[{
+      number: 1200,
+      title: 'release: v0.4.5',
+      head: { ref: 'release/v0.4.5', sha: '9ee14f9ea552e224e842e0a6650771e42cd0324f', repo: { full_name: 'HugoXK/fledge' } },
+      base: { repo: { full_name: 'HugoXK/fledge' } },
+    }]])
+    const openChecks = writeJson(dir, 'open-checks.json', {
+      total_count: 3,
+      check_runs: [
+        { id: 10, name: 'ci-ok', status: 'completed', conclusion: 'failure' },
+        { id: 11, name: 'test (24)', status: 'completed', conclusion: 'failure' },
+        { id: 12, name: 'lint', status: 'completed', conclusion: 'success' },
+      ],
+    })
+    const out = await runState(['--open', open, '--open-checks', openChecks, '--tags-json', '[]'])
+    const state = JSON.parse(out) as {
+      openPrCiOk: { conclusion: string }
+      openPrFailedChecks: string[]
+    }
+    assert.equal(state.openPrCiOk.conclusion, 'failure', 'the conclusion comes from the pull request head, not from main')
+    assert.deepEqual(state.openPrFailedChecks, ['ci-ok', 'test (24)'], 'only the checks that failed are named')
+    const green = await runState(['--open', open, '--tags-json', '[]'])
+    const greenState = JSON.parse(green) as { openPrCiOk: { conclusion: string }; openPrFailedChecks: string[] }
+    assert.equal(greenState.openPrCiOk.conclusion, 'missing', 'no collected checks reads as missing rather than a guessed green')
+    assert.deepEqual(greenState.openPrFailedChecks, [])
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
 test('a title that starts with "release: v" is not the release PR without the release branch', () => {
   // #146 finding 5: a docs-only `release: v9.9.9` on a feature branch must never
   // be picked up as the release PR, because the drive would enqueue it.

@@ -57,28 +57,63 @@ function mergedAt(pr) {
   return Number.isNaN(parsed) ? 0 : parsed
 }
 
-export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragments, tags, dryRun, closedPages, openPages, checks, branches }) {
+// A PR whose title merely starts with `release: v` is not the release PR. The
+// release routine writes a `release/vX.Y.Z` branch with a matching title, so a
+// docs-only `release: v9.9.9` on a feature branch must not be auto-merged; the
+// path set is checked again in the drive, which has the file list.
+//
+// The same-repo test is part of the predicate, not a filter applied afterwards:
+// `GET /pulls?state=open` lists newest first, so a fork PR titled `release: v…`
+// found after the fact took the slot and demoted this repository's own release
+// PR to a rejected candidate, which then made the whole night a no-op.
+function isSameRepo(pr) {
+  const head = String(pr?.head?.repo?.full_name ?? '')
+  return head !== '' && head === String(pr?.base?.repo?.full_name ?? '')
+}
+
+function releaseCandidates(openPages) {
+  const openPrs = flattenPages(openPages)
+  const titleMatched = openPrs.filter((pr) => String(pr?.title ?? '').startsWith('release: v'))
+  const accepted = (pr) => isSameRepo(pr) && releaseIdentity({ branch: pr?.head?.ref, title: pr?.title }) !== null
+  return {
+    openPrs,
+    candidate: titleMatched.find(accepted) ?? null,
+    rejected: titleMatched.find((pr) => !accepted(pr)) ?? null,
+  }
+}
+
+/**
+ * The accepted release pull request, if one is open. The workflow needs its head
+ * before it builds the state: the head is what the `ci-ok` read and the held
+ * line on #80 are keyed by (#1204), so the same predicate answers both.
+ */
+export function selectedOpenPr(openPages) {
+  return releaseCandidates(openPages).candidate
+}
+
+// The checks that are not green, as names. A required job skipped by the ci-ok
+// aggregation is not a pass in this repository, but listing it as failed would
+// misname it, so only a concluded non-success run is named here.
+const NOT_FAILED = new Set(['success', 'skipped', 'neutral'])
+
+export function failedCheckNames(checks) {
+  return checkRunsOf(checks)
+    .filter((run) => {
+      const status = String(run?.status ?? '')
+      const conclusion = String(run?.conclusion ?? '')
+      // A queued or running run has no conclusion yet, which is not a failure.
+      if (conclusion === '') return false
+      return (status === '' || status === 'completed') && !NOT_FAILED.has(conclusion)
+    })
+    .map((run) => String(run?.name ?? '?'))
+    .filter((name) => name !== '')
+}
+
+export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragments, tags, dryRun, closedPages, openPages, checks, branches, openChecks = [] }) {
   const mergedPrs = flattenPages(closedPages)
     .filter((pr) => pr?.merged_at !== null && pr?.merged_at !== undefined)
     .sort((a, b) => mergedAt(a) - mergedAt(b))
-  const openPrs = flattenPages(openPages)
-  // A PR whose title merely starts with `release: v` is not the release PR. The
-  // release routine writes a `release/vX.Y.Z` branch with a matching title, so a
-  // docs-only `release: v9.9.9` on a feature branch must not be auto-merged; the
-  // path set is checked again in the drive, which has the file list.
-  //
-  // The same-repo test is part of the predicate, not a filter applied afterwards:
-  // `GET /pulls?state=open` lists newest first, so a fork PR titled `release: v…`
-  // found after the fact took the slot and demoted this repository's own release
-  // PR to a rejected candidate, which then made the whole night a no-op.
-  const titleMatched = openPrs.filter((pr) => String(pr?.title ?? '').startsWith('release: v'))
-  const isSameRepo = (pr) => {
-    const head = String(pr?.head?.repo?.full_name ?? '')
-    return head !== '' && head === String(pr?.base?.repo?.full_name ?? '')
-  }
-  const accepted = (pr) => isSameRepo(pr) && releaseIdentity({ branch: pr?.head?.ref, title: pr?.title }) !== null
-  const candidate = titleMatched.find(accepted) ?? null
-  const rejected = titleMatched.find((pr) => !accepted(pr)) ?? null
+  const { openPrs, candidate, rejected } = releaseCandidates(openPages)
 
   // A `release/v<version>` branch that no pull request in any state and no tag
   // accounts for is an orphan: a run pushed it and then could not open the pull
@@ -115,6 +150,11 @@ export function buildState({ lastTag, lastTagCommittedAt, packageVersion, fragme
     dryRun: dryRun === true || dryRun === 'true',
     ciOk: ciOkRun.conclusion,
     ciOkRun,
+    // #1204: the night held by this pull request must be able to say whether it
+    // is red, so the conclusion of its own head is state, not a later guess. A
+    // missing collection reads `missing`, never a silent green.
+    openPrCiOk: candidate === null ? { id: 0, status: '', conclusion: 'missing' } : latestRun(openChecks, 'ci-ok'),
+    openPrFailedChecks: candidate === null ? [] : failedCheckNames(openChecks),
     openPr: candidate,
     openPrRejected: rejected === null
       ? null

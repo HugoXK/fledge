@@ -45,3 +45,25 @@ export function groundAttribution(claimed: Attribution | null, stats: TeamStat[]
   }
   return { steps }
 }
+
+// #1186 stores the answer for new rows; a row written before that column existed
+// still needs it. `captureTeamStats` used to write the observation over
+// `attribution_json`, so a row carrying team stats holds the observed half there
+// (grounded, unmarked) and a row without them holds a claim nothing checked. The
+// job page and the dataset export both call this, so the reconstruction has one
+// rule rather than one copy per reader.
+export function reconstructAttributionGround(recorded: Attribution | null, observedOnly: boolean): AttributionGround | null {
+  if (recorded === null) return null
+  const steps: AttributionGroundStep[] = []
+  for (const field of ATTRIBUTION_FIELDS) {
+    const value = recorded[field.key]
+    if (value === undefined) continue
+    steps.push({
+      key: field.key,
+      claimed: observedOnly ? null : value,
+      observed: value,
+      state: observedOnly ? 'grounded' : 'no-observation',
+    })
+  }
+  return steps.length === 0 ? null : { steps }
+}

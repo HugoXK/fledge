@@ -480,8 +480,20 @@ before the branch is pushed and names `RELEASE_OPEN_TOKEN`, and because nothing
 was pushed it says nothing on #80. A refused opener — the branch at another
 commit, `main` moved since the plan, a path outside the mechanical set, the
 version or changelog check failing in the fetched tree — is a red run with the
-reason in the job summary and on #80. Dry runs and runs that pushed nothing
-never reach the write path.
+reason in the job summary and on #80. Dry runs reach no write path, and a run
+that pushed nothing writes to #80 only when the night was held by an open
+release pull request; every other pushed-nothing run stays silent.
+
+A night held by an open release pull request is a no-plan: one slot, one
+release pull request (`scripts/lib/release-trigger.mjs`). That refusal used to
+leave no record at all — the night pushed nothing, so the #80 step exited — and
+the one fact that decides whether it ships, the pull request's own `ci-ok`, was
+never read. The collect step now reads that pull request's head and its `ci-ok`
+conclusion, with the names of the checks that failed, and a held night posts
+one line on #80 naming the pull request, its head, the conclusion and the failed
+checks. The line is keyed by the number, the head and the conclusion, so it
+repeats only when one of those changes. Nothing on that path merges, closes,
+re-runs or pushes: the release stays a person's decision.
 
 A manual run is still possible and uses the same tool:
 
@@ -1153,6 +1165,35 @@ npm run db:backup
 # outside the backup directory; BACKUP_WORK_DIR moves it (default: the temp dir)
 ```
 
+### One writer per backup directory
+
+A run takes the directory for its own length: `npm run db:backup` creates
+`${BACKUP_DIR}/.fledge-backup.lock` exclusively before it writes anything and
+removes it however the run ends. A second run started while the first holds the
+directory — a cron tick meeting a manual backup — refuses instead of pruning
+beside it:
+
+```
+backup: another backup run holds /data/backups (pid 4242); refusing to share the backup directory
+```
+
+That is exit 1, one line, and no copy is written or deleted. The lock is not a
+wait: if the holder is gone (a `SIGKILL`, a host reboot) the next run takes the
+lock over and proceeds, but only once the lock's own mtime is older than ten
+seconds — a lock created milliseconds ago may belong to a run that is one
+instruction from writing its pid, or to one whose exit handler is about to
+release it. The takeover itself is serialised through
+`.fledge-backup.lock.takeover`, an exclusive marker held only across the remove
+and the recreate: several runs that judge the same dead lock stale can therefore
+not delete each other's fresh lock and all write in the directory — the
+concurrent-run defect the lock exists to stop. A lock file that exists but cannot
+be read is only taken over once it is a minute old, so a run that is mid-creation
+is never robbed. The
+directory is also read as a directory of files: an entry that is not a regular
+file (a directory or a symlink named like a copy) is never treated as a copy and
+is never deleted — the writer and the dry run now use the same classifier, so a
+copy the console counts is a copy the writer may prune.
+
 ### Backup retention and the dry run
 
 The write-time counts are per class, and they are the counts the console reports
@@ -1330,8 +1371,10 @@ The same two readers publish five series on `/metrics` at scrape time, so the
 backup can page without somebody opening the card: `fledge_backup_age_hours`,
 `fledge_backup_copies`, `fledge_backup_encrypted_copies`,
 `fledge_restore_drill_age_hours` and `fledge_restore_drill_ok` (`1` only for a
-successful drill inside the expected interval; a fresh install reads `0` and no
-age series). The drill gauge follows the card's column check: a record whose
+successful drill inside the expected interval; with no drill record at all the
+scrape publishes neither the verdict nor the age, so a fresh install cannot trip
+the rule, while a drill that ran and failed or aged out reads `0` beside its age
+series). The drill gauge follows the card's column check: a record whose
 `columnCheck` is `fail` or `not-reached` reads `0` even beside an `ok: true`,
 because that record is not a passing drill on the page either; `skipped` keeps
 reading `1`, since a host with no column key configured has not failed a drill
@@ -1540,6 +1583,8 @@ if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill --
   echo "restore-drill: OK"
 else
   echo "drill failed; do not restore from this copy" >&2
+  # remove the key before the block stops: `exit 1` skips every line after `fi`
+  sudo rm -f /var/tmp/fledge-restore/column.key
   exit 1
 fi
 # the column key was only needed for the check above

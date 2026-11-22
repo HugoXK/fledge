@@ -155,29 +155,34 @@ explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
 a second clock that disagrees.
 
 `/settings` and `/admin` carry a sticky section nav: one chip per `.card[id]`, in
-the order the page draws the cards, so the marker can always name the section on
-screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
-is how a card added without a chip fails the suite instead of quietly leaving
-the previous chip marked. The marker seeds with the first chip, then takes the
-last target whose top has passed the reading band; between cards it stays on the
-last one that passed. `/admin`'s top card has no `id` on purpose — it is the page
-header, not a section — so at the top of that page nothing has passed and
-`#release`, the first chip, is marked. That fallback is the accepted state, not a
-defect.
+the order the page draws the cards, plus a chip for each grouped sub-block that
+keeps an `id` — `#pending` inside `/admin`'s users card, `#release`, `#backups`
+and `#retention` inside its maintenance card, and `#notifications` inside the
+settings account card — ordered by topic rather than document position, so the
+marker can always name the section on screen. `test/sectionNav.test.ts` asserts
+that every card is named by exactly one chip in card order and that every chip
+names a card or a grouped sub-block, which is how a card added without a chip
+fails the suite instead of quietly leaving the previous chip marked. The marker
+seeds with the first chip, then takes the last target whose top has passed the
+reading band; between cards it stays on the last one that passed. `/admin` opens
+with `<header class="page-head">`, not a card, so at the top of that page nothing
+has passed and `#pending`, the first chip, is marked. That fallback is the
+accepted state, not a defect.
 
 `/settings` also carries a Feedback card. The feedback form posts to `/feedback`,
 stores a `feedback` row and mails the address in `FEEDBACK_EMAIL` (falling back to
 `ADMIN_EMAIL`); the footer, not a settings card, links to the public GitHub
 repository with a Star call-to-action.
 
-`/settings` draws its content as four group cards rather than six: `#account-access`
-(with `#account`, `#sessions` and `#tokens` as sub-blocks), `#model-providers`,
-`#notifications` and `#feedback`. The nav therefore has four links, one per
-`.card[id]` in draw order. Below 961px the nav is the same chip strip `/admin` uses;
-from 961px up those same four links become a sticky left rail inside
-`.settings-shell`, so there is one nav and one set of links at every width. The
-old inner ids stay in place, and the shell's inner anchors carry the sticky offset
-too, because a sub-block can be a deep-link target. An unexpected
+`/settings` draws its content as three group cards rather than six: `#account-access`
+(with `#account`, `#sessions`, `#tokens` and `#notifications` as sub-blocks),
+`#model-providers` and `#feedback`. `#notifications` is a sub-block inside
+`#account-access`, not a fourth card, so the nav's four links are one per `.card[id]`
+in draw order plus that one sub-block, placed by topic. Below 961px the nav is the
+same chip strip `/admin` uses; from 961px up those same four links become a sticky
+left rail inside `.settings-shell`, so there is one nav and one set of links at
+every width. The old inner ids stay in place, and the shell's inner anchors carry
+the sticky offset too, because a sub-block can be a deep-link target. An unexpected
 HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
 is rendered; the page shows the data scope, requires the consent checkbox, then
 offers one POST to `/errors/:ref/report`, which claims the row atomically and
@@ -1188,6 +1193,14 @@ state that is not `ok`, so a deployment whose App JWT is never minted still gets
 a reading, and a configured App that has never measured one after 15 minutes of
 uptime answers `503` from `/readyz` with the honest `unknown` state (#1028).
 
+The same verdict reaches the console (#1198): `/dashboard` renders one critical
+banner, above the collapsed secondary section, naming `clock.skewSeconds` and
+`clock.thresholdSeconds` when — and only when — the state is `fail`. `ok`,
+`unknown` and `not-configured` render nothing, because a young process, a GitHub
+outage and a deployment with no App are not clock verdicts and would otherwise
+paint a permanent red banner. The banner names the host-clock recovery step; it
+does not change when the platform refuses work.
+
 ### Inbound email replies
 
 When `INBOUND_EMAIL_SECRET` is set, the daily digest gets a
@@ -1391,7 +1404,14 @@ for example with a single consented repository. Every exported string passes
 through `redact()`, and the exporter reads only repositories that opted in
 through the audited `evolution.consent` command; consent is off by default.
 `--report` prints the baseline and the manifest's own split counts; the export
-does not write to the database.
+does not write to the database. Each record carries both halves of the
+attribution: `attribution` is the stored claim as written, and
+`attributionGround` is the per-key `{key, claimed, observed, state}` record the
+job page shows, reconstructed for rows written before the ground column and
+`null` when nothing was recorded. The record shape is `schemaVersion: 2`; a
+version-1 dataset still verifies against its own manifest. The exporter refuses
+a database without `attribution_ground_json` instead of writing a record that
+cannot carry the observation.
 
 The held-out shadow harness (#372) answers what the ledger could not: how one
 playbook, model or router does on tasks the team has not seen, and whether a

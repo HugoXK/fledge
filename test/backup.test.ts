@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readdirSync, statSync, truncateSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, statSync, truncateSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -112,4 +112,31 @@ test('a rejected retention count reports the value that was rejected', () => {
 
   assert.equal(existsSync(join(root, 'flag')), false, 'a refused run must not create the backup directory')
   assert.equal(existsSync(join(root, 'env')), false, 'a refused run must not create the backup directory')
+})
+
+// #1196: `prune` built the copy list from `readdirSync` + mtime and never asked
+// whether an entry is a file, so a directory with a copy-shaped name entered the
+// list and `rmSync` threw EISDIR out of the process — exit 1 with a stack, not a
+// `backup: ` refusal. The reader side already skips non-files (`statOrNull`), so
+// the two sides of the same directory disagreed.
+test('an entry that is not a regular file is never treated as a copy', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-backup-'))
+  const dbPath = join(root, 'live', 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  const decoy = join(backupDir, 'fledge-2026-01-01T00-00-00-000Z.db')
+  mkdirSync(decoy, { recursive: true })
+
+  const result = runBackup(['--db', dbPath, '--backup-dir', backupDir, '--keep', '1'])
+
+  // Skipping it or refusing with its name are both honest; crashing is not.
+  if (result.code !== 0) {
+    assert.match(result.stderr, /^backup: /m, `a refusal is one backup: line, got: ${result.stderr}`)
+    assert.doesNotMatch(result.stderr, /\n\s+at /, `a refusal must not carry an uncaught stack: ${result.stderr}`)
+  } else {
+    assert.match(result.stdout, /^backup=/m)
+    assert.match(result.stdout, /^backup: OK$/m)
+  }
+  // Whatever it decided, it may not delete a directory it did not create.
+  assert.equal(statSync(decoy).isDirectory(), true, 'the writer deleted an entry that is not a copy')
 })

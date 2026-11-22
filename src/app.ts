@@ -1702,6 +1702,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         personal,
         windowDays,
         alerts,
+        // #1198: the dashboard reads the same clock verdict admission reads, so
+        // a console opened during a `fail` says why Run now is refused before the
+        // user presses it. `readyz` and the refusal sentence are unchanged.
+        clock: githubApp.clockState(),
         notifications: store.listNotifications(viewer.user.id),
         actions: store.listActions(viewer.user.id),
         notice: request.flash?.notice?.text,

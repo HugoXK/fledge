@@ -18,8 +18,9 @@ export interface BackupReadings {
   drillAgeHours: number | null
   /**
    * True only for a successful drill that is inside the expected interval. A
-   * missing or malformed `backup-drill.json` is not a passing drill, so a fresh
-   * install reads 0 rather than a green nobody proved. A record that carries a
+   * missing or malformed `backup-drill.json` is not a passing drill, and with no
+   * record at all it is not a failing one either — `publishBackupMetrics` then
+   * publishes no verdict series rather than a 0 (#1199). A record that carries a
    * failed or unreached column check is not a passing drill either, even beside
    * an `ok: true`, because the card stops calling it one: same record, one
    * answer. `skipped` stays a pass — a host that configures no column key is a
@@ -73,10 +74,12 @@ export function readBackupReadings(input: BackupMetricsInput): BackupReadings {
  *
  * Unknown is absent, per #758: a repository with no copy publishes
  * `backup_age_hours` as no series rather than as a zero, because a zero age
- * reads as "backed up just now". `backup_copies` and `restore_drill_ok` are
- * published as 0 on a fresh install — those two are real observations ("no copy
- * on disk", "no passing drill"), and the alert rules below are written so a
- * fresh install still does not page.
+ * reads as "backed up just now". The drill verdict follows the same rule
+ * (#1199): with no `backup-drill.json` the gauge is cleared, because the shipped
+ * `FledgeRestoreDrillFailing` rule reads `fledge_restore_drill_ok 0` as a drill
+ * that ran and failed, and every fresh install fired it for as long as nobody had
+ * drilled. `backup_copies` stays a 0 on a fresh install: "no copy on disk" is a
+ * real observation, and `FledgeBackupStale` reads the age series, which is absent.
  */
 export function publishBackupMetrics(input: BackupMetricsInput): BackupReadings {
   const readings = readBackupReadings(input)
@@ -87,6 +90,10 @@ export function publishBackupMetrics(input: BackupMetricsInput): BackupReadings 
   setGauge('fledge_backup_encrypted_copies', readings.backup.encrypted, {}, 'Encrypted backup copies in the backup directory')
   if (readings.drillAgeHours === null) clearGauge('fledge_restore_drill_age_hours')
   else setGauge('fledge_restore_drill_age_hours', roundedHours(readings.drillAgeHours), {}, 'Hours since the last restore drill')
-  setGauge('fledge_restore_drill_ok', readings.drillOk ? 1 : 0, {}, '1 when the last restore drill passed inside the expected interval')
+  // #1199: no record is no verdict, not a failed drill. A record that exists and
+  // says no, or one older than the expected interval, still publishes the 0 the
+  // rule pages on — it carries an age series, which is what tells the two apart.
+  if (readings.drill === null) clearGauge('fledge_restore_drill_ok')
+  else setGauge('fledge_restore_drill_ok', readings.drillOk ? 1 : 0, {}, '1 when the last restore drill passed inside the expected interval')
   return readings
 }

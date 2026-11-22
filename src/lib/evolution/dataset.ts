@@ -12,14 +12,19 @@
 
 import { createHash } from 'node:crypto'
 import { redact } from '../redact.js'
+import type { AttributionGround } from '../attribution.js'
 
-export const DATASET_SCHEMA_VERSION = 1
+// #1194: the record carries the observed ground beside the claim, so the shape a
+// consumer reads changed and the version that travels inside the hash moves. A
+// dataset exported as version 1 still verifies against its own manifest.
+export const DATASET_SCHEMA_VERSION = 2
 export const REDACTION_VERSION = 1
 
 // The job columns the export reads. A database missing one cannot produce an
 // honest record, so the exporter refuses instead of exporting a partial row —
-// that is what replaces the frozen `user_version > 28` check.
-export const REQUIRED_JOB_COLUMNS = ['kind', 'evidence_json', 'team_stats_json'] as const
+// that is what replaces the frozen `user_version > 28` check. Without
+// `attribution_ground_json` a pre-#1186 database cannot say what was observed.
+export const REQUIRED_JOB_COLUMNS = ['kind', 'evidence_json', 'team_stats_json', 'attribution_ground_json'] as const
 
 export interface EvolutionRow {
   jobId: string
@@ -36,6 +41,7 @@ export interface EvolutionRow {
   reviewScore: number | null
   evidence: unknown
   attribution: unknown
+  attributionGround: AttributionGround | null
   teamStats: unknown
   checkpoint: string | null
   costUsd: number
@@ -155,6 +161,9 @@ function redactRow(row: EvolutionRow): EvolutionRow {
     issueUrl: row.issueUrl === null ? null : redact(row.issueUrl),
     evidence: redactValue(row.evidence),
     attribution: redactValue(row.attribution),
+    // The ground is role names and states; redactValue touches only the strings,
+    // and the cast restores the shape the record was built with.
+    attributionGround: row.attributionGround === null ? null : redactValue(row.attributionGround) as AttributionGround,
     teamStats: redactValue(row.teamStats),
     checkpoint: row.checkpoint === null ? null : redact(row.checkpoint),
     createdAt: redact(row.createdAt),
