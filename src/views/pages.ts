@@ -32,6 +32,7 @@ import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkI
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
 import { ATTRIBUTION_FIELDS, parseAttributionGroundJson, parseAttributionJson } from '../lib/attribution.js'
 import type { AttributionGround, AttributionGroundState, AttributionKey } from '../lib/attribution.js'
+import { reconstructAttributionGround } from '../lib/teamStats.js'
 import { followUpLinks, summariseDeliveries, type DeliveryOutcomeRow } from '../lib/deliveryOutcome.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { planPacketHash } from '../lib/planDecision.js'
@@ -502,28 +503,14 @@ function jobTeamStats(job: JobRow): Array<{ role: string; label: string; calls: 
 
 // #368: what the job claimed and what the instance observed are two facts, and the
 // page must not print the first as the second. A stored ground record answers per
-// attribution key. A row written before that column exists needs the same answer
-// reconstructed: `captureTeamStats` used to write the observation over
-// `attribution_json`, so a row carrying team stats holds the observed half there
-// (grounded, unmarked) and a row without them holds a claim nothing checked.
+// attribution key; a row written before that column exists is reconstructed by the
+// one rule in `reconstructAttributionGround`, which the dataset export also reads.
 const GROUND_STATE_ORDER: Record<AttributionGroundState, number> = { grounded: 0, unobserved: 1, 'no-observation': 2 }
 
 function attributionGroundFor(job: JobRow): AttributionGround | null {
   const stored = parseAttributionGroundJson(job.attribution_ground_json)
   if (stored !== null) return stored
-  const recorded = parseAttributionJson(job.attribution_json)
-  if (recorded === null) return null
-  const observedOnly = job.team_stats_json !== null
-  return {
-    steps: ATTRIBUTION_FIELDS
-      .filter((field) => recorded[field.key] !== undefined)
-      .map((field) => ({
-        key: field.key,
-        claimed: observedOnly ? null : (recorded[field.key] as string),
-        observed: recorded[field.key] as string,
-        state: observedOnly ? 'grounded' as const : 'no-observation' as const,
-      })),
-  }
+  return reconstructAttributionGround(parseAttributionJson(job.attribution_json), job.team_stats_json !== null)
 }
 
 function jobAttribution(t: Translate, job: JobRow): string {
