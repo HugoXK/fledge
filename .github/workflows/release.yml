@@ -42,6 +42,10 @@ jobs:
       pull-requests: read
       id-token: write
       attestations: write
+    # #1207: the fragment names the notes had missed, for the release log line
+    # the `stranded-log` job below posts. Empty when this tag stranded nothing.
+    outputs:
+      stranded: ${{ steps.stranded.outputs.names }}
     steps:
       # #861: this job holds `contents: write`, `packages: write`,
       # `id-token: write` and `attestations: write`, and the next step runs
@@ -65,7 +69,7 @@ jobs:
       - name: Verify the changelog section
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
-        run: node scripts/changelog.mjs notes "$RELEASE_TAG" > /tmp/release-notes.md
+        run: node scripts/changelog.mjs notes "$RELEASE_TAG" > "${RUNNER_TEMP}/release-notes.md"
 
       - name: Verify the version and tag
         env:
@@ -186,6 +190,26 @@ jobs:
               exit 1
               ;;
           esac
+
+      # #1207: the notes above were assembled when the release pull request was
+      # built, and the fold that did it is the only reader of `changelog.d` — so
+      # every change merged into `main` while that pull request waited rides in
+      # this tag and is missing from the notes it publishes. The checkout here is
+      # the tag, so a fragment still in `changelog.d` is by construction one of
+      # those changes: it is named in the body before the body is published.
+      #
+      # This runs before the image is built on purpose. An unreadable
+      # `changelog.d` fails the step and the run, and no image or release is
+      # published from a body that would read complete without the release's own
+      # changes; `fragmentNames` throws rather than answering zero (#548).
+      - name: Name the changes that merged after the notes were assembled
+        id: stranded
+        if: ${{ steps.guard.outputs.published != 'true' }}
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          node scripts/release-stranded-notes.mjs "$RELEASE_TAG" "${RUNNER_TEMP}/release-notes.md"
 
       # #183: stamp the image so /healthz on the published tag names the commit
       # it was cut from. The tag checkout is not necessarily github.sha, so the
@@ -381,7 +405,7 @@ jobs:
             echo "Image: ${IMAGE}:${RELEASE_TAG}@${DIGEST}"
             echo "SBOM: https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}/sbom.spdx.json"
             echo "Attestation: ${DIGEST}"
-          } >> /tmp/release-notes.md
+          } >> "${RUNNER_TEMP}/release-notes.md"
 
       - name: Create the GitHub release
         if: ${{ steps.guard.outputs.published != 'true' }}
@@ -418,7 +442,7 @@ jobs:
             echo "::error::${RELEASE_TAG} gained a GitHub Release while this run was publishing (${STATE}); refusing to rewrite it"
             exit 1
           fi
-          gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file /tmp/release-notes.md
+          gh release create "$RELEASE_TAG" --title "$RELEASE_TAG" --notes-file "${RUNNER_TEMP}/release-notes.md"
 
       # #883 item 4: the SBOM is a Release asset, so it outlives the run that
       # made it. The body wrote its download URL before the release existed; this
@@ -447,3 +471,52 @@ jobs:
           set -euo pipefail
           # `verify-release` takes the bare X.Y.Z; the tag carries the leading v.
           node scripts/verify-release.mjs --version "${RELEASE_TAG#v}"
+
+  # #1207 step 3: the published notes and the release log on #80 have to agree
+  # about what a tag carried. The publish job reports the fragment names it
+  # appended; this job says them on #80. It is a separate job with `issues:
+  # write` alone because the publish job's token holds `contents: write`,
+  # `packages: write`, `id-token: write` and `attestations: write` and must not
+  # gain a scope it never uses. It runs only after a publish that named
+  # something: an ordinary night leaves it skipped, and a tag that already has a
+  # release never reaches the step that fills the output.
+  stranded-log:
+    name: name the stranded changes on #80
+    needs: release
+    if: ${{ needs.release.outputs.stranded != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    env:
+      RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+      STRANDED: ${{ needs.release.outputs.stranded }}
+      # gh resolves the repository for `gh issue comment` from GH_REPO or a git
+      # remote; `GITHUB_REPOSITORY` is an expression this file builds the API path
+      # from, not a variable gh reads, and this job has no checkout. Without this
+      # the comment fails after the release is already published: notes right,
+      # #80 line missing, run red (#1207 review).
+      GH_REPO: ${{ github.repository }}
+    steps:
+      - name: Comment on #80
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          # The marker carries the tag and the fragment set, so a re-run of one
+          # tag repeats nothing, and a later release with the same fragments is
+          # still its own line.
+          MARKER="<!-- stranded-notes:${RELEASE_TAG}:${STRANDED} -->"
+          LAST_LINE="$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/80/comments?per_page=100" \
+            | jq -s -r 'flatten | map(.body | split("\n") | first) | map(select(startswith("<!-- stranded-notes:"))) | last // ""')"
+          if [ "$LAST_LINE" = "$MARKER" ]; then
+            echo "already commented ${MARKER}" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          BODY="$(printf '%s\n' \
+            "$MARKER" \
+            "Written-by: HugoXK" \
+            "" \
+            "\`${RELEASE_TAG}\` shipped changes its notes were assembled too early to name; the [published notes](https://github.com/${GITHUB_REPOSITORY}/releases/tag/${RELEASE_TAG}) now list them: ${STRANDED} (#1207).")"
+          gh issue comment 80 --body "$BODY"
+          echo "commented ${MARKER} on #80" >> "$GITHUB_STEP_SUMMARY"

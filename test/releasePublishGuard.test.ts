@@ -31,8 +31,14 @@ const LOOKUP = 'scripts/lib/release-lookup.mjs'
 function stepBlocks(workflow: string): string[] {
   const start = workflow.indexOf('    steps:\n')
   assert.notEqual(start, -1, 'release.yml has a steps list')
-  return workflow
-    .slice(start + '    steps:\n'.length)
+  // #1207 added a second job (`stranded-log`, which posts the #80 line), so the
+  // publish job's steps end where the next two-space job key begins. The list
+  // below is still exactly the publish job's steps: the guard assertions that
+  // read it are unchanged.
+  const rest = workflow.slice(start + '    steps:\n'.length)
+  const nextJob = rest.search(/\n {2}[A-Za-z0-9_-]+:\s*\n/)
+  const steps = nextJob === -1 ? rest : rest.slice(0, nextJob)
+  return steps
     .split(/\n      - /)
     .map((block, index) => (index === 0 ? block : `- ${block}`))
     .filter((block) => block.trim() !== '')
