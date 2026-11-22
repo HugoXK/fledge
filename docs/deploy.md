@@ -1342,8 +1342,10 @@ The same two readers publish five series on `/metrics` at scrape time, so the
 backup can page without somebody opening the card: `fledge_backup_age_hours`,
 `fledge_backup_copies`, `fledge_backup_encrypted_copies`,
 `fledge_restore_drill_age_hours` and `fledge_restore_drill_ok` (`1` only for a
-successful drill inside the expected interval; a fresh install reads `0` and no
-age series). The drill gauge follows the card's column check: a record whose
+successful drill inside the expected interval; with no drill record at all the
+scrape publishes neither the verdict nor the age, so a fresh install cannot trip
+the rule, while a drill that ran and failed or aged out reads `0` beside its age
+series). The drill gauge follows the card's column check: a record whose
 `columnCheck` is `fail` or `not-reached` reads `0` even beside an `ok: true`,
 because that record is not a passing drill on the page either; `skipped` keeps
 reading `1`, since a host with no column key configured has not failed a drill
