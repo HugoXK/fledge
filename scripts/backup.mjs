@@ -222,8 +222,14 @@ function acquireLock(dir) {
       // The marker makes the remove-then-create a critical section; a run that
       // cannot take it lets the holder do the takeover and comes back to see the
       // lock it created.
+      // The marker this run wrote, read back as the identity its release must
+      // match. A successful `O_EXCL` create is this run's; the snapshot is taken
+      // immediately so a later release cannot confuse "the marker I made" with
+      // "a marker another run made at the same path" (#1217).
+      let markerSnapshot = null
       try {
         writeFileSync(takeoverPath, String(process.pid), { flag: 'wx', mode: 0o600 })
+        markerSnapshot = lockSnapshot(takeoverPath)
       } catch (error) {
         if (error?.code !== 'EEXIST') fail(2, `cannot lock the backup directory: ${error instanceof Error ? error.message : String(error)}`)
         // The marker is held only across the two calls below, so an old one is a
@@ -252,7 +258,14 @@ function acquireLock(dir) {
       } catch (error) {
         takeoverError = error
       } finally {
-        rmSync(takeoverPath, { force: true })
+        // #1217: release by identity, not by path. A run stopped inside this
+        // section for longer than the grace has had its marker swept and
+        // replaced, so an unconditional remove here deletes the marker the
+        // current holder is relying on, and a third run can then create its own
+        // and enter the same section. The rule is the lock's exit release: only
+        // the entry this run wrote is removed; anything else is left for its
+        // holder to release.
+        if (sameLock(markerSnapshot, lockSnapshot(takeoverPath))) rmSync(takeoverPath, { force: true })
       }
       if (takeoverError !== null) {
         fail(2, `cannot take the backup lock ${lockPath}: ${takeoverError instanceof Error ? takeoverError.message : String(takeoverError)}`)
