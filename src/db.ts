@@ -1314,6 +1314,12 @@ export interface AlertView {
   hours?: number
   spentCny?: number
   budgetCny?: number
+  // #1198: the clock banner names the measurement and the number it is compared
+  // against, so a reader can tell 1688 s from the threshold without opening
+  // /readyz. Both travel on the alert instead of inside `message`, which is one
+  // string and cannot carry the zh/en pair.
+  skewSeconds?: number
+  thresholdSeconds?: number
   state?: string
   message: string
 }

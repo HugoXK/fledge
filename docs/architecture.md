@@ -1188,6 +1188,14 @@ state that is not `ok`, so a deployment whose App JWT is never minted still gets
 a reading, and a configured App that has never measured one after 15 minutes of
 uptime answers `503` from `/readyz` with the honest `unknown` state (#1028).
 
+The same verdict reaches the console (#1198): `/dashboard` renders one critical
+banner, above the collapsed secondary section, naming `clock.skewSeconds` and
+`clock.thresholdSeconds` when — and only when — the state is `fail`. `ok`,
+`unknown` and `not-configured` render nothing, because a young process, a GitHub
+outage and a deployment with no App are not clock verdicts and would otherwise
+paint a permanent red banner. The banner names the host-clock recovery step; it
+does not change when the platform refuses work.
+
 ### Inbound email replies
 
 When `INBOUND_EMAIL_SECRET` is set, the daily digest gets a
