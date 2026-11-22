@@ -2,7 +2,7 @@ import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawn, spawnSync } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -22,6 +22,13 @@ import { makeUser } from './helpers.js'
 // named imports bind, and a run that is about to remove the lock while a marker
 // exists signals the test and holds there. That is the same stall a suspended
 // host produces, but deterministic.
+//
+// The second half of the card is the same mistake one layer down: a pid is not an
+// identity, and the lock recorded only a number. A dead holder whose number the
+// kernel has since reused reads as alive, so the directory refuses every run until
+// that unrelated process happens to exit. The holder also records its start time,
+// and a reader compares it — a two-token entry is judged on the process it names,
+// not on being unparseable.
 
 const backupScript = fileURLToPath(new URL('../scripts/backup.mjs', import.meta.url))
 
@@ -213,6 +220,114 @@ test('a straggler that resumes must not remove the marker a live run holds', asy
 
   b.child.kill('SIGKILL')
   await b.done
+})
+
+// A pid is not an identity: the kernel reuses numbers, and a lock left by a dead
+// run could name a pid that some unrelated process now has. `process.kill(pid, 0)`
+// says "alive" and the directory refuses every run until that process exits. The
+// holder records its start time beside its pid so a reused number is judged stale;
+// a lock written before that field keeps its old meaning and still refuses.
+function selfStartTime(pid: number): number {
+  const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8')
+  const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+  return Number(fields[19])
+}
+
+test('a live pid that no longer names its holder is judged stale', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-marker-'))
+  const dbPath = join(root, 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+  // This test process is alive, so the pid probe says "alive"; the recorded start
+  // time is one tick off, so the number was reused by something unrelated.
+  plantDeadLock(backupDir, `${String(process.pid)} ${String(selfStartTime(process.pid) + 1)}`)
+
+  const run = spawnSync(process.execPath, [backupScript, '--db', dbPath, '--backup-dir', backupDir], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: childEnv({}),
+  })
+
+  assert.equal(run.status, 0, `a reused pid must not block the takeover: ${run.stderr}`)
+  assert.match(run.stdout, /^backup: OK$/m)
+  assert.equal(existsSync(join(backupDir, MARKER)), false, 'the takeover leaves no marker')
+  assert.equal(existsSync(join(backupDir, LOCK)), false, 'the run releases its own lock')
+})
+
+test('a pid-only lock held by a live process still refuses', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-marker-'))
+  const dbPath = join(root, 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+  // The old file shape: one token, no start time. Nothing can tell a live holder
+  // from a reused pid here, so the safe answer stays the refusal.
+  plantDeadLock(backupDir, String(process.pid))
+
+  const run = spawnSync(process.execPath, [backupScript, '--db', dbPath, '--backup-dir', backupDir], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: childEnv({}),
+  })
+
+  assert.equal(run.status, 1, `a live pid-only holder must refuse, got ${run.stdout}`)
+  assert.match(run.stderr, new RegExp(`\\(pid ${String(process.pid)}\\)`), run.stderr)
+  assert.equal(existsSync(join(backupDir, LOCK)), true, 'a refusal leaves the holder\'s lock alone')
+})
+
+test('the marker a taking-over run writes records its pid and start time', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-marker-'))
+  const dbPath = join(root, 'fledge.db')
+  const backupDir = join(root, 'backups')
+  const signals = join(root, 'signals')
+  seed(dbPath)
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+  mkdirSync(signals)
+  writeFileSync(join(root, 'hook.cjs'), FIXTURE)
+  plantDeadLock(backupDir)
+
+  const a = startBackup(dbPath, backupDir, {
+    NODE_OPTIONS: `--require ${join(root, 'hook.cjs')}`,
+    FLEDGE_TEST_STALL_MS: '15000',
+    FLEDGE_TEST_SIGNAL_DIR: signals,
+  })
+  await waitForSignal(signals, a, 'run A')
+
+  // The entry names the holder twice: the pid every reader and every refusal
+  // message already used, and the start time that tells a reused number from the
+  // process that wrote it. A one-token entry cannot be told either way, and the
+  // base writes one.
+  const [pid, startTime, ...rest] = readFileSync(join(backupDir, MARKER), 'utf8').trim().split(/\s+/)
+  assert.equal(Number(pid), a.pid, `the marker names its holder: ${String(pid)}`)
+  assert.equal(Number(startTime), selfStartTime(a.pid), "the marker records the holder's start time")
+  assert.deepEqual(rest, [], 'the marker carries no third field')
+
+  a.child.kill('SIGKILL')
+  await a.done
+})
+
+test('a live holder whose recorded start time matches still refuses', () => {
+  const root = mkdtempSync(join(tmpdir(), 'fledge-marker-'))
+  const dbPath = join(root, 'fledge.db')
+  const backupDir = join(root, 'backups')
+  seed(dbPath)
+  mkdirSync(backupDir, { recursive: true, mode: 0o700 })
+  // A live process, recorded as itself: a real holder, not a reused number. The
+  // base cannot parse the second token, so it reads no pid at all and takes the
+  // lock over — the reason this refusal has to be asserted rather than assumed.
+  const content = `${String(process.pid)} ${String(selfStartTime(process.pid))}`
+  plantDeadLock(backupDir, content)
+
+  const run = spawnSync(process.execPath, [backupScript, '--db', dbPath, '--backup-dir', backupDir], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: childEnv({}),
+  })
+
+  assert.equal(run.status, 1, `a live holder must refuse, got ${run.stdout}`)
+  assert.match(run.stderr, new RegExp(`\\(pid ${String(process.pid)}\\)`), run.stderr)
+  assert.equal(readFileSync(join(backupDir, LOCK), 'utf8'), content, "a refusal leaves the holder's lock byte-identical")
 })
 
 test('the run that takes a dead lock over still removes its own marker', () => {
