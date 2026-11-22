@@ -155,29 +155,34 @@ explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
 a second clock that disagrees.
 
 `/settings` and `/admin` carry a sticky section nav: one chip per `.card[id]`, in
-the order the page draws the cards, so the marker can always name the section on
-screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
-is how a card added without a chip fails the suite instead of quietly leaving
-the previous chip marked. The marker seeds with the first chip, then takes the
-last target whose top has passed the reading band; between cards it stays on the
-last one that passed. `/admin`'s top card has no `id` on purpose — it is the page
-header, not a section — so at the top of that page nothing has passed and
-`#release`, the first chip, is marked. That fallback is the accepted state, not a
-defect.
+the order the page draws the cards, plus a chip for each grouped sub-block that
+keeps an `id` — `#pending` inside `/admin`'s users card, `#release`, `#backups`
+and `#retention` inside its maintenance card, and `#notifications` inside the
+settings account card — ordered by topic rather than document position, so the
+marker can always name the section on screen. `test/sectionNav.test.ts` asserts
+that every card is named by exactly one chip in card order and that every chip
+names a card or a grouped sub-block, which is how a card added without a chip
+fails the suite instead of quietly leaving the previous chip marked. The marker
+seeds with the first chip, then takes the last target whose top has passed the
+reading band; between cards it stays on the last one that passed. `/admin` opens
+with `<header class="page-head">`, not a card, so at the top of that page nothing
+has passed and `#pending`, the first chip, is marked. That fallback is the
+accepted state, not a defect.
 
 `/settings` also carries a Feedback card. The feedback form posts to `/feedback`,
 stores a `feedback` row and mails the address in `FEEDBACK_EMAIL` (falling back to
 `ADMIN_EMAIL`); the footer, not a settings card, links to the public GitHub
 repository with a Star call-to-action.
 
-`/settings` draws its content as four group cards rather than six: `#account-access`
-(with `#account`, `#sessions` and `#tokens` as sub-blocks), `#model-providers`,
-`#notifications` and `#feedback`. The nav therefore has four links, one per
-`.card[id]` in draw order. Below 961px the nav is the same chip strip `/admin` uses;
-from 961px up those same four links become a sticky left rail inside
-`.settings-shell`, so there is one nav and one set of links at every width. The
-old inner ids stay in place, and the shell's inner anchors carry the sticky offset
-too, because a sub-block can be a deep-link target. An unexpected
+`/settings` draws its content as three group cards rather than six: `#account-access`
+(with `#account`, `#sessions`, `#tokens` and `#notifications` as sub-blocks),
+`#model-providers` and `#feedback`. `#notifications` is a sub-block inside
+`#account-access`, not a fourth card, so the nav's four links are one per `.card[id]`
+in draw order plus that one sub-block, placed by topic. Below 961px the nav is the
+same chip strip `/admin` uses; from 961px up those same four links become a sticky
+left rail inside `.settings-shell`, so there is one nav and one set of links at
+every width. The old inner ids stay in place, and the shell's inner anchors carry
+the sticky offset too, because a sub-block can be a deep-link target. An unexpected
 HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
 is rendered; the page shows the data scope, requires the consent checkbox, then
 offers one POST to `/errors/:ref/report`, which claims the row atomically and
