@@ -52,6 +52,27 @@ function contextFor(fixture: ShadowFixture, version: ShadowVersion): RunnerConte
 }
 
 /**
+ * What the recorder observed of an attempt's verification. The mock calls out to
+ * nothing, so an attempt that opened a pull request ran and observed zero check
+ * runs; in the report's vocabulary that is `missing` — "recorded, not verified" —
+ * and publishing it stops the column reading `none`, "nothing was recorded". An
+ * attempt that opened nothing has nothing to verify, so no snapshot is published
+ * and the attempt stays `none`.
+ *
+ * The snapshot carries only what the recorder saw: `parseVerification` needs one
+ * boolean, and the reason line is the recorder's own. Filling `sha`, `prState`,
+ * `mergeableState`, `combinedStatus` or `reviews` would invent a pull-request
+ * read, which is the mistake this recorder exists to avoid.
+ */
+export function observedVerification(pullRequest: string | null): string | null {
+  if (pullRequest === null) return null
+  return JSON.stringify({
+    ok: false,
+    reasons: ['shadow recorder: the bundled mock opened a pull request and observed no check runs'],
+  })
+}
+
+/**
  * The reference host. It records what the loop did as an attempt the harness can
  * score; it declares no power, and `merged` is false because the mock has no
  * merge call at all.
@@ -65,11 +86,12 @@ export function createMockShadowHost(): ShadowHost {
     async run({ fixture, version }) {
       const started = performance.now()
       const result = await runner.run(contextFor(fixture, version))
+      const pullRequest = result.prUrl ?? null
       const attempt: ShadowAttempt = {
-        pullRequest: result.prUrl ?? null,
+        pullRequest,
         merged: false,
         reviewScore: result.reviewScore ?? null,
-        verificationJson: null,
+        verificationJson: observedVerification(pullRequest),
         costUsd: 0,
         durationMs: Math.round(performance.now() - started),
       }
