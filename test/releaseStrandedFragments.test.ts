@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
+import { chmodSync, copyFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 // The publish run parses the body with this script, so the test uses it too — a
@@ -251,4 +251,141 @@ test('the #80 line is its own job, with issues: write and no publish scope', () 
   assert.doesNotMatch(job, /contents: write|packages: write|id-token: write|attestations: write/, 'no publish scope reaches this job')
   assert.match(job, /gh issue comment 80/, 'the line lands on the release log')
   assert.match(job, /<!-- stranded-notes:\$\{RELEASE_TAG\}:\$\{STRANDED\} -->/, 'a re-run of one tag repeats nothing')
+})
+
+// The #80 job has no checkout, and `gh` resolves the repository for `gh issue
+// comment` from `GH_REPO` or a git remote — `GITHUB_REPOSITORY` is not something
+// gh reads; the body only uses it to build the API path. The review at
+// `7557fb61` found the job failing on the one night it exists for: notes right,
+// no line on #80, red run. These tests drive the step body with a stub `gh` that
+// refuses an `issue comment` it cannot place, the way the client does, so the
+// job's own env decides whether the line can post — a job that names no
+// repository fails here instead of in production.
+const COMMENT_STEP = 'Comment on #80'
+
+const ENV_FIXTURES: Record<string, string> = {
+  '${{ inputs.tag || github.ref_name }}': 'v0.3.2',
+  '${{ needs.release.outputs.stranded }}': '999.fixed.md',
+  '${{ github.repository }}': 'HugoXK/fledge',
+  '${{ secrets.GITHUB_TOKEN }}': 'stub-token',
+}
+
+// Env is the thing under test, so it is read out of the workflow and handed to
+// the body as a runner would: job keys sit at six spaces, step keys at ten, and a
+// value the test cannot stand in for is a failure, not a literal passed through.
+function workflowEnv(text: string): Record<string, string> {
+  const env: Record<string, string> = {}
+  for (const line of text.split('\n')) {
+    const entry = /^ {6}(?: {4})?([A-Z][A-Z0-9_]*): (.+)$/.exec(line)
+    if (entry === null) continue
+    const value = (entry[2] ?? '').trim()
+    const fixture = ENV_FIXTURES[value]
+    assert.ok(fixture !== undefined, `the test knows what "${value}" stands for`)
+    env[entry[1] ?? ''] = fixture
+  }
+  return env
+}
+
+function commentBlock(job: string): string {
+  const at = job.indexOf(`      - name: ${COMMENT_STEP}`)
+  assert.notEqual(at, -1, `the stranded-log job declares the step "${COMMENT_STEP}"`)
+  return job.slice(at)
+}
+
+interface CommentRun {
+  status: number | null
+  commands: string
+  repoSeen: string
+  summary: string
+  stderr: string
+}
+
+function runCommentStep(apiJson: string): CommentRun {
+  const dir = mkdtempSync(join(tmpdir(), 'stranded-log-'))
+  try {
+    const bin = join(dir, 'bin')
+    mkdirSync(bin)
+    const commands = join(dir, 'commands')
+    writeFileSync(commands, '')
+    const repoSeen = join(dir, 'repo')
+    writeFileSync(repoSeen, '')
+    const api = join(dir, 'comments.json')
+    writeFileSync(api, apiJson)
+    // The stub answers as `gh` does: an API path needs no repository, and an
+    // `issue comment` without `GH_REPO`, `--repo` or a token is the failure this
+    // job hit in production.
+    const stub = [
+      '#!/usr/bin/env bash',
+      'printf "%s\\n" "$*" >> "$STUB_LOG"',
+      'printf "%s\\n" "${GH_REPO:-<unset>}" > "$STUB_REPO"',
+      'case "$1 $2" in',
+      '  "api --paginate") cat "$STUB_API"; exit 0 ;;',
+      '  "issue comment")',
+      '    case " $* " in *" --repo "*|*" -R "*) exit 0 ;; esac',
+      '    if [ -z "${GH_REPO:-}" ]; then',
+      '      echo "gh: could not determine base repo; set GH_REPO or --repo" >&2',
+      '      exit 1',
+      '    fi',
+      '    if [ -z "${GH_TOKEN:-}" ]; then',
+      '      echo "gh: no authentication token; set GH_TOKEN" >&2',
+      '      exit 4',
+      '    fi',
+      '    exit 0 ;;',
+      'esac',
+      'exit 0',
+      '',
+    ].join('\n')
+    const ghPath = join(bin, 'gh')
+    writeFileSync(ghPath, stub)
+    chmodSync(ghPath, 0o755)
+    const job = jobBlocks(release).get('stranded-log')
+    assert.ok(job !== undefined, 'release.yml carries the stranded-log job')
+    const block = commentBlock(job)
+    const summary = join(dir, 'summary.md')
+    writeFileSync(summary, '')
+    const result = spawnSync('bash', ['-euo', 'pipefail', '-c', runBody(block)], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        ...workflowEnv(job),
+        PATH: `${bin}:${process.env.PATH ?? ''}`,
+        GITHUB_STEP_SUMMARY: summary,
+        GITHUB_REPOSITORY: 'HugoXK/fledge',
+        STUB_LOG: commands,
+        STUB_REPO: repoSeen,
+        STUB_API: api,
+      },
+    })
+    return {
+      status: result.status,
+      commands: readFileSync(commands, 'utf8'),
+      repoSeen: readFileSync(repoSeen, 'utf8'),
+      summary: readFileSync(summary, 'utf8'),
+      stderr: result.stderr,
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+}
+
+test('the #80 job hands gh a repository, so its line can post after the release', () => {
+  const job = jobBlocks(release).get('stranded-log')
+  assert.ok(job !== undefined, 'release.yml carries the stranded-log job')
+  assert.match(job, /^      GH_REPO: \$\{\{ github\.repository \}\}$/m, 'the job names the repository gh must use')
+  const run = runCommentStep('[]')
+  assert.equal(run.status, 0, `the step body failed with the job's own env: ${run.stderr}`)
+  assert.match(run.commands, /^issue comment 80 --body /m, 'the line is posted')
+  assert.equal(
+    run.repoSeen.trim(),
+    'HugoXK/fledge',
+    'gh received GH_REPO — the API path carries the repository in its URL, the comment call does not',
+  )
+  assert.match(run.summary, /^commented <!-- stranded-notes:v0\.3\.2:999\.fixed\.md -->/m, 'the summary names what landed')
+})
+
+test('a re-run of one tag posts no second line on #80', () => {
+  const run = runCommentStep('[{"body":"<!-- stranded-notes:v0.3.2:999.fixed.md -->\\n\\nearlier"}]')
+  assert.equal(run.status, 0, `the step body failed on an existing marker: ${run.stderr}`)
+  assert.doesNotMatch(run.commands, /^issue comment /m, 'no comment when the marker is the last line on the issue')
+  assert.match(run.summary, /already commented/, 'the summary says why nothing was posted')
 })

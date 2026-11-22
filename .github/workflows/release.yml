@@ -491,6 +491,12 @@ jobs:
     env:
       RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
       STRANDED: ${{ needs.release.outputs.stranded }}
+      # gh resolves the repository for `gh issue comment` from GH_REPO or a git
+      # remote; `GITHUB_REPOSITORY` is an expression this file builds the API path
+      # from, not a variable gh reads, and this job has no checkout. Without this
+      # the comment fails after the release is already published: notes right,
+      # #80 line missing, run red (#1207 review).
+      GH_REPO: ${{ github.repository }}
     steps:
       - name: Comment on #80
         env:
