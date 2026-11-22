@@ -572,8 +572,12 @@ unknown one:
 
 ## Visual matrix (多设备视觉矩阵)
 
-`npm run visual:matrix` boots a throwaway app on `127.0.0.1:18180` with the
-development login, a temporary SQLite database and the mock runner. It captures
+`npm run visual:matrix` splits the sweep into one share per core (four by
+default, `VISUAL_SHARDS` overrides it) and runs each share as its own process
+with its own throwaway app on `127.0.0.1:18181` and up, the development login, a
+temporary SQLite database and the mock runner. A share assigned no cells, a cell
+missing from a share's results, and a result that never arrives all fail the run
+(#1208): a gate that quietly checked less must not read green. It captures
 the landing page first, in a signed-out context, because `/` answers 302 to
 `/dashboard` for a visitor with a session: capturing it after the development
 login photographed the dashboard twice. It then signs in and renders the

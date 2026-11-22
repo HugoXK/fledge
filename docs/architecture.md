@@ -3180,6 +3180,16 @@ A failure names all four coordinates and the control
 (`en width=768 scheme=dark /settings: select is 292x43px, under the 44px touch
 floor`), so a red job points at one row instead of a screenshot.
 
+The sweep and the gate are one workload (`visualWorkload()` in the same module),
+cut into contiguous shares by `partitionWorkload`, and the `visual` job runs one
+share per core — each share its own process, server and port, because the cells
+are independent and the serial sum was the gate's wall time (#1208). The check's
+name and its place in `ci-ok` and the health reporter do not change.
+`shardFailures` is the aggregate's guard: a share assigned no cells, a share whose
+result never arrived, a cell a share dropped, and a cell measured twice all fail
+the run, and each cell's failure prefix is its label, so a failure raised in
+share 2 reaches the job output rather than only that share's artifact.
+
 The runner measures focus by tabbing: a programmatic `focus()` does not match
 `:focus-visible` in Chromium, so the resting style would read as unchanged for
 every control. It skips a control a closed `<details>` keeps out of the rendering
