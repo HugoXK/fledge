@@ -4,6 +4,7 @@
 //
 //   node scripts/release-state.mjs --prs /tmp/prs.json --open /tmp/open.json \
 //     --checks /tmp/checks.json --branches /tmp/branches.json \
+//     --open-checks /tmp/open-checks.json \
 //     --tag v0.2.4 --tag-time 2026-11-01T00:00:00Z \
 //     --version 0.2.4 --fragments 12 --tags-json '["v0.2.4"]' --dry-run false
 //
@@ -35,6 +36,9 @@ const state = buildState({
   closedPages: readJson(arg('--prs', '')),
   openPages: readJson(arg('--open', '')),
   checks: readJson(arg('--checks', '')),
+  // #1204: the open release pull request's own head is what a held night has to
+  // report, so its check-runs are collected beside `main`'s and read here.
+  openChecks: readJson(arg('--open-checks', '')),
   branches: readJson(arg('--branches', '')),
 })
 

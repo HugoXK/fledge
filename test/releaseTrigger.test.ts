@@ -64,6 +64,25 @@ test('case 3: an open release pull request blocks the night and names it', () =>
   assert.match(decision.reason, /#42/)
 })
 
+// #1204: a night held by an open release pull request was a green no-plan that
+// said nothing anywhere a person reads, and the one fact that decides whether it
+// ships — is that pull request mergeable? — was never collected. The reason now
+// carries the head and the `ci-ok` conclusion, so a red night is visible on #80.
+test('case 3b: a held night names the pull request head and its ci-ok conclusion', () => {
+  const head = '9ee14f9ea552e224e842e0a6650771e42cd0324f'
+  const red = decideTrigger(base({ openReleasePullRequests: [{ number: 1200, branch: 'release/v0.4.5', headSha: head, ciOk: 'failure' }] }))
+  assert.equal(red.plan, false)
+  assert.match(red.reason, /^open-pr/)
+  assert.match(red.reason, /#1200/)
+  assert.match(red.reason, /failure/, 'the conclusion is part of the reason, so a red night is not silent')
+  assert.match(red.reason, /9ee14f9/, 'the short head lets a reader find the run without opening the pull request')
+
+  const green = decideTrigger(base({ openReleasePullRequests: [{ number: 1200, branch: 'release/v0.4.5', headSha: head, ciOk: 'success' }] }))
+  assert.equal(green.plan, false, 'a green release pull request still holds the slot: only a merge clears it')
+  assert.match(green.reason, /success/)
+  assert.notEqual(green.reason, red.reason, 'a red night and a green night must not read the same')
+})
+
 test('case 4: a tag newer than the boundary means the slot already shipped', () => {
   const decision = decideTrigger(base({ lastTagCommittedAt: '2026-11-12T03:05:00Z' }))
   assert.equal(decision.plan, false)

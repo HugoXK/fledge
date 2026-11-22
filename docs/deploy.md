@@ -480,8 +480,20 @@ before the branch is pushed and names `RELEASE_OPEN_TOKEN`, and because nothing
 was pushed it says nothing on #80. A refused opener — the branch at another
 commit, `main` moved since the plan, a path outside the mechanical set, the
 version or changelog check failing in the fetched tree — is a red run with the
-reason in the job summary and on #80. Dry runs and runs that pushed nothing
-never reach the write path.
+reason in the job summary and on #80. Dry runs reach no write path, and a run
+that pushed nothing writes to #80 only when the night was held by an open
+release pull request; every other pushed-nothing run stays silent.
+
+A night held by an open release pull request is a no-plan: one slot, one
+release pull request (`scripts/lib/release-trigger.mjs`). That refusal used to
+leave no record at all — the night pushed nothing, so the #80 step exited — and
+the one fact that decides whether it ships, the pull request's own `ci-ok`, was
+never read. The collect step now reads that pull request's head and its `ci-ok`
+conclusion, with the names of the checks that failed, and a held night posts
+one line on #80 naming the pull request, its head, the conclusion and the failed
+checks. The line is keyed by the number, the head and the conclusion, so it
+repeats only when one of those changes. Nothing on that path merges, closes,
+re-runs or pushes: the release stays a person's decision.
 
 A manual run is still possible and uses the same tool:
 
