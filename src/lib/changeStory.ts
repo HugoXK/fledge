@@ -5,7 +5,8 @@
 // it parses the body the agent wrote and adds the diff totals. Pure, no model
 // call, no network.
 
-import { parseAttributionJson } from './attribution.js'
+import { attributionGroundFor, claimedRoleState, parseAttributionJson } from './attribution.js'
+import type { AttributionGroundState } from './attribution.js'
 import { parseModelRun } from './modelRun.js'
 
 // #793: the body also carries what was considered instead, what remains
@@ -45,9 +46,17 @@ export interface ChangeStorySection {
 // #793: which model answered and which role wrote the change, read from the job
 // row. `null` for a half means the row does not record it; it is never inferred
 // from the other half or from the body.
+//
+// #1190: `state` is how the ground record judges that claimed role, or null when
+// the role is not claimed (an observation-only seat cannot be a false claim) or
+// when the record says the claim was observed. The row's note uses it; the value
+// never changes, because the model half is not what the claim is about.
 export interface ChangeStoryAttribution {
   model: string | null
   role: string | null
+  // Optional so a caller that has no record yet (an older fixture, a unit test of
+  // the pair alone) states "no judgement" rather than inventing `grounded`.
+  state?: AttributionGroundState | null
 }
 
 export type ChangeStoryDiffState = 'ok' | 'capped' | 'unreadable'
@@ -71,6 +80,10 @@ export interface ChangeStoryLabels {
   capped?: string
   duplicate?: string
   files?: (count: number) => string
+  // #1190: the two marker words #1186 renders on the job page's team line. The
+  // change-story row uses the same vocabulary rather than inventing a second one.
+  claimedNotObserved?: string
+  claimedNotVerified?: string
 }
 
 export interface ChangeStoryFact {
@@ -200,12 +213,21 @@ export function parseChangeStoryBody(body: string): ChangeStorySection[] {
 export function changeStoryAttribution(input: {
   modelJson: string | null
   attributionJson: string | null
+  groundJson?: string | null
+  teamStatsJson?: string | null
 }): ChangeStoryAttribution | null {
   const model = parseModelRun(input.modelJson)?.model?.label ?? null
   const attribution = parseAttributionJson(input.attributionJson)
   const role = attribution?.writtenBy ?? attribution?.implementedBy ?? null
   if (model === null && role === null) return null
-  return { model, role }
+  // #1190: the record, not the page, decides whether the claim was observed. A
+  // row that predates the ground column is reconstructed by the same rule.
+  const ground = attributionGroundFor({
+    groundJson: input.groundJson ?? null,
+    attributionJson: input.attributionJson,
+    teamStatsJson: input.teamStatsJson ?? null,
+  })
+  return { model, role, state: claimedRoleState(ground, role) }
 }
 
 // `totals` is the caller's sum (the reader owns the file walk and its cap);
@@ -237,6 +259,8 @@ const DEFAULT_LABELS: Required<ChangeStoryLabels> = {
   capped: 'the file list exceeded the cap',
   duplicate: 'a repeated heading; the last one is shown',
   files: (count: number) => `${count} files`,
+  claimedNotObserved: 'claimed, not observed',
+  claimedNotVerified: 'claimed, not verified',
 }
 
 export function changeStoryFacts(story: ChangeStory, labels: ChangeStoryLabels = {}): ChangeStoryFact[] {
@@ -254,6 +278,13 @@ export function changeStoryFacts(story: ChangeStory, labels: ChangeStoryLabels =
   // "not stated" (nothing recorded) rather than "not available" (nothing read).
   const recorded = [story.attribution?.model ?? null, story.attribution?.role ?? null]
     .filter((part): part is string => part !== null && part !== '')
-  facts.push({ key: 'attribution', value: recorded.length === 0 ? l.notStated : recorded.join(' · '), note: '' })
+  // #1190: the row keeps `model · role` (the claim is about the role, not the
+  // model) and puts the claim's state in the note, so a seat nothing observed is
+  // not printed as a fact.
+  const state = story.attribution?.state ?? null
+  const claimNote = state === 'unobserved'
+    ? l.claimedNotObserved
+    : state === 'no-observation' ? l.claimedNotVerified : ''
+  facts.push({ key: 'attribution', value: recorded.length === 0 ? l.notStated : recorded.join(' · '), note: claimNote })
   return facts
 }

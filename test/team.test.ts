@@ -249,6 +249,15 @@ test('team events stream pushes a live snapshot', async () => {
       bridge_token_enc: encryptSecret('bridge-token', config.tokenEncryptionKey), bridge_pid: null, log_pid: null,
       last_error: null, created_at: new Date().toISOString(), updated_at: new Date().toISOString(), last_health_at: null,
     })
+    // #1190: the console's rows are seeded with a claim the record did not see,
+    // so both transports have to agree about the marker.
+    const job = store.createJob({ id: 'job_stream_ground', repoId: repo.id, userId: user.id, trigger: 'manual', goal: '', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+    store.updateJob(job.id, {
+      status: 'succeeded',
+      attribution_json: JSON.stringify({ writtenBy: 'Dev-1', claimedBy: 'Lead' }),
+      attribution_ground_json: JSON.stringify({ steps: [{ key: 'writtenBy', claimed: 'Dev-1', observed: 'Dev-2', state: 'unobserved' }] }),
+      team_stats_json: JSON.stringify([{ role: 'dev2', calls: 2 }]),
+    })
     await built.app.listen({ port: 0, host: '127.0.0.1' })
     const address = built.app.server.address()
     const port = typeof address === 'object' && address !== null ? address.port : 0
@@ -269,9 +278,20 @@ test('team events stream pushes a live snapshot', async () => {
     await reader.cancel().catch(() => {})
     assert.match(text, /event: snapshot/)
     const line = text.split('\n').find((entry) => entry.startsWith('data: '))
-    const snapshot = JSON.parse(line!.slice(6)) as { bots: Array<{ role: string; activity: string; calls: number }> }
+    const snapshot = JSON.parse(line!.slice(6)) as { bots: Array<{ role: string; activity: string; calls: number }>; jobs: Array<{ id: string; attributionText?: string; attribution?: unknown }> }
     assert.equal(snapshot.bots.find((bot) => bot.role === 'lead')?.activity, 'working')
     assert.equal(snapshot.bots.find((bot) => bot.role === 'lead')?.calls, 7)
+    // #1190: the stream carries the server-rendered string, marker included, so
+    // the first one-second tick cannot replace a marked claim with the bare seat.
+    assert.equal(snapshot.jobs.find((entry) => entry.id === job.id)?.attributionText, 'Dev-1 编写 · 声称，未观察 · Dev-2 编写', 'the claim is marked and the seat the instance did see is printed beside it')
+    assert.equal(typeof snapshot.jobs.find((entry) => entry.id === job.id)?.attribution, 'object', 'the structured field keeps its type')
+
+    // The 5-second fallback must carry the same field: a fix to one transport is
+    // exactly how the console's answer used to change when the stream dropped.
+    const poll = await built.app.inject({ method: 'GET', url: `/api/repos/${repo.id}/team`, headers: { cookie } })
+    assert.equal(poll.statusCode, 200)
+    const polled = poll.json() as { jobs: Array<{ id: string; attributionText?: string }> }
+    assert.equal(polled.jobs.find((entry) => entry.id === job.id)?.attributionText, 'Dev-1 编写 · 声称，未观察 · Dev-2 编写')
   } finally {
     await built.close()
     await bridge.close()
