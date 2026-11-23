@@ -201,7 +201,9 @@ jobs:
       # This runs before the image is built on purpose. An unreadable
       # `changelog.d` fails the step and the run, and no image or release is
       # published from a body that would read complete without the release's own
-      # changes; `fragmentNames` throws rather than answering zero (#548).
+      # changes (#548). An absent `changelog.d` is not unreadable: a tree with no
+      # `changelog.d` answers zero fragment names, this step exits 0, and no
+      # stranded section is written (#1218).
       - name: Name the changes that merged after the notes were assembled
         id: stranded
         if: ${{ steps.guard.outputs.published != 'true' }}
