@@ -1,0 +1,25 @@
+# Weekly database maintenance for Fledge (02:30Z Sunday = 10:30 Asia/Shanghai).
+#
+# This file installs nothing. Putting the line below into /etc/cron.d (or any
+# other scheduler) is the owner's decision, like every other change to the
+# instance's schedule.
+#
+# Preconditions, all three:
+#   * the host clock must be trustworthy — a cron line fires on the local clock,
+#     and the live instance's clock has never been synchronised (issue #1256).
+#     Fix the clock first, or the run lands at an hour nobody chose.
+#   * the backup schedule must already run: a real run refuses (exit 3) unless
+#     the newest copy in BACKUP_DIR is intact and younger than 26 hours.
+#   * run it from the checkout as the service user, so `npm run db:maintenance`
+#     finds its dependencies.
+#
+# The report lands at ${DATA_DIR}/db-maintenance.json (data/db-maintenance.json
+# by default), and the log line names the counters the run moved.
+#
+# Check the plan before trusting the line:
+#   npm run db:maintenance -- --dry-run
+#
+# The copy is chosen here and confirmed by the tool: `--backup` must name the
+# newest copy readBackupStatus reports, so a backup that lands between `ls` and
+# the run makes this line refuse rather than vacate an older copy.
+30 2 * * 0 cd /opt/fledge && /usr/bin/npm run db:maintenance -- --backup "$(ls -t "${BACKUP_DIR:-/data/backups}"/fledge-*.db | head -1)" >> /var/log/fledge/db-maintenance.log 2>&1

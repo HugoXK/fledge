@@ -1281,6 +1281,82 @@ broken, so a failed scan there is a row — `scan failed: <errno>` beside the
 configured counts — instead of a failed `/admin` request; the copy counts the
 page can still read are shown as usual.
 
+### Database maintenance (`db:maintenance`)
+
+Deleting jobs, events or artifacts leaves their pages on the file's free list.
+SQLite reuses those pages, but nothing returns them to the filesystem until
+`VACUUM` runs, and nothing refreshes the query planner's statistics until
+`ANALYZE` does. `npm run db:maintenance` is that path, and it plans before it
+touches anything:
+
+```sh
+npm run db:maintenance -- --dry-run          # prints the plan, executes nothing
+npm run db:maintenance -- --backup data/backups/fledge-<stamp>.db
+```
+
+Run it from the checkout: the tool reads `readBackupStatus` from
+`src/lib/backupStatus.ts`, so it runs through the repository's TypeScript loader
+(`tsx`, a development dependency) the same way `npm run role:set:dev` does.
+`npm ci` on the host installs it.
+
+The dry run opens the database read-only and prints the three steps it would run
+— `PRAGMA wal_checkpoint(TRUNCATE)`, `ANALYZE`, `VACUUM` — and executes none of
+them. It never runs `PRAGMA optimize`, because that writes a `sqlite_stat1` row,
+so "the dry run wrote nothing" and "optimize always" cannot both be true. It
+writes nothing at all: no `audit_log` row, no `-journal` file, and no change to
+any table's row count, to `PRAGMA freelist_count`, to `PRAGMA page_count` or to
+the `sqlite_stat1` row count. A `-shm` file may appear beside a WAL database a
+connection opened; that is the shared-memory index, not a write, which is why the
+check is counters and never file bytes.
+
+#### A real run needs a fresh copy
+
+`--backup <file>` must name the newest copy `readBackupStatus` reports, its
+manifest must agree with its size and sha256 (`matches`), and it must be younger
+than the window — `--expected-hours`, default `26` from
+`DEFAULT_EXPECTED_HOURS`. The window is a parameter so an instance with a
+different backup interval can state its own; the default is the same 26 hours
+`/admin` uses to call a copy stale.
+
+| code | when | exit |
+|---|---|---|
+| `no-backup` | `--backup` is absent, or the named file is not in `BACKUP_DIR` | 3 |
+| `backup-too-old` | the named copy is not the newest, its manifest is not `matches`, or its age exceeds the window | 3 |
+| `db-busy` | another connection held the write lock for the tool's own `busy_timeout` of 5000 ms | 3 |
+
+Each refusal prints one code and one sentence, writes the report, and leaves the
+database untouched — including `db-busy`, where the write lock is taken and
+released before any step runs, so a busy database is refused rather than left
+half-maintained. `2` stays the usage error and `1` an unexpected failure.
+
+A real run executes the plan and then records **one** `audit_log` row —
+`action db.maintenance`, `user_id NULL` (this is not a user action, and `NULL`
+keeps it out of the per-user counts), `detail` carrying the before and after
+counters and the report path. A dry run and every refusal insert nothing.
+
+On WAL, `VACUUM` is not a promise that the file shrinks: it rewrites the file and
+may leave its byte size unchanged. Read `freelist_count` and `page_count` in the
+report, not `du`.
+
+#### The report
+
+Every run that reaches a decision writes one JSON report to
+`data/db-maintenance.json` (`DATA_DIR`), overridable with `--report <file>` —
+refusals included, because "nothing was written" always means the database and
+never the report. It carries `at`, `mode` (`dry-run` or `real`), `db`,
+`busyTimeoutMs`, `before`, `after` (`null` on a dry run), `plan`, `backup`
+(`file`, `ageHours`, `manifest`, `windowHours`; `null` on a dry run), `refusal`
+(`code`, `sentence`; `null` when the run was not refused), `report` and `exit`.
+A usage error (`2`) writes none.
+
+#### Scheduling
+
+`deploy/db-maintenance.cron.example` is a sample, not an installed job:
+**installing it on the instance is the owner's decision**, like every other
+change to the host's schedule. It names the host clock as its precondition,
+because a cron line fires on the local clock and the live instance's clock has
+never been synchronised (`#1256`).
+
 ### Backup encryption
 
 Backups stay plaintext by default, so existing schedules keep working. Set one
