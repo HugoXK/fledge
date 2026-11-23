@@ -411,18 +411,13 @@ PASS at the same tip, with a real `Ran:` command.
 
 | Version | Focus |
 |---|---|
-| `v0.1` | OAuth + approval mail, multi-repo, encrypted tokens, quota gateway, own model, mock/FlyBot runners, admin/audit |
-| `v0.2` | Per-repo FlyBot teams, goal-specific playbook, team console, fork/reviewer, quota/attribution |
-| `v0.2.1` | Live SSE console, inline questions, stop/steer, job progress and cost |
-| `v0.2.2` | Self-selected repository roles, maintainer-gated review and opt-in auto-merge |
-| `v0.2.3` | Work items, plan approval, upstream preflight, job controls, branch-protection gate, admin support/search, repo budgets, notification webhook |
-| `v0.2.4` | Provider → models, per-bot models, repository lifecycle, PR delivery, issue commands, live inbox, Product/Test stage sessions |
-| `v0.3` | Branded per-repo workspace, release automation, tip review gate, operational metrics and alerts (shipped in `v0.3.1`) |
-| `v0.4` | Plan-first gates, durable checkpoints, path/approval guards, GitHub App feedback |
-| `v0.5` | Evidence and learning: job timelines, delivery metrics, shadow evaluation, playbook promotion |
-| `v1.0` | Postgres option, worker pool, external security review, audit retention |
+| `v0.1`–`v0.3` | Login and approval, multi-repo onboarding, quota gateway, per-repo FlyBot teams, roles, work items, plan-first, tip review, release automation |
+| `v0.4` | Durable attempts and lease fencing, decision pauses, strategy bundles, schedules, notification outbox, `GET /api/v1/jobs`, rules/skills, layered budgets, flight-deck console (shipped in `v0.4.5`) |
+| `v0.5` | Foundation renewal: split the four monoliths behind seams, architecture gates, a dialect port, lease/query/maintenance visibility, an audit hash chain and a release fault matrix (#1224–#1236) |
+| `v0.6` | Owner loop and openness: command palette, cross-device preferences, i18n/a11y gates, `SourceProvider` and `AgentRunner` ports, OpenAPI 3.1 (#1237–#1243) |
+| `v1.0` | Postgres and a worker pool (#387), a second source provider and runtime, a second T3 identity, merge queue and signing, audit retention, external review |
 
-Full list and open questions: [docs/roadmap.md](docs/roadmap.md).
+Full list, workstreams, exit criteria and open questions: [docs/roadmap.md](docs/roadmap.md).
 
 ## FAQ
 
