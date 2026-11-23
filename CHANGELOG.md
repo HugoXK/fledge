@@ -5,6 +5,33 @@ All notable changes to Fledge are documented here. The format follows
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-11-23
+
+### Added
+
+- Every exported evolution dataset record now carries `attributionGround` beside the stored `attribution` claim: the per-key claimed/observed/state record the job page already shows, reconstructed for rows written before the ground column and `null` when nothing was recorded. The dataset schema moves to version 2, and a dataset exported as version 1 still verifies against its own manifest.
+- The job page and the dashboard job row no longer print a claimed seat as a fact: a seat the workspace never saw working reads `claimed, not observed`, a claim on a host with no workspace reads `claimed, not verified`, and the claim and the server observation are kept in separate records instead of one overwriting the other. Nothing new blocks a merge.
+
+### Changed
+
+- The console groups its surfaces instead of stacking one card per table: the admin page draws five cards instead of nine (release, backups and retention share one maintenance card, pending approvals sit inside the user card, and the console header is a plain header), the settings page draws three instead of four with the notification preferences inside Account & access, and the dashboard's decision queue is a rule-separated band rather than a card of its own. Every route, control and line of copy is unchanged.
+
+### Fixed
+
+- `npm run db:backup` now prunes each class of backup copy at the count the console reports: plaintext copies to `BACKUP_KEEP_PLAINTEXT` (default 1) and encrypted copies to `BACKUP_KEEP_ENCRYPTED` (default 30), instead of pruning one merged list to a single `BACKUP_KEEP` of 14. With the shipped defaults that old count silently deleted encrypted copies the `/admin` card showed as kept — twenty encrypted copies became thirteen — and kept fourteen plaintext copies while the card said thirteen were due for deletion. `--keep` / `BACKUP_KEEP` remains an explicit override of both counts for one run, and the run's `retention=` line now prints the plaintext and encrypted counts it actually applied, adding `override=--keep` when that override was used. An explicitly supplied but empty `--keep` / `BACKUP_KEEP` is now refused instead of falling back to the defaults, and the copy a run writes is always kept, even when an older copy carries a future mtime.
+- A job's model-and-role line now marks a claimed seat the instance never observed — "claimed, not observed" / “声称，未观察”, or "claimed, not verified" when the row predates the observation record — on both the job page's "Why this change" block and the console's job rows, including after the console's live stream updates them. The two surfaces and the stream now take the mark from one reconstruction of the record, so the job page, the change story and the console cannot disagree about whether a seat was seen; a claim is no longer printed as a fact in either place.
+- `npm run db:backup` now takes an exclusive lock on `BACKUP_DIR` and refuses with `backup: another backup run holds <dir> (pid <pid>)` instead of pruning beside a backup that is already running, so a cron tick and a manual run can no longer delete each other's copy or crash on it; a stale lock from a killed run is taken over by the next run. The writer also treats only regular files as copies, so a directory named like a copy in `BACKUP_DIR` is skipped instead of crashing the run with `ERR_FS_EISDIR`.
+- The dashboard now shows a critical banner when the measured clock offset is above the platform's threshold, naming the seconds it measured, the threshold and the host-clock recovery command, in Chinese and English. The banner appears only for `fail`: a healthy reading, an unmeasured process, a GitHub outage and a deployment with no GitHub App stay quiet, and `/readyz` and the job refusal are unchanged.
+- A deployment that has never run a restore drill no longer publishes a `fledge_restore_drill_ok` verdict, so the shipped `FledgeRestoreDrillFailing` rule stops paging every fresh install half an hour after its first scrape. A drill record that exists still publishes `0` when it failed or aged past the expected interval, beside its age series, so a drill that stopped running keeps alerting; only "never drilled" is now absent instead of a zero.
+- A night held by an open release pull request now says so on #80, naming that pull request, its head, its `ci-ok` conclusion and any failed checks, instead of leaving the release log silent while the release was stuck.
+- A release's notes now name every change its tag carries: a change merged into `main` while the release pull request waited is listed in a final section of the published notes, and the release log names the fragments that arrived that way.
+
+### Security
+
+- A refused restore drill no longer leaves the column key on disk. The restore-for-real runbook block now removes `/var/tmp/fledge-restore/column.key` before it stops on a refusal, so the block's `exit 1` no longer skips the cleanup, and `test/columnCheck.test.ts` requires the removal on the refusal path rather than anywhere in the block.
+- `npm run db:restore-drill` can now prove that the encrypted credentials in a restored copy still open: pass `--secret-key-file` with the key (or keyring JSON) the copy was written under and the drill decrypts one payload per ciphertext column, records `columnCheck: pass` / `fail` in its status file and exits non-zero on a failure instead of printing `restore-drill: OK`. Without the flag the check is recorded as `skipped`, which the admin card shows as its own state: a drill that never checked a column no longer reads as an unqualified success, and both documented restore invocations pass the key.
+
+
 ## [0.4.5] — 2026-11-21
 
 ### Added
