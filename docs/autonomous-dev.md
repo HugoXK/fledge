@@ -293,12 +293,11 @@ renames it to `ci-ok-head`. See
   recorded in `package.json`; one execution per supported Node line, plus the
   changed-lines floor on the pull request diff)
 - `build`
-- `visual` (the UI matrix, when the diff reaches a rendered surface; the
-  Chromium layer is cached under the installed Playwright version — a version
-  bump is a cold run — and the job summary names every page, viewport and
-  scheme with its own result. The run compares the cases it recorded against
-  the set the matrix promises, so a dropped page, or a case that reuses another
-  case's key and its screenshot, fails the job instead of shrinking the table)
+- `visual` (the UI matrix, when the diff reaches a rendered surface; the job
+  summary names every page, viewport and scheme with its own result, and the
+  shard aggregate refuses a run that measured fewer cells than the matrix
+  promises, so a dropped page or a cell measured twice fails the job instead of
+  shrinking the table)
 - `docker` (image builds, scans and starts)
 - `audit` (no high-severity advisory in either the runtime set or the full graph)
 - `changelog` (fragments are well formed)

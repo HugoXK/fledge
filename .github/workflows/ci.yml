@@ -291,22 +291,6 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --ignore-scripts
-      # #787: the Chromium download is the slow half of this job and it is the
-      # same archive until the Playwright version moves. The key names that
-      # version, so a bump misses the cache — a cold run — instead of launching
-      # a browser the lockfile no longer pins. There is deliberately no
-      # restore-key, for the same reason: an older Playwright's browser under a
-      # newer key is the wrong cache this card refuses. A hit skips the download
-      # only; the install step and the matrix below always run, so a cache hit
-      # never skips an assertion.
-      - name: Read the Playwright version
-        id: playwright
-        run: node -p "'version=' + require('playwright/package.json').version" >> "$GITHUB_OUTPUT"
-      - name: Cache the Playwright browser layer
-        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
-        with:
-          path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ steps.playwright.outputs.version }}
       - run: npm run build
       - run: npx playwright install --with-deps chromium
       - run: npm run visual:matrix

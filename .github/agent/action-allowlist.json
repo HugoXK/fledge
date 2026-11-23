@@ -1,7 +1,6 @@
 {
   "allowed_actions": [
     "actions/attest-build-provenance",
-    "actions/cache",
     "actions/checkout",
     "actions/dependency-review-action",
     "actions/download-artifact",
