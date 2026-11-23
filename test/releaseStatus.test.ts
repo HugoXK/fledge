@@ -356,6 +356,31 @@ test('a chain recorded without a local digest keeps the link skipped, never red'
   assert.equal(linkOf(status, 'local')?.state, 'skipped')
 })
 
+// #1218: `skipped` is right for an operator replaying a recorded chain, and
+// wrong for the publish path, which holds the run's digest and must not report
+// green when it has none to compare. The strictness is a property of the caller,
+// so the recording path keeps its behaviour.
+test('a path that requires the run digest is red when no digest is given, not skipped', async () => {
+  const status = await evaluate(chain({ requireLocalImageDigest: true }))
+  assert.equal(status.ok, false, 'an absent digest must not read green where one is required')
+  assert.equal(linkOf(status, 'local')?.state, 'missing')
+  assert.ok(status.problems.some((problem) => problem.startsWith('local:')), JSON.stringify(status.problems))
+})
+
+test('the same path with the run digest is green, so the flag demands a digest rather than failing', async () => {
+  const status = await evaluate(chain({ requireLocalImageDigest: true, localImageDigest: DIGEST }))
+  assert.equal(status.ok, true, JSON.stringify(status.problems))
+  assert.equal(linkOf(status, 'local')?.state, 'ok')
+})
+
+test('the CLI refuses a chain with no digest when the caller requires one', () => {
+  const run = runCli(['--fixtures', fixtureFile(chain()), '--version', '0.3.2', '--require-local-image-digest'])
+  assert.equal(run.status, 1, run.stdout + run.stderr)
+  assert.match(run.stdout, /local\s+missing/)
+  const passed = runCli(['--fixtures', fixtureFile(chain({ localImageDigest: DIGEST })), '--version', '0.3.2', '--require-local-image-digest'])
+  assert.equal(passed.status, 0, passed.stdout + passed.stderr)
+})
+
 test('a local digest that is not a sha256 digest is red and names what it read', async () => {
   const status = await evaluate(chain({ localImageDigest: 'ghcr.io/hugoxk/fledge:v0.3.2' }))
   assert.equal(status.ok, false)

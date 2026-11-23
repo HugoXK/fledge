@@ -24,3 +24,34 @@ export function fragmentNames(dir = 'changelog.d') {
 export function countFragments(dir = 'changelog.d') {
   return fragmentNames(dir).length
 }
+
+// #1218: a fragment body is contributor-written free text and both render sites
+// put it into the published body as `- ${body}`, which leaves every line after an
+// inner break at column 0. The release verifier reads its chain with `/^Image:/m`
+// — and `/m` ends a line at `\r`, `\u2028` and `\u2029` exactly as at `\n` — so a
+// body that carries its own break and its own `Image:` line used to supply the
+// digest the release was judged against, and a body whose line began `## [`
+// silently truncated the notes.
+//
+// The rule is one paragraph, which is what `AGENTS.md` already says a fragment
+// is. Folding is the neutralisation that does not need a list of shapes to
+// reject: a body with no line break cannot produce a column-0 line at all, so
+// the next fragment cannot re-open the hole with a name nobody blacklisted. The
+// class below is the parser's own terminator class, not `\n` alone — a fold
+// written for `\n` closes one of four entrances.
+const LINE_BREAK = /[ \t]*[\r\n\u2028\u2029]+[ \t]*/g
+const ANY_LINE_BREAK = /[\r\n\u2028\u2029]/
+
+/** One paragraph: the body as both render sites publish it. */
+export function foldFragmentBody(body) {
+  return String(body ?? '').replace(LINE_BREAK, ' ').trim()
+}
+
+/** Why a body cannot be a fragment, or `null` when it is one paragraph the tools can fold. */
+export function fragmentBodyProblem(body) {
+  const text = String(body ?? '')
+  if (text === '') return 'empty'
+  if (ANY_LINE_BREAK.test(text)) return 'one paragraph, no line break'
+  if (text.startsWith('- ') || text.startsWith('#')) return 'no heading or leading "- "'
+  return null
+}

@@ -462,15 +462,21 @@ jobs:
       # SBOM asset and the attestation — so the verification runs here, after the
       # release exists, and a non-zero exit fails the publish instead of leaving
       # a release whose body claims more than it has.
+      #
+      # #1218: the digest this run pushed is the one value a release body cannot
+      # invent, so it is passed in and compared, and `--require-local-image-digest`
+      # makes its absence red: a body that named another image would otherwise
+      # read green as `local: skipped`.
       - name: Verify the release chain
         if: ${{ steps.guard.outputs.published != 'true' }}
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          DIGEST: ${{ steps.push.outputs.digest }}
         run: |
           set -euo pipefail
           # `verify-release` takes the bare X.Y.Z; the tag carries the leading v.
-          node scripts/verify-release.mjs --version "${RELEASE_TAG#v}"
+          node scripts/verify-release.mjs --version "${RELEASE_TAG#v}" --local-image-digest "${DIGEST}" --require-local-image-digest
 
   # #1207 step 3: the published notes and the release log on #80 have to agree
   # about what a tag carried. The publish job reports the fragment names it
