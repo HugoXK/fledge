@@ -37,6 +37,21 @@ not a conclusion.
 - Same-class reds tighten this file or LESSONS; do not paper over them with a
   special case.
 
+## Architecture boundaries
+
+- `npm run arch:check` is a step in the `lint` CI job and a test in the suite.
+  It reads the tree, not the diff.
+- A view may import `db` row types; it may not import the store. The store must
+  not import `app`, a view or a job. A job must not import a view. A view may
+  import only `src/jobs/continuity.ts` and `src/jobs/automationHealth.ts` from
+  the job layer; the job service and the bridge stay out of the view.
+- A new source file is at most 1,200 lines. The five files that predate the limit
+  are recorded in `scripts/lib/arch-grandfather.json` at their current size; an
+  entry may not grow, and it must be deleted once the file is at or below 1,200
+  lines.
+- A type-only import is erased at build time and is allowed across a boundary;
+  the gate is about runtime coupling.
+
 ## Silent catches
 
 - A `catch` that swallows an error says why in a comment inside the block, or
