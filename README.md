@@ -29,7 +29,7 @@ through a signed bridge; the agent writes a failing test, makes the smallest
 correct fix, opens one pull request, and reports back. Fledge never pushes to the
 default branch, does not merge by default, and never runs a user repository itself.
 
-> **Status:** `v0.4.5` is the latest release (2026-11-21) at <https://fledge.hugoxk.online/>.
+> **Status:** `v0.5.0` is the latest release (2026-11-23) at <https://fledge.hugoxk.online/>.
 > A weekly minor release goes out on Monday morning (10:00 Asia/Shanghai); later releases in the same week are patch releases.
 > Login is GitHub OAuth: the production OAuth App is configured and the token login is disabled. Documentation is at
 > <https://docs.fledge.hugoxk.online/>; the project homepage and guide are at
