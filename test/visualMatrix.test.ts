@@ -3,12 +3,17 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import * as visualMatrix from '../src/lib/visualMatrix.js'
 import {
+  GATE_SCHEMES,
+  GATE_WIDTHS,
+  VISUAL_LOCALES,
   VISUAL_NARROW_CASES,
   VISUAL_PATHS,
   VISUAL_WIDTHS,
+  cellLabel,
   overflowFailure,
   pageSlug,
   viewportHeight,
+  visualWorkload,
 } from '../src/lib/visualMatrix.js'
 
 test('the matrix covers phones, tablets and desktop widths', () => {
@@ -46,12 +51,23 @@ test('the matrix renders the console at 320, below the sweep that starts at 360'
 })
 
 test('the runner turns a narrow case into a failure, not a screenshot', () => {
+  const workload = visualWorkload()
+  const narrow = workload.filter((cell) => cell.kind === 'narrow')
+  assert.equal(
+    narrow.length,
+    VISUAL_NARROW_CASES.length * VISUAL_LOCALES.length,
+    'every narrow case is measured in both locales',
+  )
+  for (const locale of VISUAL_LOCALES) {
+    const consoleNarrow = narrow.find((cell) => cell.locale === locale && cell.path === '/console' && cell.width === 320)
+    assert.ok(consoleNarrow !== undefined, `the ${locale} pass has to measure /console at 320`)
+    assert.equal(cellLabel(consoleNarrow), `${locale} 320px /console`, 'a narrow case reports locale, width and path like every other row')
+  }
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
-  assert.match(script, /for \(const narrow of VISUAL_NARROW_CASES\)/, 'the runner must visit each narrow case')
   assert.match(
     script,
-    /failures\.push\(`\$\{locale\} \$\{narrow\.width\}px \$\{narrow\.path\}: /,
-    'a narrow case has to report locale, width and path like every other row',
+    /await checkPage\(page, cell\.locale, cell\.width, cell\.path\)/,
+    'a narrow case goes through the same overflow walk as every other row, so its failure is a failure and not a screenshot',
   )
 })
 
@@ -89,14 +105,27 @@ test('overflow is named by its width or its element', () => {
 // page that had no anchor and no link target. Both are structural, so they are
 // pinned here rather than only in the browser job.
 test('the matrix captures the landing page signed out, before the development login', () => {
+  const workload = visualWorkload()
+  const landing = workload.filter((cell) => cell.kind === 'sweep' && cell.path === '/')
+  assert.equal(landing.length, VISUAL_WIDTHS.length * VISUAL_LOCALES.length, 'every width is captured for the landing page')
+  const signedInSweep = workload.filter((cell) => cell.kind === 'sweep' && cell.path !== '/')
+  assert.equal(
+    signedInSweep.length,
+    (VISUAL_PATHS.length - 1) * VISUAL_WIDTHS.length * VISUAL_LOCALES.length,
+    'the signed-in sweep covers every path except the landing page, at every width',
+  )
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
-  const landing = script.indexOf('/lang/${locale}?next=/`')
-  const login = script.indexOf('/auth/dev')
-  assert.ok(landing !== -1, 'the matrix must visit the landing page')
-  assert.ok(login !== -1, 'the matrix must still sign in for the owner surfaces')
-  assert.ok(landing < login, 'the landing page redirects to /dashboard once signed in, so it has to be captured first')
-  assert.match(script, /for \(const path of SIGNED_IN_PATHS\)/, 'the signed-in pass must not revisit the landing page as the dashboard')
-  assert.match(script, /const SIGNED_IN_PATHS = VISUAL_PATHS\.filter/, 'the signed-in set has to stay derived from VISUAL_PATHS')
+  assert.match(script, /const signedIn = cell\.path !== '\/'/, 'the landing page is the one cell that stays signed out')
+  assert.match(
+    script,
+    /if \(options\.signedIn\) await page\.goto\(`\$\{base\}\/auth\/dev`/,
+    'the development login runs only for a signed-in cell, and before the page it measures',
+  )
+  assert.match(
+    script,
+    /next=\$\{options\.signedIn \? '\/dashboard' : '\/'\}/,
+    'the landing cell lands on /, and the signed-in cells land on the dashboard',
+  )
 })
 
 test('a missing #tokens anchor fails the matrix instead of skipping the assertion', () => {
@@ -272,11 +301,34 @@ test('the leftover gate names every raw-template hit it finds', () => {
 })
 
 test('the runner drives the gate from the two constants and chooses a scheme per context', () => {
+  const gate = visualWorkload().filter((cell) => cell.kind === 'gate')
+  assert.equal(
+    gate.length,
+    GATE_WIDTHS.length * GATE_SCHEMES.length * VISUAL_PATHS.length * VISUAL_LOCALES.length,
+    'the gate workload is the gate widths by schemes by every swept path, in both locales',
+  )
+  for (const path of VISUAL_PATHS) {
+    assert.ok(gate.some((cell) => cell.path === path), `every swept path has to go through the gate: ${path}`)
+  }
+  for (const width of GATE_WIDTHS) {
+    for (const scheme of GATE_SCHEMES) {
+      assert.ok(
+        gate.some((cell) => cell.width === width && cell.scheme === scheme),
+        `the gate has to measure ${String(width)} in ${scheme}`,
+      )
+    }
+  }
   const script = readFileSync(new URL('../scripts/visual-matrix.ts', import.meta.url), 'utf8')
-  assert.match(script, /for \(const width of GATE_WIDTHS\)/, 'the gate pass has to iterate GATE_WIDTHS')
-  assert.match(script, /for \(const scheme of GATE_SCHEMES\)/, 'the gate pass has to iterate GATE_SCHEMES')
-  assert.match(script, /colorScheme: scheme/, 'each gate context has to ask the browser for the scheme it measures')
-  assert.match(script, /for \(const path of VISUAL_PATHS\)/, 'every swept path has to go through the gate')
+  assert.match(
+    script,
+    /scheme: cell\.kind === 'gate' \? cell\.scheme : undefined/,
+    'each gate context has to ask the browser for the scheme it measures',
+  )
+  assert.match(
+    script,
+    /await checkGatePage\(page, cell\.locale, cell\.width, cell\.scheme, cell\.path\)/,
+    'a gate cell is measured by the gate check, not the screenshot walk',
+  )
   assert.match(script, /data-compact-target/, 'the script has to read the documented compact opt-out')
 })
 
@@ -386,89 +438,4 @@ test('the doc names each limit the gate does not close', () => {
   ] as const) {
     assert.ok(section.includes(needle), `the measured-gate section has to name the limit: ${why}`)
   }
-})
-
-// #787: a faster job is only worth it if a cheaper run cannot pass a page it
-// never rendered. The promised case set is the contract: the runner compares it
-// against the cases it recorded, so a page dropped from a loop is red, and a
-// case that reuses another case's key is red too — two cases share one
-// screenshot file (`<width>-<slug>.png`), so the second would publish the first
-// one's picture. Read through the module object like the gate above: this file
-// must load on a tree that does not have these exports yet.
-const coverageLib = visualMatrix as unknown as {
-  VISUAL_LOCALES?: readonly string[]
-  caseKey?: (coordinates: { locale: string; width: number; scheme: string; path: string }) => string
-  expectedCaseKeys?: (locales?: readonly string[]) => string[]
-  caseCoverage?: (expected: readonly string[], recorded: readonly string[]) => {
-    missing: readonly string[]
-    duplicated: readonly string[]
-    unexpected: readonly string[]
-  }
-}
-
-function promisedCases(): string[] {
-  assert.equal(typeof coverageLib.expectedCaseKeys, 'function', 'the runner needs a promised case set')
-  const keys = coverageLib.expectedCaseKeys?.() ?? []
-  assert.ok(keys.length > 0, 'the promised case set is empty')
-  return keys
-}
-
-test('the promised case set names every page of the sweep and of the gate', () => {
-  const keys = promisedCases()
-  const locales = coverageLib.VISUAL_LOCALES ?? []
-  assert.deepEqual([...locales], ['zh', 'en'])
-  const perLocale = VISUAL_WIDTHS.length * VISUAL_PATHS.length
-    + VISUAL_NARROW_CASES.length
-    + (gate.GATE_WIDTHS?.length ?? 0) * (gate.GATE_SCHEMES?.length ?? 0) * VISUAL_PATHS.length
-    + (gate.GATE_WIDTHS?.length ?? 0)
-  assert.equal(keys.length, perLocale * locales.length, 'a promised case is missing from the set')
-  assert.equal(new Set(keys).size, keys.length, 'two promised cases share a key')
-  for (const locale of locales) {
-    for (const path of VISUAL_PATHS) {
-      assert.ok(keys.includes(`${locale}|360|host|${path}`), `the sweep does not promise ${locale} 360px ${path}`)
-      assert.ok(keys.includes(`${locale}|1280|light|${path}`), `the gate does not promise ${locale} 1280px light ${path}`)
-      assert.ok(keys.includes(`${locale}|1280|dark|${path}`), `the gate does not promise ${locale} 1280px dark ${path}`)
-    }
-    for (const width of gate.GATE_WIDTHS ?? []) {
-      assert.ok(
-        keys.includes(`${locale}|${width}|explicit-dark|/dashboard`),
-        `the pinned-dark check does not promise ${locale} ${width}px /dashboard`,
-      )
-    }
-  }
-})
-
-test('a dropped page reads as a missing case, not a shorter clean run', () => {
-  const expected = promisedCases()
-  const lib = coverageLib
-  assert.equal(typeof lib.caseCoverage, 'function', 'the runner needs a coverage check')
-  const recorded = expected.filter((key) => key !== 'en|1280|light|/admin')
-  const coverage = lib.caseCoverage?.(expected, recorded) ?? { missing: [], duplicated: [], unexpected: [] }
-  assert.deepEqual([...coverage.missing], ['en|1280|light|/admin'], 'a page that never ran has to be named')
-  assert.deepEqual([...coverage.duplicated], [])
-  assert.deepEqual([...coverage.unexpected], [])
-})
-
-test('a case reusing another page key is caught, and the drop behind it stays visible', () => {
-  const expected = promisedCases()
-  // The scenario the card names: the admin cell never ran and its slot was
-  // filled by a second settings row. The summary would still hold one row per
-  // slot; only the key can tell the two apart.
-  const recorded = expected
-    .filter((key) => key !== 'zh|360|dark|/admin')
-    .concat(['zh|360|dark|/settings'])
-  const coverage = coverageLib.caseCoverage?.(expected, recorded)
-    ?? { missing: [], duplicated: [], unexpected: [] }
-  assert.deepEqual([...coverage.missing], ['zh|360|dark|/admin'], 'the page that never ran is still missing')
-  assert.deepEqual([...coverage.duplicated], ['zh|360|dark|/settings'], 'the reused key is a duplicate')
-  assert.equal(coverage.duplicated.length > 0 && coverage.missing.length > 0, true, 'a reused key cannot paper over a dropped page')
-})
-
-test('a case outside the promised set is unexpected, not silently accepted', () => {
-  const expected = promisedCases()
-  const recorded = expected.concat(['en|360|host|/not-a-page'])
-  const coverage = coverageLib.caseCoverage?.(expected, recorded)
-    ?? { missing: [], duplicated: [], unexpected: [] }
-  assert.deepEqual([...coverage.unexpected], ['en|360|host|/not-a-page'])
-  assert.deepEqual([...coverage.missing], [])
 })

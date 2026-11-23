@@ -480,8 +480,20 @@ before the branch is pushed and names `RELEASE_OPEN_TOKEN`, and because nothing
 was pushed it says nothing on #80. A refused opener — the branch at another
 commit, `main` moved since the plan, a path outside the mechanical set, the
 version or changelog check failing in the fetched tree — is a red run with the
-reason in the job summary and on #80. Dry runs and runs that pushed nothing
-never reach the write path.
+reason in the job summary and on #80. Dry runs reach no write path, and a run
+that pushed nothing writes to #80 only when the night was held by an open
+release pull request; every other pushed-nothing run stays silent.
+
+A night held by an open release pull request is a no-plan: one slot, one
+release pull request (`scripts/lib/release-trigger.mjs`). That refusal used to
+leave no record at all — the night pushed nothing, so the #80 step exited — and
+the one fact that decides whether it ships, the pull request's own `ci-ok`, was
+never read. The collect step now reads that pull request's head and its `ci-ok`
+conclusion, with the names of the checks that failed, and a held night posts
+one line on #80 naming the pull request, its head, the conclusion and the failed
+checks. The line is keyed by the number, the head and the conclusion, so it
+repeats only when one of those changes. Nothing on that path merges, closes,
+re-runs or pushes: the release stays a person's decision.
 
 A manual run is still possible and uses the same tool:
 
@@ -495,8 +507,8 @@ copies of those scripts), refuses when `main` moved since the plan or the diff
 leaves `CHANGELOG.md`, `README.md`, `README.zh.md`, `changelog.d/`,
 `docker-compose.yml`, `package-lock.json` and `package.json`, reuses an open pull
 request at the same commit — after re-reading its head, the same check a freshly
-opened pull request gets, so a head in another repository, a flag that does not
-read back, or a readback that cannot be made is a refusal rather than a reuse —
+opened pull request gets, so a head in another repository, a flag that reads back
+`true`, or a readback that cannot be made is a refusal rather than a reuse —
 instead of opening a second one, and prints the JSON it acted on. It writes that
 one pull request and nothing else, and it carries no tag endpoint: the tag stays
 in the workflow. A `POST /pulls` that answers non-201, or answers no pull request
@@ -683,6 +695,32 @@ Two recovery steps remain owner actions, unchanged by this slice: an orphan
 branches` ruleset (`bypass_actors: []`), and relaxing that is a ruleset edit, not
 a commit. The runbook is still: delete or adopt the branch after adding the
 identity to the ruleset bypass, then let the next run tag the merge.
+
+### Naming the changes a release carried but its notes did not (#1207)
+
+A release's notes are assembled once, when the release pull request is built:
+`node scripts/changelog.mjs release` folds every fragment it can see and deletes
+it, and nothing reads `changelog.d/` again before the tag is written. Every
+change merged into `main` while that pull request waited for its merge click is
+therefore carried by the tag and missing from the notes the tag publishes —
+v0.4.5 shipped three that way while its pull request body said "changelog
+fragments: 22".
+
+The publish run now checks the checkout at the tag before it builds anything. A
+fragment still present in `changelog.d/` there is by construction a change the
+release does not name, so `scripts/release-stranded-notes.mjs` appends one
+section to the assembled body that lists each of them and says why it arrived
+late; the three chain lines (`Image:`, `SBOM:`, `Attestation:`) are appended
+after it and read exactly as before. The step fails, and the image is never
+built, when `changelog.d` cannot be read: a body that reads complete without the
+release's own changes is worse than no body. The fragment names are then said on
+#80 by a separate job that holds `issues: write` and nothing else, so the release
+log and the published notes agree.
+
+Nothing else moves: the same tag, image and `CHANGELOG.md`; no push to `main`,
+no second release, no re-tag. A stranded fragment is still folded into the next
+release's section, so a change can be named twice until the fold itself is
+reworked.
 
 ### Automatic tag deployment and verification
 
@@ -1138,9 +1176,12 @@ are absolute.
 npm run db:backup
 # writes ${DATA_DIR}/backups/fledge-<ISO timestamp>.db via SQLite's online backup API
 # set BACKUP_DIR to override; in Docker the default is /data/backups
-# every copy is checked with PRAGMA integrity_check and pruned to BACKUP_KEEP
-# (default 14) newest copies; a copy that fails the check is deleted and the run
-# exits non-zero, so a failed backup never leaves a usable-looking file
+# every copy is checked with PRAGMA integrity_check and pruned to its class's
+# write-time count — BACKUP_KEEP_PLAINTEXT (default 1) plaintext copies,
+# BACKUP_KEEP_ENCRYPTED (default 30) encrypted copies; --keep / BACKUP_KEEP
+# overrides both for one run (an empty value is refused); a copy that fails the
+# check is deleted and the run exits non-zero, so a failed backup never leaves a
+# usable-looking file
 # each copy gets a <copy>.json manifest: size, sha256, schema version and
 # per-table row counts, written 0600 and deleted together with its copy
 # plaintext is the default; with a backup key this writes fledge-<timestamp>.db.enc
@@ -1150,20 +1191,57 @@ npm run db:backup
 # outside the backup directory; BACKUP_WORK_DIR moves it (default: the temp dir)
 ```
 
+### One writer per backup directory
+
+A run takes the directory for its own length: `npm run db:backup` creates
+`${BACKUP_DIR}/.fledge-backup.lock` exclusively before it writes anything and
+removes it however the run ends. A second run started while the first holds the
+directory — a cron tick meeting a manual backup — refuses instead of pruning
+beside it:
+
+```
+backup: another backup run holds /data/backups (pid 4242); refusing to share the backup directory
+```
+
+That is exit 1, one line, and no copy is written or deleted. The lock is not a
+wait: if the holder is gone (a `SIGKILL`, a host reboot) the next run takes the
+lock over and proceeds, but only once the lock's own mtime is older than ten
+seconds — a lock created milliseconds ago may belong to a run that is one
+instruction from writing its pid, or to one whose exit handler is about to
+release it. The takeover itself is serialised through
+`.fledge-backup.lock.takeover`, an exclusive marker held only across the remove
+and the recreate: several runs that judge the same dead lock stale can therefore
+not delete each other's fresh lock and all write in the directory — the
+concurrent-run defect the lock exists to stop. A lock file that exists but cannot
+be read is only taken over once it is a minute old, so a run that is mid-creation
+is never robbed. The
+directory is also read as a directory of files: an entry that is not a regular
+file (a directory or a symlink named like a copy) is never treated as a copy and
+is never deleted — the writer and the dry run now use the same classifier, so a
+copy the console counts is a copy the writer may prune.
+
 ### Backup retention and the dry run
 
-`BACKUP_KEEP` (default 14) is the write-time count `npm run db:backup` prunes to,
-and it applies to every copy it writes. The retention the console reports is
-per class, so the encrypted copies an instance keeps do not consume the plaintext
-copy the restore drill reads:
+The write-time counts are per class, and they are the counts the console reports
+and the dry run applies: `npm run db:backup` prunes plaintext copies to
+`BACKUP_KEEP_PLAINTEXT` (default 1) and encrypted copies to
+`BACKUP_KEEP_ENCRYPTED` (default 30), so the encrypted copies an instance keeps
+do not consume the plaintext copy the restore drill reads. `--keep` /
+`BACKUP_KEEP` is an explicit override of both counts for that one run — the
+`retention=` line prints `override=--keep` beside the two counts it applied —
+not a second policy. An explicitly supplied but empty value (`--keep ""` or
+`BACKUP_KEEP=""`) is refused with exit 2 instead of being treated as absent, and
+the copy a run writes is always among the copies its class keeps, even when an
+older copy carries a future mtime:
 
 | Env | Default | What the scan keeps |
 |---|---|---|
 | `BACKUP_KEEP_PLAINTEXT` | `1` | plaintext `fledge-<stamp>.db` copies (`npm run db:backup` writes one on the host) |
 | `BACKUP_KEEP_ENCRYPTED` | `30` | encrypted `fledge-<stamp>.db.enc` copies |
 
-Both are read by `loadConfig` and by the scan itself, so the policy is in the
-repository instead of only in a host wrapper. A value that is not a positive
+Both are read by `loadConfig`, by the writer that deletes and by the scan
+itself, so the policy is in the repository instead of only in a host wrapper and
+the three cannot disagree about what is kept. A value that is not a positive
 whole number is refused — `0` would erase every copy of that class — rather than
 clamped.
 
@@ -1304,16 +1382,30 @@ check` is what an empty directory says. An encrypted copy is listed the same
 way: its manifest's size and `sha256` cover the file on disk, so the card
 compares the ciphertext and reads the age from the name. The restore drill
 writes `${DATA_DIR}/backup-drill.json` when `DATA_DIR` is set (or the path passed
-with `--status-file`), and the card shows that record's time, `ok`/`failed` and
-RTO/RPO. It says `none recorded` only when that file is absent or unreadable, so
-the card never shows a green it cannot prove.
+with `--status-file`), and the card shows that record's time, `ok`/`failed`,
+RTO/RPO and the column check as its own row — `列检查：通过 / column check:
+passed`, `列检查：未运行（未提供密钥） / not run (no key given)` when the run
+carried no key, `列检查：未到达（本次运行在检查前失败） / not reached (the run
+failed before it)` when it carried a key and died first, `列检查：失败 / failed`
+with the column names, or `列检查：未记录 / not recorded` for a record written
+before the field existed. A drill whose column check did not pass never reads as
+an unqualified `成功 / ok`: the success word carries the qualification. It says
+`none recorded` only when that file is absent or unreadable, so the card never
+shows a green it cannot prove.
 
 The same two readers publish five series on `/metrics` at scrape time, so the
 backup can page without somebody opening the card: `fledge_backup_age_hours`,
 `fledge_backup_copies`, `fledge_backup_encrypted_copies`,
 `fledge_restore_drill_age_hours` and `fledge_restore_drill_ok` (`1` only for a
-successful drill inside the expected interval; a fresh install reads `0` and no
-age series). Two rules in `deploy/prometheus/fledge-alerts.yml` use them:
+successful drill inside the expected interval; with no drill record at all the
+scrape publishes neither the verdict nor the age, so a fresh install cannot trip
+the rule, while a drill that ran and failed or aged out reads `0` beside its age
+series). The drill gauge follows the card's column check: a record whose
+`columnCheck` is `fail` or `not-reached` reads `0` even beside an `ok: true`,
+because that record is not a passing drill on the page either; `skipped` keeps
+reading `1`, since a host with no column key configured has not failed a drill
+and paging it on every scrape would be the wrong alarm. Two rules in
+`deploy/prometheus/fledge-alerts.yml` use them:
 `FledgeBackupStale` at `fledge_backup_age_hours > 26` — raise that number in the
 rule if you raise `BACKUP_EXPECTED_HOURS` — and `FledgeRestoreDrillFailing` at
 `fledge_restore_drill_ok == 0`. The platform also raises one in-app ops alert per
@@ -1336,7 +1428,15 @@ written `0600`, so the dump is not readable by other accounts on the host either
 Prove that the newest copy still restores, without touching the live database:
 
 ```sh
-npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json"
+# The column key lives in the root-only env file. Derive it into an owner-only
+# file so it never appears on a command line, and remove it when the run ends:
+# a drill that refuses a bad copy exits non-zero, so a plain `rm` after it would
+# be skipped exactly when the key matters most. The subshell's EXIT trap runs on
+# success and on every failure.
+sudo sh -c 'umask 077; sed -n "s/^TOKEN_ENCRYPTION_KEY=//p" /etc/fledge/fledge.env > /var/tmp/fledge-column.key'
+( trap 'sudo rm -f /var/tmp/fledge-column.key' EXIT
+  npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --status-file "$DATA_DIR/backup-drill.json" --secret-key-file /var/tmp/fledge-column.key )
+# a keyring host passes the JSON file TOKEN_ENCRYPTION_KEYS_FILE names instead
 # encrypted copy: prefix with BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key
 # manifest=/var/lib/fledge/backups/fledge-2026-11-06T09-44-53-448Z.db.json
 # table=jobs expected=5000 actual=5000        one line per table: copy vs manifest
@@ -1357,11 +1457,26 @@ How it works and how to read it:
   directory (write a fresh copy first with `--fresh`; with a key configured that
   fresh copy is encrypted too). Nothing is created if a copy already exists, so
   the RPO you see is the age of your real backup schedule.
-- `--status-file <path>` records the result for `/admin`: `{at, ok, detail}`,
-  mode `0600`, written atomically. With neither the flag nor `DATA_DIR` the drill
-  writes nothing, so a CI run cannot touch an operator's data directory. A failed
-  drill overwrites the last success with `ok:false`, so the card never shows a
-  stale green.
+- `--status-file <path>` records the result for `/admin`:
+  `{at, ok, detail, columnCheck, columnErrors}`, mode `0600`, written atomically.
+  With neither the flag nor `DATA_DIR` the drill writes nothing, so a CI run
+  cannot touch an operator's data directory. A failed drill overwrites the last
+  success with `ok:false`, so the card never shows a stale green.
+- `--secret-key-file <path>` proves the copy's encrypted columns still open: one
+  payload per ciphertext column (`users.github_token_enc`, `repos.token_enc`,
+  `jobs.callback_secret_enc` and the other `*_enc` columns an application schema
+  carries) is decrypted with the key at that path. The file holds one base64
+  32-byte key, or the keyring JSON `{"<id>": "<base64 32 bytes>"}` a keyed host
+  already uses, so a `v2:<id>:…` payload passes with the id it names and fails
+  naming that id when the file does not carry it. The drill records
+  `columnCheck: pass`, `fail` (with the failing `table.column` entries in
+  `columnErrors`, exit non-zero), `skipped` when the flag is absent, or
+  `not-reached` when the flag was given but the run died before the check — the
+  last two are different facts, and only the first of them means "no key given".
+  The previous verdict and exit code are unchanged, and an unrun check is never
+  reported as a pass. The drill never reads the key from its own environment and
+  never imports the application's config; the block above removes the key file
+  with an `EXIT` trap, so a refused copy does not leave it behind.
 - **An encrypted copy is decrypted with the configured key before the database
   checks.** The `.db.enc` extension selects the encrypted path; the ciphertext is
   checked against the manifest first, then decrypted with
@@ -1482,17 +1597,24 @@ contents or query results into this file.
 Restore for real, on a stopped instance. The work directory must be outside
 `DATA_DIR` (the drill refuses a target inside it), so use a scratch path. For an
 encrypted copy, set the same key source the backup used; a missing or wrong key
-stops the drill before it can produce a `restored.db`:
+stops the drill before it can produce a `restored.db`. The column key is passed
+the same way, so a copy whose credentials no longer open is refused here — a
+non-zero exit takes the `else` branch and `restored.db` is never copied in:
 
 ```sh
 sudo systemctl stop fledge
 sudo install -d -m 700 /var/tmp/fledge-restore
-if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore; then
+sudo sh -c 'umask 077; sed -n "s/^TOKEN_ENCRYPTION_KEY=//p" /etc/fledge/fledge.env > /var/tmp/fledge-restore/column.key'
+if BACKUP_ENCRYPTION_KEY_FILE=/etc/fledge/backup.key npm run db:restore-drill -- --db "$DB_PATH" --backup-dir "$BACKUP_DIR" --work-dir /var/tmp/fledge-restore --secret-key-file /var/tmp/fledge-restore/column.key; then
   echo "restore-drill: OK"
 else
   echo "drill failed; do not restore from this copy" >&2
+  # remove the key before the block stops: `exit 1` skips every line after `fi`
+  sudo rm -f /var/tmp/fledge-restore/column.key
   exit 1
 fi
+# the column key was only needed for the check above
+sudo rm -f /var/tmp/fledge-restore/column.key
 # a failed drill renames the copy to restored.db.failed, so only a fresh, verified
 # restored.db can be copied in the next step
 sudo rm -f "$DB_PATH-wal" "$DB_PATH-shm"

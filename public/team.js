@@ -178,7 +178,11 @@
       }
       const attr = row.querySelector('[data-job-attribution]')
       if (attr) {
-        const text = attribution(job.attribution)
+        // #1190: the server-rendered string is authoritative when it is present —
+        // it already carries the claim marker, in this reader's language. The
+        // structured fallback stays for an older payload that has no text.
+        const rendered = typeof job.attributionText === 'string' ? job.attributionText : ''
+        const text = rendered !== '' ? rendered : attribution(job.attribution)
         if (text) attr.textContent = text
       }
     }

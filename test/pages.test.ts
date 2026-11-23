@@ -265,6 +265,65 @@ test('the anonymous landing page follows the saved language', async () => {
   }
 })
 
+// #1190: the change-story row printed the claimed seat as a fact while the
+// team line directly above it marked the same claim as unobserved. The row keeps
+// `model · role` and puts #1186's marker word in its note, so the page answers
+// the same question the same way twice.
+test('#1190: the change-story row marks a claimed role the record did not observe', async () => {
+  const config = testConfig()
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'ground-row-user', status: 'approved' })
+    const repo = store.createRepo({ id: 'repo_ground_row', userId: user.id, owner: 'o', name: 'r', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const { cookie } = sessionFor(built, user)
+    // One job per record: the page caches a change story per job for a minute, so
+    // a state change has to be a second row rather than a second read.
+    const seed = (id: string, ground: unknown, stats: unknown): string => {
+      const job = store.createJob({ id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: '', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate', baseBranch: 'main' })
+      store.updateJob(job.id, {
+        status: 'succeeded',
+        pr_url: `https://github.com/o/r/pull/${id.replace(/\D/g, '')}`,
+        attribution_json: JSON.stringify({ writtenBy: 'Dev-1', claimedBy: 'Lead' }),
+        attribution_ground_json: JSON.stringify({ steps: ground }),
+        team_stats_json: stats === null ? null : JSON.stringify(stats),
+      })
+      return job.id
+    }
+    const unobserved = seed('job_ground_unobserved', [
+      { key: 'writtenBy', claimed: 'Dev-1', observed: 'Dev-2', state: 'unobserved' },
+      { key: 'claimedBy', claimed: 'Lead', observed: 'Lead', state: 'grounded' },
+    ], [{ role: 'dev2', calls: 2 }])
+    // The marker also appears on the page's team line (#1186), so the assertions
+    // read the change-story block itself rather than the whole document.
+    const storyOf = (body: string): string => {
+      const start = body.indexOf('data-change-story')
+      assert.notEqual(start, -1, 'the job page renders the change-story block')
+      return body.slice(start, body.indexOf('</details>', start))
+    }
+    const zh = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${unobserved}`, headers: { cookie } })
+    assert.equal(zh.statusCode, 200)
+    assert.match(storyOf(zh.body), /Dev-1/, 'the row still shows the claimed seat; only the note changes')
+    assert.match(storyOf(zh.body), /声称，未观察/, 'the claim the instance did not see is marked, in the row note')
+    const en = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${unobserved}`, headers: { cookie: `${cookie}; fledge_lang=en` } })
+    assert.match(storyOf(en.body), /claimed, not observed/)
+
+    // Nothing observed the job at all: the same row says "not verified".
+    const unverified = seed('job_ground_unverified', [{ key: 'writtenBy', claimed: 'Dev-1', observed: null, state: 'no-observation' }], null)
+    const unverifiedPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${unverified}`, headers: { cookie } })
+    assert.match(storyOf(unverifiedPage.body), /声称，未核实/)
+
+    // A grounded claim carries no note; the marker is the record's, never assumed.
+    const grounded = seed('job_ground_grounded', [{ key: 'writtenBy', claimed: 'Dev-1', observed: 'Dev-1', state: 'grounded' }], [{ role: 'dev1', calls: 2 }])
+    const groundedPage = await built.app.inject({ method: 'GET', url: `/repos/${repo.id}/jobs/${grounded}`, headers: { cookie } })
+    assert.match(storyOf(groundedPage.body), /Dev-1/)
+    assert.doesNotMatch(storyOf(groundedPage.body), /声称，未观察/)
+    assert.doesNotMatch(storyOf(groundedPage.body), /声称，未核实/)
+  } finally {
+    await built.close()
+  }
+})
+
 test('job detail shows evidence and can retry a failed job', async () => {
   const config = testConfig()
   const store = new Store(':memory:')

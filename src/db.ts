@@ -620,6 +620,9 @@ export interface JobRow {
   pr_state: string | null
   review_score: number | null
   attribution_json: string | null
+  // #368: what the instance observed beside what the job claimed; never the same
+  // column, so a claim cannot be overwritten by an observation.
+  attribution_ground_json: string | null
   evidence_json: string | null
   checkpoint: string | null
   team_stats_json: string | null
@@ -1311,6 +1314,12 @@ export interface AlertView {
   hours?: number
   spentCny?: number
   budgetCny?: number
+  // #1198: the clock banner names the measurement and the number it is compared
+  // against, so a reader can tell 1688 s from the threshold without opening
+  // /readyz. Both travel on the alert instead of inside `message`, which is one
+  // string and cannot carry the zh/en pair.
+  skewSeconds?: number
+  thresholdSeconds?: number
   state?: string
   message: string
 }
@@ -1590,6 +1599,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   pr_state TEXT,
   review_score INTEGER,
   attribution_json TEXT,
+  attribution_ground_json TEXT,
   evidence_json TEXT,
   checkpoint TEXT,
   team_stats_json TEXT,
@@ -3266,6 +3276,7 @@ export class Store {
     if (!jobColumns.has('issue_url')) this.run('ALTER TABLE jobs ADD COLUMN issue_url TEXT')
     if (!jobColumns.has('review_score')) this.run('ALTER TABLE jobs ADD COLUMN review_score INTEGER')
     if (!jobColumns.has('attribution_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_json TEXT')
+    if (!jobColumns.has('attribution_ground_json')) this.run('ALTER TABLE jobs ADD COLUMN attribution_ground_json TEXT')
     if (!jobColumns.has('evidence_json')) this.run('ALTER TABLE jobs ADD COLUMN evidence_json TEXT')
     if (!jobColumns.has('checkpoint')) this.run('ALTER TABLE jobs ADD COLUMN checkpoint TEXT')
     if (!jobColumns.has('team_stats_json')) this.run('ALTER TABLE jobs ADD COLUMN team_stats_json TEXT')
@@ -7724,7 +7735,7 @@ export class Store {
     })
   }
 
-  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc' | 'skill_bundle_hash' | 'skill_bundle_json' | 'skill_state' | 'context_bundle_hash' | 'context_bundle_json' | 'context_bundle_state' | 'adherence_status' | 'adherence_json'>>): void {
+  updateJob(id: string, patch: Partial<Pick<JobRow, 'status' | 'branch' | 'pr_url' | 'issue_url' | 'pr_state' | 'review_score' | 'attribution_json' | 'attribution_ground_json' | 'evidence_json' | 'checkpoint' | 'team_stats_json' | 'summary' | 'error' | 'error_code' | 'cost_usd' | 'started_at' | 'last_callback_at' | 'finished_at' | 'base_branch' | 'work_item_id' | 'priority' | 'plan_approved_at' | 'plan_approved_by' | 'plan_rejected_at' | 'plan_hash' | 'plan_reject_reason' | 'plan_allow_paths' | 'plan_deny_paths' | 'base_sha' | 'temporal_json' | 'path_guard_json' | 'verification_json' | 'decision_json' | 'continuity_json' | 'model_json' | 'provider_model' | 'provider_region' | 'provider_label' | 'provider_id' | 'output_kind' | 'work_type' | 'triage_json' | 'continuity_used' | 'carry_over_json' | 'retry_attempt' | 'retry_of' | 'lease_owner' | 'lease_until' | 'lease_epoch' | 'callback_secret_enc' | 'platform_token_enc' | 'skill_bundle_hash' | 'skill_bundle_json' | 'skill_state' | 'context_bundle_hash' | 'context_bundle_json' | 'context_bundle_state' | 'adherence_status' | 'adherence_json'>>): void {
     const entries = Object.entries(redactJobText(patch as Record<string, unknown>)).filter(([, value]) => value !== undefined)
     if (entries.length === 0) return
     const sets: string[] = []

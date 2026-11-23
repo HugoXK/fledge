@@ -527,6 +527,13 @@ p { margin: 0 0 12px; }
   border-radius: var(--radius-sm);
   padding: var(--card-pad);
 }
+/* issue 659: a page header, a decision queue and a grouped panel are not console
+   sections, so they carry no top rule and no section gap of their own. The card
+   count in `test/layout.test.ts` reads this attribute, so the surface has to
+   change with it rather than the name alone. */
+.page-head { margin: 0 0 var(--section-gap); }
+.band { margin: 0 0 var(--space-5); padding: var(--space-2) 0 var(--space-3) var(--space-4); border-left: 1px solid var(--line-strong); }
+.sub + .sub { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--line); }
 .table-scroll { width: 100%; overflow-x: auto; }
 .table-scroll::-webkit-scrollbar { height: 8px; }
 .table-scroll::-webkit-scrollbar-thumb { background: var(--line-strong); border-radius: var(--radius-pill); }
@@ -1473,6 +1480,9 @@ html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus:
 .section-nav a:hover { color: var(--text); border-bottom-color: var(--accent); }
 .section-nav a[aria-current="true"] { color: var(--accent); border-bottom-color: var(--accent); font-weight: 700; }
 .section-nav ~ .card[id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
+/* issue 659: an anchor can now sit inside a card (the admin's pending queue, the
+   settings' notification block), and the sibling rule above cannot see it. */
+.section-nav ~ .card [id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
 
 /* Issue 860: the settings page answers four questions, not six, so its nav is four
    group links. Below 961px the strip above is unchanged. From there the same
@@ -1481,7 +1491,6 @@ html:not([data-js]) .info-tip:hover::after, html:not([data-js]) .info-tip:focus:
    the same sticky offset the card rule above promises, because `#tokens` and
    `#sessions` are now sub-blocks rather than cards. */
 .settings-shell [id] { scroll-margin-top: calc(var(--header-h) + var(--nav-h)); }
-.settings-shell .sub + .sub { margin-top: var(--space-5); padding-top: var(--space-4); border-top: 1px solid var(--line); }
 @media (min-width: 961px) {
   .settings-shell { display: grid; grid-template-columns: 208px minmax(0, 1fr); gap: var(--space-5); align-items: start; }
   .settings-shell > .section-nav {

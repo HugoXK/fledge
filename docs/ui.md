@@ -81,6 +81,13 @@ them; this page only fixes the names and the values.
 | Layout | `--section-gap` | `clamp(24px, 4vw, 48px)` | page and section rhythm |
 | Layout | `--card-pad` | `clamp(18px, 2.4vw, 28px)` | card padding |
 
+The console's card budget is part of that rhythm: counting the exact `class="card"`
+attribute only, `test/layout.test.ts` caps `/dashboard` at 4 (base 5: four plain
+cards plus the pending-action queue — the notification banner renders
+`class="card notices"` and that metric never sees it), `/settings` at 3 (base 4)
+and `/admin` at 5 (base 9). A block leaves the card system by dropping the
+box chrome, not by renaming the class: `.band` and `.sub` paint no panel.
+
 ### Alpha tints
 
 Every rgba() a component rule paints is one of these tokens, so a palette change
@@ -565,8 +572,12 @@ unknown one:
 
 ## Visual matrix (多设备视觉矩阵)
 
-`npm run visual:matrix` boots a throwaway app on `127.0.0.1:18180` with the
-development login, a temporary SQLite database and the mock runner. It captures
+`npm run visual:matrix` splits the sweep into one share per core (four by
+default, `VISUAL_SHARDS` overrides it) and runs each share as its own process
+with its own throwaway app on `127.0.0.1:18181` and up, the development login, a
+temporary SQLite database and the mock runner. A share assigned no cells, a cell
+missing from a share's results, and a result that never arrives all fail the run
+(#1208): a gate that quietly checked less must not read green. It captures
 the landing page first, in a signed-out context, because `/` answers 302 to
 `/dashboard` for a visitor with a session: capturing it after the development
 login photographed the dashboard twice. It then signs in and renders the

@@ -155,29 +155,34 @@ explicit `UTC` suffix. The digest is scheduled in `DIGEST_TIMEZONE` and
 a second clock that disagrees.
 
 `/settings` and `/admin` carry a sticky section nav: one chip per `.card[id]`, in
-the order the page draws the cards, so the marker can always name the section on
-screen. `test/sectionNav.test.ts` asserts that mapping in both directions, which
-is how a card added without a chip fails the suite instead of quietly leaving
-the previous chip marked. The marker seeds with the first chip, then takes the
-last target whose top has passed the reading band; between cards it stays on the
-last one that passed. `/admin`'s top card has no `id` on purpose — it is the page
-header, not a section — so at the top of that page nothing has passed and
-`#release`, the first chip, is marked. That fallback is the accepted state, not a
-defect.
+the order the page draws the cards, plus a chip for each grouped sub-block that
+keeps an `id` — `#pending` inside `/admin`'s users card, `#release`, `#backups`
+and `#retention` inside its maintenance card, and `#notifications` inside the
+settings account card — ordered by topic rather than document position, so the
+marker can always name the section on screen. `test/sectionNav.test.ts` asserts
+that every card is named by exactly one chip in card order and that every chip
+names a card or a grouped sub-block, which is how a card added without a chip
+fails the suite instead of quietly leaving the previous chip marked. The marker
+seeds with the first chip, then takes the last target whose top has passed the
+reading band; between cards it stays on the last one that passed. `/admin` opens
+with `<header class="page-head">`, not a card, so at the top of that page nothing
+has passed and `#pending`, the first chip, is marked. That fallback is the
+accepted state, not a defect.
 
 `/settings` also carries a Feedback card. The feedback form posts to `/feedback`,
 stores a `feedback` row and mails the address in `FEEDBACK_EMAIL` (falling back to
 `ADMIN_EMAIL`); the footer, not a settings card, links to the public GitHub
 repository with a Star call-to-action.
 
-`/settings` draws its content as four group cards rather than six: `#account-access`
-(with `#account`, `#sessions` and `#tokens` as sub-blocks), `#model-providers`,
-`#notifications` and `#feedback`. The nav therefore has four links, one per
-`.card[id]` in draw order. Below 961px the nav is the same chip strip `/admin` uses;
-from 961px up those same four links become a sticky left rail inside
-`.settings-shell`, so there is one nav and one set of links at every width. The
-old inner ids stay in place, and the shell's inner anchors carry the sticky offset
-too, because a sub-block can be a deep-link target. An unexpected
+`/settings` draws its content as three group cards rather than six: `#account-access`
+(with `#account`, `#sessions`, `#tokens` and `#notifications` as sub-blocks),
+`#model-providers` and `#feedback`. `#notifications` is a sub-block inside
+`#account-access`, not a fourth card, so the nav's four links are one per `.card[id]`
+in draw order plus that one sub-block, placed by topic. Below 961px the nav is the
+same chip strip `/admin` uses; from 961px up those same four links become a sticky
+left rail inside `.settings-shell`, so there is one nav and one set of links at
+every width. The old inner ids stay in place, and the shell's inner anchors carry
+the sticky offset too, because a sub-block can be a deep-link target. An unexpected
 HTTP 5xx creates an `error_reports` row with a random `ref` before the error page
 is rendered; the page shows the data scope, requires the consent checkbox, then
 offers one POST to `/errors/:ref/report`, which claims the row atomically and
@@ -215,7 +220,14 @@ them, and `readRestoreDrill()` reads `<dataDir>/backup-drill.json`. The card
 never opens the database or a copy. It hashes only the newest plaintext copy
 under the 4 MiB cap, gives a row only to a copy that differs or whose manifest
 cannot be read, and reports the drill record rather than a fixed "none
-recorded". `scripts/restore-drill.mjs --status-file` is the writer.
+recorded". `scripts/restore-drill.mjs --status-file` is the writer. The record's
+`columnCheck` (the drill's proof that the copy's encrypted columns still open)
+has its own row — `passed`, `not run (no key given)`, `not reached (the run
+failed before it)` when a key was given and the drill died first, `failed` with
+the column names, or `not recorded` for a file written before the field existed —
+and an `ok` whose check did not pass carries the qualification, so a green row
+and a skipped check never read the same. The writer of that field is the drill's
+`--secret-key-file` flag.
 
 ## Components
 
@@ -1181,6 +1193,14 @@ state that is not `ok`, so a deployment whose App JWT is never minted still gets
 a reading, and a configured App that has never measured one after 15 minutes of
 uptime answers `503` from `/readyz` with the honest `unknown` state (#1028).
 
+The same verdict reaches the console (#1198): `/dashboard` renders one critical
+banner, above the collapsed secondary section, naming `clock.skewSeconds` and
+`clock.thresholdSeconds` when — and only when — the state is `fail`. `ok`,
+`unknown` and `not-configured` render nothing, because a young process, a GitHub
+outage and a deployment with no App are not clock verdicts and would otherwise
+paint a permanent red banner. The banner names the host-clock recovery step; it
+does not change when the platform refuses work.
+
 ### Inbound email replies
 
 When `INBOUND_EMAIL_SECRET` is set, the daily digest gets a
@@ -1384,7 +1404,14 @@ for example with a single consented repository. Every exported string passes
 through `redact()`, and the exporter reads only repositories that opted in
 through the audited `evolution.consent` command; consent is off by default.
 `--report` prints the baseline and the manifest's own split counts; the export
-does not write to the database.
+does not write to the database. Each record carries both halves of the
+attribution: `attribution` is the stored claim as written, and
+`attributionGround` is the per-key `{key, claimed, observed, state}` record the
+job page shows, reconstructed for rows written before the ground column and
+`null` when nothing was recorded. The record shape is `schemaVersion: 2`; a
+version-1 dataset still verifies against its own manifest. The exporter refuses
+a database without `attribution_ground_json` instead of writing a record that
+cannot carry the observation.
 
 The held-out shadow harness (#372) answers what the ledger could not: how one
 playbook, model or router does on tasks the team has not seen, and whether a
@@ -2347,10 +2374,26 @@ zero row for this purpose: `usageCountForJob` counts only `cost_known = 1`, so
 the per-job budget's unknown refusal (#357) still fires when every call a job
 made was unknown. Only USD-billed rows reach `jobs.cost_usd`, and a retry names
 the attempt it continues in `jobs.retry_of`, so the chain a job inherits is the
-sum of every attempt rather than a fresh budget. The job page shows cost, attribution and
-Team attribution is grounded in the DSH per-role call counts: the job page and the
-PR automation comment use only roles with actual calls, and a claimed role with
-zero calls is recorded as a `team_attribution_grounded` mismatch event.
+sum of every attempt rather than a fresh budget. The job page shows the cost and the
+team journey beside the evidence they rest on.
+
+Team attribution is grounded in the DSH per-role call counts, which prove that a
+seat worked and never that it wrote a file. `jobs.attribution_json` holds what the
+job claimed; `jobs.attribution_ground_json` records the observation beside it, per
+attribution key, as `claimed` / `observed` / `state` (`grounded`, `unobserved`,
+`no-observation`), so an observation never overwrites a claim. Every reader of the
+claim marks it with the same vocabulary: the job page and the dashboard job row,
+the job page's change-story `Model and role` row (the marker goes in the row's
+note, because the model half is not what the claim is about), and the console's
+live job rows, whose snapshot and 5-second fallback both carry the server-rendered
+`attributionText` so a stream tick cannot replace a marked seat with the bare
+claim. A claimed seat the instance did not see reads `claimed, not observed`, a
+claim nothing observed reads `claimed, not verified`, and a grounded seat is
+unmarked; a seat only the instance saw is shown from the observation. The PR automation comment uses the observed roles and falls back to
+the claim only when there was no observation. None of this blocks a merge: an
+instance exists only where one is configured, so the marker describes the record
+rather than gating it. A claimed role with zero calls still records a
+`team_attribution_grounded` event, whose meta names the per-key states.
 
 structured evidence (`scope`, `acceptance`, `testPlan`, `testRed`, `testGreen`,
 `tests`, `checks`, `files`, `risk`, `rollback`); failed jobs have a one-click
@@ -3136,6 +3179,16 @@ for `{infoTip(`, `class="undefined"`, `[object Object]` and an unrendered `${`.
 A failure names all four coordinates and the control
 (`en width=768 scheme=dark /settings: select is 292x43px, under the 44px touch
 floor`), so a red job points at one row instead of a screenshot.
+
+The sweep and the gate are one workload (`visualWorkload()` in the same module),
+cut into contiguous shares by `partitionWorkload`, and the `visual` job runs one
+share per core — each share its own process, server and port, because the cells
+are independent and the serial sum was the gate's wall time (#1208). The check's
+name and its place in `ci-ok` and the health reporter do not change.
+`shardFailures` is the aggregate's guard: a share assigned no cells, a share whose
+result never arrived, a cell a share dropped, and a cell measured twice all fail
+the run, and each cell's failure prefix is its label, so a failure raised in
+share 2 reaches the job output rather than only that share's artifact.
 
 The runner measures focus by tabbing: a programmatic `focus()` does not match
 `:focus-visible` in Chromium, so the resting style would read as unchanged for

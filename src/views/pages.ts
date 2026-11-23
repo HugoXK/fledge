@@ -8,6 +8,7 @@ import { agreementContent } from '../users/agreements.js'
 import { quotaView } from '../gateway/quota.js'
 import { humanTimeShort } from '../lib/time.js'
 import { nextRun, type NextRun, type NextRunState } from '../lib/nextRun.js'
+import type { ClockState } from '../repos/app.js'
 import { aheadOfViewer, queueRanks, rankQueued, type QueueRank } from '../lib/queueRank.js'
 import { levelFromRank, PRIORITY_LEVELS } from '../lib/priority.js'
 import { RELATION_KINDS, relationKindLabel, type RelationKind } from '../lib/relations.js'
@@ -30,7 +31,8 @@ import { diffContextBundles, readContextBundle, verifyContextBundle } from '../l
 import type { AdherenceRecord, AdherenceStatus, ClauseStatus, ClauseResult } from '../lib/instructions.js'
 import { WORK_ITEM_STATES, WORK_ITEM_TRANSITIONS, workItemStateLabel, type WorkItemState } from '../lib/workItems.js'
 import { PAT_EXPIRY_CHOICES } from '../lib/tokens.js'
-import { ATTRIBUTION_FIELDS, attributionJourney, parseAttributionJson } from '../lib/attribution.js'
+import { ATTRIBUTION_FIELDS, attributionGroundFor } from '../lib/attribution.js'
+import type { AttributionGround, AttributionGroundState, AttributionKey } from '../lib/attribution.js'
 import { followUpLinks, summariseDeliveries, type DeliveryOutcomeRow } from '../lib/deliveryOutcome.js'
 import { parseEvidenceJson } from '../lib/evidence.js'
 import { planPacketHash } from '../lib/planDecision.js'
@@ -244,6 +246,14 @@ function alertText(t: Translate, alert: AlertView): string {
         `30 天已用 ${quotaMoney(alert.spentCny ?? 0)} / ${quotaMoney(alert.budgetCny ?? 0)}`,
         `spent ${quotaMoney(alert.spentCny ?? 0)} of ${quotaMoney(alert.budgetCny ?? 0)} in 30 days`,
       )
+    // #1198: the admission guard refuses every job while the clock is `fail`,
+    // and the sentence names the number the guard compared, so a reader can
+    // tell a 28-minute host drift from a threshold they need to look up.
+    case 'clock_skew':
+      return t(
+        `进程时钟与 GitHub 时间相差 ${alert.skewSeconds ?? '?'} 秒，超过 ${alert.thresholdSeconds ?? '?'} 秒阈值，所有任务都会被拒绝。修正主机时间（timedatectl set-ntp true）后，/readyz 会在一个测量窗口内恢复 200。`,
+        `The process clock is ${alert.skewSeconds ?? '?'} seconds from GitHub time, past the ${alert.thresholdSeconds ?? '?'}-second threshold, so every job is refused. Correct the host clock (timedatectl set-ntp true) and /readyz returns 200 within one measurement window.`,
+      )
     default:
       return alert.message
   }
@@ -264,6 +274,22 @@ function alertRows(t: Translate, alerts: AlertView[]): string {
       : href === '' ? '' : `<a class="link" href="${escapeHtml(href)}">${escapeHtml(t('打开', 'Open'))}</a>`
     return `<tr><td><span class="badge ${alert.level === 'critical' ? 'bad' : alert.level === 'warning' ? 'busy' : ''}">${escapeHtml(level)}</span></td><td>${escapeHtml(alert.kind)}</td><td>${escapeHtml(alert.repoLabel ?? '')}${alert.repoLabel === undefined || alert.repoLabel === '' ? '' : ' · '}${escapeHtml(alertText(t, alert))}</td><td>${link}</td></tr>`
   }).join('')
+}
+
+// #1198: `fail` is the only clock verdict a user has to act on, and it is read
+// from the same object `/readyz` and `Jobs.enqueue` read. It renders as a banner
+// above the collapsed secondary section rather than as a row in the alert table:
+// the table lives inside that collapsed section, and a refused job is not a
+// detail a user should have to expand "More" to discover.
+function clockFailAlert(clock: ClockState | undefined): AlertView | null {
+  if (clock === undefined || clock.state !== 'fail') return null
+  return {
+    kind: 'clock_skew',
+    level: 'critical',
+    message: '',
+    skewSeconds: clock.skewSeconds ?? 0,
+    thresholdSeconds: clock.thresholdSeconds,
+  }
 }
 
 function failureHref(action: FailureAction, repoId: string): string {
@@ -499,16 +525,52 @@ function jobTeamStats(job: JobRow): Array<{ role: string; label: string; calls: 
   }
 }
 
-function jobAttribution(t: Translate, job: JobRow): string {
-  return attributionJourney(parseAttributionJson(job.attribution_json))
-    .map(({ role, keys }) => {
-      const labels = keys.map((key) => {
-        const field = ATTRIBUTION_FIELDS.find((entry) => entry.key === key)
-        return field === undefined ? key : t(field.zh, field.en)
-      })
-      return `${role} ${labels.join(' + ')}`
+// #368: what the job claimed and what the instance observed are two facts, and the
+// page must not print the first as the second. The reconstruction of a row that
+// predates the ground column lives in `attributionGroundFor` (#1190), shared with
+// the change-story row and the console so the three cannot answer differently;
+// the stored record still wins, which is the rule the dataset export reads too.
+const GROUND_STATE_ORDER: Record<AttributionGroundState, number> = { grounded: 0, unobserved: 1, 'no-observation': 2 }
+
+function groundOf(job: JobRow): AttributionGround | null {
+  return attributionGroundFor({
+    groundJson: job.attribution_ground_json,
+    attributionJson: job.attribution_json,
+    teamStatsJson: job.team_stats_json,
+  })
+}
+
+export function jobAttribution(t: Translate, job: JobRow): string {
+  const ground = groundOf(job)
+  if (ground === null) return ''
+  const byRole = new Map<string, { role: string; keys: AttributionKey[]; state: AttributionGroundState }>()
+  const add = (role: string, key: AttributionKey, state: AttributionGroundState): void => {
+    const entry = byRole.get(role) ?? { role, keys: [], state }
+    entry.keys.push(key)
+    // One ungrounded key speaks for the role: a seat seen on one kind of work and
+    // not on another is not a grounded seat.
+    if (GROUND_STATE_ORDER[state] > GROUND_STATE_ORDER[entry.state]) entry.state = state
+    byRole.set(role, entry)
+  }
+  for (const step of ground.steps) {
+    if (step.claimed !== null) add(step.claimed, step.key, step.state)
+    // An observation that did not name the claimed seat is printed beside it,
+    // unmarked, because it is what the server saw rather than what the job said.
+    if (step.observed !== null && step.observed !== step.claimed) add(step.observed, step.key, 'grounded')
+  }
+  return [...byRole.values()].map(({ role, keys, state }) => {
+    // "wrote" and "implemented" stay one contribution when one role did both, the
+    // same rule `attributionJourney` applies.
+    const shown = keys.includes('implementedBy') ? keys.filter((key) => key !== 'writtenBy') : keys
+    const labels = shown.map((key) => {
+      const field = ATTRIBUTION_FIELDS.find((entry) => entry.key === key)
+      return field === undefined ? key : t(field.zh, field.en)
     })
-    .join(' · ')
+    const marker = state === 'unobserved'
+      ? t('声称，未观察', 'claimed, not observed')
+      : state === 'no-observation' ? t('声称，未核实', 'claimed, not verified') : ''
+    return `${role} ${labels.join(' + ')}${marker === '' ? '' : ` · ${marker}`}`
+  }).join(' · ')
 }
 
 function jobPlainSummary(locale: Locale, t: Translate, job: JobRow, max = 160): { full: string; short: string } {
@@ -1495,6 +1557,11 @@ export function dashboardPage(input: {
   // still paused. Absent means the caller did not read the fact; the banner
   // keeps its pre-#1104 answer.
   platformFunded?: boolean
+  // #1198: the same `clockState()` the admission guard and `/readyz` read. Only
+  // `fail` is news to a user — `unknown` covers a young process and a GitHub
+  // outage, `not-configured` is a deployment with no App, and neither is a clock
+  // verdict, so neither may paint a permanent banner.
+  clock?: ClockState
   notice?: string
   error?: string
 }): string {
@@ -1505,6 +1572,7 @@ export function dashboardPage(input: {
   const openWorkItems = personal?.openWorkItems ?? 0
   const windowDays = input.windowDays ?? 7
   const alerts = input.alerts ?? []
+  const clockAlert = clockFailAlert(input.clock)
   const reposPage = input.reposPage ?? 1
   const reposTotal = input.reposTotal ?? repos.length
   const jobsPage = input.jobsPage ?? 1
@@ -1616,7 +1684,8 @@ export function dashboardPage(input: {
       <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', `repositor${reposTotal === 1 ? 'y' : 'ies'}`))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', `job${jobsTotal === 1 ? '' : 's'}`))}</span><span><b>${openWorkItems}</b> ${escapeHtml(t('个未完成工作项', `open work item${openWorkItems === 1 ? '' : 's'}`))}</span></div>
     </div>
     ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
-  </section>
+  </section>${clockAlert === null ? '' : `
+  <div class="banner bad" id="clock-fail" role="alert"><strong>${escapeHtml(t('平台时钟未通过校验', 'The platform clock failed its check'))}</strong> ${escapeHtml(alertText(t, clockAlert))}</div>`}
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}
   ${repoDecisionsSection(decisions, t)}
@@ -1633,7 +1702,7 @@ export function dashboardPage(input: {
     <div class="meter"><span style="width:${quota.unlimited ? '0' : Math.min(100, Math.max(0, (quota.usedCny / Math.max(0.0001, quota.initialCny)) * 100)).toFixed(2)}%"></span></div>
   </section>
   ${inboxSection(locale, viewer, questions, '/dashboard')}
-  ${(input.actions ?? []).length === 0 ? '' : `<section class="card" id="actions-needed">
+  ${(input.actions ?? []).length === 0 ? '' : `<section class="band" id="actions-needed">
     <div class="row between"><h2>${escapeHtml(t('需要你决定', 'Needs your decision'))}</h2><span class="fine">${escapeHtml(t('每条只有一个处理动作；处理完会自动消失。', 'One action per item; it clears when you handle it.'))}</span></div>
     <ul class="list">${(input.actions ?? []).map((action) => `<li class="list-row"><div class="list-main"><span class="badge">${escapeHtml(action.kind)}</span> <strong>${escapeHtml(localizeMessage(locale, action.reason) ?? action.reason)}</strong><small>${escapeHtml(action.id)}</small></div><div class="row"><a class="btn" href="/actions/${escapeHtml(action.id)}">${escapeHtml(localizeMessage(locale, action.label) ?? action.label)}</a><form method="post" action="/actions/${escapeHtml(action.id)}/resolve" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('已处理', 'Done'))}</button></form></div></li>`).join('')}</ul>
   </section>`}
@@ -2804,6 +2873,32 @@ export function settingsPage(input: {
     <p class="fine">${escapeHtml(t('范围就是能力边界：gateway 只能调用 /v1 模型接口，jobs:read 只能读 /api/v1/jobs，两者不通用。', 'The scope is the capability boundary: gateway may call /v1 only, jobs:read may read /api/v1/jobs only, and neither substitutes for the other.'))}</p>
     </div>
 
+  <section class="sub" id="notifications">
+    <h2>${escapeHtml(t('邮件通知', 'Email notifications'))}</h2>
+    <p class="muted">${escapeHtml(t(`任务需要你回答、完成或失败时，发送到 ${maskedEmail || '（未配置）'}；发件人是 ${config.mail.from}。`, `Send to ${maskedEmail || '(not configured)'} when a job needs an answer, finishes or fails; the sender is ${config.mail.from}.`))}</p>
+    ${hasEmail ? '' : `<div class="banner bad">${escapeHtml(t('还没有可用的通知邮箱，请填写一个邮箱后再开启通知。', 'There is no notification email yet; add one before enabling notifications.'))}</div>`}
+    <form method="post" action="/settings/notifications" class="form">
+      ${csrf(viewer)}
+      <label>${escapeHtml(t('通知邮箱', 'Notification email'))} <input name="email" type="email" value="" placeholder="${escapeHtml(maskedEmail || 'you@example.com')}" autocomplete="email" /></label>
+      <p class="fine">${escapeHtml(t('留空保持不变；勾选下方“清除”则改回 GitHub 邮箱（界面只显示掩码）。', 'Leave blank to keep the current address; tick "Clear" to use the GitHub email (the UI shows a mask only).'))}</p>
+      ${customEmail === '' ? '' : `<label class="check"><input type="checkbox" name="clear" value="1" /> ${escapeHtml(t('清除自定义邮箱，使用 GitHub 邮箱', 'Clear the custom email and use the GitHub email'))}</label>`}
+      <label class="check"><input type="checkbox" name="jobUpdates" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
+      <label class="check"><input type="checkbox" name="dailyDigest" value="1" ${user.email_daily_digest === 1 ? 'checked' : ''} /> ${escapeHtml(t('每天发送一封今日摘要', 'Send a daily summary email'))}</label>
+      <label class="check"><input type="checkbox" name="jobSuccess" value="1" ${user.email_job_success === 1 ? 'checked' : ''} /> ${escapeHtml(t('计划任务成功时也单独发邮件（默认关闭，成功会汇总进每日摘要）', 'Also email me when a scheduled job succeeds (off by default; successes are summarized in the daily summary)'))}</label>
+      <div class="row">
+        <label>${escapeHtml(t('安静时段开始', 'Quiet hours start'))} <input type="time" name="quietStart" value="${escapeHtml(user.quiet_hours_start ?? '')}" /></label>
+        <label>${escapeHtml(t('安静时段结束', 'Quiet hours end'))} <input type="time" name="quietEnd" value="${escapeHtml(user.quiet_hours_end ?? '')}" /></label>
+      </div>
+      <p class="fine">${escapeHtml(t(`安静时段按 ${config.digest.timeZone} 计算，只延迟计划任务的邮件：窗口内完成的计划任务会等到窗口结束再发一封，手动运行的任务从不延迟。两端都留空表示不启用。`, `Quiet hours are read in ${config.digest.timeZone} and hold only scheduled job mail: a run that finishes inside the window queues one mail for the window's end, and a run you started by hand is never held. Leave both blank to turn the window off.`))}</p>
+      <p class="fine">${escapeHtml(t(`计划任务成功不再单独发邮件，而是汇总进每日摘要；失败按仓库合并，同一仓库 ${config.mail.jobEmailCooldownMinutes} 分钟内最多一封。你手动运行的任务，结果总是发邮件。`, `A scheduled success is summarized in the daily summary instead of its own mail; failures are coalesced so one repository sends at most one mail per ${config.mail.jobEmailCooldownMinutes} minutes. A run you started by hand always mails its result.`))}</p>
+      <div class="row">
+        <button class="btn" name="action" value="save" type="submit">${escapeHtml(t('保存通知设置', 'Save notification settings'))}</button>
+        <button class="btn btn-ghost" name="action" value="test" type="submit">${escapeHtml(t('发送测试邮件', 'Send test email'))}</button>
+      </div>
+    </form>
+    <p class="fine">${escapeHtml(t(`审批和额度邮件不受这个开关影响。每日摘要默认在 ${config.digest.hour}:00（${config.digest.timeZone}）发送。`, `Approval and quota mail are not affected by these switches. The daily summary is sent at ${config.digest.hour}:00 (${config.digest.timeZone}).`))}</p>
+  </section>
+
   </section>
 
   <section class="card" id="model-providers">
@@ -2874,32 +2969,6 @@ export function settingsPage(input: {
       ${config.allowPrivateModelUrls || viewer.user.allow_private_models === 1 || viewer.user.role === 'superadmin' ? `<label class="check"><input type="checkbox" name="allowPrivate" value="1" /> ${escapeHtml(t('允许 HTTP / 内网地址（Fledge 必须能访问）', 'Allow HTTP / private address (Fledge must be able to reach it)'))}</label>` : `<p class="fine">${escapeHtml(t('需要管理员在 Admin 中为你的账号开启“内网模型”权限，或由运维设置 ALLOW_PRIVATE_MODEL_URLS=true。', 'An admin must enable private models for your account in Admin, or the operator must set ALLOW_PRIVATE_MODEL_URLS=true.'))}</p>`}
       <button class="btn" type="submit">${escapeHtml(t('添加提供方', 'Add provider'))}</button>
     </form>
-  </section>
-
-  <section class="card" id="notifications">
-    <h2>${escapeHtml(t('邮件通知', 'Email notifications'))}</h2>
-    <p class="muted">${escapeHtml(t(`任务需要你回答、完成或失败时，发送到 ${maskedEmail || '（未配置）'}；发件人是 ${config.mail.from}。`, `Send to ${maskedEmail || '(not configured)'} when a job needs an answer, finishes or fails; the sender is ${config.mail.from}.`))}</p>
-    ${hasEmail ? '' : `<div class="banner bad">${escapeHtml(t('还没有可用的通知邮箱，请填写一个邮箱后再开启通知。', 'There is no notification email yet; add one before enabling notifications.'))}</div>`}
-    <form method="post" action="/settings/notifications" class="form">
-      ${csrf(viewer)}
-      <label>${escapeHtml(t('通知邮箱', 'Notification email'))} <input name="email" type="email" value="" placeholder="${escapeHtml(maskedEmail || 'you@example.com')}" autocomplete="email" /></label>
-      <p class="fine">${escapeHtml(t('留空保持不变；勾选下方“清除”则改回 GitHub 邮箱（界面只显示掩码）。', 'Leave blank to keep the current address; tick "Clear" to use the GitHub email (the UI shows a mask only).'))}</p>
-      ${customEmail === '' ? '' : `<label class="check"><input type="checkbox" name="clear" value="1" /> ${escapeHtml(t('清除自定义邮箱，使用 GitHub 邮箱', 'Clear the custom email and use the GitHub email'))}</label>`}
-      <label class="check"><input type="checkbox" name="jobUpdates" value="1" ${user.email_job_updates === 1 ? 'checked' : ''} /> ${escapeHtml(t('任务需要回答、完成或失败时发邮件', 'Email me when a job needs an answer, finishes or fails'))}</label>
-      <label class="check"><input type="checkbox" name="dailyDigest" value="1" ${user.email_daily_digest === 1 ? 'checked' : ''} /> ${escapeHtml(t('每天发送一封今日摘要', 'Send a daily summary email'))}</label>
-      <label class="check"><input type="checkbox" name="jobSuccess" value="1" ${user.email_job_success === 1 ? 'checked' : ''} /> ${escapeHtml(t('计划任务成功时也单独发邮件（默认关闭，成功会汇总进每日摘要）', 'Also email me when a scheduled job succeeds (off by default; successes are summarized in the daily summary)'))}</label>
-      <div class="row">
-        <label>${escapeHtml(t('安静时段开始', 'Quiet hours start'))} <input type="time" name="quietStart" value="${escapeHtml(user.quiet_hours_start ?? '')}" /></label>
-        <label>${escapeHtml(t('安静时段结束', 'Quiet hours end'))} <input type="time" name="quietEnd" value="${escapeHtml(user.quiet_hours_end ?? '')}" /></label>
-      </div>
-      <p class="fine">${escapeHtml(t(`安静时段按 ${config.digest.timeZone} 计算，只延迟计划任务的邮件：窗口内完成的计划任务会等到窗口结束再发一封，手动运行的任务从不延迟。两端都留空表示不启用。`, `Quiet hours are read in ${config.digest.timeZone} and hold only scheduled job mail: a run that finishes inside the window queues one mail for the window's end, and a run you started by hand is never held. Leave both blank to turn the window off.`))}</p>
-      <p class="fine">${escapeHtml(t(`计划任务成功不再单独发邮件，而是汇总进每日摘要；失败按仓库合并，同一仓库 ${config.mail.jobEmailCooldownMinutes} 分钟内最多一封。你手动运行的任务，结果总是发邮件。`, `A scheduled success is summarized in the daily summary instead of its own mail; failures are coalesced so one repository sends at most one mail per ${config.mail.jobEmailCooldownMinutes} minutes. A run you started by hand always mails its result.`))}</p>
-      <div class="row">
-        <button class="btn" name="action" value="save" type="submit">${escapeHtml(t('保存通知设置', 'Save notification settings'))}</button>
-        <button class="btn btn-ghost" name="action" value="test" type="submit">${escapeHtml(t('发送测试邮件', 'Send test email'))}</button>
-      </div>
-    </form>
-    <p class="fine">${escapeHtml(t(`审批和额度邮件不受这个开关影响。每日摘要默认在 ${config.digest.hour}:00（${config.digest.timeZone}）发送。`, `Approval and quota mail are not affected by these switches. The daily summary is sent at ${config.digest.hour}:00 (${config.digest.timeZone}).`))}</p>
   </section>
 
   <section class="card" id="feedback">
@@ -3311,7 +3380,7 @@ export function adminPage(input: {
     const confirm = `RELEASE ${preview.nextVersion}`
     return `<div class="list-row" data-release-dispatch><div class="list-main"><strong>${escapeHtml(t(`发布 v${preview.nextVersion}`, `Release v${preview.nextVersion}`))}</strong><small>${facts}</small><small>${escapeHtml(t('只创建发布 PR；tag 与 publish 仍走现有门禁。不会部署或重启服务。', 'Creates the release pull request only; tagging and publishing stay on the existing gates. It does not deploy or restart the service.'))}</small><form method="post" action="/admin/release" class="row" data-release-dispatch-form>${csrf(viewer)}<label class="fine">${escapeHtml(t('输入确认', 'Type to confirm'))} <code>${escapeHtml(confirm)}</code> <input name="confirm" type="text" autocomplete="off" required /></label><button class="btn" type="submit">${escapeHtml(t('创建发布 PR', 'Create release PR'))}</button></form></div><div class="row"><span class="badge good">${escapeHtml(t('可用', 'ready'))}</span></div></div>`
   })()
-  const releaseCard = `<section class="card" id="release">
+  const releaseCard = `<section class="sub" id="release">
     <div class="row between">
       <div>
         <h2>${escapeHtml(t('发布与部署', 'Release & deployment'))}</h2>
@@ -3399,10 +3468,35 @@ export function adminPage(input: {
   const expiredText = expiry === null
     ? `${t(`扫描失败：${expiryError ?? 'unknown'}`, `scan failed: ${expiryError ?? 'unknown'}`)} · ${keepText}`
     : `${expiry.expiredCopies === 1 ? t('1 (试运行)', '1 (dry run)') : t(`${expiry.expiredCopies} (试运行)`, `${expiry.expiredCopies} (dry run)`)} · ${keepText}`
+  // #463: a drill that did not prove the copy's encrypted columns may not read
+  // as an unqualified success. The `ok` word carries the qualification and the
+  // next row names the check as its own state, so the green and the skipped
+  // cannot share one reading. A `fail` or `not-reached` renders as a failure
+  // even beside a malformed or older `ok: true`: the card trusts the field it
+  // renders, and only a check that ran and passed earns a bare `ok`.
+  const drillOkText = (): string => {
+    if (drill === null) return ''
+    if (!drill.ok) return t('失败', 'failed')
+    if (drill.columnCheck === 'pass') return t('成功', 'ok')
+    if (drill.columnCheck === 'skipped') return t('成功（列检查未运行）', 'ok (column check not run)')
+    if (drill.columnCheck === 'fail') return t('失败（列检查失败）', 'failed (column check failed)')
+    if (drill.columnCheck === 'not-reached') return t('失败（列检查未到达）', 'failed (column check not reached)')
+    return t('成功（列检查未记录）', 'ok (column check not recorded)')
+  }
+  const drillColumnText = (): string => {
+    if (drill === null) return ''
+    const zh = drill.columnErrors.length === 0 ? '' : `（${drill.columnErrors.join('；')}）`
+    const en = drill.columnErrors.length === 0 ? '' : ` (${drill.columnErrors.join('; ')})`
+    if (drill.columnCheck === 'pass') return t('列检查：通过', 'column check: passed')
+    if (drill.columnCheck === 'skipped') return t('列检查：未运行（未提供密钥）', 'column check: not run (no key given)')
+    if (drill.columnCheck === 'not-reached') return t('列检查：未到达（本次运行在检查前失败）', 'column check: not reached (the run failed before it)')
+    if (drill.columnCheck === 'fail') return t(`列检查：失败${zh}`, `column check: failed${en}`)
+    return t('列检查：未记录', 'column check: not recorded')
+  }
   const drillText = drill === null
     ? t('没有记录', 'none recorded')
-    : `${humanTimeShort(drill.at)} · ${drill.ok ? t('成功', 'ok') : t('失败', 'failed')}${drill.detail === null ? '' : ` · ${drill.detail}`}`
-  const backupCard = `<section class="card" id="backups">
+    : `${humanTimeShort(drill.at)} · ${drillOkText()}${drill.detail === null ? '' : ` · ${drill.detail}`}`
+  const backupCard = `<section class="sub" id="backups">
     <h2>${escapeHtml(t('备份', 'Backups'))}</h2>
     <div class="list">
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本', 'Newest copy'))}</strong><small>${newest === null ? escapeHtml(t('还没有记录备份副本', 'No backup copy recorded yet')) : `${escapeHtml(newest.name)} · ${escapeHtml(backupSize(newest.sizeBytes))} · ${escapeHtml(humanTimeShort(newest.createdAt))}`}</small></div></div>
@@ -3412,6 +3506,7 @@ export function adminPage(input: {
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('最新副本的清单', 'Newest manifest'))}</strong><small>${newest === null ? escapeHtml('—') : escapeHtml(manifestText(newest))}</small></div></div>
       ${problemRows}
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('恢复演练', 'Restore drill'))}</strong><small>${escapeHtml(drillText)}</small></div></div>
+      ${drill === null ? '' : `<div class="list-row"><div class="list-main"><strong>${escapeHtml(t('列检查', 'Column check'))}</strong><small>${escapeHtml(drillColumnText())}</small></div></div>`}
     </div>
     <p class="muted">${escapeHtml(t('只读：本卡片列出备份目录并核对清单，不会打开正在备份的数据库，也没有备份、恢复或删除按钮。', 'Read-only: this card lists the backup directory and checks the manifests. It never opens the database being backed up, and carries no backup, restore or delete control.'))} ${escapeHtml(t('只列出真正不符或无法读取的副本；旧副本只按大小核对，sha256 只核对最新副本。', 'Only copies that differ or cannot be read are listed; older copies are compared by size, and sha256 only on the newest.'))}${newest === null ? ` ${escapeHtml(t('在主机上运行', 'Run'))} <code>npm run db:backup</code> ${escapeHtml(t('后，下一份副本会出现在这里。', 'on the host; the next copy appears here.'))}` : ''}</p>
   </section>`
@@ -3428,7 +3523,7 @@ export function adminPage(input: {
     const idle = RETENTION_IDLE_TABLES.find((entry) => entry.id === id)
     return idle === undefined ? id : locale === 'zh' ? idle.label[0] : idle.label[1]
   }
-  const retentionCard = `<section class="card" id="retention">
+  const retentionCard = `<section class="sub" id="retention">
     <div class="row between">
       <h2>${escapeHtml(t('数据保留', 'Data retention'))}</h2>
       <span class="fine">${escapeHtml(t('只读预览', 'read-only preview'))}</span>
@@ -3482,28 +3577,29 @@ export function adminPage(input: {
     <a href="#release"><strong>${escapeHtml(releaseShort)}</strong><span>${escapeHtml(t('发布', 'Release'))}</span></a>
     <a href="#backups"><strong>${escapeHtml(backupShort)}</strong><span>${escapeHtml(t('备份', 'Backups'))}</span></a>
   </div>`
-  const body = `${stopBanner}<section class="card">
+  const body = `${stopBanner}<header class="page-head">
     <div class="eyebrow">${escapeHtml(t('管理', 'Admin'))}</div>
     <h1>${escapeHtml(t('管理控制台', 'Admin console'))}</h1>
     <p class="muted">${escapeHtml(t(`申请邮件发往 ${config.mail.adminEmail}；这里的操作会写审计日志。`, `Applications are mailed to ${config.mail.adminEmail}; actions here are written to the audit log.`))} · ${escapeHtml(t('当前身份：', 'Role: '))}${escapeHtml(roleLabel(t, viewer.user.role))}</p>
     ${superadmin ? `<form method="post" action="/admin/simulation" class="row">${csrf(viewer)}<input type="hidden" name="enable" value="${preview ? '0' : '1'}" /><input type="hidden" name="returnTo" value="/admin" /><button class="link" type="submit">${escapeHtml(preview ? t('退出用户视图预览', 'Exit user preview') : t('预览用户视图', 'Preview the user view'))}</button></form>` : ''}
     ${adminSummary}
-  </section>
+  </header>
   <nav class="section-nav" aria-label="${escapeHtml(t('页面导航', 'Section navigation'))}">
     <a href="#pending" data-allow-overflow>${escapeHtml(t('待审批', 'Pending'))}</a>
     <a href="#users" data-allow-overflow>${escapeHtml(t('用户', 'Users'))}</a>
     <a href="#jobs" data-allow-overflow>${escapeHtml(t('任务', 'Jobs'))}</a>
     ${showAudit ? `<a href="#audit" data-allow-overflow>${escapeHtml(t('审计', 'Audit'))}</a>` : ''}
+    <a href="#maintenance" data-allow-overflow>${escapeHtml(t('维护', 'Maintenance'))}</a>
     <a href="#release" data-allow-overflow>${escapeHtml(t('发布', 'Release'))}</a>
     <a href="#backups" data-allow-overflow>${escapeHtml(t('备份', 'Backups'))}</a>
     <a href="#retention" data-allow-overflow>${escapeHtml(t('数据保留', 'Retention'))}</a>
     <a href="#operations" data-allow-overflow>${escapeHtml(t('运维', 'Operations'))}</a>
   </nav>
-  <section class="card" id="pending">
+  <section class="card" id="users">
+    <section class="sub" id="pending">
     <h2>${escapeHtml(t('待审批', 'Pending'))} <small class="count">${pending.length}</small></h2>
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('用户', 'User'))}</th><th>${escapeHtml(t('申请时间', 'Applied'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th></th></tr></thead><tbody>${pendingRows}</tbody></table></div>
-  </section>
-  <section class="card" id="users">
+    </section>
     <h2>${escapeHtml(t('用户', 'Users'))} <small class="count">${users.length}</small></h2>
     <div class="table-scroll"><table class="admin-users-table table-cards table-priority" id="admin-users-table" aria-label="${escapeHtml(t('用户', 'Users'))}"><thead><tr><th>${escapeHtml(t('登录名', 'Login'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('角色', 'Role'))}</th><th>${escapeHtml(t('额度', 'Quota'))}</th><th data-priority="low">${escapeHtml(t('已用', 'Used'))}</th><th data-priority="low">${escapeHtml(t('活动', 'Activity'))}</th><th>${escapeHtml(t('调整', 'Adjust'))}</th></tr></thead><tbody>${userRows}</tbody></table></div>
   </section>
@@ -3517,9 +3613,11 @@ export function adminPage(input: {
     <div class="table-scroll"><table class="table-cards table-priority" id="audit-table" aria-label="${escapeHtml(t('审计', 'Audit'))}"><thead><tr><th>${escapeHtml(t('时间', 'Time'))}</th><th>${escapeHtml(t('动作', 'Action'))}</th><th>${escapeHtml(t('操作者', 'Actor'))}</th><th data-priority="low">${escapeHtml(t('详情', 'Detail'))}</th></tr></thead><tbody>${auditRows(locale, audit, usersById, hideActor)}</tbody></table></div>
     ${pager('/admin', 'auditPage', auditPage, auditTotal, perPage, t, { jobsPage })}
   </section>` : ''}
+  <section class="card" id="maintenance">
   ${releaseCard}
   ${backupCard}
   ${retentionCard}
+  </section>
   <section class="card" id="operations">
     <div class="row between"><h2>${escapeHtml(t('运维工具', 'Operations'))}</h2><span class="fine">${escapeHtml(t('独立运维页面', 'separate operator pages'))}</span></div>
     <div class="admin-modules">
@@ -4123,6 +4221,8 @@ export function jobPage(input: {
           capped: t('读不到：改动文件超过读取上限', 'not available: the file list exceeded the read cap'),
           duplicate: t('标题重复，显示最后一处', 'a repeated heading; the last one is shown'),
           files: (count) => t(`${count} 个文件`, `${count} files`),
+          claimedNotObserved: t('声称，未观察', 'claimed, not observed'),
+          claimedNotVerified: t('声称，未核实', 'claimed, not verified'),
         }).map((fact) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(changeStoryLabel(t, fact.key))}</strong><small class="job-report">${escapeHtml(fact.value)}</small>${fact.note === '' ? '' : `<small class="muted">${escapeHtml(fact.note)}</small>`}</div></div>`).join('')}
       </div>
     </section></details>`
@@ -4602,7 +4702,7 @@ function readAdherence(json: string | null): AdherenceRecord | null {
       ${budgetStop === '' ? '' : renderState({ kind: 'error', title: t('已达单任务预算', 'Per-job budget reached'), body: budgetStop, action: { href: `/repos/${repo.id}#repo-settings`, label: t('提高单任务预算', 'Raise the per-job budget') } })}
       ${job.error === null || job.error === '' ? '' : `<details class="fine"><summary>${escapeHtml(t('技术详情', 'Technical detail'))}</summary><p>${escapeHtml(redact(job.error))}</p></details>`}
       <p class="fine">${escapeHtml(t('成本', 'Cost'))} ${escapeHtml(cost)} · ${escapeHtml(t('创建', 'Created'))} ${escapeHtml(humanTimeShort(job.created_at))} · ${escapeHtml(t('结束', 'Finished'))} ${escapeHtml(humanTimeShort(job.finished_at))}</p>
-      ${attribution === '' ? '' : `<p class="fine">${escapeHtml(attribution)}</p>`}
+      ${attribution === '' ? '' : `<p class="fine" data-attribution>${escapeHtml(attribution)}</p>`}
       ${modelLine}
       ${untrustedLine}
       ${providerLine}

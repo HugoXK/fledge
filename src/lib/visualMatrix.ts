@@ -212,125 +212,166 @@ export function leftoverFailures(html: string): string[] {
   )
 }
 
-/**
- * #787: one row per measured case. The runner writes this table to
- * `GITHUB_STEP_SUMMARY`, so a red job names the page, viewport and scheme that
- * failed instead of one line for a whole matrix. `scheme` is `host` for the
- * screenshot sweep, which uses the runner's own preference, and the palette name
- * for the measured gate.
- */
-export interface VisualCaseResult {
-  readonly locale: string
-  readonly width: number
-  readonly scheme: string
-  readonly path: string
-  readonly ok: boolean
-  /** Every failure this case produced, in the order they were recorded. */
-  readonly detail: readonly string[]
-}
-
-/** A cell is safe to interpolate: a reason can carry a `|` of its own. */
-function cell(value: string): string {
-  return value.split('|').join('\\|')
-}
-
-/**
- * The summary is the record of what ran, so it lists every case — a failure
- * keeps its reasons and a pass is still a row. A cache hit cannot produce a
- * green row: the row is written from the assertions this process ran.
- */
-export function summaryMarkdown(rows: readonly VisualCaseResult[]): string {
-  const passed = rows.filter((row) => row.ok).length
-  const lines = [
-    `visual matrix: ${String(passed)}/${String(rows.length)} case(s) passed`,
-    '',
-    '| locale | viewport | scheme | page | result |',
-    '| --- | --- | --- | --- | --- |',
-  ]
-  for (const row of rows) {
-    const result = row.ok ? 'pass' : `fail: ${row.detail.join('; ')}`
-    lines.push(
-      `| ${cell(row.locale)} | ${String(row.width)}px | ${cell(row.scheme)} | \`${cell(row.path)}\` | ${cell(result)} |`,
-    )
-  }
-  return `${lines.join('\n')}\n`
-}
-
-/** The two locales every matrix runs; the promised set and the loops share it. */
+// #1208: the sweep is a serial loop over independent cells, so the gate's wall
+// time was the sum of every cell instead of the longest share. The partition
+// below is the whole contract that makes sharding safe: the same lists build the
+// workload, a share is a contiguous slice of it, and the aggregate refuses to
+// read green when a share measured nothing or its results never arrived.
 export const VISUAL_LOCALES = ['zh', 'en'] as const
 
 export type VisualLocale = (typeof VISUAL_LOCALES)[number]
 
-/** The coordinates that name one measured case. */
-export interface VisualCaseCoordinates {
-  readonly locale: string
+/** One screenshot cell: a page at a width the sweep renders. */
+export interface VisualSweepCell {
+  readonly kind: 'sweep'
+  readonly locale: VisualLocale
   readonly width: number
-  readonly scheme: string
-  readonly path: string
+  readonly path: VisualPath
+}
+
+/** A page measured below the sweep's first width (`VISUAL_NARROW_CASES`). */
+export interface VisualNarrowCell {
+  readonly kind: 'narrow'
+  readonly locale: VisualLocale
+  readonly width: number
+  readonly path: VisualPath
+}
+
+/** One gate cell: a page at a gate width in a forced colour scheme. */
+export interface VisualGateCell {
+  readonly kind: 'gate'
+  readonly locale: VisualLocale
+  readonly width: GateWidth
+  readonly scheme: GateScheme
+  readonly path: VisualPath
+}
+
+/** The explicit-dark probe at a gate width (`checkExplicitTheme`). */
+export interface VisualThemeCell {
+  readonly kind: 'theme'
+  readonly locale: VisualLocale
+  readonly width: GateWidth
+}
+
+export type VisualCell = VisualSweepCell | VisualNarrowCell | VisualGateCell | VisualThemeCell
+
+/**
+ * The failure-message prefix for a cell, and the cell's identity in a shard's
+ * result file. Every message the runner pushes for a cell starts with exactly
+ * this string, so a failure raised inside a share is readable in the aggregate
+ * without translation and a result can be matched to what it claims to measure.
+ */
+export function cellLabel(cell: VisualCell): string {
+  switch (cell.kind) {
+    case 'sweep':
+    case 'narrow':
+      return `${cell.locale} ${String(cell.width)}px ${cell.path}`
+    case 'gate':
+      return `${cell.locale} width=${String(cell.width)} scheme=${cell.scheme} ${cell.path}`
+    case 'theme':
+      return `${cell.locale} width=${String(cell.width)} scheme=explicit-dark /dashboard`
+  }
 }
 
 /**
- * One case, one key. A duplicate key means one case ran twice or one case was
- * recorded under another page's identity, and its screenshot (`<width>-<slug>.png`)
- * would overwrite the other case's file — a dropped page hiding behind a picture
- * that is still there.
+ * The full workload in the order the serial runner visited it: the signed-out
+ * landing page, the signed-in sweep, the narrow cases, then the gate pass and
+ * the explicit-theme probe. Built from the exported lists, never a second copy
+ * of them, so a width or path added to the matrix joins the partition.
  */
-export function caseKey(coordinates: VisualCaseCoordinates): string {
-  return `${coordinates.locale}|${String(coordinates.width)}|${coordinates.scheme}|${coordinates.path}`
-}
-
-/**
- * Every case the runner promises to run, built from the same constants the
- * runner loops over. The runner compares this set against the cases it recorded,
- * so a page or viewport removed from a loop is a red job, not a shorter summary.
- * `host` is the screenshot sweep's own colour preference; `explicit-dark` is the
- * theme the runner pins through the page.
- */
-export function expectedCaseKeys(locales: readonly string[] = VISUAL_LOCALES): string[] {
-  const keys: string[] = []
+export function visualWorkload(): readonly VisualCell[] {
+  const cells: VisualCell[] = []
   const signedIn = VISUAL_PATHS.filter((path) => path !== '/')
-  for (const locale of locales) {
+  for (const locale of VISUAL_LOCALES) {
+    for (const width of VISUAL_WIDTHS) cells.push({ kind: 'sweep', locale, width, path: '/' })
     for (const width of VISUAL_WIDTHS) {
-      keys.push(caseKey({ locale, width, scheme: 'host', path: '/' }))
-      for (const path of signedIn) keys.push(caseKey({ locale, width, scheme: 'host', path }))
+      for (const path of signedIn) cells.push({ kind: 'sweep', locale, width, path })
     }
     for (const narrow of VISUAL_NARROW_CASES) {
-      keys.push(caseKey({ locale, width: narrow.width, scheme: 'host', path: narrow.path }))
+      cells.push({ kind: 'narrow', locale, width: narrow.width, path: narrow.path })
     }
     for (const width of GATE_WIDTHS) {
       for (const scheme of GATE_SCHEMES) {
-        keys.push(caseKey({ locale, width, scheme, path: '/' }))
-        for (const path of signedIn) keys.push(caseKey({ locale, width, scheme, path }))
+        for (const path of VISUAL_PATHS) cells.push({ kind: 'gate', locale, width, scheme, path })
       }
-      keys.push(caseKey({ locale, width, scheme: 'explicit-dark', path: '/dashboard' }))
     }
+    for (const width of GATE_WIDTHS) cells.push({ kind: 'theme', locale, width })
   }
-  return keys
+  return cells
 }
 
-export interface CaseCoverage {
-  /** Promised cases that never ran: a page, width or scheme was dropped. */
-  readonly missing: readonly string[]
-  /** Keys recorded more than once: the later case overwrote the earlier cell. */
-  readonly duplicated: readonly string[]
-  /** Cases outside the promised set: the matrix ran something it does not name. */
-  readonly unexpected: readonly string[]
+/**
+ * Contiguous, balanced slices: `shares` arrays covering `cells` in order, sizes
+ * within one of each other. Contiguous on purpose — the runner keeps one browser
+ * context per locale and mode, so a slice that hops between locales would pay
+ * the context setup on every cell.
+ */
+export function partitionWorkload(cells: readonly VisualCell[], shares: number): VisualCell[][] {
+  if (!Number.isInteger(shares) || shares < 1) {
+    throw new RangeError(`the sweep needs at least one share, got ${String(shares)}`)
+  }
+  const base = Math.floor(cells.length / shares)
+  const remainder = cells.length % shares
+  const parts: VisualCell[][] = []
+  let start = 0
+  for (let index = 0; index < shares; index += 1) {
+    const size = base + (index < remainder ? 1 : 0)
+    parts.push(cells.slice(start, start + size))
+    start += size
+  }
+  return parts
 }
 
-/** Compares what ran against what the matrix promised, without trusting order. */
-export function caseCoverage(expected: readonly string[], recorded: readonly string[]): CaseCoverage {
-  const expectedSet = new Set(expected)
-  const seen = new Set<string>()
-  const duplicated: string[] = []
-  for (const key of recorded) {
-    if (seen.has(key)) {
-      if (!duplicated.includes(key)) duplicated.push(key)
+/** What one share wrote: the cells it measured and the failures it raised. */
+export interface VisualShardResult {
+  readonly share: number
+  readonly cells: readonly string[]
+  readonly failures: readonly string[]
+}
+
+/**
+ * The aggregate's guard. Returns every reason the split must not read green:
+ * a share with no cells, a result that never arrived, a cell missing from a
+ * share that ran, a cell measured twice, and every share failure verbatim so a
+ * failing cell in share 2 reaches the job output instead of only its artifact.
+ */
+export function shardFailures(
+  cells: readonly VisualCell[],
+  shares: number,
+  results: readonly (VisualShardResult | null)[],
+): string[] {
+  const failures: string[] = []
+  if (!Number.isInteger(shares) || shares < 1) {
+    return [`the sweep cannot run in ${String(shares)} shares`]
+  }
+  const parts = partitionWorkload(cells, shares)
+  const measured = new Map<string, number>()
+  for (const result of results) {
+    for (const label of result?.cells ?? []) measured.set(label, (measured.get(label) ?? 0) + 1)
+  }
+  parts.forEach((part, index) => {
+    const name = `share ${String(index + 1)}/${String(shares)}`
+    if (part.length === 0) {
+      failures.push(`${name} was assigned no cells: a share that measures nothing must not read green`)
+      return
     }
-    seen.add(key)
+    const expected = part.map(cellLabel)
+    const result = results[index] ?? null
+    if (result === null) {
+      failures.push(`${name} reported no result: its ${String(expected.length)} cell(s) were never measured`)
+      return
+    }
+    const reported = new Set(result.cells)
+    for (const label of expected) {
+      if (!reported.has(label)) failures.push(`${name} did not report ${label}: the cell was never measured`)
+    }
+    for (const label of result.cells) {
+      if (!expected.includes(label)) failures.push(`${name} reported ${label}, which it was not assigned`)
+    }
+    failures.push(...result.failures)
+  })
+  for (const [label, count] of measured) {
+    if (count > 1) failures.push(`${label} was measured ${String(count)} times: the partition must render each cell once`)
   }
-  return {
-    missing: expected.filter((key) => !seen.has(key)),
-    duplicated,
-    unexpected: [...seen].filter((key) => !expectedSet.has(key)),
-  }
+  return failures
 }

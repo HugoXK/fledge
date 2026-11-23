@@ -317,8 +317,11 @@ the browser.
 comment otherwise. The snapshot includes `bots` (with `tool`, `step`, `since`,
 `lastActivityAt`), `questions` (with `id`, `sessionId`, `question`, `detail`,
 `options`, `multiSelect`), `timeline` (active/ended role activity), `jobs`
-(summary, status, issue/PR and attribution) and quota. Clients should fall back to the
-5-second JSON poll if the stream drops.
+(summary, status, issue/PR, `attribution` and the server-rendered
+`attributionText`, which carries the claim marker in the request's language) and
+quota. The 5-second JSON poll carries the same `attributionText` on its job
+entries, so the answer does not change when the stream drops. Clients should fall
+back to the 5-second JSON poll if the stream drops.
 
 `POST /api/repos/:id/team/answer` takes JSON:
 
