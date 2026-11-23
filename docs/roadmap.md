@@ -15,7 +15,7 @@ durable execution (LangSmith/Langfuse, OpenTelemetry, Temporal/DBOS):
 4. evidence-first review (diff, tests, CI, risk, cost);
 5. isolation, secret brokering, budgets and audit.
 
-**Current release: `v0.4.5` (2026-11-21).** This page is current as of
+**Current release: `v0.5.0` (2026-11-23).** This page is current as of
 2026-11-23. It is a plan, not a promise: a bullet is not an `agent-ready` issue
 until it has a card with expected behaviour, scope and a red test (see
 [How a roadmap item becomes work](#how-a-roadmap-item-becomes-work)).
@@ -28,7 +28,7 @@ until it has a card with expected behaviour, scope and a red test (see
 - **Frozen** — deliberately not next. A frozen item is not a rejection; it is a
   statement that the foundation must land first.
 
-## Where we are — `v0.4.5`
+## Where we are — `v0.5.0`
 
 | Era | What it made true |
 |---|---|
@@ -36,6 +36,7 @@ until it has a card with expected behaviour, scope and a red test (see
 | `v0.2` | Per-repository FlyBot team and playbook, team console, fork/upstream, roles, work items, plan-first, budgets, issue commands, live inbox, stage sessions, grounded attribution |
 | `v0.3` | Branded workspace, release automation, tip review gate, operational metrics/alerts, owner/operator surfaces, flight-deck visual system |
 | `v0.4` | Durable `job_attempts` and lease fencing, decision pauses, strategy bundles, notification outbox, schedule occurrences/pause/run-now, admin automation health, closure of the release chain, feedback triage, project memory, product-loop metrics, `GET /api/v1/jobs`, repository rules/skills, layered budgets, deploy-check |
+| `v0.5.0` | Owner-authorized release of the accumulated `0.4.1`–`0.4.5` work and this roadmap; the foundation renewal below is the first `0.5.x` series |
 
 Recent releases (the last week) added, among other things:
 
@@ -70,11 +71,15 @@ The loop is measured by product metrics, not vanity counts
 - release-to-deploy lead time and deploy drift;
 - how often a human has to rescue a run.
 
-## v0.5 — foundation renewal (next)
+## v0.5.x — foundation renewal (in progress)
 
 **Goal:** make the next ten features cheaper and the next ten incidents rarer.
 The tree is now 65 tables, 174 routes and four files between 5.5k and 8.7k
 lines. The system works; the cost of changing it is the risk.
+
+`v0.5.0` shipped the accumulated `0.4.x` work and this roadmap. The work below is
+the first `0.5.x` series; it ships as `0.5.1` and later patches, and the owner
+calls the next minor when the series is complete.
 
 ### 5.1 Structure
 
@@ -121,7 +126,7 @@ survivable under failure.
 - **#1236** `feat(security)` — add a token-rotation drill that proves old tokens
   are refused.
 
-### v0.5 exit criteria
+### v0.5.x exit criteria
 
 - The architecture gate is green in CI and the grandfathered list has shrunk.
 - One domain, one route surface, one page and one job path are extracted with
