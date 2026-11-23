@@ -376,14 +376,13 @@ issue → claim → worktree → 红测试 → 修 → gates → PR
 
 | 版本 | 重点 |
 |---|---|
-| `v0.1` | OAuth + 审批邮件、多仓库、加密 token、额度网关、自带模型、Mock/FlyBot runner、Admin/审计 |
-| `v0.2` | GitHub App、PR 反馈闭环（红 CI/review → 追加任务）、任务取消、路径守卫 |
-| `v0.3` | 品牌化仓库工作区、发布自动化、tip 审核门、运营指标与告警（`v0.3.1` 已发布） |
-| `v0.4` | 计划先行门禁、durable checkpoint、路径/审批守卫、GitHub App 反馈 |
-| `v0.5` | 证据与学习：任务时间线、交付指标、shadow 评估、playbook 晋级 |
-| `v1.0` | Postgres 选项、worker pool、外部安全评审、审计保留 |
+| `v0.1`–`v0.3` | 登录与审批、多仓库接入、额度网关、每仓库 FlyBot 团队、角色、工作项、计划先行、tip 审核、发布自动化 |
+| `v0.4` | 可恢复 attempt 与 lease fencing、决策暂停、strategy bundle、调度 occurrence、通知 outbox、`GET /api/v1/jobs`、仓库规则/技能、分层预算、flight-deck 控制台（`v0.4.5` 已发布） |
+| `v0.5` | 地基焕新：把四个单体拆到有边界的模块、架构门禁、dialect 端口、lease/慢查询/数据库维护可见性、审计哈希链、发布故障矩阵（#1224–#1236） |
+| `v0.6` | Owner 闭环与开放：命令面板、跨设备偏好、i18n/a11y 门禁、`SourceProvider` 与 `AgentRunner` 端口、OpenAPI 3.1（#1237–#1243） |
+| `v1.0` | Postgres 与 worker pool（#387）、第二 source provider 与运行时、T3 第二独立身份、merge queue 与签名、审计保留、外部评审 |
 
-完整列表和开放问题见 [docs/roadmap.md](docs/roadmap.md)。
+完整列表、工作流、退出标准和开放问题见 [docs/roadmap.md](docs/roadmap.md)。
 
 ## FAQ
 
