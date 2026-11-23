@@ -55,6 +55,19 @@ both agree with the sidecar the writer leaves), and be younger than
 clock. The CLI does not reimplement the judgement: one function decides what
 "fresh" means for the console and the tool, so they cannot disagree.
 
+One part of the judgement is not that function's to make. It compares a copy's
+bytes only while the copy is at most `SHA256_MAX_BYTES` (4 MiB,
+`src/lib/backupStatus.ts:17`), because `/admin` must not read a large copy on a
+render path; above the cap it reports `not-checked` with the size already agreed,
+which the host's 235 MB copy always is. Reading that state as "not intact" made
+every real run refuse a copy the instance already had (`#1264`). So the tool
+hashes the named copy itself, streamed, and compares it against the same manifest
+sidecar — once per run, only after the copy is the newest and inside the window,
+and never when the report already says `matches`. The cap stays where it is: it
+is a render-path budget, not a statement about what counts as a good copy. A
+missing, `differs` or unreadable manifest still refuses, and the refusal names
+which of the three checks failed.
+
 **3. A busy database is refused, not waited on, and the refusal writes
 nothing.** The tool sets `PRAGMA busy_timeout = 5000` on its own connection —
 the app's value (`src/db.ts:2862`), repeated because a pragma does not travel to

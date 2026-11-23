@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -65,8 +65,10 @@ function auditRows(dbPath: string): number {
 
 // The shape the live file has: the audit table this tool writes one row into,
 // one table with rows to count, and no `sqlite_stat1` until something runs
-// `ANALYZE`.
-function makeDb(dbPath: string): void {
+// `ANALYZE`. `padBytes` grows the file above `SHA256_MAX_BYTES` (4 MiB), the cap
+// below which `readBackupStatus` certifies a copy's bytes itself; the host's copy
+// is 235 MB, so the above-cap path is the only one a real run ever takes here.
+function makeDb(dbPath: string, options: { padBytes?: number } = {}): void {
   const db = new DatabaseSync(dbPath)
   try {
     db.exec('PRAGMA journal_mode = WAL;')
@@ -81,8 +83,29 @@ function makeDb(dbPath: string): void {
       CREATE TABLE jobs (id INTEGER PRIMARY KEY, note TEXT);
       INSERT INTO jobs (note) VALUES ('a'), ('b'), ('c'), ('d');
     `)
+    if (options.padBytes !== undefined) {
+      db.exec('CREATE TABLE pad (id INTEGER PRIMARY KEY, blob BLOB)')
+      db.prepare('INSERT INTO pad (blob) VALUES (?)').run(Buffer.alloc(options.padBytes, 7))
+    }
   } finally {
     db.close()
+  }
+}
+
+// Change one byte in the middle of a copy, which keeps its size (so
+// `readBackupStatus` still says `not-checked` above the cap instead of `differs`)
+// and leaves it a valid SQLite file. Only the bytes stop being the bytes the
+// manifest named.
+function flipByte(path: string): void {
+  const offset = Math.floor(statSync(path).size / 2)
+  const fd = openSync(path, 'r+')
+  try {
+    const byte = Buffer.alloc(1)
+    readSync(fd, byte, 0, 1, offset)
+    byte[0] = (byte[0] ?? 0) ^ 0xff
+    writeSync(fd, byte, 0, 1, offset)
+  } finally {
+    closeSync(fd)
   }
 }
 
@@ -275,6 +298,92 @@ test('#1261 a real run with a fresh, matching copy executes the plan and writes 
     assert.equal(report.refusal, null)
     assert.notEqual(report.after, null)
     assert.equal((report.backup as { manifest: string }).manifest, 'matches')
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+// #1264 verdict: the live copy is 235,327,488 B, above `SHA256_MAX_BYTES`
+// (4 MiB), where `readBackupStatus` reports `not-checked` because `/admin` must
+// not read a copy that large on a render path. Before the fix every genuine run
+// refused `backup-too-old` / `not-checked` immediately after telling the operator
+// to take a copy it already had. The tool now hashes the named copy itself,
+// streamed — so the case that must accept is this one, not the 16 KiB fixture.
+const ABOVE_CAP_BYTES = 5 * 1024 * 1024
+
+test('#1261 a fresh copy above the hashing cap is accepted once the tool hashes it itself', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'db-maintenance-large-'))
+  try {
+    const dbPath = join(dir, 'fledge.db')
+    makeDb(dbPath, { padBytes: ABOVE_CAP_BYTES })
+    const backupDir = join(dir, 'backups')
+    const copyPath = await makeBackup(backupDir, dbPath, NOW)
+    assert.ok(statSync(copyPath).size > 4 * 1024 * 1024, 'the fixture must be above the render-path cap')
+    const reportPath = join(dir, 'report.json')
+    const run = runTool(dbPath, ['--backup', copyPath, '--now', NOW.toISOString()], { reportPath, backupDir })
+    assert.equal(run.status, 0, `expected exit 0, got ${String(run.status)}: ${run.stderr}`)
+    assert.equal(auditRows(dbPath), 1)
+
+    const report = readReport(reportPath)
+    assert.equal(report.exit, 0)
+    assert.equal(report.refusal, null)
+    const backup = report.backup as { manifest: string; file: string }
+    assert.equal(backup.manifest, 'matches')
+    assert.equal(backup.file, copyPath.slice(copyPath.lastIndexOf('/') + 1))
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('#1261 a copy above the hashing cap whose bytes disagree with its manifest is refused and writes nothing', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'db-maintenance-large-tampered-'))
+  try {
+    const dbPath = join(dir, 'fledge.db')
+    makeDb(dbPath, { padBytes: ABOVE_CAP_BYTES })
+    const backupDir = join(dir, 'backups')
+    const copyPath = await makeBackup(backupDir, dbPath, NOW)
+    // Same size, different bytes: `readBackupStatus` alone can only say
+    // `not-checked` here, so only the tool's own hash can catch this.
+    flipByte(copyPath)
+    const before = countersOf(dbPath)
+    const reportPath = join(dir, 'report.json')
+    const run = runTool(dbPath, ['--backup', copyPath, '--now', NOW.toISOString()], { reportPath, backupDir })
+    assert.equal(run.status, 3, `expected exit 3, got ${String(run.status)}: ${run.stderr}`)
+    assert.match(run.stderr, /refused: backup-too-old — /)
+    assert.match(run.stderr, /manifest sha256 differs from the bytes/)
+
+    const after = countersOf(dbPath)
+    assert.equal(after.pageCount, before.pageCount)
+    assert.equal(after.freelistCount, before.freelistCount)
+    assert.deepEqual(after.tables, before.tables)
+    assert.equal(auditRows(dbPath), 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('#1261 a small copy whose bytes disagree with its manifest is still refused by readBackupStatus', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'db-maintenance-small-tampered-'))
+  try {
+    const dbPath = join(dir, 'fledge.db')
+    makeDb(dbPath)
+    const backupDir = join(dir, 'backups')
+    // Below the cap `readBackupStatus` hashes the newest copy itself, so this
+    // path must not have been replaced by the tool's own hash.
+    const copyPath = await makeBackup(backupDir, dbPath, NOW)
+    flipByte(copyPath)
+    const before = countersOf(dbPath)
+    const reportPath = join(dir, 'report.json')
+    const run = runTool(dbPath, ['--backup', copyPath, '--now', NOW.toISOString()], { reportPath, backupDir })
+    assert.equal(run.status, 3, `expected exit 3, got ${String(run.status)}: ${run.stderr}`)
+    assert.match(run.stderr, /refused: backup-too-old — /)
+    assert.match(run.stderr, /manifest sha256 differs from the bytes/)
+
+    const after = countersOf(dbPath)
+    assert.equal(after.pageCount, before.pageCount)
+    assert.equal(after.freelistCount, before.freelistCount)
+    assert.deepEqual(after.tables, before.tables)
+    assert.equal(auditRows(dbPath), 0)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

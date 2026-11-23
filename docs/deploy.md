@@ -1318,10 +1318,20 @@ than the window — `--expected-hours`, default `26` from
 different backup interval can state its own; the default is the same 26 hours
 `/admin` uses to call a copy stale.
 
+`readBackupStatus` compares a copy's bytes only while it is at most 4 MiB
+(`SHA256_MAX_BYTES`), because `/admin` must not read a large copy on a render
+path; above that cap it reports `not-checked` with the size already agreed, and
+the host's 235 MB copy is always above it. So the tool hashes the copy it was
+named, itself and streamed, and compares that against the same manifest sidecar
+— once per run, only after the copy is known to be the newest and inside the
+window, and never when the report already says `matches`. A missing manifest, a
+`differs` and an unreadable copy stay refusals: the tool vouches only for bytes
+it compared.
+
 | code | when | exit |
 |---|---|---|
 | `no-backup` | `--backup` is absent, or the named file is not in `BACKUP_DIR` | 3 |
-| `backup-too-old` | the named copy is not the newest, its manifest is not `matches`, or its age exceeds the window | 3 |
+| `backup-too-old` | the named copy is not the newest, its manifest does not match its bytes, or its age exceeds the window | 3 |
 | `db-busy` | another connection held the write lock for the tool's own `busy_timeout` of 5000 ms | 3 |
 
 Each refusal prints one code and one sentence, writes the report, and leaves the
@@ -1345,7 +1355,9 @@ Every run that reaches a decision writes one JSON report to
 refusals included, because "nothing was written" always means the database and
 never the report. It carries `at`, `mode` (`dry-run` or `real`), `db`,
 `busyTimeoutMs`, `before`, `after` (`null` on a dry run), `plan`, `backup`
-(`file`, `ageHours`, `manifest`, `windowHours`; `null` on a dry run), `refusal`
+(`file`, `ageHours`, `manifest`, `verifiedBytes` — `readBackupStatus` or
+`db-maintenance`, i.e. which of the two compared the bytes — and `windowHours`;
+`null` on a dry run), `refusal`
 (`code`, `sentence`; `null` when the run was not refused), `report` and `exit`.
 A usage error (`2`) writes none.
 
@@ -1355,7 +1367,10 @@ A usage error (`2`) writes none.
 **installing it on the instance is the owner's decision**, like every other
 change to the host's schedule. It names the host clock as its precondition,
 because a cron line fires on the local clock and the live instance's clock has
-never been synchronised (`#1256`).
+never been synchronised (`#1256`). Its line carries five fields, not six, so it
+belongs in a user crontab (`crontab -e`); a file in `/etc/cron.d` would need the
+user named after the schedule (`30 2 * * 0 fledge <command>`), and the sample
+says so rather than shipping a line that silently does nothing there.
 
 ### Backup encryption
 

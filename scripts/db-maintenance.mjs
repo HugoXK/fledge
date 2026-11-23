@@ -19,6 +19,7 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { DEFAULT_EXPECTED_HOURS, readBackupStatus } from '../src/lib/backupStatus.js'
+import { readManifest, sha256File } from './lib/backup-manifest.mjs'
 import { BUSY_TIMEOUT_MS, buildReport, planSteps, readCounters, refusalSentence } from './lib/db-maintenance.mjs'
 
 const USAGE =
@@ -116,11 +117,42 @@ function refuse(code, detail, beforeCounters) {
   process.exit(EXIT_REFUSED)
 }
 
+// `readBackupStatus` certifies a copy's bytes only while it is at most
+// `SHA256_MAX_BYTES` (4 MiB), because `/admin` must not read a large copy on a
+// render path; above the cap the newest copy is reported `not-checked` with its
+// size already agreed. The host's copy is 235 MB, so that cap is every real run:
+// taken as a refusal, it told an operator to take a fresh copy they already had.
+// The two states below are the ones where the bytes were never compared.
+const UNHASHED_STATES = new Set(['not-checked', 'size-only'])
+
+// Hash exactly the file that is about to be maintained, streamed: 235 MB once
+// per maintenance run is nothing, and `readFileSync` on it is not. Only the named
+// copy is read — the cap stays in `/admin`, where it belongs.
+async function hashAgainstManifest(copyPath) {
+  let manifest
+  try {
+    manifest = readManifest(copyPath)
+  } catch {
+    return 'unreadable'
+  }
+  // No sidecar is still a refusal: this tool does not vouch for a copy the writer
+  // never described.
+  if (manifest === null) return 'missing'
+  try {
+    return (await sha256File(copyPath)) === manifest.sha256 ? 'matches' : 'differs'
+  } catch {
+    return 'unreadable'
+  }
+}
+
 // A copy is a precondition only if it is the newest one, its manifest agrees
 // with its bytes, and it is inside the window — the same three judgements
 // `/admin` makes, from the same function, so the CLI cannot call "fresh" what
-// the console calls stale.
-function checkBackup() {
+// the console calls stale. The one addition is the bytes of an above-cap copy,
+// which that function leaves `not-checked`; the tool hashes them itself, and only
+// after the cheap two checks pass and only when the bytes were not already
+// certified, so a `matches` copy is never re-read.
+async function checkBackup() {
   if (args.backup === undefined) return { refusal: 'no-backup' }
   const wanted = resolve(args.backup)
   const status = readBackupStatus({ dir: backupDir, now: nowMs, expectedHours })
@@ -128,16 +160,18 @@ function checkBackup() {
   if (copy === undefined) return { refusal: 'no-backup' }
   const newest = status.newest !== null && status.newest.name === copy.name
   const fresh = copy.ageHours !== null && copy.ageHours <= expectedHours
-  if (!newest || copy.manifest !== 'matches' || !fresh) {
+  let manifest = copy.manifest
+  if (newest && fresh && UNHASHED_STATES.has(manifest)) manifest = await hashAgainstManifest(wanted)
+  if (!newest || !fresh || manifest !== 'matches') {
     return {
       refusal: 'backup-too-old',
-      detail: { name: copy.name, ageHours: copy.ageHours, manifest: copy.manifest, windowHours: expectedHours },
+      detail: { name: copy.name, ageHours: copy.ageHours, manifest, windowHours: expectedHours, newest, fresh },
     }
   }
-  return { backup: { file: copy.name, ageHours: copy.ageHours, manifest: copy.manifest, windowHours: expectedHours } }
+  return { backup: { file: copy.name, ageHours: copy.ageHours, manifest, verifiedBytes: UNHASHED_STATES.has(copy.manifest) ? 'db-maintenance' : 'readBackupStatus', windowHours: expectedHours } }
 }
 
-const checked = checkBackup()
+const checked = await checkBackup()
 if (checked.refusal !== undefined) refuse(checked.refusal, checked.detail, before)
 
 function isBusy(error) {

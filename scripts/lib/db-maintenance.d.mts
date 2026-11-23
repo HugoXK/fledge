@@ -34,6 +34,8 @@ export interface BackupFacts {
   file: string
   ageHours: number | null
   manifest: string
+  /** Which of the two compared the copy's bytes against its manifest. */
+  verifiedBytes: 'readBackupStatus' | 'db-maintenance'
   windowHours: number
 }
 

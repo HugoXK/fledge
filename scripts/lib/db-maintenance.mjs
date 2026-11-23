@@ -56,9 +56,21 @@ export function refusalSentence(code, detail = {}) {
   }
   if (code === 'backup-too-old') {
     const name = String(detail.name ?? 'the named copy')
-    const age = Number.isFinite(detail.ageHours) ? `${Math.round(detail.ageHours)}h` : 'an unknown number of hours'
-    const windowHours = String(detail.windowHours ?? '')
-    return `refused: backup-too-old — ${name} is ${age} old or its manifest is ${String(detail.manifest ?? 'unknown')}; window is ${windowHours}h, take a fresh copy with npm run db:backup`
+    // Name the checks that failed, not one of them: a copy can be the newest and
+    // inside the window and still be refused for its bytes, and "is 0h old or its
+    // manifest is differs" told an operator neither which test failed nor what to
+    // do. `newest` and `fresh` are absent when the caller did not judge them.
+    const failed = []
+    if (detail.newest === false) failed.push('is not the newest copy in BACKUP_DIR')
+    if (detail.fresh === false) {
+      const age = Number.isFinite(detail.ageHours) ? `${Math.round(Number(detail.ageHours))}h` : 'an unknown number of hours'
+      failed.push(`is ${age} old, window is ${String(detail.windowHours ?? '')}h`)
+    }
+    const manifest = String(detail.manifest ?? 'unknown')
+    if (manifest === 'differs') failed.push('its manifest sha256 differs from the bytes')
+    else if (manifest !== 'matches') failed.push(`its manifest is ${manifest}`)
+    const list = failed.length === 0 ? 'no fresh copy was named' : failed.join('; ')
+    return `refused: backup-too-old — ${name} ${list}; take a fresh copy with npm run db:backup`
   }
   if (code === 'db-busy') {
     return `refused: db-busy — another connection held a write lock for ${BUSY_TIMEOUT_MS} ms; nothing was written`

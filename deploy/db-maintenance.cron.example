@@ -1,8 +1,13 @@
 # Weekly database maintenance for Fledge (02:30Z Sunday = 10:30 Asia/Shanghai).
 #
-# This file installs nothing. Putting the line below into /etc/cron.d (or any
-# other scheduler) is the owner's decision, like every other change to the
+# This file installs nothing. Putting the line below into your user's crontab
+# (`crontab -e`) is the owner's decision, like every other change to the
 # instance's schedule.
+#
+# The line has five time-and-command fields and no user field, so it is a user
+# crontab entry: a file in /etc/cron.d would need the user named after the
+# schedule (`30 2 * * 0 <user> cd /opt/fledge && ...`), and one there without
+# that field is read and ignored.
 #
 # Preconditions, all three:
 #   * the host clock must be trustworthy — a cron line fires on the local clock,
@@ -10,8 +15,8 @@
 #     Fix the clock first, or the run lands at an hour nobody chose.
 #   * the backup schedule must already run: a real run refuses (exit 3) unless
 #     the newest copy in BACKUP_DIR is intact and younger than 26 hours.
-#   * run it from the checkout as the service user, so `npm run db:maintenance`
-#     finds its dependencies.
+#   * run it from the checkout as the user whose crontab carries the line, so
+#     `npm run db:maintenance` finds its dependencies.
 #
 # The report lands at ${DATA_DIR}/db-maintenance.json (data/db-maintenance.json
 # by default), and the log line names the counters the run moved.
