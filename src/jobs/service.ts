@@ -61,7 +61,7 @@ import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
 import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, lastWorkSucceeded, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
-import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatched, type DispatchBlockReason } from './automationHealth.js'
+import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatched, recordLeaseHealth, type DispatchBlockReason } from './automationHealth.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
@@ -4887,7 +4887,14 @@ export class Jobs {
   private startLeaseHeartbeat(jobId: string, owner: string, leaseMs: number): void {
     this.clearLeaseHeartbeat(jobId)
     const timer = setInterval(() => {
-      if (!this.store.renewJobLease(jobId, owner, leaseMs)) this.clearLeaseHeartbeat(jobId)
+      if (this.store.renewJobLease(jobId, owner, leaseMs)) return
+      // A refused renewal on a live row means the lease moved to another worker;
+      // a terminal row releasing its lease is the normal end and is not counted.
+      const job = this.store.getJob(jobId)
+      if (job !== undefined && (job.status === 'queued' || job.status === 'running')) {
+        incCounter('fledge_job_lease_renew_failures_total', { kind: job.kind }, 1, 'Job lease renewals refused because the lease moved')
+      }
+      this.clearLeaseHeartbeat(jobId)
     }, Math.max(1000, Math.floor(leaseMs / 5)))
     timer.unref()
     this.leaseTimers.set(jobId, timer)
@@ -4987,6 +4994,10 @@ export class Jobs {
       incCounter('fledge_lease_expired_total', { kind: job.kind }, 1, 'Jobs whose worker lease expired')
       this.finish(job.id, { status: 'failed', error: '任务租约过期：worker 未续约。', errorCode: 'JOB_LEASE_EXPIRED' }, revoke, null, null, null, null, true)
     }
+    // #1230: one gauge for the oldest lease still held. It is removed when no
+    // lease is live, so a dashboard says "none", not a stale reading.
+    const oldestLease = this.store.oldestLiveLease()
+    recordLeaseHealth({ oldestSince: oldestLease === undefined ? null : Date.parse(oldestLease.since), now: Date.now() })
     this.store.deleteExpiredJobTokens()
     if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {
       this.lastPruneAt = Date.now()
