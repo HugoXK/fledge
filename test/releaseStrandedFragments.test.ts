@@ -87,14 +87,17 @@ interface Fixture {
   output: string
 }
 
-function fixture(options: { fragments?: Record<string, string>; changelogIsFile?: boolean } = {}): Fixture {
+function fixture(options: { fragments?: Record<string, string>; changelogIsFile?: boolean; missingDir?: boolean } = {}): Fixture {
   const dir = mkdtempSync(join(tmpdir(), 'stranded-fragments-'))
   for (const file of SCRIPTS) {
     mkdirSync(join(dir, dirname(file)), { recursive: true })
     copyFileSync(file, join(dir, file))
   }
   writeFileSync(join(dir, 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n' + NOTES_BEFORE)
-  if (options.changelogIsFile === true) {
+  if (options.missingDir === true) {
+    // A tag cut before `changelog.d` existed: the directory is absent, which is
+    // a tag that predates fragments rather than a read that failed.
+  } else if (options.changelogIsFile === true) {
     // A path that is not a directory cannot be read as one, whatever user the
     // suite runs as — `chmod 000` proves nothing under root.
     writeFileSync(join(dir, 'changelog.d'), 'README.md\n')
@@ -187,6 +190,22 @@ test('an unreadable changelog.d fails the step and never yields a body that read
   assert.equal(run.notes, NOTES_BEFORE, 'nothing is appended from a read that did not happen')
   assert.doesNotMatch(run.notes, /Changes that merged after/, 'no section is written on an unreadable read')
   assert.match(run.stderr, /ENOTDIR|not a directory/i, 'the failure names the directory')
+})
+
+// #1218 secondary: a tag cut before `changelog.d` existed carries no fragments,
+// so the step reports zero stranded changes instead of failing a publish for a
+// directory that tag never had (`v0.1.0` is one). The rule is narrow on purpose:
+// `ENOENT` means absence, and every other read failure still throws — the test
+// above is the arm that must keep failing at both tips, so a broad `catch {}`
+// cannot pass this pair.
+test('a tag with no changelog.d reports zero stranded changes instead of failing', () => {
+  const tree = fixture({ missingDir: true })
+  const run = runStep(STRANDED, tree)
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(run.notes, NOTES_BEFORE, 'a tag that predates fragments appends nothing')
+  assert.doesNotMatch(run.notes, /Changes that merged after/, 'no section is written for an absent directory')
+  assert.match(run.output, /^names=$/m, 'no fragment names are published')
+  assert.match(run.summary, /no stranded change/, 'the summary says the tag stranded nothing')
 })
 
 test('the three chain lines still parse after the section, whatever it names', () => {

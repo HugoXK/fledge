@@ -8,19 +8,34 @@
 //
 // Zero fragments is a legitimate answer — the planner refuses the night with its
 // own first reason — but a directory that cannot be read is not zero: only the
-// two empty shapes answer 0, and a missing or unreadable `changelog.d` throws so
-// the release step fails loudly instead of reporting a count nobody measured.
+// two empty shapes answer 0, and an unreadable `changelog.d` throws so the
+// release step fails loudly instead of reporting a count nobody measured.
+//
+// #1218: "cannot be read" is not "does not exist". A tag cut before
+// `changelog.d` existed (`v0.1.0`) carries no fragments, and ENOENT is the one
+// code that says so; the release step has to report zero stranded changes rather
+// than fail a publish for a directory that tag never had. That is the only code
+// answered 0 here — EACCES, EPERM, ENOTDIR and anything else still throw, so an
+// unreadable tree keeps failing the step (#548) and a blanket `catch {}` cannot
+// pass the pair of tests that pin both halves.
 
 import { readdirSync } from 'node:fs'
 
-/** Sorted fragment file names (`*.md`, never `README.md`). Throws when the directory cannot be read. */
+/** Sorted fragment file names (`*.md`, never `README.md`). Answers `[]` when the directory does not exist; throws for every other read failure. */
 export function fragmentNames(dir = 'changelog.d') {
-  return readdirSync(dir)
+  let names
+  try {
+    names = readdirSync(dir)
+  } catch (error) {
+    if (error instanceof Error && 'code' in error && error.code === 'ENOENT') return []
+    throw error
+  }
+  return names
     .filter((name) => name.endsWith('.md') && name !== 'README.md')
     .sort()
 }
 
-/** How many fragments a release would fold. Throws, rather than answering 0, when the directory is unreadable. */
+/** How many fragments a release would fold. Zero when the directory is absent; throws when it cannot be read. */
 export function countFragments(dir = 'changelog.d') {
   return fragmentNames(dir).length
 }
