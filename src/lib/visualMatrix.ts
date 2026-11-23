@@ -375,3 +375,103 @@ export function shardFailures(
   }
   return failures
 }
+
+/**
+ * One row of the job summary: a cell as a reader sees it, with the mode it was
+ * measured in and every reason it failed. The row is derived from what the
+ * shares reported, so a cell that never ran cannot appear as a pass.
+ */
+export interface VisualCaseResult {
+  readonly locale: string
+  readonly width: number
+  readonly scheme: string
+  readonly path: string
+  readonly ok: boolean
+  readonly detail: readonly string[]
+}
+
+/** The scheme a cell is measured in: the sweep takes the host's, the gate forces one. */
+function caseScheme(cell: VisualCell): string {
+  switch (cell.kind) {
+    case 'gate':
+      return cell.scheme
+    case 'theme':
+      return 'explicit-dark'
+    default:
+      return 'host'
+  }
+}
+
+/**
+ * The rows behind the summary, one per promised cell in workload order. A cell
+ * is a pass only when a share reported measuring it and no failure carries its
+ * label; a cell no share reported reads as a failure naming that, so a share
+ * that skipped work shrinks nothing.
+ */
+export function caseRows(
+  cells: readonly VisualCell[],
+  results: readonly (VisualShardResult | null)[],
+): VisualCaseResult[] {
+  const labels = new Map(cells.map((cell) => [cellLabel(cell), cell]))
+  const reported = new Set<string>()
+  const reasons = new Map<string, string[]>()
+  for (const result of results) {
+    for (const label of result?.cells ?? []) reported.add(label)
+    for (const failure of result?.failures ?? []) {
+      for (const [label] of labels) {
+        const prefix = `${label}: `
+        if (!failure.startsWith(prefix)) continue
+        const list = reasons.get(label) ?? []
+        list.push(failure.slice(prefix.length))
+        reasons.set(label, list)
+        break
+      }
+    }
+  }
+  return cells.map((cell) => {
+    const label = cellLabel(cell)
+    const detail = reasons.get(label) ?? []
+    const ok = reported.has(label) && detail.length === 0
+    return {
+      locale: cell.locale,
+      width: cell.width,
+      scheme: caseScheme(cell),
+      path: cell.kind === 'theme' ? '/dashboard' : cell.path,
+      ok,
+      detail: ok ? [] : detail.length > 0 ? detail : ['the share that owned this cell reported no result'],
+    }
+  })
+}
+
+/** A cell of the table: a reason can carry a `|` of its own. */
+function tableCell(value: string): string {
+  return value.split('|').join('\\|')
+}
+
+/**
+ * The summary a reader opens from the run page. Every promised case is a row —
+ * a pass is a row too — so a red run names the page, viewport and scheme that
+ * failed and a green run shows the table the matrix actually covered. `notes`
+ * carries the aggregate's own reasons (a share that died, a cell counted
+ * twice), which belong to no single row.
+ */
+export function summaryMarkdown(rows: readonly VisualCaseResult[], notes: readonly string[] = []): string {
+  const passed = rows.filter((row) => row.ok).length
+  const lines = [
+    `visual matrix: ${String(passed)}/${String(rows.length)} case(s) passed`,
+    '',
+    '| locale | viewport | scheme | page | result |',
+    '| --- | --- | --- | --- | --- |',
+  ]
+  for (const row of rows) {
+    const result = row.ok ? 'pass' : `fail: ${row.detail.join('; ')}`
+    lines.push(
+      `| ${tableCell(row.locale)} | ${String(row.width)}px | ${tableCell(row.scheme)} | \`${tableCell(row.path)}\` | ${tableCell(result)} |`,
+    )
+  }
+  if (notes.length > 0) {
+    lines.push('', '**Aggregate notes**')
+    for (const note of notes) lines.push(`- ${tableCell(note)}`)
+  }
+  return `${lines.join('\n')}\n`
+}
