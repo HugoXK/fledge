@@ -1214,8 +1214,18 @@ and the recreate: several runs that judge the same dead lock stale can therefore
 not delete each other's fresh lock and all write in the directory — the
 concurrent-run defect the lock exists to stop. A lock file that exists but cannot
 be read is only taken over once it is a minute old, so a run that is mid-creation
-is never robbed. The
-directory is also read as a directory of files: an entry that is not a regular
+is never robbed. The lock and the marker both name their holder twice: the pid,
+and the process start time the kernel gives that pid. The start time is what makes
+a reused number harmless — a dead run's lock whose pid some unrelated process has
+since inherited is alive by pid alone and refuses every run until that process
+exits, while with the start time recorded the number is judged stale and the
+takeover proceeds. A lock written before the field existed carries the pid only
+and keeps the old meaning, so a live pid still refuses; nothing can tell a reused
+number from its holder without it. The marker is released by identity for the
+same reason: a run stopped inside the takeover for longer than the grace has its
+marker swept and replaced, and when it resumes it removes only the entry it
+wrote, leaving the current holder's marker — and the section it guards — alone.
+The directory is also read as a directory of files: an entry that is not a regular
 file (a directory or a symlink named like a copy) is never treated as a copy and
 is never deleted — the writer and the dry run now use the same classifier, so a
 copy the console counts is a copy the writer may prune.

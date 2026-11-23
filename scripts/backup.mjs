@@ -151,13 +151,49 @@ const LOCK_TAKEOVER_GRACE_MS = 10_000
 // write rather than a run in the middle of those two calls.
 const LOCK_UNREADABLE_GRACE_MS = 60_000
 
-function readLockPid(lockPath) {
+// Field 22 of /proc/<pid>/stat: the process start time, in clock ticks since
+// boot. A pid is not an identity — the kernel reuses the number — so the holder's
+// start time is recorded beside its pid, and a live pid whose start time differs
+// is a different process that inherited the number (#1217). The command name is
+// parenthesised and may contain spaces, so fields are counted from the last `)`.
+// Where /proc is unavailable this answers null and the pid alone decides, exactly
+// as before.
+function processStartTime(pid) {
   try {
-    const pid = Number(readFileSync(lockPath, 'utf8').trim())
-    return Number.isInteger(pid) && pid > 0 ? pid : null
+    const stat = readFileSync(`/proc/${String(pid)}/stat`, 'utf8')
+    const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ')
+    const start = Number(fields[19])
+    return Number.isFinite(start) && start > 0 ? start : null
   } catch {
     return null
   }
+}
+
+// What the lock and the marker carry: the holder's pid and start time. The pid
+// stays the first token, so a lock written before this field still parses and
+// every refusal keeps naming it.
+const SELF_START_TIME = processStartTime(process.pid)
+
+function lockText() {
+  return SELF_START_TIME === null ? String(process.pid) : `${String(process.pid)} ${String(SELF_START_TIME)}`
+}
+
+function readLockRecord(lockPath) {
+  try {
+    const [pidToken, startToken] = readFileSync(lockPath, 'utf8').trim().split(/\s+/)
+    const pid = Number(pidToken)
+    const startTime = Number(startToken)
+    return {
+      pid: Number.isInteger(pid) && pid > 0 ? pid : null,
+      startTime: Number.isFinite(startTime) && startTime > 0 ? startTime : null,
+    }
+  } catch {
+    return null
+  }
+}
+
+function readLockPid(lockPath) {
+  return readLockRecord(lockPath)?.pid ?? null
 }
 
 // One read of the entry: the pid it names and the identity of the file itself.
@@ -166,7 +202,14 @@ function readLockPid(lockPath) {
 function lockSnapshot(lockPath) {
   const stat = statOrNull(lockPath)
   if (stat === null) return null
-  return { pid: readLockPid(lockPath), mtimeMs: stat.mtimeMs, ino: stat.ino, dev: stat.dev }
+  const record = readLockRecord(lockPath)
+  return {
+    pid: record?.pid ?? null,
+    startTime: record?.startTime ?? null,
+    mtimeMs: stat.mtimeMs,
+    ino: stat.ino,
+    dev: stat.dev,
+  }
 }
 
 function sameLock(left, right) {
@@ -174,6 +217,7 @@ function sameLock(left, right) {
     left !== null &&
     right !== null &&
     left.pid === right.pid &&
+    left.startTime === right.startTime &&
     left.mtimeMs === right.mtimeMs &&
     left.ino === right.ino &&
     left.dev === right.dev
@@ -187,14 +231,22 @@ function lockIsStale(snapshot) {
   // A young lock is never stale, dead pid or not: its holder may be one
   // instruction from writing its pid, and its exit handler releases it.
   if (age <= LOCK_TAKEOVER_GRACE_MS) return false
+  let gone = false
   try {
     process.kill(snapshot.pid, 0)
-    return false
   } catch (error) {
     // ESRCH: no such process, so the lock outlived its holder. EPERM: the process
     // exists under another account, which is still a holder.
-    return error?.code === 'ESRCH'
+    if (error?.code === 'ESRCH') gone = true
   }
+  if (gone) return true
+  // Alive, but a live number is not the same process: if the holder recorded its
+  // start time and the process behind that pid now has another, the number was
+  // reused and the lock is a dead run's. A pid-only lock cannot say either way,
+  // so it keeps refusing, as it always did.
+  if (snapshot.startTime === null) return false
+  const liveStart = processStartTime(snapshot.pid)
+  return liveStart !== null && liveStart !== snapshot.startTime
 }
 
 function acquireLock(dir) {
@@ -203,7 +255,7 @@ function acquireLock(dir) {
   for (let attempt = 0; attempt < 3; attempt += 1) {
     try {
       // O_CREAT|O_EXCL: the first run to create the entry holds the directory.
-      writeFileSync(lockPath, String(process.pid), { flag: 'wx', mode: 0o600 })
+      writeFileSync(lockPath, lockText(), { flag: 'wx', mode: 0o600 })
       return lockPath
     } catch (error) {
       if (error?.code !== 'EEXIST') fail(2, `cannot lock the backup directory: ${error instanceof Error ? error.message : String(error)}`)
@@ -222,8 +274,14 @@ function acquireLock(dir) {
       // The marker makes the remove-then-create a critical section; a run that
       // cannot take it lets the holder do the takeover and comes back to see the
       // lock it created.
+      // The marker this run wrote, read back as the identity its release must
+      // match. A successful `O_EXCL` create is this run's; the snapshot is taken
+      // immediately so a later release cannot confuse "the marker I made" with
+      // "a marker another run made at the same path" (#1217).
+      let markerSnapshot = null
       try {
-        writeFileSync(takeoverPath, String(process.pid), { flag: 'wx', mode: 0o600 })
+        writeFileSync(takeoverPath, lockText(), { flag: 'wx', mode: 0o600 })
+        markerSnapshot = lockSnapshot(takeoverPath)
       } catch (error) {
         if (error?.code !== 'EEXIST') fail(2, `cannot lock the backup directory: ${error instanceof Error ? error.message : String(error)}`)
         // The marker is held only across the two calls below, so an old one is a
@@ -252,7 +310,14 @@ function acquireLock(dir) {
       } catch (error) {
         takeoverError = error
       } finally {
-        rmSync(takeoverPath, { force: true })
+        // #1217: release by identity, not by path. A run stopped inside this
+        // section for longer than the grace has had its marker swept and
+        // replaced, so an unconditional remove here deletes the marker the
+        // current holder is relying on, and a third run can then create its own
+        // and enter the same section. The rule is the lock's exit release: only
+        // the entry this run wrote is removed; anything else is left for its
+        // holder to release.
+        if (sameLock(markerSnapshot, lockSnapshot(takeoverPath))) rmSync(takeoverPath, { force: true })
       }
       if (takeoverError !== null) {
         fail(2, `cannot take the backup lock ${lockPath}: ${takeoverError instanceof Error ? takeoverError.message : String(takeoverError)}`)
