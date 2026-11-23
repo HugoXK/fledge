@@ -2438,7 +2438,7 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
           <label class="check"><input type="checkbox" name="requireProtection" value="1" ${repo.require_protection === 1 ? 'checked' : ''} /> ${escapeHtml(t('自动合并前要求 branch protection', 'Require branch protection before auto-merge'))}${infoTip(t('开启后，自动合并前必须先读到 branch protection。', 'When on, auto-merge needs a readable branch protection rule.'))}</label>
         </div>
         <p class="fine">${escapeHtml(t('自动合并要求 branch protection：Fledge 会检查保护规则、required checks 和 required approvals；读不到保护规则时不会自动合并。', 'Auto-merge requires branch protection: Fledge checks the protection rule, required checks and required approvals; if the rule cannot be read, it will not auto-merge.'))}</p>
-        <p class="fine">${escapeHtml(t('Branch protection', 'Branch protection'))}: <code>${escapeHtml(repo.protection_state ?? 'unknown')}</code>${repo.protection_checked_at === null ? '' : ` · ${escapeHtml(humanTimeShort(repo.protection_checked_at))}`}</p>
+        <p class="fine">${escapeHtml(t('分支保护', 'Branch protection'))}: <code>${escapeHtml(repo.protection_state ?? 'unknown')}</code>${repo.protection_checked_at === null ? '' : ` · ${escapeHtml(humanTimeShort(repo.protection_checked_at))}`}</p>
         <div class="row">
           <label>${escapeHtml(t('仓库月度预算（元）', 'Monthly repository budget (CNY)'))} <input name="monthlyBudget" type="number" min="0" max="10000" step="0.01" value="${repo.monthly_budget_cny.toFixed(2)}" /></label>
           <label>${escapeHtml(t('单任务预算（元）', 'Per-job budget (CNY)'))} <input name="jobBudget" type="number" min="0" max="10000" step="0.01" value="${repo.job_budget_cny.toFixed(2)}" /></label>
@@ -4201,7 +4201,7 @@ export function jobPage(input: {
         <div class="list-row" data-red-test-row><div class="list-main"><strong>${escapeHtml(t('失败测试', 'Red test'))}</strong><small>${escapeHtml(evidence.testRed ?? '—')}</small>${redTestBadge}${redTestDecisionLine}${redTestForm}</div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('通过测试', 'Green test'))}</strong><small>${escapeHtml(evidence.testGreen ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('测试', 'Tests'))}</strong><small>${escapeHtml(evidence.tests ?? '—')}</small></div></div>
-        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('CI / checks', 'CI / checks'))}</strong><small>${escapeHtml(evidence.checks ?? '—')}</small></div></div>
+        <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('CI / 检查', 'CI / checks'))}</strong><small>${escapeHtml(evidence.checks ?? '—')}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('改动文件', 'Files changed'))}</strong><small>${evidence.files ?? '—'}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('风险', 'Risk'))}</strong><small>${escapeHtml(riskLabel)}</small></div></div>
         <div class="list-row"><div class="list-main"><strong>${escapeHtml(t('回滚', 'Rollback'))}</strong><small>${escapeHtml(evidence.rollback ?? '—')}</small></div></div>
@@ -5555,7 +5555,7 @@ export function adminWebhooksPage(input: {
       </tr>`).join('')
   const body = `<a class="back" href="/admin">← ${escapeHtml(t('返回管理', 'Back to admin'))}</a>
   <section class="card">
-    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('WEBHOOK', 'WEBHOOK'))}</div><h1>${escapeHtml(t('Webhook deliveries', 'Webhook deliveries'))}</h1><p class="muted">${escapeHtml(t(`最近 ${total} 条；只显示元数据，不显示 payload。`, `Latest ${total}; metadata only, payload is not shown.`))}</p></div></div>
+    <div class="row between"><div><div class="eyebrow">${escapeHtml(t('WEBHOOK', 'WEBHOOK'))}</div><h1>${escapeHtml(t('Webhook 投递', 'Webhook deliveries'))}</h1><p class="muted">${escapeHtml(t(`最近 ${total} 条；只显示元数据，不显示 payload。`, `Latest ${total}; metadata only, payload is not shown.`))}</p></div></div>
     <form method="get" action="/admin/webhooks" class="form">
       <div class="row">
         <label>${escapeHtml(t('状态', 'Status'))} <select name="status"><option value="">${escapeHtml(t('全部', 'All'))}</option>${['processing', 'processed', 'failed'].map((value) => `<option value="${value}"${filters.status === value ? ' selected' : ''}>${escapeHtml(deliveryStatusLabel(t, value))}</option>`).join('')}</select></label>
@@ -5566,7 +5566,7 @@ export function adminWebhooksPage(input: {
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('收到', 'Received'))}</th><th>${escapeHtml(t('事件', 'Event'))}</th><th>${escapeHtml(t('仓库', 'Repository'))}</th><th>${escapeHtml(t('状态', 'Status'))}</th><th>${escapeHtml(t('错误', 'Error'))}</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>
     ${pages <= 1 ? '' : `<div class="row between mt-12"><span class="fine">${escapeHtml(t(`第 ${page} / ${pages} 页`, `Page ${page} of ${pages}`))}</span><div class="row"><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.max(1, page - 1) })}">${escapeHtml(t('上一页', 'Previous'))}</a><a class="btn btn-ghost btn-small" href="/admin/webhooks?${query({ page: Math.min(pages, page + 1) })}">${escapeHtml(t('下一页', 'Next'))}</a></div></div>`}
   </section>`
-  return layout({ title: t('Webhook deliveries', 'Webhook deliveries'), viewer, body, config, locale, path: '/admin/webhooks', active: 'admin', notice, error })
+  return layout({ title: t('Webhook 投递', 'Webhook deliveries'), viewer, body, config, locale, path: '/admin/webhooks', active: 'admin', notice, error })
 }
 
 // #544 slice 7: the outbox's operator surface. It answers the one question a
@@ -5645,7 +5645,7 @@ export function adminNotificationsPage(input: {
     <div class="table-scroll"><table><thead><tr><th>${escapeHtml(t('创建', 'Created'))}</th><th>${escapeHtml(t('通道', 'Transport'))}</th><th>${escapeHtml(t('状态', 'State'))}</th><th>${escapeHtml(t('尝试', 'Attempts'))}</th><th>${escapeHtml(t('错误', 'Error'))}</th><th>${escapeHtml(t('送达', 'Delivered'))}</th><th></th></tr></thead><tbody>${bodyRows}</tbody></table></div>
     ${pages <= 1 ? '' : `<div class="row between mt-12"><span class="fine">${escapeHtml(t(`第 ${page} / ${pages} 页`, `Page ${page} of ${pages}`))}</span><div class="row"><a class="btn btn-ghost btn-small" href="/admin/notifications?${query({ page: Math.max(1, page - 1) })}">${escapeHtml(t('上一页', 'Previous'))}</a><a class="btn btn-ghost btn-small" href="/admin/notifications?${query({ page: Math.min(pages, page + 1) })}">${escapeHtml(t('下一页', 'Next'))}</a></div></div>`}
   </section>`
-  return layout({ title: t('Notification outbox', 'Notification outbox'), viewer, body, config, locale, path: '/admin/notifications', active: 'admin', notice, error })
+  return layout({ title: t('通知发件箱', 'Notification outbox'), viewer, body, config, locale, path: '/admin/notifications', active: 'admin', notice, error })
 }
 
 export function adminSupportPage(input: {
@@ -6029,21 +6029,21 @@ export function scheduleConsolePage(input: {
   const canWrite = role !== 'viewer'
   const canMaintain = role === 'maintainer'
   const iso = (at: number | null): string => (at === null ? 'unknown' : new Date(at).toISOString())
-  const shown = (at: number | null): string => (at === null ? t('unknown', 'unknown') : humanTimeShort(new Date(at).toISOString()))
+  const shown = (at: number | null): string => (at === null ? t('未知', 'unknown') : humanTimeShort(new Date(at).toISOString()))
   const scheduleLine = state.schedule === null
-    ? t('unknown', 'unknown')
+    ? t('未知', 'unknown')
     : state.schedule.kind === 'cron'
       ? `cron <code>${escapeHtml(state.schedule.expression)}</code> · ${escapeHtml(state.schedule.timezone)}`
       : `${escapeHtml(t('间隔', 'interval'))} <code>${escapeHtml(intervalFieldText(state.schedule.everyMs))}</code>`
   const window = state.schedule === null
-    ? t('unknown', 'unknown')
+    ? t('未知', 'unknown')
     : `${state.schedule.startAt === null ? t('不限', 'open') : escapeHtml(new Date(state.schedule.startAt).toISOString())} → ${state.schedule.endAt === null ? t('不限', 'open') : escapeHtml(new Date(state.schedule.endAt).toISOString())}`
   const last = state.last
   const lastLine = last === null
-    ? t('unknown', 'unknown')
+    ? t('未知', 'unknown')
     : `${escapeHtml(last.state)}${last.reason === null ? '' : ` · ${escapeHtml(last.reason)}`}${last.missed === 0 ? '' : ` · ${escapeHtml(t(`跨过 ${last.missed} 次`, `${last.missed} passed over`))}`}`
   const leaseLine = last === null
-    ? t('unknown', 'unknown')
+    ? t('未知', 'unknown')
     : last.leaseHeld
       ? t(`持有中，至 ${shown(last.leaseExpiresAt)}`, `held until ${shown(last.leaseExpiresAt)}`)
       : t(`未被持有（尝试 ${last.attempts} 次）`, `not held (${last.attempts} attempt${last.attempts === 1 ? '' : 's'})`)
@@ -6103,7 +6103,7 @@ export function scheduleConsolePage(input: {
   // state the page printed is re-read from the row rather than trusted from the
   // form.
   const stateLine = state.kind === 'none'
-    ? t('unknown', 'unknown')
+    ? t('未知', 'unknown')
     : state.status === 'paused'
       ? `${t('已暂停', 'paused')}${state.pausedAt === null ? '' : ` · ${t('自 ', 'since ')}${escapeHtml(new Date(state.pausedAt).toISOString())}`}`
       : t('运行中', 'active')
@@ -6138,7 +6138,7 @@ export function scheduleConsolePage(input: {
   }
   const frozenCard = state.last === null ? '' : (() => {
     const snapshot = state.frozen.snapshot
-    const unknownText = t('unknown', 'unknown')
+    const unknownText = t('未知', 'unknown')
     const cell = (attr: string, label: string, value: string | null): string => {
       const machine = snapshot === null ? 'unknown' : (value ?? '—')
       const display = snapshot === null ? unknownText : (value ?? '—')
@@ -6201,7 +6201,7 @@ export function scheduleConsolePage(input: {
         <dt>${escapeHtml(t('租约', 'Lease'))}</dt><dd>${leaseLine}</dd>
         <dt>${escapeHtml(t('投递结果', 'Delivery'))}</dt><dd data-delivery="${escapeHtml(state.delivery)}">${escapeHtml(deliveryLine)}</dd>
         <dt>${escapeHtml(t('有效期', 'Window'))}</dt><dd>${window}</dd>
-        <dt>${escapeHtml(t('时序版本', 'Timing revision'))}</dt><dd>${escapeHtml(state.timingRevision === null ? t('unknown', 'unknown') : String(state.timingRevision))} · ${escapeHtml(state.misfire === null ? t('unknown', 'unknown') : state.misfire)}</dd>
+        <dt>${escapeHtml(t('时序版本', 'Timing revision'))}</dt><dd>${escapeHtml(state.timingRevision === null ? t('未知', 'unknown') : String(state.timingRevision))} · ${escapeHtml(state.misfire === null ? t('未知', 'unknown') : state.misfire)}</dd>
         <dt>${escapeHtml(t('宽限', 'Grace'))}</dt><dd data-schedule-grace="${escapeHtml(state.graceMs === null ? 'none' : String(state.graceMs))}">${escapeHtml(state.graceMs === null ? t('不限（默认）', 'unbounded (default)') : t(`${Math.round(state.graceMs / 60_000)} 分钟`, `${Math.round(state.graceMs / 60_000)} minutes`))}</dd>
         <dt>${escapeHtml(t('每日运行上限', 'Daily run limit'))}</dt><dd data-schedule-daily-runs="${escapeHtml(state.budget.dailyRuns === null ? 'none' : String(state.budget.dailyRuns))}">${escapeHtml(state.budget.dailyRuns === null ? t('不限（默认）', 'unbounded (default)') : t(`${state.budget.dailyRuns} 次`, `${state.budget.dailyRuns} runs`))} · ${escapeHtml(state.budget.runsToday === null ? t('今天已运行 unknown', 'today unknown') : t(`今天已运行 ${state.budget.runsToday} 次`, `${state.budget.runsToday} today`))}${state.budget.remaining === null ? '' : ` · ${escapeHtml(t(`今天还剩 ${state.budget.remaining} 次`, `${state.budget.remaining} left today`))}`}</dd>
       </dl>
