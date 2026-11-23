@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
+import { crc32, deflateRawSync } from 'node:zlib'
 import { readFileSync } from 'node:fs'
 import { promisify } from 'node:util'
 import { fileURLToPath } from 'node:url'
@@ -157,12 +158,16 @@ interface Recorded {
   posts: { title: string; body: string }[]
 }
 
-async function serve(recorded: Recorded, options: { releases?: SlotRelease[]; issues?: SlotIssue[]; runs?: SlotRun[]; date?: string }) {
+async function serve(
+  recorded: Recorded,
+  options: { releases?: SlotRelease[]; issues?: SlotIssue[]; runs?: SlotRun[]; date?: string; planZip?: Buffer },
+) {
   const served = {
     releases: options.releases ?? [],
     issues: options.issues ?? [],
     runs: options.runs ?? [],
     date: options.date ?? 'Wed, 19 Nov 2026 04:10:00 GMT',
+    planZip: options.planZip ?? null,
   }
   return startFakeServer(async (request: IncomingMessage, response: ServerResponse) => {
     const url = String(request.url ?? '')
@@ -172,6 +177,20 @@ async function serve(recorded: Recorded, options: { releases?: SlotRelease[]; is
       recorded.posts.push(payload)
       response.writeHead(201, { 'content-type': 'application/json', ...headers })
       response.end(JSON.stringify({ number: 1200, ...payload }))
+      return
+    }
+    if (url === '/repos/owner/repo/actions/artifacts/7/zip') {
+      response.writeHead(200, { 'content-type': 'application/zip', 'content-length': String(served.planZip?.length ?? 0), ...headers })
+      response.end(served.planZip ?? Buffer.alloc(0))
+      return
+    }
+    if (/^\/repos\/owner\/repo\/actions\/runs\/\d+\/artifacts\?per_page=100$/.test(url)) {
+      const artifacts =
+        served.planZip === null
+          ? []
+          : [{ id: 7, name: 'release-plan', expired: false, size_in_bytes: served.planZip.length, archive_download_url: `${url.split('/actions/')[0]}/actions/artifacts/7/zip` }]
+      response.writeHead(200, { 'content-type': 'application/json', ...headers })
+      response.end(JSON.stringify({ total_count: artifacts.length, artifacts }))
       return
     }
     let body: unknown = null
@@ -285,4 +304,182 @@ test('the workflow runs the driver from the existing watchdog path with the issu
   assert.match(workflow, /issues: write/)
   // The card is the only write: no workflow dispatch, no tag or release call.
   assert.match(workflow, /permissions:\n(?:.|\n)*?contents: read/)
+})
+
+// ------------------- a declined night is not a missed one (#1222)
+
+// The plan the daily-release run publishes as the `release-plan` artifact: the
+// gate's own answer, which the watchdog could not read before #1222.
+const DECLINED_FEATURES = { shouldRelease: false, reason: 'not-enough-features', total: 11, features: 1, fragments: 12 }
+const DECLINED_PRS = { shouldRelease: false, reason: 'not-enough-prs', total: 0, features: 0, fragments: 3 }
+const SAID_RELEASE = { shouldRelease: true, reason: 'ok', total: 12, features: 6, fragments: 2 }
+
+test('a night the planner declined is declined on either count, and opens no card', () => {
+  for (const plan of [DECLINED_FEATURES, DECLINED_PRS]) {
+    const decision = decideSlotWatchdog({
+      now: NOW,
+      releases: [],
+      runs: [run(45006001540, 'schedule', '2026-11-19T02:00:30Z')],
+      issues: [],
+      plan,
+    })
+    assert.equal(decision.action, 'declined')
+    assert.equal(decision.issue, undefined)
+    assert.match(decision.reason, new RegExp(plan.reason))
+    assert.equal(decision.planReason, plan.reason)
+  }
+})
+
+test('a night the planner said release is still a miss, with a card', () => {
+  const decision = decideSlotWatchdog({
+    now: NOW,
+    releases: [],
+    runs: [run(45006001540, 'schedule', '2026-11-19T02:00:30Z')],
+    issues: [],
+    plan: SAID_RELEASE,
+  })
+  assert.equal(decision.action, 'missed')
+  assert.match(decision.issue?.title ?? '', /shipped no release/)
+  assert.match(decision.issue?.body ?? '', /the planner said release/i)
+})
+
+test('a failed run and no run at all are two alarms, told apart in the decision and in the card', () => {
+  const failedRun = { ...run(45006001541, 'schedule', '2026-11-19T02:00:30Z'), conclusion: 'failure' }
+  const failed = decideSlotWatchdog({ now: NOW, releases: [], runs: [failedRun], issues: [] })
+  assert.equal(failed.action, 'missed')
+  assert.equal(failed.alarm, 'workflow-failed')
+  assert.match(failed.issue?.body ?? '', /45006001541/)
+  assert.match(failed.issue?.body ?? '', /failure/)
+  assert.match(failed.issue?.body ?? '', /[Aa]larm/)
+
+  const silent = decideSlotWatchdog({ now: NOW, releases: [], runs: [], issues: [] })
+  assert.equal(silent.action, 'missed')
+  assert.equal(silent.alarm, 'no-run')
+  assert.match(silent.issue?.body ?? '', /did not run for this slot/)
+  assert.match(silent.issue?.body ?? '', /[Aa]larm/)
+  assert.notEqual(silent.issue?.body, failed.issue?.body)
+})
+
+test('a successful run whose plan cannot be read is still a miss, not a decline', () => {
+  const decision = decideSlotWatchdog({
+    now: NOW,
+    releases: [],
+    runs: [run(45006001540, 'schedule', '2026-11-19T02:00:30Z')],
+    issues: [],
+    plan: null,
+  })
+  assert.equal(decision.action, 'missed')
+  assert.equal(decision.alarm, 'plan-unavailable')
+  assert.match(decision.issue?.body ?? '', /45006001540/)
+})
+
+test('a card that already records the slot still wins over a declined plan', () => {
+  const marker = markerFor(SLOT)
+  const decision = decideSlotWatchdog({
+    now: NOW,
+    releases: [],
+    runs: [run(45006001540, 'schedule', '2026-11-19T02:00:30Z')],
+    issues: [{ number: 902, state: 'open', body: `card\n\n${marker}\n` }],
+    plan: DECLINED_FEATURES,
+  })
+  assert.equal(decision.action, 'already-open')
+  assert.equal(decision.existingIssueNumber, 902)
+})
+
+// ------------------------------------------------------- the plan artifact
+
+/**
+ * A real (deflate-compressed) zip, built here so the reader is exercised against
+ * the format GitHub's artifact download answers instead of against a mock.
+ */
+function zipOf(files: Record<string, string>): Buffer {
+  const locals: Buffer[] = []
+  const centrals: Buffer[] = []
+  let offset = 0
+  for (const [name, content] of Object.entries(files)) {
+    const nameBuf = Buffer.from(name)
+    const raw = Buffer.from(content)
+    const data = deflateRawSync(raw)
+    const crc = crc32(raw)
+    const local = Buffer.alloc(30)
+    local.writeUInt32LE(0x04034b50, 0)
+    local.writeUInt16LE(20, 4)
+    local.writeUInt16LE(0x0800, 6)
+    local.writeUInt16LE(8, 8)
+    local.writeUInt32LE(crc, 14)
+    local.writeUInt32LE(data.length, 18)
+    local.writeUInt32LE(raw.length, 22)
+    local.writeUInt16LE(nameBuf.length, 26)
+    local.writeUInt16LE(0, 28)
+    locals.push(local, nameBuf, data)
+
+    const central = Buffer.alloc(46)
+    central.writeUInt32LE(0x02014b50, 0)
+    central.writeUInt16LE(20, 4)
+    central.writeUInt16LE(20, 6)
+    central.writeUInt16LE(0x0800, 8)
+    central.writeUInt16LE(8, 10)
+    central.writeUInt32LE(crc, 16)
+    central.writeUInt32LE(data.length, 20)
+    central.writeUInt32LE(raw.length, 24)
+    central.writeUInt16LE(nameBuf.length, 28)
+    central.writeUInt32LE(offset, 42)
+    centrals.push(central, nameBuf)
+
+    offset += local.length + nameBuf.length + data.length
+  }
+  const centralBuf = Buffer.concat(centrals)
+  const eocd = Buffer.alloc(22)
+  eocd.writeUInt32LE(0x06054b50, 0)
+  eocd.writeUInt16LE(Object.keys(files).length, 8)
+  eocd.writeUInt16LE(Object.keys(files).length, 10)
+  eocd.writeUInt32LE(centralBuf.length, 12)
+  eocd.writeUInt32LE(offset, 16)
+  return Buffer.concat([...locals, centralBuf, eocd])
+}
+
+test('the plan is read out of the artifact zip the daily-release run uploads', async () => {
+  const { planFromArtifactZip } = await import('../scripts/lib/release-slot-watchdog.mjs')
+  const zip = zipOf({ 'release-plan.json': `${JSON.stringify(DECLINED_FEATURES)}\n` })
+  assert.deepEqual(planFromArtifactZip(zip), DECLINED_FEATURES)
+})
+
+test('an artifact zip without a plan file answers null instead of guessing', async () => {
+  const { planFromArtifactZip } = await import('../scripts/lib/release-slot-watchdog.mjs')
+  const zip = zipOf({ 'other.json': '{"shouldRelease":false}' })
+  assert.equal(planFromArtifactZip(zip), null)
+  assert.equal(planFromArtifactZip(Buffer.from('not a zip at all')), null)
+})
+
+test('the driver reads the run\'s release-plan artifact and opens nothing on a declined night', async () => {
+  const recorded: Recorded = { posts: [] }
+  const planZip = zipOf({ 'release-plan.json': `${JSON.stringify(DECLINED_PRS)}\n` })
+  const server = await serve(recorded, {
+    runs: [run(45006001540, 'schedule', '2026-11-19T02:00:30Z')],
+    planZip,
+  })
+  try {
+    const result = await drive(server.url)
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(recorded.posts.length, 0)
+    assert.match(result.stdout, /declined/)
+  } finally {
+    await server.close()
+  }
+})
+
+test('the driver still opens the card when the run failed, and says so in the body', async () => {
+  const recorded: Recorded = { posts: [] }
+  const server = await serve(recorded, {
+    runs: [{ ...run(45006001541, 'schedule', '2026-11-19T02:00:30Z'), conclusion: 'failure' }],
+  })
+  try {
+    const result = await drive(server.url)
+    assert.equal(result.code, 0, result.stderr)
+    assert.equal(recorded.posts.length, 1)
+    assert.match(recorded.posts[0]?.body ?? '', /45006001541/)
+    assert.match(recorded.posts[0]?.body ?? '', /failure/)
+  } finally {
+    await server.close()
+  }
 })
