@@ -413,7 +413,8 @@ PASS at the same tip, with a real `Ran:` command.
 |---|---|
 | `v0.1`–`v0.3` | Login and approval, multi-repo onboarding, quota gateway, per-repo FlyBot teams, roles, work items, plan-first, tip review, release automation |
 | `v0.4` | Durable attempts and lease fencing, decision pauses, strategy bundles, schedules, notification outbox, `GET /api/v1/jobs`, rules/skills, layered budgets, flight-deck console (shipped in `v0.4.5`) |
-| `v0.5` | Foundation renewal: split the four monoliths behind seams, architecture gates, a dialect port, lease/query/maintenance visibility, an audit hash chain and a release fault matrix (#1224–#1236) |
+| `v0.5.0` | Owner-authorized release of the accumulated `0.4.1`–`0.4.5` work and the roadmap (2026-11-23) |
+| `v0.5.x` | Foundation renewal: split the four monoliths behind seams, architecture gates, a dialect port, lease/query/maintenance visibility, an audit hash chain and a release fault matrix (#1224–#1236) |
 | `v0.6` | Owner loop and openness: command palette, cross-device preferences, i18n/a11y gates, `SourceProvider` and `AgentRunner` ports, OpenAPI 3.1 (#1237–#1243) |
 | `v1.0` | Postgres and a worker pool (#387), a second source provider and runtime, a second T3 identity, merge queue and signing, audit retention, external review |
 
