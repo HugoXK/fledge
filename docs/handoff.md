@@ -71,6 +71,7 @@ not committed; it lives next to the working copy as `SESSION_HANDOFF.md`.
 
 ### Verified
 
+- `npm run check` — green at the `v0.5.0` release tip (lint, typecheck, tests, build).
 - `ci-ok` is green on `main` at the `v0.5.0` release commit.
 - `node scripts/verify-release.mjs --version 0.5.0` reports
   `release-status: ok` for the plan, branch, pull request, annotated tag, image,
