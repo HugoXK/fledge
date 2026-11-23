@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { closeSync, copyFileSync, existsSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, writeSync } from 'node:fs'
+import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -97,9 +97,12 @@ function makeDb(dbPath: string, options: { padBytes?: number } = {}): void {
 // and leaves it a valid SQLite file. Only the bytes stop being the bytes the
 // manifest named.
 function flipByte(path: string): void {
-  const offset = Math.floor(statSync(path).size / 2)
+  // Size from the descriptor, not a `statSync` before the open: a stat-then-open
+  // is a file-system race (`js/file-system-race`), and the offset only has to be
+  // inside the copy, not at a size read before it was opened.
   const fd = openSync(path, 'r+')
   try {
+    const offset = Math.floor(fstatSync(fd).size / 2)
     const byte = Buffer.alloc(1)
     readSync(fd, byte, 0, 1, offset)
     byte[0] = (byte[0] ?? 0) ^ 0xff
