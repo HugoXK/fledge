@@ -112,6 +112,25 @@ function flipByte(path: string): void {
   }
 }
 
+// Rows inserted and then dropped return their pages to SQLite's free list; a WAL
+// checkpoint folds them into the database file so `freelist_count` and
+// `page_count` describe a file that only `VACUUM` can actually shrink. Without
+// this the real-run fixture is inserts only, and `VACUUM` could be deleted from
+// the CLI without a single case noticing (verdict `6031100821`).
+function makeFragmentedDb(dbPath: string): void {
+  makeDb(dbPath)
+  const db = new DatabaseSync(dbPath)
+  try {
+    db.exec('CREATE TABLE scratch (id INTEGER PRIMARY KEY, blob BLOB)')
+    const insert = db.prepare('INSERT INTO scratch (blob) VALUES (?)')
+    for (let row = 0; row < 240; row += 1) insert.run(Buffer.alloc(4096, row % 251))
+    db.exec('DROP TABLE scratch')
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)')
+  } finally {
+    db.close()
+  }
+}
+
 // `fledge-<ISO with : and . replaced>.db` — the writer's own file-name stamp
 // (`scripts/backup.mjs`), which is how `readBackupStatus` dates a copy.
 function stampFor(date: Date): string {
@@ -267,11 +286,16 @@ test('#1261 a second writer holding the lock is refused with db-busy inside the 
   }
 })
 
-test('#1261 a real run with a fresh, matching copy executes the plan and writes exactly one audit row', async () => {
+test('#1261 a real run with a fresh, matching copy executes the plan — VACUUM returns the free pages, ANALYZE writes stat1 — and writes exactly one audit row', async () => {
   const dir = mkdtempSync(join(tmpdir(), 'db-maintenance-real-'))
   try {
     const dbPath = join(dir, 'fledge.db')
-    makeDb(dbPath)
+    // Deleted rows, checkpointed: this file has free pages, so `VACUUM` has
+    // something to return and the two counters below can fall. An inserts-only
+    // fixture leaves `freelist_count` at 0 and would pass with `VACUUM` removed.
+    makeFragmentedDb(dbPath)
+    const before = countersOf(dbPath)
+    assert.ok(before.freelistCount > 0, `the fixture must have free pages, got freelist_count=${String(before.freelistCount)}`)
     const backupDir = join(dir, 'backups')
     const copyPath = await makeBackup(backupDir, dbPath, NOW)
     const reportPath = join(dir, 'report.json')
@@ -294,6 +318,17 @@ test('#1261 a real run with a fresh, matching copy executes the plan and writes 
     // A real run is the one place `sqlite_stat1` gains a row: `ANALYZE` runs.
     const after = countersOf(dbPath)
     assert.ok(after.stat1Rows > 0)
+    // `VACUUM` rewrites the file: the free pages go back and the page count
+    // falls. Asserting only `stat1Rows` proves `ANALYZE` and says nothing about
+    // the step that cannot be undone.
+    assert.ok(
+      after.freelistCount < before.freelistCount,
+      `VACUUM did not return free pages: freelist_count ${String(before.freelistCount)} -> ${String(after.freelistCount)}`,
+    )
+    assert.ok(
+      after.pageCount < before.pageCount,
+      `VACUUM did not shrink the file: page_count ${String(before.pageCount)} -> ${String(after.pageCount)}`,
+    )
 
     const report = readReport(reportPath)
     assert.equal(report.mode, 'real')
@@ -301,6 +336,11 @@ test('#1261 a real run with a fresh, matching copy executes the plan and writes 
     assert.equal(report.refusal, null)
     assert.notEqual(report.after, null)
     assert.equal((report.backup as { manifest: string }).manifest, 'matches')
+    // The plan the report carries is the record of what ran: every step marked
+    // `executes: true`, and the three names in the order the tool runs them.
+    const steps = (report.plan as { steps: { name: string; executes: boolean }[] }).steps
+    assert.deepEqual(steps.map((step) => step.name), ['wal-checkpoint', 'analyze', 'vacuum'])
+    assert.ok(steps.every((step) => step.executes), `a step was not executed: ${JSON.stringify(steps)}`)
   } finally {
     rmSync(dir, { recursive: true, force: true })
   }

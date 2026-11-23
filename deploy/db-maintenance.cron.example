@@ -26,5 +26,10 @@
 #
 # The copy is chosen here and confirmed by the tool: `--backup` must name the
 # newest copy readBackupStatus reports, so a backup that lands between `ls` and
-# the run makes this line refuse rather than vacate an older copy.
-30 2 * * 0 cd /opt/fledge && /usr/bin/npm run db:maintenance -- --backup "$(ls -t "${BACKUP_DIR:-/data/backups}"/fledge-*.db | head -1)" >> /var/log/fledge/db-maintenance.log 2>&1
+# the run makes this line refuse rather than vacate an older copy. "Copy" means
+# both names the writer produces — `fledge-<stamp>.db` and, once a backup key is
+# configured, `fledge-<stamp>.db.enc`. The glob below matches both, and therefore
+# also catches their sidecars (`…db.json`, `…db-wal`, `…db-shm`), which are not
+# copies: the filter drops them. `2>/dev/null` keeps a plaintext-only or an
+# encrypted-only directory from failing the whole substitution.
+30 2 * * 0 cd /opt/fledge && /usr/bin/npm run db:maintenance -- --backup "$(ls -t "${BACKUP_DIR:-/data/backups}"/fledge-*.db* 2>/dev/null | grep -Ev '(\.json|-wal|-shm)$' | head -1)" >> /var/log/fledge/db-maintenance.log 2>&1
