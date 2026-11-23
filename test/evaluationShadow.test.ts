@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawnSync } from 'node:child_process'
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
@@ -15,7 +17,8 @@ import {
   type ShadowRecordedAttempt,
   type ShadowVersion,
 } from '../src/lib/evaluation.js'
-import { createMockShadowHost } from '../src/jobs/shadow.js'
+import { parseVerification } from '../src/lib/verification.js'
+import { createMockShadowHost, observedVerification } from '../src/jobs/shadow.js'
 
 // #372: the held-out harness. These tests pin the four properties the card asks
 // for — a fixture produces a shadow pull request that is never merged, a version
@@ -25,6 +28,7 @@ import { createMockShadowHost } from '../src/jobs/shadow.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
 const fixturePath = join(root, 'test/fixtures/shadow/holdout.json')
+const scriptPath = join(root, 'scripts/evolution-shadow.ts')
 
 function fixtureSet() {
   return loadFixtureSet(readFileSync(fixturePath, 'utf8'))
@@ -198,4 +202,127 @@ test('compareVersions reports an interval that excludes zero when every shared t
   assert.equal(comparison.sharedTasks, 2)
   assert.ok(comparison.interval[0] > 0 && comparison.interval[1] <= 1, 'the interval excludes zero')
   assert.equal(comparison.differs, true)
+})
+
+/** Run the checked-in CLI the way an operator does, in a child process. */
+function shadowCli(args: string[]): ReturnType<typeof spawnSync> {
+  return spawnSync(process.execPath, ['--import', 'tsx', scriptPath, ...args], {
+    cwd: root,
+    encoding: 'utf8',
+    env: { ...process.env },
+    timeout: 180_000,
+  })
+}
+
+function readJson<T>(path: string): T {
+  return JSON.parse(readFileSync(path, 'utf8')) as T
+}
+
+// #1128: the bundled reference recorder must publish what it observed. The mock
+// opens a pull request and looks at no checks, so an attempt is `missing`
+// ("recorded, not verified") rather than `none` ("nothing was recorded").
+const PR_READ_ONLY_KEYS = ['sha', 'prState', 'draft', 'mergeableState', 'combinedStatus', 'reviews']
+
+test('the bundled recorder records an attempt with no check runs as missing, not none', async () => {
+  const set = fixtureSet()
+  const host = createMockShadowHost()
+  // Acceptance 5: the boundary that makes an observation safe is unchanged.
+  assert.deepEqual(host.capabilities, { push: false, merge: false, liveAccess: false, tokens: false })
+  const recorded: ShadowRecordedAttempt[] = []
+  const run = await runShadow(set, VERSIONS, host, {
+    onAttempt: ({ fixture, version, attempt }) => {
+      recorded.push({ fixtureId: fixture.id, version: version.id, ...attempt })
+    },
+  })
+  assert.equal(run.ok, true)
+  if (!run.ok) return
+  for (const task of run.report.tasks) {
+    assert.equal(task.evidence, 'missing', `${task.version}/${task.fixtureId} ran and observed no check runs`)
+  }
+  for (const metrics of run.report.versions) {
+    assert.equal(metrics.evidence.missing, set.fixtures.length)
+    assert.equal(metrics.evidence.none, 0)
+  }
+  // Acceptance 3 and 4: the record carries a snapshot the same parser a job uses
+  // accepts, it says not-green, and it invents nothing only a pull-request read
+  // could have produced.
+  assert.equal(recorded.length, set.fixtures.length * VERSIONS.length)
+  for (const attempt of recorded) {
+    assert.equal(typeof attempt.verificationJson, 'string')
+    const parsed = parseVerification(attempt.verificationJson)
+    assert.ok(parsed !== null, 'the recorder publishes a snapshot parseVerification accepts')
+    assert.equal(parsed.ok, false)
+    const snapshot = JSON.parse(String(attempt.verificationJson)) as Record<string, unknown>
+    for (const key of PR_READ_ONLY_KEYS) {
+      assert.equal(key in snapshot, false, `the snapshot carries ${key}, which only a pull-request read could produce`)
+    }
+    if ('checks' in snapshot) {
+      const checks = snapshot.checks as { total?: unknown; green?: unknown }
+      assert.equal(checks.total, 0)
+      assert.equal(checks.green, 0)
+    }
+    assert.equal(attempt.merged, false)
+  }
+})
+
+test('the recorded evidence replays through --attempts with the same counts', () => {
+  const set = fixtureSet()
+  const dir = mkdtempSync(join(tmpdir(), 'shadow-1128-'))
+  try {
+    const recordPath = join(dir, 'attempts.json')
+    const reportPath = join(dir, 'report.json')
+    const replayPath = join(dir, 'replay.json')
+    // Acceptance 2: both artifacts come from the same command an operator runs.
+    const record = shadowCli(['--shadow', fixturePath, '--record', recordPath, '--out', reportPath])
+    assert.equal(record.status, 0, `recording failed: ${record.stderr}`)
+    const written = readJson<{ host: { name: string; signature: string }; attempts: ShadowRecordedAttempt[] }>(recordPath)
+    const recordedReport = readJson<{ runner: { name: string; signature: string }; versions: Array<{ evidence: Record<string, number> }>; tasks: Array<{ evidence: string }> }>(reportPath)
+    assert.equal(recordedReport.runner.name, 'mock')
+    assert.equal(written.host.signature, recordedReport.runner.signature)
+    assert.deepEqual(recordedReport.versions.map((version) => version.evidence), [{ verified: 0, missing: set.fixtures.length, none: 0 }])
+
+    const replay = shadowCli(['--shadow', fixturePath, '--attempts', recordPath, '--out', replayPath])
+    assert.equal(replay.status, 0, `replay failed: ${replay.stderr}`)
+    const replayed = readJson<{ versions: Array<{ evidence: Record<string, number> }>; tasks: Array<{ evidence: string }> }>(replayPath)
+    assert.deepEqual(
+      replayed.versions.map((version) => version.evidence),
+      recordedReport.versions.map((version) => version.evidence),
+    )
+    assert.deepEqual(
+      replayed.tasks.map((task) => task.evidence),
+      recordedReport.tasks.map((task) => task.evidence),
+    )
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a refusal fixture that opened nothing keeps its evidence unknown', async () => {
+  const base = fixtureSet()
+  const source = base.fixtures[0]
+  assert.ok(source !== undefined)
+  // Acceptance 6: nothing was there to verify, so the recorder publishes no
+  // snapshot and the attempt stays `none` — the fix is not a blanket rewrite.
+  const set = { ...base, fixtures: [{ ...source, id: 'refusal-opened-nothing', expected: 'refusal' as const }] }
+  const version = VERSIONS[0]
+  assert.ok(version !== undefined)
+  const nothingOpened: ShadowHost = {
+    name: 'scripted-refusal',
+    signature: 'sha256:2222222222222222222222222222222222222222222222222222222222222222',
+    capabilities: { push: false, merge: false, liveAccess: false, tokens: false },
+    run: () => ({
+      pullRequest: null,
+      merged: false,
+      reviewScore: null,
+      verificationJson: observedVerification(null),
+      costUsd: 0,
+      durationMs: 0,
+    }),
+  }
+  assert.equal(observedVerification(null), null)
+  const run = await runShadow(set, [version], nothingOpened)
+  assert.equal(run.ok, true)
+  if (!run.ok) return
+  assert.equal(run.report.tasks[0]?.evidence, 'none')
+  assert.equal(run.report.versions[0]?.evidence.none, 1)
 })
