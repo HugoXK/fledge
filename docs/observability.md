@@ -174,6 +174,22 @@ fingerprint; `deleteRepo` removes the repository's rows with it.
   (`RETENTION_PRODUCT_EVENTS_DAYS`, default 730) and `product_push:` markers age
   out in 30 days, so a backup cannot carry the history past the operator's window.
 
+## Incident bundle (#1234)
+
+`GET /admin/incident/<window>` (superadmin only) returns a read-only JSON bundle;
+`?format=markdown` returns the same artifact as markdown. The window is `1h`
+through `24h`; anything else is a 400. The bundle carries the release surface,
+build commit and time, schema version, user/repository/job counts, the
+`/readyz`-style database, instance, clock and router readings, open alerts,
+recent job events, audit rows, the latest deployment and a config fingerprint of
+**names only**. Every string is passed through `redact()` and capped; the bundle
+contains no request body, query, cookie, token, email or host path.
+
+`npm run incident:bundle -- --db <copy.db> [--window 6h] [--format markdown]`
+prints the same artifact from a copy. It refuses the configured `DB_PATH` or
+`DATA_DIR`, because the admin route is the live export; the copy is the safe
+path for a support conversation.
+
 ## Alert rules and SLO report
 
 Prometheus alert rules live in [`deploy/prometheus/fledge-alerts.yml`](../deploy/prometheus/fledge-alerts.yml).

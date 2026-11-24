@@ -1119,6 +1119,7 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
     assert.match(page, /Delivery efficiency/)
     // #807: the automation card is on the same page as the numbers it reads.
     assert.match(page, /Automation health/)
+    assert.match(page, /admin\/incident\/1h/)
     assert.match(page, /4\.5 s/)
     assert.match(page, /Mean over 3 dispatches/)
     assert.match(page, /Daily trend/)

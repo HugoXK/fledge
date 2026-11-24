@@ -1808,6 +1808,16 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
+### Incident bundle (#1234)
+
+`src/lib/incident.ts` is the one builder for the admin route and the CLI. It
+reads a bounded window (1h through 24h), redacts and caps every string, maps the
+open alerts, the recent `job_events` and `audit_log` rows, the latest deployment
+and the instance states, and returns the config as names only. The route
+`GET /admin/incident/:window` is superadmin-only and exports JSON or markdown;
+the CLI requires a copy and refuses the configured live DB path. Neither path
+writes a row, opens a request body or returns a token, email or host path.
+
 ### Scheduled work, continuity and work items
 
 Work items are a tracking board, not a second scheduler lock. No work-item state
