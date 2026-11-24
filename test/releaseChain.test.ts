@@ -114,6 +114,17 @@ test('the release chain is verified after the release exists and a failure fails
   assert.ok(indexOfStep('Create the GitHub release') < indexOfStep('Verify the release chain'), 'verification runs after the release is created')
 })
 
+// #1218: the digest the run built is the one value a fragment author cannot
+// choose, and the publish job already holds it. `--local-image-digest` and the
+// comparison underneath it exist — the wiring was missing, so the publish path
+// verified a body against itself and an absent digest read green as `skipped`.
+test('the verify step compares the digest this run published, and an absent one is red', () => {
+  const verify = step('Verify the release chain')
+  assert.match(verify.body, /DIGEST: \$\{\{ steps\.push\.outputs\.digest \}\}/, 'the step reads the digest the push step published')
+  assert.match(verify.body, /--local-image-digest "\$\{DIGEST\}"/, 'the run digest is what is compared, never a value read back from the body')
+  assert.match(verify.body, /--require-local-image-digest/, 'an absent digest is red on the publish path, never skipped')
+})
+
 test('every publish step that writes is gated on the guard', () => {
   for (const name of [
     'Build the image',

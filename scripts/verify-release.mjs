@@ -57,15 +57,24 @@ function readPackageVersion(path) {
 // The release body is the durable record the publish job writes; the three lines
 // are the only place the digest, the SBOM and the attestation are readable
 // without a registry credential.
+//
+// #1218: they are read as the tail block the publish job appends, not as the
+// first line matching anywhere in the body. The body is assembled from notes
+// that carry contributor-written changelog fragments, and `/^Image:/m` ends a
+// line at `\r`, `\u2028` and `\u2029` as well as at `\n`, so a fragment could
+// supply the line this verifier accepted and name an image this run never
+// pushed. The three lines only mean something together, as the last thing in the
+// body, which is the shape `release.yml` writes and nothing can append past.
+const CHAIN_TAIL =
+  /(?:^|\n)Image:[ \t]*(\S+)@(sha256:[0-9a-f]{64})[ \t]*\nSBOM:[ \t]*(\S+)[ \t]*\nAttestation:[ \t]*(sha256:[0-9a-f]{64})[ \t]*\s*$/
+
 export function publishedChainFromBody(body) {
-  const text = String(body ?? '')
-  const image = /^Image:\s*(\S+)@(sha256:[0-9a-f]{64})\s*$/m.exec(text)
-  const sbom = /^SBOM:\s*(\S+)\s*$/m.exec(text)
-  const attestation = /^Attestation:\s*(sha256:[0-9a-f]{64})\s*$/m.exec(text)
+  const found = CHAIN_TAIL.exec(String(body ?? ''))
+  if (found === null) return { image: null, sbom: null, attestation: null }
   return {
-    image: image === null ? null : { tag: image[1] ?? '', digest: image[2] ?? '' },
-    sbom: sbom === null ? null : { present: true, name: sbom[1] ?? '' },
-    attestation: attestation === null ? null : { present: true, subjectDigest: attestation[1] ?? '' },
+    image: { tag: found[1] ?? '', digest: found[2] ?? '' },
+    sbom: { present: true, name: found[3] ?? '' },
+    attestation: { present: true, subjectDigest: found[4] ?? '' },
   }
 }
 
@@ -214,7 +223,7 @@ function repoFromEnvironment() {
 
 async function main() {
   if (has('--help')) {
-    console.log('node scripts/verify-release.mjs --version X.Y.Z [--base-url URL] [--fixtures FILE] [--deployment FILE] [--local-image-digest sha256:…] [--write FILE] [--json]')
+    console.log('node scripts/verify-release.mjs --version X.Y.Z [--base-url URL] [--fixtures FILE] [--deployment FILE] [--local-image-digest sha256:…] [--require-local-image-digest] [--write FILE] [--json]')
     return 0
   }
   const fixtures = argument('--fixtures')
@@ -223,6 +232,11 @@ async function main() {
   const deploymentPath = argument('--deployment')
   const write = argument('--write')
   const localDigest = argument('--local-image-digest')
+  // #1218: the publish path holds the digest this run built, so a run that
+  // reaches the verifier without one has lost the only value a contributor
+  // cannot choose. `skipped` is the right answer for an operator replaying a
+  // recorded chain and the wrong one here, so the caller says which it is.
+  const requireLocalDigest = has('--require-local-image-digest')
   // A present-but-empty value is not "nothing to compare": the documented
   // recording command substitutes the output of `docker image inspect`, which is
   // empty when the image carries no RepoDigests or the inspect fails. Passing
@@ -260,22 +274,26 @@ async function main() {
       packageVersion: packagePath === '' ? String(payload.packageVersion ?? local.version) : local.version,
       baseUrl: baseUrl === '' ? String(payload.baseUrl ?? '') : baseUrl,
       localImageDigest: localDigest === '' ? String(payload.localImageDigest ?? '') : localDigest,
+      requireLocalImageDigest: requireLocalDigest,
     }
   } else {
     const repo = argument('--repo') || repoFromEnvironment()
     const token = String(process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? '')
     if (repo === '') throw new UsageError('no repository: set GITHUB_REPOSITORY or pass --repo owner/name')
     if (token === '') throw new UsageError('no token: set GITHUB_TOKEN or pass --fixtures to replay a recorded chain')
-    input = await collect({
-      version,
-      repo,
-      token,
-      baseUrl,
-      packageVersion: local.version,
-      fetchImpl: fetch,
-      metricsToken: String(process.env.METRICS_TOKEN ?? ''),
-      localImageDigest: localDigest,
-    })
+    input = {
+      ...(await collect({
+        version,
+        repo,
+        token,
+        baseUrl,
+        packageVersion: local.version,
+        fetchImpl: fetch,
+        metricsToken: String(process.env.METRICS_TOKEN ?? ''),
+        localImageDigest: localDigest,
+      })),
+      requireLocalImageDigest: requireLocalDigest,
+    }
   }
 
   let status = evaluateReleaseStatus(input)

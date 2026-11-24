@@ -177,9 +177,18 @@ function imageLink(links, version, image) {
 // check stays read-only and shells out to nothing. Absent means "not compared",
 // which is skipped rather than red; unreadable, or readable and different from
 // the attested digest, is red.
-function localLink(links, localImageDigest, image) {
+//
+// #1218: `skipped` is only honest where the caller has no digest to offer. The
+// publish path holds the digest it just pushed, so a caller that requires one
+// and passes none has lost the only value a release body cannot invent — that is
+// `missing`, not a pass.
+function localLink(links, localImageDigest, image, requireLocalImageDigest) {
   const local = text(localImageDigest)
   if (local === '') {
+    if (requireLocalImageDigest === true) {
+      bad(links, 'local', 'missing', 'this path requires the digest it published, and none was given, so the image it would run was not compared')
+      return
+    }
     links.push(link('local', 'skipped', 'no local image digest was given, so the image this host would start was not compared'))
     return
   }
@@ -298,6 +307,9 @@ export function evaluateReleaseStatus(input = {}) {
   // as a field of the status so a written snapshot can carry it into the boot
   // check, which has no network and no docker.
   const localImageDigest = text(input?.localImageDigest)
+  // #1218: the publish path requires the digest it just pushed, so an absent one
+  // is a red link there. A recorded snapshot does not, and keeps `skipped`.
+  const requireLocalImageDigest = input?.requireLocalImageDigest === true
 
   // A chain for a version nobody named cannot be judged; saying so is better
   // than judging it green against an empty string.
@@ -313,7 +325,7 @@ export function evaluateReleaseStatus(input = {}) {
   pullLink(links, version, input?.pull ?? null, input?.branch ?? null)
   tagLink(links, version, input?.tag ?? null, input?.pull ?? null)
   imageLink(links, version, input?.image ?? null)
-  localLink(links, localImageDigest, input?.image ?? null)
+  localLink(links, localImageDigest, input?.image ?? null, requireLocalImageDigest)
   sbomLink(links, version, input?.sbom ?? null)
   attestationLink(links, version, input?.attestation ?? null, input?.image ?? null)
   releaseLink(links, version, input?.release ?? null)
