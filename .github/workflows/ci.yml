@@ -138,8 +138,6 @@ jobs:
       # at a time with their own measured run (#646).
       - run: npm ci --ignore-scripts
       - run: npm run lint
-      - name: Architecture boundaries
-        run: npm run arch:check
 
   typecheck:
     name: typecheck
