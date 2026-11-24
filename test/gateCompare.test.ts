@@ -119,6 +119,44 @@ const MINI = [
 
 const mini = (edit: (text: string) => string): string => edit(MINI)
 
+const STEP_BASE = MINI.replace(
+  '    steps:\n      - run: npm run build\n',
+  '    steps:\n      - name: one\n        run: echo one\n      - name: two\n        run: echo two\n',
+)
+
+test('a required job may gain a step; removing, changing or reordering a base step is refused', () => {
+  const added = STEP_BASE.replace('      - name: two', '      - name: three\n        run: echo three\n      - name: two')
+  assert.notEqual(added, STEP_BASE)
+  assert.equal(compareGate({ base: STEP_BASE, head: added, required: ['build'] }).ok, true, 'a new step is allowed')
+
+  const removed = STEP_BASE.replace('      - name: two\n        run: echo two\n', '')
+  assert.notEqual(removed, STEP_BASE)
+  const removedResult = compareGate({ base: STEP_BASE, head: removed, required: ['build'] })
+  assert.equal(removedResult.ok, false, 'a removed base step must not pass')
+  assert.match(removedResult.problems.join('\n'), /`steps:`/)
+
+  const changed = STEP_BASE.replace('        run: echo two', '        run: echo changed')
+  const changedResult = compareGate({ base: STEP_BASE, head: changed, required: ['build'] })
+  assert.equal(changedResult.ok, false, 'a changed base step must not pass')
+  assert.match(changedResult.problems.join('\n'), /`steps:`/)
+
+  const reordered = STEP_BASE.replace(
+    '      - name: one\n        run: echo one\n      - name: two\n        run: echo two\n',
+    '      - name: two\n        run: echo two\n      - name: one\n        run: echo one\n',
+  )
+  const reorderedResult = compareGate({ base: STEP_BASE, head: reordered, required: ['build'] })
+  assert.equal(reorderedResult.ok, false, 'reordering the base steps must not pass')
+  assert.match(reorderedResult.problems.join('\n'), /`steps:`/)
+
+  // The aggregate may also gain a step; its base steps (the evaluator and the
+  // `path: base` checkout) must survive.
+  const aggregateAdded = MINI.replace(
+    '      - run: node base/scripts/ci-ok.mjs\n',
+    '      - name: extra\n        run: echo extra\n      - run: node base/scripts/ci-ok.mjs\n',
+  )
+  assert.equal(compareGate({ base: MINI, head: aggregateAdded, required: ['build'] }).ok, true)
+})
+
 test('the checked-in workflow is its own base, so an untouched pull request is allowed', () => {
   const result = compareGate({ base: ci, head: ci })
   assert.equal(result.ok, true, result.problems.join('\n'))
@@ -133,7 +171,7 @@ test('acceptance 1: a required job stubbed to `run: true` is refused, naming the
   assert.equal(result.ok, false)
   const text = result.problems.join('\n')
   assert.match(text, /`mock-check`/, 'the refusal names the required job')
-  assert.match(text, /`run:`/, 'the refusal names the differing body key')
+  assert.match(text, /`steps:`/, 'the refusal names the changed step list')
   assert.equal(result.lines.length, 0, 'a refusal carries no informational line that could be read as a pass')
 })
 
@@ -162,7 +200,7 @@ test('acceptance 3a: a step-level `continue-on-error: true` is refused, and the 
   const head = stepLevelContinueOnError()
   const result = compareGate({ base: ci, head })
   assert.equal(result.ok, false)
-  assert.match(result.problems.join('\n'), /`continue-on-error:`/)
+  assert.match(result.problems.join('\n'), /`steps:`/)
   assert.match(result.problems.join('\n'), /`mock-check`/, 'the key is named together with the job it would hide')
 })
 

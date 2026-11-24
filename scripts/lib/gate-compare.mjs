@@ -8,7 +8,11 @@
 // branch's copy, inside the publisher that runs on `workflow_run` (so the code
 // doing the comparison always comes from the default branch), and refuses every
 // required job whose definition differs. Every key of the job is compared, not
-// only `run:`/`uses:`, because any key can decide a conclusion.
+// only `run:`/`uses:`, because any key can decide a conclusion. The one shape
+// that is allowed to grow is `steps:`: a new step cannot remove or change a
+// base step, so the comparator requires every base step to survive, in order,
+// and lets a head insert another one (#1270). A removed, changed or reordered
+// base step still refuses.
 //
 // Only `timeout-minutes:` is allowlisted, and only because it cannot flip a
 // conclusion: a shorter timeout fails a job, a longer one lets it finish.
@@ -271,6 +275,56 @@ function isLiteralName(value) {
 }
 
 /**
+ * The individual list items under a job's `steps:`, each as its original lines.
+ * The first `- ` line after `steps:` sets the list's indentation; a nested list
+ * item inside a step is deeper, so it stays in that step's block.
+ */
+function stepBlocks(job) {
+  const key = job.keys.get('steps')
+  if (key === undefined) return []
+  const lines = key.lines.slice(1)
+  const blocks = []
+  let current = null
+  let itemIndent = null
+  for (const line of lines) {
+    const item = /^([ \t]*)-[ \t]+(.*)$/.exec(line)
+    if (item !== null) {
+      const indent = item[1].length
+      if (itemIndent === null) itemIndent = indent
+      if (indent === itemIndent) {
+        if (current !== null) blocks.push(current)
+        current = [line]
+        continue
+      }
+    }
+    if (current !== null) current.push(line)
+  }
+  if (current !== null) blocks.push(current)
+  return blocks
+}
+
+/** A step compared by content, not by how deeply it happens to be indented. */
+function normalizeStep(block) {
+  return block.map((line) => line.trim()).join('\n')
+}
+
+/**
+ * Every base step must still appear, unchanged and in the same order, in the
+ * head. A new step may be inserted anywhere; a removed, changed or reordered
+ * base step is not a new step and is refused.
+ */
+function stepsPreserved(baseJob, headJob) {
+  const head = stepBlocks(headJob).map(normalizeStep)
+  let cursor = 0
+  for (const step of stepBlocks(baseJob).map(normalizeStep)) {
+    const found = head.indexOf(step, cursor)
+    if (found === -1) return false
+    cursor = found + 1
+  }
+  return true
+}
+
+/**
  * Compare the head's workflow with the base tree's. `ok` is true only when every
  * top-level block other than `jobs:` matches, every required job is defined
  * identically (allowlisted keys aside), every required display name belongs to
@@ -337,6 +391,15 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
       const headKey = headJob.keys.get(name)
       if (headKey === undefined) {
         refuse(`required job \`${id}\` loses \`${name}:\` in the pull request's ${GATE_COMPARE_FILE}${DOOR}`)
+        continue
+      }
+      // `steps:` may grow, but every base step has to survive unchanged and in
+      // order. This is the one key where an addition is a strengthening, not a
+      // substitution; a removed, changed or reordered base step still refuses.
+      if (name === 'steps') {
+        if (!stepsPreserved(baseJob, headJob)) {
+          refuse(`required job \`${id}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (a new step is allowed; a removed, changed or reordered base step is not)`)
+        }
         continue
       }
       // The aggregate may wait on more than the base did, but never on less:

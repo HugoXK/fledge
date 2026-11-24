@@ -488,7 +488,11 @@ match, and `name:` is *not* allowlisted: it is the value the publisher matches
 against the required list, so a required display name belongs to exactly one job,
 and a second job claiming it is refused as a collision (a matrix-shaped name such
 as `test (${{ matrix.node }})` is reserved by its literal prefix). Only
-`timeout-minutes:` is allowlisted, because it cannot flip a conclusion. The
+`timeout-minutes:` is allowlisted, because it cannot flip a conclusion. `steps:`
+is the one key that may grow: every base step must still appear unchanged and in
+the same order, so a new step is allowed, while a removed, changed or reordered
+base step is refused (#1270). The aggregate may also gain a step; its evaluator
+step and `path: base` checkout still have to survive. The
 `ci-ok` job's `needs` may grow but not shrink, and its step must still be exactly
 `node base/scripts/ci-ok.mjs` with the gate checked out under `path: base`. The
 comparator is `scripts/lib/gate-compare.mjs`, and it fails closed: a duplicated
