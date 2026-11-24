@@ -66,7 +66,7 @@ function withJob(text: string, id: string, body: string[]): string {
 
 const STUB_ROWS = ['    runs-on: ubuntu-latest', '    steps:', '      - run: true']
 
-// A head that renames the aggregate away from `ci-ok`. `ci-ok` is not in
+// A head that renames the aggregate away from `ci-ok-head`. The aggregate is not in
 // `REQUIRED_JOBS` — it is the aggregate, looked up on its own — so moving the id
 // is the shape that used to lose the `needs:`/evaluator/`path: base` checks.
 function aggregateRename(id: string): string {
@@ -148,7 +148,7 @@ test('the checked-in workflow is its own base, so an untouched pull request is a
   assert.equal(result.lines.length, 1)
   assert.match(result.lines[0]!, /gate-compare/)
   assert.match(result.lines[0]!, new RegExp(String(REQUIRED_JOBS.length)))
-  assert.match(result.lines[0]!, /`ci-ok` runs `node base\/scripts\/ci-ok\.mjs`/, 'the line names the id it checked')
+  assert.match(result.lines[0]!, /`ci-ok-head` runs `node base\/scripts\/ci-ok\.mjs`/, 'the line names the id it checked')
 })
 
 test('the accepted aggregate ids are explicit data, and the publisher reads the same two names', async () => {
@@ -157,7 +157,7 @@ test('the accepted aggregate ids are explicit data, and the publisher reads the 
   // acceptance cases below.
   const module: Record<string, unknown> = await import('../scripts/lib/gate-compare.mjs')
   assert.deepEqual(module.AGGREGATE_JOBS, ['ci-ok-head', 'ci-ok'], 'the transition set is exact: nothing outside it may pass')
-  assert.equal(AGGREGATE_JOB, 'ci-ok', 'the base tree declares `ci-ok` today; #1273 moves it to `ci-ok-head`')
+  assert.equal(AGGREGATE_JOB, 'ci-ok-head', 'the base tree declares `ci-ok-head` after #1273 renamed the in-run aggregate')
   const publisher = read('scripts/lib/ci-ok-run.mjs')
   assert.match(publisher, /export const HEAD_AGGREGATE_JOB = 'ci-ok-head'/, 'the publisher and the comparator agree on the new id')
   assert.match(publisher, /export const REQUIRED_CHECK = 'ci-ok'/, 'and on the old one')
@@ -177,13 +177,13 @@ test('acceptance 2: an aggregate step that no longer runs the base evaluator is 
   assert.equal(result.ok, false)
   const text = result.problems.join('\n')
   assert.match(text, new RegExp(`does not run the base evaluator \`${REQUIRED_EVALUATOR.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\``))
-  assert.match(text, /`ci-ok`/)
+  assert.match(text, /`ci-ok-head`/)
 })
 
 test('acceptance 3: a head that adds its own job and waits on it is allowed', () => {
   const withExtraJob = ci.replace(
-    '  ci-ok:\n',
-    '  extra-gate:\n    name: extra-gate\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n\n  ci-ok:\n',
+    `  ${AGGREGATE_JOB}:\n`,
+    `  extra-gate:\n    name: extra-gate\n    runs-on: ubuntu-latest\n    steps:\n      - run: true\n\n  ${AGGREGATE_JOB}:\n`,
   )
   assert.notEqual(withExtraJob, ci, 'the fixture inserted a job')
   const head = editJob(withExtraJob, AGGREGATE_JOB, (block) =>
@@ -291,13 +291,13 @@ test('no top-level block may change, be added or be lost', () => {
   assert.doesNotMatch(text, /NODE_OPTIONS|--require/, 'an env value is not echoed into the refusal')
 })
 
-test('a required job missing from `ci-ok.needs` is refused, naming the dependency', () => {
+test('a required job missing from `ci-ok-head.needs` is refused, naming the dependency', () => {
   const head = editJob(ci, AGGREGATE_JOB, (block) =>
     block.map((line) => (line.startsWith('    needs: ') ? line.replace('mock-check, ', '') : line)),
   )
   const result = compareGate({ base: ci, head })
   assert.equal(result.ok, false)
-  assert.match(result.problems.join('\n'), /`ci-ok` does not depend on required job `mock-check`/)
+  assert.match(result.problems.join('\n'), /`ci-ok-head` does not depend on required job `mock-check`/)
 })
 
 test('the `path: base` checkout is pinned: removing it is a refusal', () => {
@@ -327,7 +327,7 @@ test('acceptance 1: an aggregate id outside the accepted set is refused, naming 
 })
 
 test('acceptance 2: a head declaring both accepted aggregate ids is refused, naming both', () => {
-  const head = withJob(ci, 'ci-ok-head', ['    name: ci-ok-head', ...STUB_ROWS])
+  const head = withJob(ci, 'ci-ok', ['    name: ci-ok', ...STUB_ROWS])
   assert.notEqual(head, ci, 'the fixture added the second candidate')
   const result = compareGate({ base: ci, head })
   assert.equal(result.ok, false, 'two candidates for one aggregate is not a pass')
@@ -337,29 +337,29 @@ test('acceptance 2: a head declaring both accepted aggregate ids is refused, nam
   assert.equal(result.lines.length, 0)
 })
 
-test('acceptance 3: a head with exactly one accepted aggregate id passes, and the line names the id it checked', () => {
-  const head = aggregateRename('ci-ok-head')
+test('acceptance 3: a head that still declares the old id while the base declares ci-ok-head is checked under it', () => {
+  const head = aggregateRename('ci-ok')
   const result = compareGate({ base: ci, head })
   assert.equal(result.ok, true, result.problems.join('\n'))
   assert.equal(result.lines.length, 1)
-  assert.match(result.lines[0]!, /`ci-ok-head` runs `node base\/scripts\/ci-ok\.mjs`/, 'the green line names the id it read')
-  assert.doesNotMatch(result.lines[0]!, /`ci-ok` runs /, 'a green line cannot credit an id that was not read')
+  assert.match(result.lines[0]!, /`ci-ok` runs `node base\/scripts\/ci-ok\.mjs`/, 'the green line names the id it read')
+  assert.doesNotMatch(result.lines[0]!, /`ci-ok-head` runs /, 'a green line cannot credit an id that was not read')
 })
 
 test('acceptance 4: the three aggregate checks follow the accepted id the head declares', () => {
-  const renamed = aggregateRename('ci-ok-head')
-  const droppedNeeds = editJob(renamed, 'ci-ok-head', (block) =>
+  const renamed = aggregateRename('ci-ok')
+  const droppedNeeds = editJob(renamed, 'ci-ok', (block) =>
     block.map((line) => (line.startsWith('    needs: ') ? line.replace('mock-check, ', '') : line)),
   )
-  const noEvaluator = editJob(renamed, 'ci-ok-head', (block) =>
+  const noEvaluator = editJob(renamed, 'ci-ok', (block) =>
     block.map((line) => (line.trim() === `run: ${REQUIRED_EVALUATOR}` ? '        run: exit 0' : line)),
   )
-  const noCheckout = editJob(renamed, 'ci-ok-head', (block) => block.filter((line) => line.trim() !== 'path: base'))
+  const noCheckout = editJob(renamed, 'ci-ok', (block) => block.filter((line) => line.trim() !== 'path: base'))
 
   for (const [label, head, expected] of [
-    ['needs', droppedNeeds, /`ci-ok-head` does not depend on required job `mock-check`/],
-    ['evaluator', noEvaluator, /`ci-ok-head` does not run the base evaluator/],
-    ['path: base', noCheckout, /`ci-ok-head` does not check the gate out under `path: base`/],
+    ['needs', droppedNeeds, /`ci-ok` does not depend on required job `mock-check`/],
+    ['evaluator', noEvaluator, /`ci-ok` does not run the base evaluator/],
+    ['path: base', noCheckout, /`ci-ok` does not check the gate out under `path: base`/],
   ] as const) {
     const result = compareGate({ base: ci, head })
     assert.equal(result.ok, false, `${label} must still be refused when the aggregate id is renamed`)

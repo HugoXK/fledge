@@ -39,6 +39,9 @@ export const MAIN_EVENTS = ['push', 'schedule', 'workflow_dispatch']
 export const RED_LABEL_COLOR = 'b60205'
 export const RED_LABEL_DESCRIPTION = 'a red default branch'
 
+/** The `needs` key of the in-run aggregate (`ci.yml` job id, #1273). */
+export const AGGREGATE_JOB = 'ci-ok-head'
+
 function text(value) {
   return String(value ?? '')
 }
@@ -50,7 +53,7 @@ function text(value) {
 export function failingJobsFrom(needs) {
   const entries = needs !== null && typeof needs === 'object' && !Array.isArray(needs) ? Object.entries(needs) : []
   return entries
-    .filter(([name, value]) => name !== 'ci-ok' && ['failure', 'cancelled'].includes(text(value?.result)))
+    .filter(([name, value]) => name !== AGGREGATE_JOB && ['failure', 'cancelled'].includes(text(value?.result)))
     .map(([name]) => name)
 }
 

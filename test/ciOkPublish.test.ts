@@ -1,6 +1,11 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { REQUIRED_JOBS } from '../scripts/ci-ok.mjs'
@@ -12,6 +17,7 @@ import {
   checkRunPayload,
   jobKey,
   needsFromJobs,
+  pendingRequired,
   runIdFrom,
   shouldPublish,
   verdict,
@@ -82,15 +88,12 @@ test('the verdict is published by a workflow_run workflow, never by the pull req
 test('the required context gains a default-branch producer, and the head aggregate cannot retire it', () => {
   assert.equal(REQUIRED_CHECK, 'ci-ok')
   assert.equal(HEAD_AGGREGATE_JOB, 'ci-ok-head')
-  // The in-run aggregate keeps the required name while the publisher is being
-  // installed: GitHub loads a `workflow_run` file from the default branch, so on
-  // the pull request that adds it there would otherwise be no `ci-ok` at all and
-  // the change could never merge. Two producers of one context are safe here
-  // because every check run at the head sha counts (#175): the publisher's red
-  // cannot be retired by the head's green. The follow-up renames this job to
-  // `ci-ok-head`, leaving exactly one producer.
-  const aggregate = jobBlock(ci, 'ci-ok')
-  assert.match(aggregate, /^ {4}name: ci-ok$/m, 'the in-run aggregate publishes the required context until the publisher is on the default branch')
+  // #1273 lands the rename the publisher's comment promised: the in-run
+  // aggregate is `ci-ok-head`, so `ci-ok` has exactly one producer — the
+  // publisher's verdict. The case is rewritten rather than deleted because it is
+  // what pins the single-producer property after the rename.
+  const aggregate = jobBlock(ci, HEAD_AGGREGATE_JOB)
+  assert.match(aggregate, /^ {4}name: ci-ok-head$/m, 'the in-run aggregate publishes its own id, not the required context')
   assert.match(aggregate, /node base\/scripts\/ci-ok\.mjs/, 'the in-run aggregate still evaluates the base tree')
   const publishers = declaredNames(publish)
   assert.ok(publishers.includes('publish ci-ok'), 'the workflow publishes a job named for its check')
@@ -143,10 +146,85 @@ test('a matrix leg reports under the needs key, and the worse leg wins', () => {
   assert.equal(both.test?.result, 'failure', 'one green leg must not hide a red one')
 })
 
-test('an unfinished job is missing, never a pass', () => {
-  const needs = needsFromJobs([{ name: 'lint', status: 'in_progress', conclusion: null }])
-  assert.equal(needs.lint?.result, 'missing')
-  assert.equal(verdict({ jobs: [{ name: 'lint', status: 'in_progress', conclusion: null }], eventName: 'pull_request', changes: { source: true } }).ok, false)
+// #1273: the API can return `status: in_progress` beside a `conclusion` and a
+// `completed_at` (jobs 138082842033 and 138086900960 in run 45286143428). The
+// reader printed `missing` for that shape, which sends a reviewer looking for a
+// job that did run. An unsettled object is `pending` — still red, and the
+// publisher returns before it creates any check run.
+test('an unfinished job object is pending, never missing and never a pass', () => {
+  const jobs = successJobs().map((job) => ({ ...job, id: 1, completed_at: '2026-11-23T23:00:00Z' }))
+  jobs[jobs.findIndex((job) => job.name === 'changelog')] = {
+    id: 138082842033,
+    name: 'changelog',
+    status: 'in_progress',
+    conclusion: 'success',
+    completed_at: '2026-11-23T23:08:29Z',
+  }
+  const result = verdict({ jobs, eventName: 'pull_request', changes: { source: true } })
+  assert.equal(result.needs.changelog?.result, 'pending', 'an unsettled object is pending, whatever conclusion it names')
+  assert.equal(result.ok, false, 'pending is red: the merge gate stays fail-closed')
+  assert.ok(
+    result.problems.some((problem) => problem.includes('changelog') && problem.includes('pending')),
+    `the problem names the context and the word pending, got ${result.problems.join('; ')}`,
+  )
+  assert.ok(!result.problems.some((problem) => problem.includes('missing')), 'the job exists; calling it missing sends the reader to the wrong place')
+  assert.deepEqual(pendingRequired(result.needs), ['changelog'], 'the publisher sees one context it must not publish for')
+})
+
+test('a context with no job object at all is still missing, not pending', () => {
+  const jobs = successJobs().filter((job) => job.name !== 'lint').map((job) => ({ ...job, id: 2, completed_at: '2026-11-23T23:00:00Z' }))
+  const result = verdict({ jobs, eventName: 'pull_request', changes: { source: true } })
+  assert.equal(result.needs.lint, undefined, 'an absent job stays absent from needs')
+  assert.ok(
+    result.problems.some((problem) => problem.includes('lint') && problem.includes('missing')),
+    'absence is still the red word missing, with its own fixture so pending cannot widen to "nothing is missing"',
+  )
+  assert.deepEqual(pendingRequired(result.needs), [])
+})
+
+test('two settled conclusions for one context: the newest wins and both are listed', () => {
+  const jobs = successJobs().map((job) => ({ ...job, id: 10, completed_at: '2026-11-24T00:00:00Z' }))
+  jobs[jobs.findIndex((job) => job.name === 'changelog')] = {
+    id: 501,
+    name: 'changelog',
+    status: 'completed',
+    conclusion: 'failure',
+    completed_at: '2026-11-24T00:00:10Z',
+  }
+  jobs.push({ id: 502, name: 'changelog', status: 'completed', conclusion: 'success', completed_at: '2026-11-24T00:00:20Z' })
+  const result = verdict({ jobs, eventName: 'pull_request', changes: { source: true } })
+  assert.equal(result.needs.changelog?.result, 'success', 'the newest settled conclusion is the reading')
+  const payload = checkRunPayload({ headSha: 'b'.repeat(40), result, runId: 7 })
+  assert.match(payload.output.summary, /502/, 'the summary records the conclusion it read')
+  assert.match(payload.output.summary, /501/, 'and the one it superseded, so two conclusions can be told from none')
+  assert.match(payload.output.summary, /changelog/)
+  assert.match(payload.output.summary, /failure/)
+  assert.match(payload.output.summary, /success/)
+})
+
+// The card asks for one fixture on one axis: absent, unsettled and settled must
+// read as three different things, not as one bucket. The zero-POST half of the
+// unsettled case is the CLI fixture below, because "no check run was created" is
+// a fact about a request log rather than about a return value.
+test('one axis separates absent, unsettled and settled', () => {
+  const settled = successJobs().map((job) => ({ ...job, id: 21, completed_at: '2026-11-24T00:00:00Z' }))
+  const context = 'changelog'
+
+  const absent = verdict({ jobs: settled.filter((job) => job.name !== context), eventName: 'pull_request', changes: { source: true } })
+  assert.equal(absent.needs[context], undefined, 'absent: no job object, so the key is absent')
+  assert.ok(absent.problems.some((problem) => problem.includes(context) && problem.includes('missing')), 'absent reads missing and is red')
+  assert.equal(absent.ok, false)
+
+  const unsettledJobs = settled.map((job) => (job.name === context ? { ...job, status: 'in_progress', conclusion: 'success' } : job))
+  const unsettled = verdict({ jobs: unsettledJobs, eventName: 'pull_request', changes: { source: true } })
+  assert.equal(unsettled.needs[context]?.result, 'pending', 'unsettled reads pending')
+  assert.equal(unsettled.ok, false, 'pending is still red')
+  assert.deepEqual(pendingRequired(unsettled.needs), [context], 'the publisher returns before any POST')
+
+  const settledJobs = [...settled, { id: 22, name: context, status: 'completed', conclusion: 'success', completed_at: '2026-11-24T00:00:30Z' }]
+  const newest = verdict({ jobs: settledJobs, eventName: 'pull_request', changes: { source: true } })
+  assert.equal(newest.needs[context]?.result, 'success', 'settled: the newest settled conclusion wins')
+  assert.equal(newest.ok, true)
 })
 
 test('a skipped conditional job passes only when the base classifier says the category is absent', () => {
@@ -275,4 +353,94 @@ test('the published body carries only whitelisted enums and a validated head', (
 
   const odd = checkRunPayload({ headSha: 'f'.repeat(40), result: red, runId: 11, runUrl: 'javascript:alert(1)' })
   assert.doesNotMatch(odd.output.summary, /javascript:/, 'a URL that is not plain https is not quoted')
+})
+
+// Shape 1 of #1273: while any required context is unsettled the publish job
+// creates no `ci-ok` check run at all — not a red one, none. The assertion is
+// the request log of a fake API the real CLI talks to, so the count is what the
+// job actually did rather than "no run had appeared yet".
+test('an unsettled required job makes the publisher create no check run at all', async () => {
+  const requests: Array<{ method: string; path: string; body: string }> = []
+  const headSha = 'f'.repeat(40)
+  const runId = 4242
+  const jobs = successJobs().map((job) => ({ ...job, id: 1, completed_at: '2026-11-24T00:00:00Z' }))
+  jobs[jobs.findIndex((job) => job.name === 'changelog')] = {
+    id: 77,
+    name: 'changelog',
+    status: 'in_progress',
+    conclusion: 'success',
+    completed_at: '2026-11-24T00:00:05Z',
+  }
+  const server = createServer((request, response) => {
+    let body = ''
+    request.on('data', (chunk) => {
+      body += String(chunk)
+    })
+    request.on('end', () => {
+      requests.push({ method: request.method ?? '', path: request.url ?? '', body })
+      response.setHeader('content-type', 'application/json')
+      if (request.method === 'GET' && request.url === `/repos/o/r/actions/runs/${String(runId)}`) {
+        response.end(JSON.stringify({
+          id: runId,
+          head_sha: headSha,
+          event: 'push',
+          conclusion: 'success',
+          html_url: `https://example.test/runs/${String(runId)}`,
+          pull_requests: [],
+        }))
+        return
+      }
+      if (request.method === 'GET' && (request.url ?? '').startsWith(`/repos/o/r/actions/runs/${String(runId)}/jobs`)) {
+        response.end(JSON.stringify({ jobs }))
+        return
+      }
+      response.statusCode = 404
+      response.end(JSON.stringify({ message: 'unexpected route' }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  const checkout = mkdtempSync(join(tmpdir(), 'ci-ok-run-'))
+  try {
+    // `gateBlob()` reads the policy blob from the checkout's `base/` tree, so
+    // the fixture must be a real git repository rather than a directory.
+    const base = join(checkout, 'base')
+    mkdirSync(join(base, 'scripts'), { recursive: true })
+    writeFileSync(join(base, 'scripts', 'ci-ok.mjs'), '// the policy blob only has to exist\n')
+    const git = (...args: string[]) => spawnSync('git', ['-C', base, '-c', 'user.name=t', '-c', 'user.email=t@t', ...args], { encoding: 'utf8' })
+    assert.equal(git('init', '-q').status, 0)
+    assert.equal(git('add', 'scripts/ci-ok.mjs').status, 0)
+    assert.equal(git('commit', '-q', '-m', 'gate').status, 0)
+
+    const { port } = server.address() as AddressInfo
+    const child = spawn(process.execPath, [fileURLToPath(new URL('../scripts/ci-ok-run.mjs', import.meta.url)), '--repo', checkout], {
+      env: {
+        ...process.env,
+        GITHUB_TOKEN: 'fixture-token',
+        GITHUB_REPOSITORY: 'o/r',
+        GITHUB_API_URL: `http://127.0.0.1:${String(port)}`,
+        CI_OK_RUN_ID: String(runId),
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', (chunk) => {
+      stderr += String(chunk)
+    })
+    const code = await new Promise<number | null>((resolve) => child.on('close', resolve))
+    assert.equal(code, 0, stderr)
+    assert.match(stdout, /pending/, 'the publisher says pending in its own log, which is where a reader can see it')
+    assert.match(stdout, /changelog/, 'and names the context that is still unsettled')
+    assert.deepEqual(
+      requests.filter((request) => request.method === 'POST'),
+      [],
+      'zero check-run POST: an unsettled required set publishes nothing',
+    )
+  } finally {
+    server.close()
+    rmSync(checkout, { recursive: true, force: true })
+  }
 })

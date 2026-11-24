@@ -120,6 +120,23 @@ not a conclusion.
 - Never admin-merge, never bypass a required check, never force-push `main`.
 - One PR per issue. Push to the existing branch instead of opening a duplicate.
 
+## Required contexts
+
+A required context is green only when its latest **settled** conclusion is
+`success`. `status != completed` is `pending`, never `missing`: a context whose
+only job object is unsettled after the run finished is reported as `pending` and
+stays red, and the publisher creates no check run at all while any required
+context is unsettled. A context with no job object at all is `missing` and stays
+red — the two words are distinct on purpose, because `missing` sends a reader to
+look for a job that did run. When one context carries several conclusions at one
+commit, the newest settled one decides, and every conclusion seen is recorded in
+the published summary, so "two conclusions" can be told from "no conclusions"
+without re-querying the API. `ci-ok` has one workflow-file producer,
+`ci-ok-publish.yml`; `ci-ok-refresh.yml` posts a red `ci-ok` through the API on
+every push to `main`, and `scripts/lib/reserved-contexts.mjs` reads job ids and
+job-level `name:` values, so that producer sits outside the scanner's view by
+design and must keep blocking — deleting it would let a stale green stand.
+
 ## The issue tie in a PR body
 
 `pr-lint` requires every pull request to name the issue it belongs to, in one of

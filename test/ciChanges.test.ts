@@ -213,8 +213,8 @@ test('the deploy job starts only on a deploy flag, runs the syntax checks, and c
 
   const changes = jobBlock(workflow, 'changes')
   assert.match(changes, /deploy: \$\{\{ steps\.classify\.outputs\.deploy \}\}/, 'the changes job must publish the deploy flag')
-  const ciOk = jobBlock(workflow, 'ci-ok')
-  assert.match(ciOk, /needs: \[[^\]]*\bdeploy-check\b/, 'ci-ok must accept a skipped deploy-check only through the flag')
+  const ciOk = jobBlock(workflow, 'ci-ok-head')
+  assert.match(ciOk, /needs: \[[^\]]*\bdeploy-check\b/, 'ci-ok-head must accept a skipped deploy-check only through the flag')
 })
 
 test('an empty diff runs everything, because an unreadable diff must not shrink the gate', () => {

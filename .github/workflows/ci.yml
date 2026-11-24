@@ -850,8 +850,8 @@ jobs:
           fi
           exit "$status"
 
-  ci-ok:
-    name: ci-ok
+  ci-ok-head:
+    name: ci-ok-head
     if: always()
     needs: [changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, reserved-contexts, secret-scan, codeql-required, mock-check, deploy-check]
     runs-on: ubuntu-latest
@@ -886,22 +886,24 @@ jobs:
           GITHUB_EVENT_NAME: ${{ github.event_name }}
         run: node base/scripts/ci-ok.mjs
 
-  # #305: a red `main` used to be invisible. `ci-ok` computed the commit's
+  # #305: a red `main` used to be invisible. The aggregate computed the commit's
   # health and stopped, no job held a write scope on issues, and the branch was
   # noticed only by a person who went and looked. This is the one job allowed to write,
   # and it writes one issue: create it, comment on it, or close it. Every
   # decision is `scripts/lib/main-health.mjs`; the job only gathers the input.
   #
-  # It is deliberately not in `ci-ok`'s `needs`: a reporter that fails must not
-  # be able to fail the merge gate as well.
+  # It is deliberately not in `ci-ok-head`'s `needs`: a reporter that fails must
+  # not be able to fail the merge gate as well.
   #
-  # Its `needs` mirrors `ci-ok`'s so the tracker can name the jobs that actually
-  # failed. With only `ci-ok` in the list the reporter saw the aggregate and
-  # nothing else, and every tracker said "ci-ok did not report success".
+  # Its `needs` mirrors `ci-ok-head`'s so the tracker can name the jobs that
+  # actually failed. With only the aggregate in the list the reporter saw the
+  # aggregate and nothing else, and every tracker said it did not report success.
+  # The reporter reads the aggregate by the job id it has here, so #1273's
+  # rename moves both sides together.
   main-health:
     name: main-health
     if: always() && github.ref == 'refs/heads/main'
-    needs: [ci-ok, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, reserved-contexts, secret-scan, codeql-required, mock-check, deploy-check]
+    needs: [ci-ok-head, changes, lint, typecheck, test, coverage, build, visual, docker, audit, dependency-review, changelog, version, risk, restore-drill, action-pins, workflow-lint, reserved-contexts, secret-scan, codeql-required, mock-check, deploy-check]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
