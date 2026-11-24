@@ -443,7 +443,7 @@ the base branch into `base/` and executed from there:
 | `workflow-lint` | `node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json` |
 | `reserved-contexts` | `node base/scripts/reserved-contexts.mjs --workflows .github/workflows` |
 | `codeql-required` | `node base/scripts/codeql-required.mjs` |
-| `ci-ok` (the in-run aggregate, until the follow-up renames it) | `node base/scripts/ci-ok.mjs` |
+| `ci-ok` / `ci-ok-head` (the in-run aggregate; `#1273` renames it and both ids are accepted meanwhile) | `node base/scripts/ci-ok.mjs` |
 | `ci-ok` (the publisher's verdict) | `node base/scripts/ci-ok-run.mjs`, run by `ci-ok-publish.yml` |
 | CodeQL gate | `node base/scripts/codeql-gate.mjs --sarif codeql-results --baseline base/.github/agent/codeql-baseline.json` |
 
@@ -460,6 +460,16 @@ there is the file the next step executes — so a branch that rewrites
 `scripts/ci-ok.mjs` is visible as a mismatch instead of an invisible
 substitution. It is evidence, not a gate: the verdict still comes from the base
 file.
+
+The workflow comparator finds the aggregate by an accepted id set
+(`ci-ok-head`, `ci-ok`) instead of one literal. A head that declares none of them
+is refused, naming the ids it looked for and the ids it declares; a head that
+declares both is refused by both names. The three checks behind that lookup —
+every required job in the aggregate's `needs:`, the base evaluator's command, and
+the `path: base` checkout — decide whether the base tree's gate is still the
+thing that runs, so a lookup miss is never a skip. The success line names the id
+it actually checked, and the set is narrowed in a later card once no branch
+carries the old id.
 
 The `changes` job also runs `scripts/gate-integrity.mjs`, which writes every
 gate file in the diff into the job summary. It fails closed when the diff cannot
