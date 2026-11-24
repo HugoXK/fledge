@@ -235,7 +235,33 @@ newer base: it voids the PASS and makes the same change be judged twice. Fix the
 branch, push a new tip, and ask for a verdict at that tip. Resolve a real
 conflict inside the branch; never rewrite a tip that was already reviewed.
 
+## UI evidence capture (#1271)
+
+A user-visible console change needs a BEFORE/AFTER record. The repository has one
+command for it:
+
+```sh
+npm run evidence:ui -- --issue 1230 --path /admin/metrics --selector '#sqlite-health'
+npm run evidence:ui -- --issue 1263 --path '/repos/repo_evidence_ui#repo-settings' \
+  --selector 'details[data-advanced="repo-settings"]' --open summary
+```
+
+It refuses a dirty worktree, builds the base (`origin/main` by default) and head
+(`HEAD` by default) in throwaway worktrees, seeds one shared fixture database
+(the dev user, a repository with branch protection, a live lease and a reaped
+attempt), starts each app on a loopback port, signs in with the dev login, clicks
+every `--open` selector and screenshots the same `--selector` at each locale and
+width. It writes `docs/images/<issue>/` on an `evidence/<issue>` branch and prints
+a ready-to-paste body table. `--push` pushes that branch; without it the temporary
+worktree is kept for the printed push command. It never opens a pull request and
+never moves the tip. `--dry-run` prints the plan only.
+
+The fixture is code, not production data. A selector that cannot be found fails
+the command instead of producing a blank image, and a missing Playwright browser
+is named instead of silently skipped.
+
 ## Risk tiers
+
 
 `node scripts/risk-gate.mjs --base origin/main` is the source of truth. It prints
 a report and a final machine-readable line:
