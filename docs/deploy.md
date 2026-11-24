@@ -392,13 +392,17 @@ boundary rather than the runner's instant.
 
 The hourly `ci-watchdog` workflow also judges the `02:00Z` slot. Once the
 slot's 60-minute grace window has passed, `scripts/release-slot-watchdog.mjs`
-reads that UTC day's releases, the `daily-release` runs and the recent issues
-from the API and opens exactly one card when the day has no release. The card
+reads that UTC day's releases, the `daily-release` runs, their `release-plan`
+artifacts and the recent issues from the API and opens exactly one card when the
+day should have shipped a release and did not. The card
 names the day, the expected slot, the grace window, the observed run ids (with
 the `event` that fired each one) and the API `Date` it used; the clock is the
 API's `Date` header, never the host's. A rerun of the same day opens nothing,
-because the card carries a marker built from the slot. The detector writes
-nothing else: it dispatches no workflow and creates no tag, release or deploy.
+because the card carries a marker built from the slot. A night the planner
+declined — a green run whose own `release-plan` says `shouldRelease: false` —
+opens no card, while a failed run, no run at all, and a plan that cannot be read
+still do, and the card names which alarm it is. The detector writes nothing else:
+it dispatches no workflow and creates no tag, release or deploy.
 
 #### Reading the slot back (#1035)
 
