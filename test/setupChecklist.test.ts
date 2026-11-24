@@ -28,6 +28,7 @@ function state(patch: Partial<SetupState> = {}): SetupState {
     platformQuotaUnlimited: false,
     platformQuotaComfortCny: 50,
     instanceReady: false,
+    instancesUsed: true,
     jobs: 0,
     firstJobStatus: null,
     firstPrUrl: null,
@@ -154,6 +155,7 @@ test('the quota comfort threshold comes from config, not a second constant', () 
 
 test('the dashboard shows platform quota instead of a model requirement when the platform can fund the run', async () => {
   const config = testConfig()
+  config.flybot.instanceImage = 'ghcr.io/example/flybot:latest'
   config.llm.baseUrl = 'https://platform.example/v1'
   config.llm.key = 'platform-key'
   const store = new Store(':memory:')
@@ -173,6 +175,79 @@ test('the dashboard shows platform quota instead of a model requirement when the
     const nextAction = page.body.match(/<section class="card(?: [a-z-]+)?" id="next-action"[\s\S]*?<\/section>/)?.[0] ?? ''
     assert.match(nextAction, /Start workspace/, 'the platform-funded run does not stop at the model step')
     assert.doesNotMatch(nextAction, /Add a model provider/, 'the optional model step is not the primary action')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('a deployment without workspaces does not ask for one', async () => {
+  const config = testConfig()
+  config.llm.baseUrl = 'https://platform.example/v1'
+  config.llm.key = 'platform-key'
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'no-workspaces', status: 'approved' })
+    const session = sessionFor(built, user)
+    store.createRepo({ id: 'repo_no_ws', userId: user.id, owner: 'o', name: 'no-ws', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-setup-next="job"/, 'an empty FLYBOT_INSTANCE_IMAGE makes the first job the next step')
+    assert.match(page.body, /<li class="setup-step is-done[^"]*" data-setup-step="instance"/, 'the workspace step is done when the deployment has none')
+    assert.doesNotMatch(page.body, /Start the instance first|Start the workspace first/, 'the first job is not blocked on a workspace this deployment cannot start')
+    const chinese = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=zh` } })
+    assert.doesNotMatch(chinese.body, /先启动实例|先启动工作区/, 'the zh render asks for no workspace either')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('a deployment with workspaces still blocks the first job on a stopped workspace', async () => {
+  const config = testConfig()
+  config.flybot.instanceImage = 'ghcr.io/example/flybot:latest'
+  config.llm.baseUrl = 'https://platform.example/v1'
+  config.llm.key = 'platform-key'
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'with-workspaces', status: 'approved' })
+    const session = sessionFor(built, user)
+    store.createRepo({ id: 'repo_ws', userId: user.id, owner: 'o', name: 'ws', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
+    assert.equal(page.statusCode, 200)
+    assert.match(page.body, /data-setup-next="instance"/, 'a deployment with workspaces still asks for one')
+    const instanceStep = page.body.match(/<li[^>]*data-setup-step="instance"[\s\S]*?<\/li>/)?.[0] ?? ''
+    assert.ok(instanceStep !== '', 'the workspace step renders')
+    assert.doesNotMatch(instanceStep, /is-done/, 'no ready workspace: the step stays unmet')
+    const jobStep = page.body.match(/<li[^>]*data-setup-step="job"[\s\S]*?<\/li>/)?.[0] ?? ''
+    assert.match(jobStep, /setup-blocked/, 'the first job is still blocked')
+  } finally {
+    await built.app.close()
+    store.close()
+  }
+})
+
+test('the first-job blocker names the workspace, not the instance', async () => {
+  const config = testConfig()
+  config.flybot.instanceImage = 'ghcr.io/example/flybot:latest'
+  config.llm.baseUrl = 'https://platform.example/v1'
+  config.llm.key = 'platform-key'
+  const store = new Store(':memory:')
+  const built = await buildApp({ config, store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'blocker-wording', status: 'approved' })
+    const session = sessionFor(built, user)
+    store.createRepo({ id: 'repo_wording', userId: user.id, owner: 'o', name: 'wording', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
+    const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
+    const jobStep = page.body.match(/<li[^>]*data-setup-step="job"[\s\S]*?<\/li>/)?.[0] ?? ''
+    assert.match(jobStep, /Start the workspace first/, 'the blocker names the workspace')
+    assert.doesNotMatch(jobStep, /Start the instance first/, 'the blocker no longer names the instance')
+    const chinese = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=zh` } })
+    const zhJobStep = chinese.body.match(/<li[^>]*data-setup-step="job"[\s\S]*?<\/li>/)?.[0] ?? ''
+    assert.match(zhJobStep, /先启动工作区/, 'the zh blocker names the workspace')
+    assert.doesNotMatch(zhJobStep, /先启动实例/, 'the zh blocker no longer names the instance')
   } finally {
     await built.app.close()
     store.close()
@@ -324,7 +399,7 @@ test('the route detects the step from rows, so a second browser or a cleared coo
 
     store.setRepoModelSelection('repo_route', [model.id], model.id)
     const withSelection = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie } })
-    assert.match(withSelection.body, /data-setup-next="instance"/, 'a selected repository model completes the model step')
+    assert.match(withSelection.body, /data-setup-next="job"/, 'a selected repository model completes the model step; with no workspaces the first job is next')
   } finally {
     await built.app.close()
     store.close()

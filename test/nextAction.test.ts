@@ -33,6 +33,7 @@ const completeSetup: SetupState = {
   platformQuotaRemainingCny: 50,
   platformQuotaUnlimited: false, platformQuotaComfortCny: 50,
   instanceReady: true,
+  instancesUsed: true,
   jobs: 1,
   firstJobStatus: 'succeeded',
   firstPrUrl: null,
@@ -249,7 +250,7 @@ test('an account with every repository switched off leads with the lock, not the
 })
 
 test('an unfinished first run keeps exactly one primary action, in the next-action block', () => {
-  const setup: SetupState = { repos: 1, roleChosen: false, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const setup: SetupState = { repos: 1, roleChosen: false, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, instancesUsed: true, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
   const html = render('en', { setup })
   const section = nextActionBlock(html)
   assert.match(section, /data-next-action="setup"/)
@@ -263,7 +264,7 @@ test('an unfinished first run keeps exactly one primary action, in the next-acti
 })
 
 test('platform quota satisfies the model step, so the next action is the instance', () => {
-  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: false, modelConfigured: false, platformAvailable: true, platformQuotaRemainingCny: 50, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: false, modelConfigured: false, platformAvailable: true, platformQuotaRemainingCny: 50, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, instancesUsed: true, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
   const html = render('en', { setup })
   const section = nextActionBlock(html)
   assert.match(section, /data-next-action="setup"/)
@@ -273,14 +274,14 @@ test('platform quota satisfies the model step, so the next action is the instanc
 })
 
 test('without platform quota the missing model is still the next action', () => {
-  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, instancesUsed: true, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
   const section = nextActionBlock(render('en', { setup }))
   assert.match(section, /data-next-action="setup"/)
   assert.match(section, /Add a model provider/)
 })
 
 test('an own repository model keeps the quota card out of the next action', () => {
-  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: true, modelConfigured: true, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: true, jobs: 1, firstJobStatus: 'succeeded', firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: true, modelConfigured: true, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: true, instancesUsed: true, jobs: 1, firstJobStatus: 'succeeded', firstPrUrl: null, repoHref: '/repos/repo_1' }
   const html = render('en', { setup }, (store, user) => { store.setUserQuota(user.id, 0) })
   const section = nextActionBlock(html)
   assert.doesNotMatch(section, /data-next-action="quota"/, 'a selected repository model is not platform-funded')
@@ -288,7 +289,7 @@ test('an own repository model keeps the quota card out of the next action', () =
 })
 
 test('without an own model the exhausted quota is still the next action', () => {
-  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
+  const setup: SetupState = { repos: 1, roleChosen: true, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, instancesUsed: true, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: '/repos/repo_1' }
   const section = nextActionBlock(render('en', { setup }, (store, user) => { store.setUserQuota(user.id, 0) }))
   assert.match(section, /data-next-action="quota"/)
 })
@@ -323,7 +324,7 @@ test('secondary sections collapse into one disclosure and lose nothing', () => {
 })
 
 test('the disclosure opens when the next action points inside it', () => {
-  const setup: SetupState = { repos: 0, roleChosen: false, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: null }
+  const setup: SetupState = { repos: 0, roleChosen: false, providerConfigured: false, modelConfigured: false, platformAvailable: false, platformQuotaRemainingCny: 0, platformQuotaUnlimited: false, platformQuotaComfortCny: 50, instanceReady: false, instancesUsed: true, jobs: 0, firstJobStatus: null, firstPrUrl: null, repoHref: null }
   const html = render('en', { setup })
   const section = nextActionBlock(html)
   assert.deepEqual(targets(section), ['#add-repo'], 'the first step is adding a repository')

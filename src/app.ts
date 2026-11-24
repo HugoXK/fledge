@@ -1650,6 +1650,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       platformQuotaUnlimited: setupQuota.unlimited,
       platformQuotaComfortCny: config.quota.comfortCny,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
+      instancesUsed: config.flybot.instanceImage !== '',
       jobs: setupJobsTotal,
       firstJobStatus: firstJob?.status ?? null,
       firstPrUrl: firstJob?.pr_url ?? null,
