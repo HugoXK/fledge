@@ -88,10 +88,20 @@ export function testConfig(overrides: Partial<Omit<Config, 'backup'>> & { backup
 
 // Tests that need many historical jobs for one repository must not leave more
 // than one active row: the jobs_one_active_per_repo index is a real invariant.
-export function makeTerminalJob(store: Store, input: Parameters<Store['createJob']>[0]): JobRow {
+// #1300: `finishedAt` is an input so a page rendered from this row can be
+// compared with another render of the same record; the default stays the wall
+// clock, which is what the existing call sites want. The returned snapshot keeps
+// the created row's other fields (status included) so those call sites see the
+// object they saw before, with the one stamp they can now pin.
+export function makeTerminalJob(
+  store: Store,
+  input: Parameters<Store['createJob']>[0],
+  options: { finishedAt?: string } = {},
+): JobRow {
   const job = store.createJob(input)
-  store.updateJob(job.id, { status: 'succeeded', finished_at: new Date().toISOString() })
-  return job
+  const finishedAt = options.finishedAt ?? new Date().toISOString()
+  store.updateJob(job.id, { status: 'succeeded', finished_at: finishedAt })
+  return { ...job, finished_at: finishedAt }
 }
 
 export function makeUser(store: Store, options: { login?: string; admin?: boolean; superadmin?: boolean; status?: 'pending' | 'approved' | 'rejected'; quota?: number } = {}): UserRow {
