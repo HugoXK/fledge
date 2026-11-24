@@ -152,7 +152,7 @@ test('the newest tracker is the one commented on and closed', () => {
 
 test('the reporter selection names failures and ignores the aggregate', () => {
   const needs = {
-    'ci-ok': { result: 'failure' },
+    'ci-ok-head': { result: 'failure' },
     lint: { result: 'success' },
     test: { result: 'failure' },
     coverage: { result: 'cancelled' },
@@ -240,11 +240,11 @@ test('only the reporter job holds issues: write', () => {
   }
 })
 
-test('the reporter is gated to main, depends on ci-ok and is not itself required', () => {
+test('the reporter is gated to main, depends on the aggregate and is not itself required', () => {
   const block = jobBlock(ci, 'main-health')
   assert.match(block, /^ {4}if: .*refs\/heads\/main/m, 'the condition must name the default branch, not a wildcard')
-  assert.match(block, /^ {4}needs: .*\bci-ok\b/m, 'the reporter reads the aggregate result')
-  assert.doesNotMatch(jobBlock(ci, 'ci-ok'), /^ {4}needs:.*\bmain-health\b/m, 'the reporter must never become a required check: a red reporter would block merges')
+  assert.match(block, /^ {4}needs: .*\bci-ok-head\b/m, 'the reporter reads the aggregate result')
+  assert.doesNotMatch(jobBlock(ci, 'ci-ok-head'), /^ {4}needs:.*\bmain-health\b/m, 'the reporter must never become a required check: a red reporter would block merges')
 })
 
 test('the reporter serialises per red state and searches by label', () => {
@@ -278,16 +278,16 @@ function needsOf(job: string): string[] {
 }
 
 test('the reporter depends on the jobs it must name, not only the aggregate', () => {
-  const required = needsOf('ci-ok')
+  const required = needsOf('ci-ok-head')
   const reporter = needsOf('main-health')
-  assert.ok(required.length > 1, 'ci-ok gates on the individual jobs')
+  assert.ok(required.length > 1, 'ci-ok-head gates on the individual jobs')
   for (const job of required) {
     assert.ok(
       reporter.includes(job),
       `main-health must depend on ${job} to name it as failing; it depends on ${reporter.join(', ')}`,
     )
   }
-  assert.ok(reporter.includes('ci-ok'), 'the aggregate result still decides green or red')
+  assert.ok(reporter.includes('ci-ok-head'), 'the aggregate result still decides green or red')
 })
 
 // --- #343: the label bootstrap belongs to the create path -------------------
@@ -339,7 +339,7 @@ function runReporter(env: Record<string, string>) {
 }
 
 const GREEN_RUN = {
-  NEEDS: JSON.stringify({ 'ci-ok': { result: 'success' } }),
+  NEEDS: JSON.stringify({ 'ci-ok-head': { result: 'success' } }),
   GITHUB_EVENT_NAME: 'push',
   GITHUB_REF: MAIN_REF,
   GITHUB_SHA: CLEARING_SHA,

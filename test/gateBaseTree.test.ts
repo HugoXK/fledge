@@ -39,7 +39,7 @@ const evaluators: Array<[string, string]> = [
   ['workflow-lint', 'base/scripts/workflow-injection.mjs'],
   ['reserved-contexts', 'base/scripts/reserved-contexts.mjs'],
   ['codeql-required', 'base/scripts/codeql-required.mjs'],
-  ['ci-ok', 'base/scripts/ci-ok.mjs'],
+  ['ci-ok-head', 'base/scripts/ci-ok.mjs'],
 ]
 
 for (const [job, script] of evaluators) {

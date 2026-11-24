@@ -63,14 +63,13 @@ const SHADOW_NAME = [
   '',
 ].join('\n')
 
-test('the reserved table allows ci-ok in both canonical producers and the other contexts only in their own file', async () => {
+test('the reserved table allows ci-ok only in the publisher and the other contexts only in their own file', async () => {
   const { RESERVED_CONTEXTS } = await lib()
-  const ciOk = RESERVED_CONTEXTS['ci-ok'] ?? []
-  assert.ok(ciOk.includes('ci.yml'), 'the in-run aggregate at ci.yml:808 publishes ci-ok today')
-  assert.ok(
-    ciOk.includes('ci-ok-publish.yml'),
-    'the recorded producer is ci-ok-publish.yml (.github/agent/required-checks.md); an honest sample must not be judged red',
-  )
+  // #1273 renamed the in-run aggregate to `ci-ok-head`, so allowing `ci.yml`
+  // here would let an honest tree be judged red and would keep a second
+  // producer legal after the rename. The entry is the publisher alone.
+  assert.deepEqual(RESERVED_CONTEXTS['ci-ok'], ['ci-ok-publish.yml'])
+  assert.equal(RESERVED_CONTEXTS['ci-ok-head'], undefined, 'the head aggregate is not a required context and must not be reserved')
   assert.deepEqual(RESERVED_CONTEXTS['review-gate'], ['review-gate.yml'])
   assert.deepEqual(RESERVED_CONTEXTS['pr-lint'], ['pr-lint.yml'])
 })
@@ -108,12 +107,15 @@ test('the repository\'s own workflows are the honest sample and produce no findi
   assert.ok(report.files.length >= 10, `every workflow file is read, got ${String(report.files.length)}`)
 })
 
-test('a canonical file is allowed and every other file is not', async () => {
+test('ci.yml no longer publishes the required context, and any other file that does is a finding', async () => {
   const { scanWorkflowText } = await lib()
   const ci = readFileSync(ciPath, 'utf8')
   const inCi = scanWorkflowText(ci, 'ci.yml')
-  assert.deepEqual(inCi.filter((finding) => finding.context === 'ci-ok'), [], 'ci.yml publishes ci-ok legitimately')
-  const renamed = scanWorkflowText(ci, 'review-gate.yml')
+  // #1273 renamed the in-run aggregate to `ci-ok-head`, which is not a reserved
+  // context; the publisher writes `ci-ok` through the API, not as a job name.
+  assert.deepEqual(inCi.filter((finding) => finding.context === 'ci-ok'), [], 'ci.yml no longer produces the required context')
+  const shadow = ['jobs:', '  ci-ok:', '    name: ci-ok', '    runs-on: ubuntu-latest', ''].join('\n')
+  const renamed = scanWorkflowText(shadow, 'review-gate.yml')
   assert.deepEqual(
     renamed.filter((finding) => finding.context === 'ci-ok').map((finding) => finding.kind).sort(),
     ['job-id', 'name'],
@@ -226,7 +228,7 @@ test('ci.yml runs the base-tree scanner over the head workflows and ci-ok requir
 
   const { REQUIRED_JOBS } = (await import('../scripts/ci-ok.mjs')) as { REQUIRED_JOBS: string[] }
   assert.ok(REQUIRED_JOBS.includes('reserved-contexts'), 'ci-ok must fail when the new job fails')
-  const ciOkStart = workflow.indexOf('\n  ci-ok:')
+  const ciOkStart = workflow.indexOf('\n  ci-ok-head:')
   const needsMatch = /needs:\s*\[([^\]]*)\]/.exec(workflow.slice(ciOkStart))
   assert.ok(needsMatch !== null, 'ci-ok must declare needs as an inline list')
   assert.ok(
