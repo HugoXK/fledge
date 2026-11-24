@@ -1,6 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
+import { registeredRoutes } from './apiDocReader.js'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
 import { randomToken, sha256Hex } from '../src/lib/secrets.js'
@@ -14,12 +15,19 @@ import { makeUser, MemoryMailer, testConfig } from './helpers.js'
 //
 // The route list is read out of the app source on purpose. Importing the
 // document module would let the test agree with itself; reading the registration
-// calls is what makes "an undocumented route fails" true.
+// calls is what makes "an undocumented route fails" true. The reader is
+// `test/apiDocReader.ts`, shared with the `docs/api.md` checker (#1289): one
+// definition of "a route the app registers", every verb, either quote style.
 
 const APP_SOURCE = readFileSync(new URL('../src/app.ts', import.meta.url), 'utf8')
+const CONTRACT_SOURCE = readFileSync(new URL('../src/api/openapi.ts', import.meta.url), 'utf8')
 
-function registeredApiRoutes(): string[] {
-  return [...APP_SOURCE.matchAll(/\bapp\.get\('(\/api\/v1\/[^']*)'/g)].map((match) => match[1] as string)
+// `paths` in the contract is an object literal, so a duplicate key is already
+// gone from the document the route serves; the declaration is counted in the
+// source text instead. In that file a `/api/v1/*` string appears only as a key.
+function pathDeclarationCount(path: string, source: string): number {
+  const quoted = path.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return [...source.matchAll(new RegExp(`['"]${quoted}['"]\\s*:`, 'g'))].length
 }
 
 async function serveContract(): Promise<{ app: Awaited<ReturnType<typeof buildApp>>['app']; status: number; document: Record<string, unknown> }> {
@@ -41,21 +49,52 @@ test('the contract is served at GET /api/v1/openapi.json as OpenAPI 3.1', async 
   }
 })
 
+// `paths` is flattened to `METHOD /path` entries, so the assertions below hold
+// per method: a `POST /api/v1/x` registered in `src/app.ts` fails unless the
+// contract describes that same verb, and a documented verb with no registration
+// fails the other way.
 test('every /api/v1 route src/app.ts registers appears exactly once in the contract', async () => {
   const { app, document } = await serveContract()
   try {
-    const paths = Object.keys((document.paths ?? {}) as Record<string, unknown>)
-    const registered = registeredApiRoutes()
+    const paths = Object.entries((document.paths ?? {}) as Record<string, Record<string, unknown>>).flatMap(([path, item]) =>
+      Object.keys(item).map((method) => `${method.toUpperCase()} ${path}`),
+    )
+    const registered = [...registeredRoutes(APP_SOURCE)].filter((route) => route.slice(route.indexOf(' ') + 1).startsWith('/api/v1/'))
     assert.ok(registered.length > 0, 'the app registers at least one public API route')
     for (const route of registered) {
       assert.equal(paths.filter((path) => path === route).length, 1, `${route} is registered in src/app.ts but is not declared exactly once in the contract`)
     }
-    for (const path of paths.filter((entry) => entry.startsWith('/api/v1/'))) {
+    for (const path of paths.filter((entry) => entry.slice(entry.indexOf(' ') + 1).startsWith('/api/v1/'))) {
       assert.ok(registered.includes(path), `the contract declares ${path}, but src/app.ts registers no such route`)
     }
   } finally {
     await app.close()
   }
+})
+
+// A duplicate path key collapses inside the literal, so "declared exactly once"
+// can only be checked against the source text; counting the served object would
+// count the survivor and always pass (#1293).
+test('every path is declared exactly once in the contract source', async () => {
+  const { app, document } = await serveContract()
+  try {
+    const paths = Object.keys((document.paths ?? {}) as Record<string, unknown>)
+    assert.ok(paths.length > 0, 'the contract declares at least one path')
+    for (const path of paths) {
+      const declared = pathDeclarationCount(path, CONTRACT_SOURCE)
+      assert.equal(declared, 1, `${path} is declared ${declared} time(s) in src/api/openapi.ts; a duplicate key collapses before the served document can show it`)
+    }
+  } finally {
+    await app.close()
+  }
+})
+
+// The counter is the only thing that makes the assertion above able to fail, so
+// it is tested on source the contract does not contain.
+test('the declaration counter sees a path declared twice', () => {
+  const source = ['const paths = {', "  '/api/v1/jobs': { get: {} },", "  '/api/v1/jobs': { get: {} },", '}'].join('\n')
+  assert.equal(pathDeclarationCount('/api/v1/jobs', source), 2)
+  assert.equal(pathDeclarationCount('/api/v1/openapi.json', source), 0)
 })
 
 test('the contract carries no session-only, console or callback route', async () => {
