@@ -231,6 +231,27 @@ Answers the caller's own jobs, newest first, as:
 - Write endpoints (`POST /api/v1/jobs`, `pause`, `resume`, `cancel`) are a later
   slice and a separate scope, `jobs:write`. v1 is read-only today.
 
+### `GET /api/v1/openapi.json`
+
+The machine-readable contract for this API, as an OpenAPI 3.1 document:
+
+```bash
+curl 'http://localhost:8080/api/v1/openapi.json'
+```
+
+- It needs no token. The document names the instance's routes, parameters, the
+  bearer scheme and the error envelopes, never a job, a user or a secret, so a
+  client can be generated before one is minted.
+- The paths it declares are exactly the `/api/v1/*` routes `src/app.ts`
+  registers — `GET /api/v1/jobs` and this route. The document lives in
+  `src/api/openapi.ts`, and `test/openapi.test.ts` fails in both directions: a
+  registered route missing from the contract, and a contract path with no route.
+- Session-only routes, the console pages and callbacks are not in it. The
+  OpenAI-compatible `/v1/*` gateway keeps its own shape and is also absent.
+- When a status code or a field changes, `src/api/openapi.ts` changes in the same
+  pull request: a stale contract is worse than none, because a generated client
+  would encode the stale one.
+
 ## Read-only metrics
 
 ### `GET /api/read/metrics`

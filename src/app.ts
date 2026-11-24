@@ -39,6 +39,7 @@ import { parseAttributionJson } from './lib/attribution.js'
 import { decisionWithAnswer, jobIdFromQuestionId, jobQuestionId, storedDecision } from './lib/uncertainty.js'
 import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
+import { openApiDocument } from './api/openapi.js'
 import { parseVerification } from './lib/verification.js'
 import { cachedRouterProbe } from './lib/routerHealth.js'
 import { changeStoryAttribution, readChangeStory, type ChangeStory } from './lib/changeStory.js'
@@ -1761,6 +1762,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const page = rows.slice(0, limit)
     const last = page[page.length - 1]
     return { data: page.map(jobSummary), next_cursor: rows.length > limit && last !== undefined ? last.id : null }
+  })
+
+  // #1243: the contract is public — it names the instance's routes, not its
+  // data — so a control room can generate a client before it holds a token. It
+  // sits beside the route it describes, and `test/openapi.test.ts` refuses a
+  // `/api/v1/*` route that the document does not declare.
+  app.get('/api/v1/openapi.json', async (_request, reply) => {
+    return reply.header('cache-control', 'no-store').send(openApiDocument())
   })
 
   app.get('/console', async (request, reply) => {

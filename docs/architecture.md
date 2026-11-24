@@ -1017,6 +1017,13 @@ mapper is the boundary: the row also holds a callback hash, a platform token
 hash and a callback secret, and none of them is in the response. See
 `docs/api.md` for the contract.
 
+`GET /api/v1/openapi.json` serves that contract as an OpenAPI 3.1 document
+(`src/api/openapi.ts`) without a token, because it names the instance's routes
+and not its data. The document is data beside the routes, and
+`test/openapi.test.ts` pins it to the `/api/v1/*` registrations in `src/app.ts`
+in both directions, so a new public route cannot ship undocumented. The gateway
+routes under `/v1/*` are not in it: they follow the OpenAI shape, not this one.
+
 ### Model gateway
 
 `/v1/*` is OpenAI-compatible and authenticated with `flg_` tokens. A token
