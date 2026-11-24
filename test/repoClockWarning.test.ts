@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { Store } from '../src/db.js'
 import { dashboardPage, repoPage } from '../src/views/pages.js'
 import type { ClockState } from '../src/repos/app.js'
@@ -29,7 +29,7 @@ const failing: ClockState = {
 // The old fixture built a fresh store per render, so the job carried a
 // wall-clock `created_at` read at call time and the two pages could differ by
 // one second when a boundary fell between them. The page is now a function of
-// the record: both renders below read one job that was built once with these
+// the record: every render below reads one job that was built once with these
 // stamps, and the rendered line is the literal below, not "now".
 const FIXED_AT = '2026-11-23T21:25:43.500Z'
 const FIXED_LABEL = '2026-11-23 21:25:43 UTC'
@@ -75,49 +75,46 @@ function makeRepoFixture(): { store: Store; render: (clock?: ClockState) => stri
   return { store, render }
 }
 
+// #1300: one store and one job for the whole file, so `renderRepo` can keep the
+// call shape these tests already had. The record is the fixture; the wall clock
+// is no longer an input to any assertion here.
+const repoFixture = makeRepoFixture()
+after(() => repoFixture.store.close())
+
+function renderRepo(clock?: ClockState): string {
+  return repoFixture.render(clock)
+}
+
 function textOf(html: string): string {
   return html.replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ')
 }
 
 test('a failing clock paints the dashboard banner on the repository page, above the sections', () => {
-  const fixture = makeRepoFixture()
-  try {
-    const html = fixture.render(failing)
-    const banners = html.match(/id="clock-fail"/g) ?? []
-    assert.equal(banners.length, 1, `expected exactly one clock banner on the repository page, rendering it ${banners.length} times`)
-    const opening = html.match(/<div class="banner bad" id="clock-fail"[^>]*>/)?.[0] ?? ''
-    assert.match(opening, /role="alert"/, 'the banner announces itself')
-    const text = textOf(html)
-    assert.ok(text.includes('1686'), 'the banner names the measured offset')
-    assert.ok(text.includes('120'), 'the banner names the threshold')
-    assert.ok(text.includes('timedatectl set-ntp true'), 'the banner carries the recovery command')
-    // Visible on load: the page's own sections, not a collapsed detail, follow it.
-    const banner = html.indexOf('id="clock-fail"')
-    const sections = html.indexOf('class="repo-subnav"')
-    assert.ok(banner > 0 && sections > 0, 'the banner and the section nav both render')
-    assert.ok(banner < sections, 'the banner sits above the sections, not inside one')
-  } finally {
-    fixture.store.close()
-  }
+  const html = renderRepo(failing)
+  const banners = html.match(/id="clock-fail"/g) ?? []
+  assert.equal(banners.length, 1, `expected exactly one clock banner on the repository page, rendering it ${banners.length} times`)
+  const opening = html.match(/<div class="banner bad" id="clock-fail"[^>]*>/)?.[0] ?? ''
+  assert.match(opening, /role="alert"/, 'the banner announces itself')
+  const text = textOf(html)
+  assert.ok(text.includes('1686'), 'the banner names the measured offset')
+  assert.ok(text.includes('120'), 'the banner names the threshold')
+  assert.ok(text.includes('timedatectl set-ntp true'), 'the banner carries the recovery command')
+  // Visible on load: the page's own sections, not a collapsed detail, follow it.
+  const banner = html.indexOf('id="clock-fail"')
+  const sections = html.indexOf('class="repo-subnav"')
+  assert.ok(banner > 0 && sections > 0, 'the banner and the section nav both render')
+  assert.ok(banner < sections, 'the banner sits above the sections, not inside one')
 })
 
 test('the repository page is unchanged for an ok clock and for no reading at all', () => {
-  const fixture = makeRepoFixture()
-  try {
-    const ok: ClockState = { state: 'ok', skewSeconds: 3, measuredAt: '2026-11-23T21:25:43.933Z', thresholdSeconds: 120 }
-    assert.equal(fixture.render(ok).includes('id="clock-fail"'), false, 'an ok clock paints nothing')
-    assert.equal(fixture.render().includes('id="clock-fail"'), false, 'no reading paints nothing')
-    const okPage = fixture.render(ok)
-    const absentPage = fixture.render()
-    assert.equal(okPage, absentPage, 'an ok clock renders exactly like an absent one')
-    assert.ok(textOf(okPage).includes(FIXED_LABEL), `the page renders the stored instant ${FIXED_LABEL}, not the wall clock`)
-  } finally {
-    fixture.store.close()
-  }
+  const ok: ClockState = { state: 'ok', skewSeconds: 3, measuredAt: '2026-11-23T21:25:43.933Z', thresholdSeconds: 120 }
+  assert.equal(renderRepo(ok).includes('id="clock-fail"'), false, 'an ok clock paints nothing')
+  assert.equal(renderRepo(undefined).includes('id="clock-fail"'), false, 'no reading paints nothing')
+  assert.equal(renderRepo(ok), renderRepo(undefined), 'an ok clock renders exactly like an absent one')
+  assert.ok(textOf(renderRepo(ok)).includes(FIXED_LABEL), `the page renders the stored instant ${FIXED_LABEL}, not the wall clock`)
 })
 
 test('both pages render the same banner markup and sentence for the same clock', () => {
-  const fixture = makeRepoFixture()
   const store = new Store(':memory:')
   try {
     const user = makeUser(store, { login: 'clock-both', status: 'approved' })
@@ -132,11 +129,10 @@ test('both pages render the same banner markup and sentence for the same clock',
     })
     const bannerOf = (html: string): string => html.match(/<div class="banner bad" id="clock-fail"[^>]*>[\s\S]*?<\/div>/)?.[0] ?? ''
     const fromDashboard = bannerOf(dashboard)
-    const fromRepo = bannerOf(fixture.render(failing))
+    const fromRepo = bannerOf(renderRepo(failing))
     assert.notEqual(fromDashboard, '', 'the dashboard still carries the banner')
     assert.equal(fromRepo, fromDashboard, 'one wording, one component: the two pages cannot drift apart')
   } finally {
     store.close()
-    fixture.store.close()
   }
 })
