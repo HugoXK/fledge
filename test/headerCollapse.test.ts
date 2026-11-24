@@ -174,6 +174,10 @@ test('the 420px band takes chrome off the row, never a control, so 360 fits with
   for (const selector of ['.lang a', '.account-exit']) {
     assert.match(rule(css, selector), /min-(height|width):\s*var\(--touch\)/, `${selector} must keep its --touch floor`)
   }
-  // The mark alone is not a link name, so the brand carries one of its own.
-  assert.match(render(), /<a class="brand" href="\/" aria-label="Fledge"/, 'the mark-only brand needs an accessible name of its own')
+  // #1240: the brand's accessible name is its visible wordmark. An aria-label
+  // that does not repeat the visible text fails WCAG 2.5.3 (`label-content-name-
+  // mismatch` in axe), and below 420px the mark is the only visible text, so a
+  // name of "Fledge" alone would not contain it — the wordmark must be the name.
+  assert.match(render(), /<a class="brand" href="\/"><span class="mark">F<\/span>/, 'the brand name must be its visible wordmark, not a label beside it')
+  assert.doesNotMatch(render(), /<a class="brand"[^>]*aria-label/, 'an aria-label that is not the visible wordmark fails label-in-name')
 })
