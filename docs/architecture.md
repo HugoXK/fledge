@@ -2840,6 +2840,21 @@ listing, and every row links to the page that already owns it.
 | `budget_scopes` | one stored CNY cap per scope — `repository` keyed by repository id, `principal` keyed by `principal:user:<id>` — with the action it takes (`alert`/`pause`/`cancel`); a missing row means no cap, never a zero cap, and the job scope keeps reading `repos.job_budget_cny` (#697) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
+### Audit hash chain (#1233)
+
+`audit_log` is append-only in code and linked in storage. Each new row carries a
+`prev_hash` equal to the previous row's `hash`, and its own `hash` is SHA-256 over
+`id`, `at`, `user_id`, `action`, `detail` and `prev_hash` (canonical JSON, `v1`
+prefix). `Store.audit` writes the row and its link in one savepoint, so a caller
+that is already inside a transaction cannot leave a half row. Rows written before
+the chain keep a NULL hash and are reported unverified, not forged; the first
+hashed row is recorded in the `audit_chain_start_id` setting.
+
+`npm run audit:verify -- --db <copy.db>` uses a read-only `DatabaseSync` and the
+shared `verifyAuditChain` function, exits non-zero at the first edit, delete or
+reorder and prints `--json` for a machine. The chain is not a signature: an
+administrator who rewrites every following hash can rebuild it.
+
 ## Deployment records
 
 A release and a deployment are separate events. `scripts/verify-release.mjs`
