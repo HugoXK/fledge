@@ -141,6 +141,11 @@ function releaseVersion(value) {
 // outlive the review that justified it, and one minor would lapse before a single
 // release could carry the follow-up.
 export function approvedUnusedExpiryProblems(entries, version, path = ALLOWLIST_FILE) {
+  // With no entries there is nothing to bound, so a tree that is not a minor
+  // release has no problem to report. Failing here would red every patch release
+  // (ADR 0008 bumps the patch on all but the week's first day) over an empty list
+  // the project ships, which is how a check gets deleted instead of read.
+  if (entries.length === 0) return []
   const current = releaseVersion(version)
   if (current === null) {
     return [`${path}: ${JSON.stringify(version)} is not a minor release version (x.y.0), so no exemption can be bounded against it`]

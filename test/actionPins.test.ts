@@ -490,9 +490,29 @@ test('an exemption lapses at its release version and cannot outrun two minors', 
   // A patch version is not a minor release version, and there is no "no expiry".
   assert.match(approvedUnusedExpiryProblems(entries('0.6.1'), '0.5.0').join('\n'), /not a minor release version/)
 
-  // The shipped tree carries no exemption, so nothing lapses at its own version.
+  // The shipped tree carries no exemption, so nothing can lapse on it at any
+  // version it releases. A patch release has to stay green: releases bump the
+  // patch on every day but the week's first (ADR 0008), so the tree the day after
+  // `0.5.0` is `0.5.1` — with no entries there is no bound to check and no problem
+  // to print, and the checkout that vibrates red with an empty list teaches people
+  // to delete the check rather than read it.
+  const shipped = readAllowlistFile().approved_unused
   const treeVersion = JSON.parse(readFileSync('package.json', 'utf8')).version as string
-  assert.deepEqual(approvedUnusedExpiryProblems(readAllowlistFile().approved_unused, treeVersion), [])
+  assert.deepEqual(shipped, [])
+  for (const version of [treeVersion, '0.5.0', '0.5.1']) {
+    assert.deepEqual(
+      approvedUnusedExpiryProblems(shipped, version),
+      [],
+      `an empty approved_unused must stay green on a ${version} tree`,
+    )
+  }
+
+  // Skipped only because there is nothing to bound: one real entry on a patch tree
+  // is still refused, so the empty list is not a loophole for an unbounded entry.
+  const misbounded = approvedUnusedExpiryProblems(entries('0.6.0'), '0.5.1')
+  assert.equal(misbounded.length, 1)
+  assert.match(String(misbounded[0]), /not a minor release version/)
+  assert.match(String(misbounded[0]), /0\.5\.1/)
 })
 
 test('a malformed allowlist refuses to load instead of allowing everything', (t) => {
