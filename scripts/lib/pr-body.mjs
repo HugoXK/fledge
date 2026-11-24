@@ -22,20 +22,51 @@ const NOT_RUN = /(^|\n)[ \t]*Not run[^\n:]*[:：]/i
 const RAN_HEADING = /^[ \t]*#{1,6}[ \t]+Ran\b[^\n]*/im
 const NOT_RUN_HEADING = /^[ \t]*#{1,6}[ \t]+Not run\b[^\n]*/im
 
+// A code fence quotes a shape, so a line inside one is never evidence about what
+// was executed (#1294). The two evidence rules therefore read the body with its
+// fenced blocks removed; everything else in this file reads the body as written.
+//
+// The scan follows CommonMark narrowly: a fence opens with three or more
+// backticks or tildes at up to three spaces of indent, closes on the same
+// character with at least the same run length and nothing else on its line, and
+// an unterminated fence runs to the end of the body — the fail-closed answer for
+// a body whose author meant to quote something and did not close it.
+const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/
+const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
+
+function unfenced(body) {
+  const kept = []
+  let fence = null
+  for (const line of String(body ?? '').split(/\r?\n/)) {
+    if (fence === null) {
+      const open = FENCE_OPEN.exec(line)
+      if (open === null) {
+        kept.push(line)
+        continue
+      }
+      fence = { char: open[1][0], length: open[1].length }
+      continue
+    }
+    const close = FENCE_CLOSE.exec(line)
+    if (close !== null && close[1][0] === fence.char && close[1].length >= fence.length) fence = null
+  }
+  return kept.join('\n')
+}
+
 export function hasRanSection(body) {
-  return RAN.test(String(body ?? ''))
+  return RAN.test(unfenced(body))
 }
 
 export function hasNotRunSection(body) {
-  return NOT_RUN.test(String(body ?? ''))
+  return NOT_RUN.test(unfenced(body))
 }
 
 export function ranHeading(body) {
-  return RAN_HEADING.exec(String(body ?? ''))?.[0]?.trim() ?? null
+  return RAN_HEADING.exec(unfenced(body))?.[0]?.trim() ?? null
 }
 
 export function notRunHeading(body) {
-  return NOT_RUN_HEADING.exec(String(body ?? ''))?.[0]?.trim() ?? null
+  return NOT_RUN_HEADING.exec(unfenced(body))?.[0]?.trim() ?? null
 }
 
 export function attributionList(policy) {

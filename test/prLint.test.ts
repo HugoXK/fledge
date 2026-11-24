@@ -296,6 +296,106 @@ test('a ## Not run: heading is reported as a heading', async () => {
   assert.doesNotMatch(errors[0]!, /needs a "Not run:" section/)
 })
 
+// --- evidence lines inside a code fence (#1294) -----------------------------
+// A fenced block quotes a shape; it is never a record of what was executed, so
+// the `Ran:` and `Not run:` rules read only the lines outside a fence.
+
+const FENCED_RAN = `Written-by: HugoXK
+Bot: Fledge Platform Dev-1
+
+Fixes #96
+
+Nothing was run for this change.
+
+\`\`\`
+Ran: nothing
+\`\`\`
+
+Not run: Docker image, real SMTP
+`
+
+const FENCED_NOT_RUN = `Written-by: HugoXK
+Bot: Fledge Platform Dev-1
+
+Fixes #96
+
+Ran:
+- \`npm run check\` — pass
+
+\`\`\`
+Not run: Docker image
+\`\`\`
+`
+
+test('a Ran: line that exists only inside a code fence is reported as missing', async () => {
+  const { checkBody, hasRanSection } = await bodyRules()
+  assert.equal(hasRanSection(FENCED_RAN), false)
+  assert.deepEqual(checkBody(FENCED_RAN, POLICY), ['the PR body needs a "Ran:" section'])
+})
+
+test('a Not run: line that exists only inside a code fence is reported as missing', async () => {
+  const { checkBody, hasNotRunSection } = await bodyRules()
+  assert.equal(hasNotRunSection(FENCED_NOT_RUN), false)
+  assert.deepEqual(checkBody(FENCED_NOT_RUN, POLICY), ['the PR body needs a "Not run:" section'])
+})
+
+test('a real Ran: line outside every fence still satisfies the rule', async () => {
+  const { checkBody } = await bodyRules()
+  assert.deepEqual(checkBody(OWNER_SIGNED_WITH_BOT, POLICY), [])
+})
+
+test('a ### Ran: heading is still rejected as a heading, not accepted as the section', async () => {
+  const { checkBody } = await bodyRules()
+  const body = OWNER_SIGNED_WITH_BOT.replace('Ran:\n', '### Ran:\n')
+  const errors = checkBody(body, POLICY)
+  assert.equal(errors.length, 1)
+  assert.match(errors[0]!, /has a "### Ran:" heading/)
+})
+
+test('a line after a closing fence is real text again', async () => {
+  const { checkBody, hasRanSection } = await bodyRules()
+  const body = `Written-by: HugoXK
+
+Fixes #96
+
+\`\`\`
+Ran: nothing
+\`\`\`
+
+Ran:
+- \`npm run check\` — pass
+
+Not run: Docker image
+`
+  assert.equal(hasRanSection(body), true)
+  assert.deepEqual(checkBody(body, POLICY), [])
+})
+
+test('a ~~~ fence hides an evidence line exactly like a backtick fence', async () => {
+  const { hasRanSection } = await bodyRules()
+  assert.equal(hasRanSection(`Written-by: HugoXK\n\n~~~\nRan: nothing\n~~~\n\nNot run: Docker\n`), false)
+})
+
+test('an unterminated fence at the end of the body is treated as a fence', async () => {
+  const { checkBody, hasRanSection, hasNotRunSection } = await bodyRules()
+  const body = `Written-by: HugoXK
+
+Fixes #96
+
+Nothing was run for this change.
+
+\`\`\`
+Ran: nothing
+Not run: nothing
+`
+  assert.equal(hasRanSection(body), false)
+  assert.equal(hasNotRunSection(body), false)
+  assert.deepEqual(checkBody(body, POLICY), [
+    'the PR body needs a "Ran:" section',
+    'the PR body needs a "Not run:" section',
+  ])
+})
+
 test('the shipped policy keeps attribution and verdict authorship apart', async () => {
   const { checkBody } = await bodyRules()
   const policy = JSON.parse(readFileSync(new URL('../.github/agent/review-policy.json', import.meta.url), 'utf8')) as {
