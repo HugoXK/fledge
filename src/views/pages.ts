@@ -292,6 +292,16 @@ function clockFailAlert(clock: ClockState | undefined): AlertView | null {
   }
 }
 
+// #1255: the same banner on every page that can start or promise work. The
+// dashboard shipped it in #1198 and the repository page — the page with Run now
+// and the next-run line — said nothing, so this is one renderer rather than a
+// second sentence about the same fact.
+function clockFailBanner(clock: ClockState | undefined, t: Translate): string {
+  const alert = clockFailAlert(clock)
+  if (alert === null) return ''
+  return `<div class="banner bad" id="clock-fail" role="alert"><strong>${escapeHtml(t('平台时钟未通过校验', 'The platform clock failed its check'))}</strong> ${escapeHtml(alertText(t, alert))}</div>`
+}
+
 function failureHref(action: FailureAction, repoId: string): string {
   if (action === 'reauthorize') return `/auth/github/reauthorize?next=${encodeURIComponent(`/repos/${repoId}`)}`
   if (action === 'settings') return '/settings'
@@ -1572,7 +1582,6 @@ export function dashboardPage(input: {
   const openWorkItems = personal?.openWorkItems ?? 0
   const windowDays = input.windowDays ?? 7
   const alerts = input.alerts ?? []
-  const clockAlert = clockFailAlert(input.clock)
   const reposPage = input.reposPage ?? 1
   const reposTotal = input.reposTotal ?? repos.length
   const jobsPage = input.jobsPage ?? 1
@@ -1580,6 +1589,7 @@ export function dashboardPage(input: {
   const jobFilter = input.jobFilter ?? { repo: '', status: '' as const, kind: '', priority: '' }
   const repoOptions = input.repoOptions ?? []
   const t = translator(locale)
+  const clockBanner = clockFailBanner(input.clock, t)
   const quota = quotaView(viewer.user, config)
   // #472 slice 3: page-level messages are entries, not hand-written banners.
   // The stack owns their order, region and dismiss control.
@@ -1684,8 +1694,8 @@ export function dashboardPage(input: {
       <div class="masthead-meta"><span><b>${reposTotal}</b> ${escapeHtml(t('个仓库', `repositor${reposTotal === 1 ? 'y' : 'ies'}`))}</span><span><b>${jobsTotal}</b> ${escapeHtml(t('个任务', `job${jobsTotal === 1 ? '' : 's'}`))}</span><span><b>${openWorkItems}</b> ${escapeHtml(t('个未完成工作项', `open work item${openWorkItems === 1 ? '' : 's'}`))}</span></div>
     </div>
     ${loopRail(nextAction, t, loopRepos.some((repo) => repo.goal.trim() !== ''))}
-  </section>${clockAlert === null ? '' : `
-  <div class="banner bad" id="clock-fail" role="alert"><strong>${escapeHtml(t('平台时钟未通过校验', 'The platform clock failed its check'))}</strong> ${escapeHtml(alertText(t, clockAlert))}</div>`}
+  </section>${clockBanner === '' ? '' : `
+  ${clockBanner}`}
   ${noticeBlock(locale, viewer, notifications)}
   ${nextActionSection(nextAction, t)}
   ${repoDecisionsSection(decisions, t)}
@@ -1785,7 +1795,7 @@ export interface BudgetScopeView {
   unknownCount: number
 }
 
-export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; errorField?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[]; skillSources?: SkillBundleSourceRow[]; canMaintain?: boolean; deliveryOutcomes?: DeliveryOutcomeRow[]; playbookTextHash?: string | null }): string {
+export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer; recentAuthAt?: string | null; repo: RepoRow; instance?: RepoInstanceRow; jobs: JobRow[]; prJobs?: JobRow[]; workItems?: WorkItemRow[]; pendingPlan?: { jobId: string; deadline: string }; workState?: string; reviewTrend?: { week: ReviewTrendWindow; month: ReviewTrendWindow }; commands?: Record<string, { revision: number; idempotencyKey: string }>; models?: Array<ProviderModelRow & { provider_label: string }>; repoModelIds?: string[]; repoDefaultModelId?: string; repoBotModels?: Array<{ role: string; provider_model_id: string }>; repoSpendCny?: number; questions?: InboxQuestion[]; chiefMessages?: ChiefMessage[]; activeJob?: boolean; jobsPage?: number; jobsTotal?: number; queued?: JobRow[]; notice?: string; error?: string; errorField?: string; releases?: ReleaseRow[]; releaseRefused?: string; releaseTagged?: string; releaseRetagged?: string; releaseChecked?: string; postmortems?: PostmortemRow[]; recurrences?: PostmortemRecurrenceRow[];  providers?: ModelProviderRow[]; workflowFailures?: WorkflowFailureRow[]; usage?: { repos: number; reposCap: number; instances: number; instancesCap: number }; scheduledNext?: ScheduledNext; securityFindings?: SecurityFindingRow[]; budgetScopes?: BudgetScopeView[]; skillSources?: SkillBundleSourceRow[]; canMaintain?: boolean; deliveryOutcomes?: DeliveryOutcomeRow[]; playbookTextHash?: string | null; clock?: ClockState }): string {
   const { config, locale, viewer, repo, instance, jobs, notice, error } = input
   const ranks = input.queued === undefined ? undefined : queueRanks(input.queued)
   const workItems = input.workItems ?? []
@@ -2568,7 +2578,10 @@ export function repoPage(input: { config: Config; locale: Locale; viewer: Viewer
       return `<li><code>${escapeHtml(release.tag_name)}</code> <span class="fine">${escapeHtml(release.target_sha.slice(0, 12))} · ${escapeHtml(release.status)}${run}${external}${draft}${organised}</span>${sourceList}${analysisBlock} <form method="post" action="/repos/${escapeHtml(repo.id)}/releases/${escapeHtml(release.id)}/check" class="inline">${csrf(viewer)}<button class="btn btn-ghost" type="submit">${escapeHtml(t('检查工作流', 'Check run'))}</button></form>${analyze}</li>`
     }).join('')}</ul>`}
   </section>`
-  const body = `<div class="repo-page">${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${skillsCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryOutcomesCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
+  // #1255: the page that offers Run now carries the verdict that refuses it,
+  // above the tabs so it is visible without expanding anything.
+  const clockBanner = clockFailBanner(input.clock, t)
+  const body = `<div class="repo-page">${clockBanner}${repoHeader}${repoTabs}${repoSection('overview', `${triageCard}${inboxSection(locale, viewer, questions, `/repos/${repo.id}`)}${chiefCard}${memoryCard}${gateCard}${rulesCard}${skillsCard}${securityFindingsCard(t, viewer, repo, securityFindings)}`)}${repoSection('delivery', `${releaseCard}${workflowFailuresCard}${postmortemCard}${reviewTrendCard}${deliveryOutcomesCard}${deliveryCard}${jobsCard}`)}${repoSection('work', `${workCard}`)}${repoSection('team', `${roleCard}${instanceCard}`)}${repoSection('settings', settingsCards)}${repoSection('danger', dangerCard)}</div>`
   return layout({ title: `${upstreamOwner}/${upstreamName}`, viewer, body: `${body}${advanced ? '' : `<script src="${assetUrl('/assets/chief.js')}" defer></script>`}<script src="${assetUrl('/assets/repoTabs.js')}" defer></script>`, config, locale, path: `/repos/${repo.id}`, active: 'dashboard', notice, error, notifications: pageMessages })
 }
 
