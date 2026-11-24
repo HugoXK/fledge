@@ -862,7 +862,9 @@ node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` 
 
 `pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
-writer, and any `risk:T*` label against the computed tier.
+writer, and any `risk:T*` label against the computed tier. A `Ran:` or
+`Not run:` line counts only as real body text: the same word inside a fenced code
+block is an example, so it satisfies neither rule (#1294).
 
 One exemption is structural and keyed on a **pair**: when the pull request's
 author login is exactly `dependabot[bot]` *and* the body's first line starts with
