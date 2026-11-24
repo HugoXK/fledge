@@ -39,10 +39,12 @@ async function backupBanner(options: { keepEncrypted?: number; locale: 'en' | 'z
     })
     assert.equal(page.statusCode, 200)
     const banners = [...page.body.matchAll(/<div class="banner warn">([\s\S]*?)<\/div>/g)]
-      .map((match) => match[1])
+      .map((match) => match[1] ?? '')
       .filter((body) => /backup|备份/i.test(body))
     assert.equal(banners.length, 1, 'the preview must carry exactly one backup banner')
-    return banners[0]
+    const [banner] = banners
+    assert.ok(banner !== undefined, 'the backup banner must be readable')
+    return banner
   } finally {
     await built.close()
   }
