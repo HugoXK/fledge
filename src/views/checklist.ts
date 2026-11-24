@@ -8,7 +8,14 @@ import type { Translate } from '../i18n.js'
 
 export type SetupStepKey = 'repo' | 'role' | 'model' | 'instance' | 'job'
 
-export interface SetupState {
+/**
+ * Whether this deployment runs per-repository workspaces at all. An empty
+ * `FLYBOT_INSTANCE_IMAGE` means it runs without containers, so a workspace
+ * cannot be started and must be neither a step nor a blocker (#1281).
+ */
+export interface SetupWorkspaces { instancesUsed: boolean }
+
+export interface SetupState extends SetupWorkspaces {
   repos: number
   roleChosen: boolean
   // A provider with at least one model exists, but it may not be selected by a
@@ -27,12 +34,6 @@ export interface SetupState {
   /** Config value: below this remaining balance the step warns and recommends an own model. */
   platformQuotaComfortCny: number
   instanceReady: boolean
-  /**
-   * Whether this deployment runs per-repository workspaces at all. An empty
-   * `FLYBOT_INSTANCE_IMAGE` means it runs without containers, so a workspace
-   * cannot be started and must be neither a step nor a blocker (#1281).
-   */
-  instancesUsed: boolean
   jobs: number
   // Status of the account's *first* job, all-time, not a window-scoped count:
   // a success that fell out of the 7-day window must not read as a failure.
