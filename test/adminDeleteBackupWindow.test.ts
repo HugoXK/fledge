@@ -82,10 +82,13 @@ test('neither the trial-purge paragraph nor the view states the fixed window', (
     .split('\n\n')
     .find((block) => /Backups keep the account/.test(block))
   assert.ok(paragraph !== undefined, 'docs/security.md must keep the trial-purge backup sentence')
-  assert.doesNotMatch(paragraph, /GitHub\s*14/, 'the doc must drop the unsourced GitHub-side 14')
-  assert.doesNotMatch(paragraph, /\b30\s*days\b/i, 'the doc must not state the keep count as a number of days')
-  assert.match(paragraph, /BACKUP_KEEP_ENCRYPTED/, 'the doc must name the knob that sets the keep count')
-  assert.match(paragraph, /erasing a backup early is not part of this control/, 'the doc must keep the control boundary')
+  // Markdown wraps the sentence across lines, so the assertion reads it as one
+  // run of text; a line break is not a different sentence.
+  const sentence = paragraph.replace(/\s+/g, ' ')
+  assert.doesNotMatch(sentence, /GitHub\s*14/, 'the doc must drop the unsourced GitHub-side 14')
+  assert.doesNotMatch(sentence, /\b30\s*days\b/i, 'the doc must not state the keep count as a number of days')
+  assert.match(sentence, /BACKUP_KEEP_ENCRYPTED/, 'the doc must name the knob that sets the keep count')
+  assert.match(sentence, /erasing a backup early is not part of this control/, 'the doc must keep the control boundary')
 
   const view = readFileSync(new URL('../src/views/pages.ts', import.meta.url), 'utf8')
   assert.doesNotMatch(view, /GitHub 14/, 'the view must not carry the unsourced GitHub-side 14 literal')
