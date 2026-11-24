@@ -34,6 +34,10 @@ const ACTION_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 // pull request that reaches `expires_at` is where a person has to decide, so a
 // lapse lands in front of a human instead of on a date nobody scheduled.
 const RELEASE_VERSION = /^(\d+)\.(\d+)\.0$/
+// A checkout is any released tree, including the patch releases the daily cadence
+// produces (ADR 0008 bumps the patch on every day but the week's first). Its bound
+// is the minor it belongs to: `0.5.1` is bounded as `0.5.0`.
+const TREE_VERSION = /^(\d+)\.(\d+)(?:\.\d+)?$/
 const APPROVED_UNUSED_FIELDS = 'expires_at,issue,name'
 
 // Resolved from this file, never from the working directory: the checker runs
@@ -134,6 +138,14 @@ function releaseVersion(value) {
   return Number(match[1]) * 1000 + Number(match[2])
 }
 
+// The minor a checkout belongs to, whatever its patch. A tree that is not a
+// version at all cannot bound anything, and the caller says so instead of guessing.
+function treeMinor(value) {
+  const match = TREE_VERSION.exec(String(value))
+  if (match === null) return null
+  return Number(match[1]) * 1000 + Number(match[2])
+}
+
 // The bound, as failures rather than prose. Equality fails deliberately: the
 // release pull request that bumps the tree to `expires_at` is exactly the moment a
 // person has to delete or renew the entry, so that pull request cannot go green
@@ -141,14 +153,14 @@ function releaseVersion(value) {
 // outlive the review that justified it, and one minor would lapse before a single
 // release could carry the follow-up.
 export function approvedUnusedExpiryProblems(entries, version, path = ALLOWLIST_FILE) {
-  // With no entries there is nothing to bound, so a tree that is not a minor
-  // release has no problem to report. Failing here would red every patch release
-  // (ADR 0008 bumps the patch on all but the week's first day) over an empty list
-  // the project ships, which is how a check gets deleted instead of read.
+  // With no entries there is nothing to bound, so a tree that is not a release has
+  // no problem to report. Failing here would red every patch release (ADR 0008 bumps
+  // the patch on all but the week's first day) over an empty list the project ships,
+  // which is how a check gets deleted instead of read.
   if (entries.length === 0) return []
-  const current = releaseVersion(version)
+  const current = treeMinor(version)
   if (current === null) {
-    return [`${path}: ${JSON.stringify(version)} is not a minor release version (x.y.0), so no exemption can be bounded against it`]
+    return [`${path}: ${JSON.stringify(version)} is not a release version (x.y.z), so no exemption can be bounded against it`]
   }
   const problems = []
   for (const entry of entries) {

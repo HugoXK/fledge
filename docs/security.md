@@ -1053,14 +1053,16 @@ One state is not drift. `approved_unused` in the same file holds entries of
 exactly `name`, `issue` and `expires_at`: an action this project has pre-approved
 by a reviewed decision while no workflow uses it yet. That is the only legal way
 to land a list entry before its use, and it is bounded rather than open-ended —
-`expires_at` is a minor release version (`x.y.0`), a tree at or past that version
-fails its suite, and the message names the entry, its issue and its expiry plus
-both legal moves: delete it, or renew it with a comment on the issue saying why
-the pre-approval still stands. The bound only applies once there is an entry to
-bound: an empty `approved_unused` — the state every tree ships — stays green on
-any version, including the patch releases the daily cadence produces
-(`x.y.1`), so the check cannot red a release over a list it did not add to. The
-entry also expires on first use: a workflow
+`expires_at` is a minor release version (`x.y.0`), a tree whose minor is at or
+past that version fails its suite, and the message names the entry, its issue and
+its expiry plus both legal moves: delete it, or renew it with a comment on the
+issue saying why the pre-approval still stands. The tree is read as the checkout
+it is: any released `x.y.z` counts, and it is bounded as the minor it belongs to,
+so `0.5.1` is bounded as `0.5.0` — a valid entry does not die on the patch
+releases the daily cadence produces (`docs/decisions/0008-release-cadence.md`).
+The bound only applies once there is an entry to bound: an empty
+`approved_unused` stays green on any version, so the check cannot red a release
+over a list it did not add to. The entry also expires on first use: a workflow
 that uses an exempted action while the entry is still listed fails the suite, and
 the change that adds the use deletes the entry. Until the check moves into the
 base checker, this rule lives in the tree's own suite, so removing it is a
