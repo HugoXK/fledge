@@ -703,6 +703,11 @@ input:disabled, select:disabled, textarea:disabled { opacity: 0.55; cursor: not-
 .btn-danger { background: transparent; color: var(--danger); border-color: var(--danger-a40); box-shadow: none; }
 .btn-danger:hover { background: var(--danger-a10); border-color: var(--danger-a58); }
 .link { background: none; border: 0; color: var(--accent); cursor: pointer; padding: 0; font: inherit; }
+/* 1240: a link that sits in a sentence and is marked by colour alone is a
+   link a reader with a colour-vision difference cannot find (WCAG 1.4.1, axe
+   `link-in-text-block`). The underline is scoped to a paragraph, where the link
+   is one word among prose; a link that is the whole control keeps its shape. */
+p > .link { text-decoration: underline; text-underline-offset: 2px; }
 .link:hover { text-decoration: underline; }
 .link.bad { color: var(--danger); }
 .link.good { color: var(--good); }

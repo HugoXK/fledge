@@ -16,7 +16,10 @@
   padding: var(--space-2) var(--space-3);
   border: 1px solid var(--accent-strong);
   border-radius: var(--radius-pill);
-  background: var(--accent);
+  /* 1240: `--accent` is the foreground green; behind `--accent-ink` it measured
+     about 1.5:1 in the dark palette. Every button pairs the strong step with the
+     ink, so the launcher does too and measures above 4.5:1 in both schemes. */
+  background: var(--accent-strong);
   color: var(--accent-ink);
   font: 700 var(--text-sm)/1 var(--font, inherit);
   box-shadow: var(--shadow);
