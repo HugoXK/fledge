@@ -30,11 +30,6 @@ function pathDeclarationCount(path: string, source: string): number {
   return [...source.matchAll(new RegExp(`['"]${quoted}['"]\\s*:`, 'g'))].length
 }
 
-function splitRoute(route: string): { method: string; path: string } {
-  const space = route.indexOf(' ')
-  return { method: route.slice(0, space), path: route.slice(space + 1) }
-}
-
 async function serveContract(): Promise<{ app: Awaited<ReturnType<typeof buildApp>>['app']; status: number; document: Record<string, unknown> }> {
   const built = await buildApp({ config: testConfig(), store: new Store(':memory:'), mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
   const response = await built.app.inject({ method: 'GET', url: '/api/v1/openapi.json' })
@@ -54,21 +49,23 @@ test('the contract is served at GET /api/v1/openapi.json as OpenAPI 3.1', async 
   }
 })
 
-test('every route src/app.ts registers is described in the contract, under its own method', async () => {
+// `paths` is flattened to `METHOD /path` entries, so the assertions below hold
+// per method: a `POST /api/v1/x` registered in `src/app.ts` fails unless the
+// contract describes that same verb, and a documented verb with no registration
+// fails the other way.
+test('every /api/v1 route src/app.ts registers appears exactly once in the contract', async () => {
   const { app, document } = await serveContract()
   try {
-    const paths = (document.paths ?? {}) as Record<string, Record<string, unknown>>
-    const registered = registeredRoutes(APP_SOURCE)
-    const apiV1Routes = [...registered].filter((route) => splitRoute(route).path.startsWith('/api/v1/'))
-    assert.ok(apiV1Routes.length > 0, 'the app registers at least one public API route')
-    for (const route of apiV1Routes) {
-      const { method, path } = splitRoute(route)
-      assert.equal(typeof paths[path]?.[method.toLowerCase()], 'object', `${route} is registered in src/app.ts but the contract does not describe it`)
+    const paths = Object.entries((document.paths ?? {}) as Record<string, Record<string, unknown>>).flatMap(([path, item]) =>
+      Object.keys(item).map((method) => `${method.toUpperCase()} ${path}`),
+    )
+    const registered = [...registeredRoutes(APP_SOURCE)].filter((route) => route.slice(route.indexOf(' ') + 1).startsWith('/api/v1/'))
+    assert.ok(registered.length > 0, 'the app registers at least one public API route')
+    for (const route of registered) {
+      assert.equal(paths.filter((path) => path === route).length, 1, `${route} is registered in src/app.ts but is not declared exactly once in the contract`)
     }
-    for (const [path, item] of Object.entries(paths)) {
-      for (const method of Object.keys(item)) {
-        assert.ok(registered.has(`${method.toUpperCase()} ${path}`), `the contract describes ${method.toUpperCase()} ${path}, but src/app.ts registers no such route`)
-      }
+    for (const path of paths.filter((entry) => entry.slice(entry.indexOf(' ') + 1).startsWith('/api/v1/'))) {
+      assert.ok(registered.includes(path), `the contract declares ${path}, but src/app.ts registers no such route`)
     }
   } finally {
     await app.close()
