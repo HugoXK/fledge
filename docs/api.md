@@ -246,6 +246,11 @@ curl 'http://localhost:8080/api/v1/openapi.json'
   registers — `GET /api/v1/jobs` and this route. The document lives in
   `src/api/openapi.ts`, and `test/openapi.test.ts` fails in both directions: a
   registered route missing from the contract, and a contract path with no route.
+  The check reads every registration verb and either quote style, through the
+  reader it shares with the endpoint-table check (`test/apiDocReader.ts`), so a
+  `POST` or a double-quoted registration cannot slip past it. It counts path
+  declarations in the contract's source too, because a duplicate key inside the
+  `paths` literal collapses before the served document could show it.
 - Session-only routes, the console pages and callbacks are not in it. The
   OpenAI-compatible `/v1/*` gateway keeps its own shape and is also absent.
 - When a status code or a field changes, `src/api/openapi.ts` changes in the same
