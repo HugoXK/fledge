@@ -21,6 +21,14 @@ export interface SlotIssue {
   body?: string | null
 }
 
+export interface SlotPlan {
+  shouldRelease: boolean
+  reason?: string
+  total?: number
+  features?: number
+  fragments?: number
+}
+
 export interface SlotWindow {
   slot: string
   day: string
@@ -36,7 +44,15 @@ export interface ObservedSlotRun {
   headSha: string
 }
 
-export type SlotWatchdogAction = 'invalid-clock' | 'too-early' | 'shipped' | 'missed' | 'already-open'
+export type SlotWatchdogAction =
+  | 'invalid-clock'
+  | 'too-early'
+  | 'shipped'
+  | 'missed'
+  | 'already-open'
+  | 'declined'
+
+export type SlotWatchdogAlarm = 'workflow-failed' | 'no-run' | 'plan-unavailable' | 'release-not-shipped'
 
 export interface SlotWatchdogDecision {
   action: SlotWatchdogAction
@@ -48,12 +64,15 @@ export interface SlotWatchdogDecision {
   release?: { tag: string; publishedAt: string }
   existingIssueNumber?: number
   observedRuns?: ObservedSlotRun[]
+  alarm?: SlotWatchdogAlarm
+  planReason?: string
   issue?: { title: string; body: string }
 }
 
 export declare const SLOT_HOUR_UTC: number
 export declare const GRACE_MINUTES: number
 export declare const SLOT_MARKER_PREFIX: string
+export declare const ALARMS: SlotWatchdogAlarm[]
 
 export declare function slotFor(now?: string | null, graceMinutes?: number): SlotWindow | null
 export declare function markerFor(slot?: string | null): string
@@ -63,4 +82,7 @@ export declare function decideSlotWatchdog(input?: {
   releases?: SlotRelease[]
   runs?: SlotRun[]
   issues?: SlotIssue[]
+  plan?: SlotPlan | null
 }): SlotWatchdogDecision
+
+export declare function planFromArtifactZip(bytes?: Uint8Array | Buffer | null): SlotPlan | null

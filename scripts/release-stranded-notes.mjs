@@ -9,9 +9,11 @@
 // name, so this appends one section that names each of them and writes the
 // fragment names to $GITHUB_OUTPUT for the release log line on #80.
 //
-// An unreadable `changelog.d` fails the step: a body that reads complete is
-// worse than no body, and `fragmentNames` throws instead of answering zero
-// (#548).
+// An unreadable `changelog.d` (`EACCES`, `EPERM`, `ENOTDIR`, anything but
+// absence) fails the step: a body that reads complete is worse than no body
+// (#548). An absent `changelog.d` is not unreadable: a tree with no
+// `changelog.d` answers zero names, this step exits 0, and no stranded section
+// is written (#1218).
 
 import { appendFileSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'

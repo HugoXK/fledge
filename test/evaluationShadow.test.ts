@@ -326,3 +326,76 @@ test('a refusal fixture that opened nothing keeps its evidence unknown', async (
   assert.equal(run.report.tasks[0]?.evidence, 'none')
   assert.equal(run.report.versions[0]?.evidence.none, 1)
 })
+
+/** One fixture of the given expectation, taken from the shipped holdout set. */
+function singleFixture(expected: 'refusal' | 'pull-request', id: string) {
+  const base = fixtureSet()
+  const source = base.fixtures[0]
+  assert.ok(source !== undefined)
+  return { ...base, fixtures: [{ ...source, id, expected }] }
+}
+
+/** A host that answers once, so the scored attempt is the one under test. */
+function oneAttempt(name: string, attempt: ShadowAttempt): ShadowHost {
+  return {
+    name,
+    signature: 'sha256:3333333333333333333333333333333333333333333333333333333333333333',
+    capabilities: { push: false, merge: false, liveAccess: false, tokens: false },
+    run: () => attempt,
+  }
+}
+
+const CRASHED_ATTEMPT: ShadowAttempt = {
+  pullRequest: null,
+  merged: false,
+  reviewScore: null,
+  verificationJson: null,
+  costUsd: 0,
+  durationMs: 10,
+  error: 'runner finished failed',
+}
+
+test('a crashed or timed-out attempt on a refusal fixture is not a correct refusal', async () => {
+  const version = VERSIONS[0]
+  assert.ok(version !== undefined)
+  // #1252: `pullRequest: null` is not by itself a correct refusal — a run that
+  // crashed or timed out opened nothing too, and the host records why in `error`.
+  for (const error of ['runner finished failed', 'runner timed out after 30m']) {
+    const run = await runShadow(singleFixture('refusal', 'must-refuse'), [version], oneAttempt('crashed-refusal', { ...CRASHED_ATTEMPT, error }))
+    assert.equal(run.ok, true)
+    if (!run.ok) return
+    const task = run.report.tasks[0]
+    assert.equal(task?.success, false, `a refusal fixture must not score \`${error}\` as a correct refusal`)
+    assert.equal(task?.failure, 'reported-error', 'the carried error keeps its existing category')
+    assert.equal(run.report.versions[0]?.successes, 0, 'a failed run must not count towards the success rate')
+  }
+})
+
+test('a refusal fixture that declined cleanly still scores a success', async () => {
+  const version = VERSIONS[0]
+  assert.ok(version !== undefined)
+  const declined: ShadowAttempt = {
+    pullRequest: null,
+    merged: false,
+    reviewScore: null,
+    verificationJson: null,
+    costUsd: 0,
+    durationMs: 10,
+  }
+  const run = await runShadow(singleFixture('refusal', 'must-refuse'), [version], oneAttempt('declined-refusal', declined))
+  assert.equal(run.ok, true)
+  if (!run.ok) return
+  assert.equal(run.report.tasks[0]?.success, true, 'a clean decline is still the success this fixture asks for')
+  assert.equal(run.report.tasks[0]?.failure, 'none')
+  assert.equal(run.report.versions[0]?.successes, 1)
+})
+
+test('a pull-request fixture with the same carried error keeps reporting the error', async () => {
+  const version = VERSIONS[0]
+  assert.ok(version !== undefined)
+  const run = await runShadow(singleFixture('pull-request', 'must-open'), [version], oneAttempt('crashed-pull-request', CRASHED_ATTEMPT))
+  assert.equal(run.ok, true)
+  if (!run.ok) return
+  assert.equal(run.report.tasks[0]?.success, false)
+  assert.equal(run.report.tasks[0]?.failure, 'reported-error', 'the pull-request branch already worked and must not change')
+})

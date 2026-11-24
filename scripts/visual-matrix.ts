@@ -1,13 +1,14 @@
 /// <reference lib="dom" />
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { appendFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { randomBytes } from 'node:crypto'
 import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
 import {
+  caseRows,
   cellLabel,
   focusFailures,
   leftoverFailures,
@@ -16,6 +17,7 @@ import {
   pageSlug,
   partitionWorkload,
   shardFailures,
+  summaryMarkdown,
   touchFailures,
   viewportHeight,
   visualWorkload,
@@ -538,6 +540,23 @@ function report(summary: string): void {
   process.exitCode = 1
 }
 
+/** The aggregate's reasons that belong to no single row: a share that died, a cell counted twice. */
+function aggregateNotes(problems: readonly string[], cells: readonly VisualCell[]): string[] {
+  const labels = cells.map((cell) => cellLabel(cell))
+  return problems.filter((problem) => !labels.some((label) => problem.startsWith(`${label}: `)))
+}
+
+/** The job summary is optional: a local run has no GITHUB_STEP_SUMMARY to append to. */
+function writeStepSummary(rows: readonly import('../src/lib/visualMatrix.js').VisualCaseResult[], notes: readonly string[]): void {
+  const target = process.env.GITHUB_STEP_SUMMARY
+  if (target === undefined || target === '') return
+  try {
+    appendFileSync(target, summaryMarkdown(rows, notes))
+  } catch (error) {
+    console.error(`visual matrix: the job summary was not written: ${error instanceof Error ? error.message : String(error)}`)
+  }
+}
+
 async function runCoordinator(): Promise<void> {
   const workload = visualWorkload()
   const shares = shardCount(workload.length)
@@ -563,6 +582,9 @@ async function runCoordinator(): Promise<void> {
     }
   })
   failures.push(...problems)
+  // The table is written before the exit code is decided, so a red run still
+  // names every page, viewport and scheme instead of one line for the matrix.
+  writeStepSummary(caseRows(workload, results), aggregateNotes(problems, workload))
   report(`${String(workload.length)} cell(s) over ${String(shares)} share(s)`)
 }
 

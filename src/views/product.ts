@@ -49,7 +49,7 @@ export function productPage(input: {
     [t('带 PR', 'With a pull request'), loop.evidence.withPr],
     [t('带已知成本', 'With a known cost'), loop.evidence.withCost],
   ].map(([label, value]) => `<tr><td>${escapeHtml(String(label))}</td><td>${Number(value)}</td></tr>`).join('')
-  const percent = (value: number | null): string => (value === null ? t('n/a', 'n/a') : `${value}%`)
+  const percent = (value: number | null): string => (value === null ? t('暂无', 'n/a') : `${value}%`)
   const body = `<section class="workspace-hero">
     <div class="workspace-intro">
       <div class="eyebrow">${escapeHtml(t('产品回路', 'Product loop'))}</div>
@@ -103,7 +103,7 @@ export function productPage(input: {
       <th>${escapeHtml(t('失败的任务', 'Failed jobs'))}</th>
       <th>${escapeHtml(t('人工动作', 'Human actions'))}</th>
       <th>${escapeHtml(t('每个失败的救援数', 'Rescues per failure'))}</th>
-    </tr></thead><tbody><tr><td>${loop.rescue.failed}</td><td>${loop.rescue.actions}</td><td>${escapeHtml(loop.rescue.rate === null ? t('n/a', 'n/a') : `${loop.rescue.rate}%`)}</td></tr></tbody></table></div>
+    </tr></thead><tbody><tr><td>${loop.rescue.failed}</td><td>${loop.rescue.actions}</td><td>${escapeHtml(loop.rescue.rate === null ? t('暂无', 'n/a') : `${loop.rescue.rate}%`)}</td></tr></tbody></table></div>
     ${mixRows}
   </section>
   <section class="card">

@@ -12,7 +12,7 @@
 
 import { existsSync, readFileSync, writeFileSync, unlinkSync } from 'node:fs'
 import { join } from 'node:path'
-import { fragmentNames } from './lib/changelog-fragments.mjs'
+import { foldFragmentBody, fragmentBodyProblem, fragmentNames } from './lib/changelog-fragments.mjs'
 import { STATUS_FILES, STATUS_MARKERS, rewriteStatusLine } from './lib/mechanical-release.mjs'
 
 const DIR = 'changelog.d'
@@ -29,7 +29,11 @@ function fragments() {
   if (!existsSync(DIR)) return []
   return fragmentNames(DIR).map((name) => {
     const match = NAME.exec(name)
-    return { name, kind: match?.[2], slug: match?.[1], body: readFileSync(join(DIR, name), 'utf8').trim() }
+    const raw = readFileSync(join(DIR, name), 'utf8').trim()
+    // `raw` is what `check` judges — a body that is not one paragraph is refused
+    // before it can be rendered — and `body` is what both render sites publish
+    // (#1218): one paragraph, so no line of it can begin at column 0.
+    return { name, kind: match?.[2], slug: match?.[1], raw, body: foldFragmentBody(raw) }
   })
 }
 
@@ -42,12 +46,9 @@ function check() {
       failed = true
       continue
     }
-    if (fragment.body === '') {
-      console.error(`empty: ${fragment.name}`)
-      failed = true
-    }
-    if (fragment.body.startsWith('- ') || fragment.body.startsWith('#')) {
-      console.error(`no heading or leading "- ": ${fragment.name}`)
+    const problem = fragmentBodyProblem(fragment.raw)
+    if (problem !== null) {
+      console.error(`${problem}: ${fragment.name}`)
       failed = true
     }
   }
