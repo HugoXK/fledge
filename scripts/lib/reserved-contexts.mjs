@@ -13,11 +13,14 @@
 // and runs from the base tree, while the workflows are the diff under test and
 // come from the head, which is why the CLI takes a directory argument.
 //
-// `ci-ok` has two canonical producers on purpose: `ci-ok-publish.yml` publishes
-// the verdict from the default branch (#855) and the in-run aggregate inside
-// `ci.yml` keeps publishing the same context until the documented follow-up
-// renames it to `ci-ok-head`. A table that allowed only one of them would judge
-// the honest tree red.
+// `ci-ok` has one workflow-file producer: `ci-ok-publish.yml` publishes the
+// verdict from the default branch (#855). #1273 renamed the in-run aggregate in
+// `ci.yml` to `ci-ok-head`, so the old entry no longer has to allow two files —
+// and the scanner cannot see the third producer at all: `ci-ok-refresh.yml`
+// posts a red `ci-ok` through the API from `scripts/ci-ok-refresh.mjs`, and this
+// scanner reads job ids and job-level `name:` values, not API posts. That blind
+// spot is written down beside the rule in `docs/code-standards.md`; the red it
+// posts still blocks a merge.
 //
 // Line-based parsing, like `scripts/lib/workflow-injection.mjs`: the repository
 // carries no YAML dependency. Two rules keep the line parser from skipping the
@@ -40,7 +43,7 @@ import { readFileSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 
 export const RESERVED_CONTEXTS = {
-  'ci-ok': ['ci.yml', 'ci-ok-publish.yml'],
+  'ci-ok': ['ci-ok-publish.yml'],
   'review-gate': ['review-gate.yml'],
   'pr-lint': ['pr-lint.yml'],
 }

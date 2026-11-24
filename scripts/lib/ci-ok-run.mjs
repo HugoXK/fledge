@@ -76,11 +76,62 @@ export function jobKey(name, required = REQUIRED_JOBS) {
   return null
 }
 
-// A job that has not finished, or reports no conclusion, is not a pass.
+/** The word an unsettled job object gets. `pending` is red, and it is not
+ *  `missing`: the job exists and the API has not settled it, so a reader must
+ *  not go looking for a job that did run (#1273). `missing` is reserved for a
+ *  required context with no job object at all. */
+export const PENDING = 'pending'
+
+const SETTLED = 'completed'
+
+// A job object that has not settled is pending; one that settled with no
+// conclusion is pending too, because no conclusion is not a pass. `missing` is
+// left to `needsFromJobs`, which omits a context it saw no object for.
 function resultOf(job) {
   if (job === null || typeof job !== 'object') return 'missing'
-  if (job.status !== 'completed') return 'missing'
-  return typeof job.conclusion === 'string' && job.conclusion !== '' ? job.conclusion : 'missing'
+  if (job.status !== SETTLED) return PENDING
+  return typeof job.conclusion === 'string' && job.conclusion !== '' ? job.conclusion : PENDING
+}
+
+// The values a check-run summary may quote. Anything else the API returns is
+// named `unknown`, so the request body never carries an unvalidated job string.
+const JOB_STATUSES = new Set(['queued', 'in_progress', 'completed', 'waiting', 'requested', 'pending'])
+const JOB_CONCLUSIONS = new Set([
+  'success',
+  'failure',
+  'neutral',
+  'cancelled',
+  'skipped',
+  'timed_out',
+  'action_required',
+  'stale',
+  'startup_failure',
+])
+const COMPLETED_AT = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?Z$/
+
+function summaryWord(value, allowed) {
+  return typeof value === 'string' && allowed.has(value) ? value : 'unknown'
+}
+
+/** Every job object seen for a required context, in the order the API returned
+ *  them. The published summary quotes this list, so "two conclusions" can be
+ *  told from "no conclusions" without re-querying the API (#1273). */
+export function conclusionsSeen(jobs, required = REQUIRED_JOBS) {
+  const seen = []
+  for (const job of Array.isArray(jobs) ? jobs : []) {
+    const key = jobKey(job?.name, required)
+    if (key === null) continue
+    seen.push({
+      key,
+      name: typeof job?.name === 'string' ? job.name : '',
+      id: Number.isSafeInteger(job?.id) && job.id > 0 ? job.id : null,
+      status: summaryWord(job?.status, JOB_STATUSES),
+      conclusion: summaryWord(job?.conclusion, JOB_CONCLUSIONS),
+      completedAt: typeof job?.completed_at === 'string' && COMPLETED_AT.test(job.completed_at) ? job.completed_at : '',
+      result: resultOf(job),
+    })
+  }
+  return seen
 }
 
 // Two legs of one required job must not be able to hide each other's red: the
@@ -94,20 +145,61 @@ function worse(left, right) {
   return left
 }
 
+// Two objects for one display name are two attempts at the same context: the
+// newest settled conclusion is the reading (#1273). When the two cannot be
+// ordered, the worse result stands — an unreadable pair is never resolved to
+// the greener one.
+function newest(first, second) {
+  const left = Date.parse(first.completedAt)
+  const right = Date.parse(second.completedAt)
+  if (Number.isFinite(left) && Number.isFinite(right) && left !== right) return left > right ? first : second
+  return { ...first, result: worse(first.result, second.result) }
+}
+
 /**
  * Build the `needs` shape `scripts/ci-ok.mjs` evaluates from a finished run's
  * job list. A required job absent from the list stays absent, which the
  * evaluator already reports as missing.
  */
 export function needsFromJobs(jobs, required = REQUIRED_JOBS) {
+  const perKey = new Map()
+  for (const entry of conclusionsSeen(jobs, required)) {
+    let perName = perKey.get(entry.key)
+    if (perName === undefined) {
+      perName = new Map()
+      perKey.set(entry.key, perName)
+    }
+    const current = perName.get(entry.name)
+    if (current === undefined) {
+      perName.set(entry.name, entry)
+      continue
+    }
+    // A settled object cannot outvote an unsettled one for the same context:
+    // the run has not decided what that job did yet.
+    if (current.result === PENDING || entry.result === PENDING) {
+      perName.set(entry.name, { ...current, result: PENDING })
+      continue
+    }
+    perName.set(entry.name, newest(current, entry))
+  }
   const needs = {}
-  for (const job of Array.isArray(jobs) ? jobs : []) {
-    const key = jobKey(job?.name, required)
-    if (key === null) continue
-    const result = resultOf(job)
-    needs[key] = { result: needs[key] === undefined ? result : worse(needs[key].result, result) }
+  for (const [key, perName] of perKey) {
+    let result
+    for (const entry of perName.values()) {
+      if (result === undefined) result = entry.result
+      else result = result === PENDING || entry.result === PENDING ? PENDING : worse(result, entry.result)
+    }
+    needs[key] = { result }
   }
   return needs
+}
+
+/** The required contexts whose evidence is unsettled. The publisher creates no
+ *  check run while this is non-empty: an unsettled context is not a verdict
+ *  (#1273, shape 1). */
+export function pendingRequired(needs, required = REQUIRED_JOBS) {
+  const object = needs !== null && typeof needs === 'object' ? needs : {}
+  return required.filter((name) => object[name]?.result === PENDING)
 }
 
 /**
@@ -117,7 +209,9 @@ export function needsFromJobs(jobs, required = REQUIRED_JOBS) {
  */
 export function verdict(input) {
   const required = input.required ?? REQUIRED_JOBS
-  const needs = needsFromJobs(input.jobs, required)
+  const jobs = Array.isArray(input.jobs) ? input.jobs : []
+  const seen = conclusionsSeen(jobs, required)
+  const needs = needsFromJobs(jobs, required)
   const { lines, problems } = evaluate(needs, {
     required,
     skippable: SKIPPABLE_ON,
@@ -125,7 +219,7 @@ export function verdict(input) {
     eventName: typeof input.eventName === 'string' ? input.eventName : '',
     changes: input.changes ?? {},
   })
-  return { needs, lines, problems, ok: problems.length === 0 }
+  return { needs, lines, problems, ok: problems.length === 0, seen }
 }
 
 /** The base shas a `pull_request` run says it was measured against. A run that
@@ -222,6 +316,21 @@ export function checkRunPayload({ headSha, result, runId, runUrl, required = REQ
     ? `every required job passed (${String(required.length)} required)`
     : `${String(result.problems.length)} required job(s) did not pass`
   const source = typeof runUrl === 'string' && RUN_URL.test(runUrl) ? runUrl : undefined
+  const seen = Array.isArray(result.seen) ? result.seen : []
+  // #1273: a reader must be able to tell "two conclusions" from "no
+  // conclusions" by reading the check run, so every object seen for a required
+  // context is listed with the four fields the API answered.
+  const seenLines = required.map((name) => {
+    const entries = seen.filter((entry) => entry.key === name)
+    if (entries.length === 0) return `- ${name}: no job object seen (missing)`
+    return entries
+      .map((entry) => {
+        const id = entry.id === null ? 'unknown' : String(entry.id)
+        const at = entry.completedAt === '' ? '' : ` completed ${entry.completedAt}`
+        return `- ${name}: job ${id} ${entry.status}/${entry.conclusion}${at}`
+      })
+      .join('\n')
+  })
   const summary = [
     `Verdict computed from the default branch's copy of the gate, not from the pull request's \`ci.yml\` (run #${String(runId)}${source === undefined ? '' : `, ${source}`}).`,
     '',
@@ -232,6 +341,9 @@ export function checkRunPayload({ headSha, result, runId, runUrl, required = REQ
     ...result.lines,
     ...result.problems,
     '```',
+    '',
+    'Conclusions seen for each required context (id, status, conclusion, completed_at); the newest settled one decides:',
+    ...seenLines,
   ].join('\n')
   return {
     name: REQUIRED_CHECK,

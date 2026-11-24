@@ -300,13 +300,11 @@ as the checks API reports them, in
 [`.github/agent/required-checks.md`](../.github/agent/required-checks.md); that
 file is the record and not the gate — branch protection is an owner action.
 
-`ci-ok` is also published by `ci-ok-publish.yml`, a `workflow_run` workflow that
+`ci-ok` is published by `ci-ok-publish.yml`, a `workflow_run` workflow that
 GitHub always takes from the default branch, so the copy that judges a change is
-never the one under test. The aggregate job inside `ci.yml` keeps publishing the
-same context for one step — the pull request that adds the publisher would
-otherwise carry no `ci-ok` and could never merge; every check run at the head sha
-counts, so the head's green cannot retire the publisher's red — and a follow-up
-renames it to `ci-ok-head`. See
+never the one under test. The aggregate job inside `ci.yml` is `ci-ok-head` since
+`#1273`, so the required context has one producer; every check run at the head sha
+counts, so the head's green cannot retire the publisher's red. See
 [Gate integrity](#gate-integrity-the-evaluator-runs-from-the-base-branch).
 
 `ci-ok` is green only when all of these are green at the same tip:
@@ -443,7 +441,7 @@ the base branch into `base/` and executed from there:
 | `workflow-lint` | `node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json` |
 | `reserved-contexts` | `node base/scripts/reserved-contexts.mjs --workflows .github/workflows` |
 | `codeql-required` | `node base/scripts/codeql-required.mjs` |
-| `ci-ok` / `ci-ok-head` (the in-run aggregate; `#1273` renames it and both ids are accepted meanwhile) | `node base/scripts/ci-ok.mjs` |
+| `ci-ok-head` (the in-run aggregate; a branch still carrying the pre-`#1273` id `ci-ok` is accepted while the transition runs) | `node base/scripts/ci-ok.mjs` |
 | `ci-ok` (the publisher's verdict) | `node base/scripts/ci-ok-run.mjs`, run by `ci-ok-publish.yml` |
 | CodeQL gate | `node base/scripts/codeql-gate.mjs --sarif codeql-results --baseline base/.github/agent/codeql-baseline.json` |
 
@@ -489,12 +487,11 @@ always loads a `workflow_run` workflow from the default branch, so the file that
 decides is never the one under test. It reads the finished run's job results from
 the API, re-derives the change flags with the default branch's `ci-changes.mjs`
 over the same diff, evaluates the default branch's `REQUIRED_JOBS` and
-`SKIP_WHEN`, and creates the `ci-ok` check run itself. The in-run aggregate still
-publishes the same context in this step, but it is never read as evidence — the
-publisher matches required jobs by name and answers `null` for both `ci-ok` and
-`ci-ok-head` — so a head that rewrites its `run:` line to `exit 0` changes only
-that job's own result, and every check run at the head sha counts, so the
-publisher's red still blocks. A required job the head deletes or renames is
+`SKIP_WHEN`, and creates the `ci-ok` check run itself. The in-run aggregate
+publishes `ci-ok-head`, and it is never read as evidence — the publisher matches
+required jobs by name and answers `null` for both `ci-ok` and `ci-ok-head` — so a
+head that rewrites its `run:` line to `exit 0` changes only that job's own result,
+and every check run at the head sha counts, so the publisher's red still blocks. A required job the head deletes or renames is
 reported missing by name, which is red — the same answer as dropping it from
 `needs` inside the run. A run the platform `cancelled` publishes nothing, because
 the run that replaced it owns the verdict. A `pull_request` run whose payload no
@@ -558,9 +555,9 @@ enumerates the open pull request heads and publishes a red `ci-ok` where the
 newest verdict that names a policy was computed under a different policy, so a
 green verdict does not outlive the required set it was computed under — a head
 whose verdict predates a newly required job stops being satisfying the moment that
-job reaches `main`. Two shapes are deliberately not verdicts. The in-run `ci-ok`
-job in `.github/workflows/ci.yml` publishes the same check name, finishes before
-the publisher and names no policy (it is the aggregate #855 removed as evidence);
+job reaches `main`. Two shapes are deliberately not verdicts. The in-run
+`ci-ok-head` job in `.github/workflows/ci.yml` finishes before the publisher and
+names no policy (it is the aggregate #855 removed as evidence);
 while a `ci-ok-publish.yml` run for the head is queued or in progress the sweep
 skips that head, because its verdict is imminent and a red published against the
 aggregate would be permanent. Once the CI workflow has finished and no publisher

@@ -6,9 +6,16 @@
 //
 // `ci-ok-publish.yml` runs this on `workflow_run`, after a `CI` run completes,
 // so the file that decides the merge is the default branch's and not the pull
-// request's. The aggregate inside `ci.yml` keeps publishing `ci-ok` until the
-// follow-up renames it to `ci-ok-head`; every check run at the head sha counts,
-// so the head's green cannot retire this verdict.
+// request's. #1273 renamed the in-run aggregate to `ci-ok-head`, so the
+// required context `ci-ok` has one producer — this verdict — and every check
+// run at the head sha still counts: no green can retire a red.
+//
+// A concluded run can still carry an unsettled job object (`status:
+// in_progress` beside a `conclusion`, jobs 138082842033 and 138086900960).
+// While any required context is unsettled this publishes nothing at all: the
+// word `pending` goes to this log, and the absent context stays red through
+// the reader's `missing` branch. A red check run that invented a conclusion
+// would keep the duplicate-producer shape #863 removed.
 //
 // The trigger names the finished run as an integer (`CI_OK_RUN_ID`, set from
 // `github.event.workflow_run.id`), and every fact about that run is then read
@@ -60,6 +67,7 @@ import {
   checkRunPayload,
   lostItsBase,
   mergedPullRequestOf,
+  pendingRequired,
   runIdFrom,
   skipDetail,
   skipReason,
@@ -289,6 +297,15 @@ async function main() {
     }
   } catch (error) {
     result = failingResult(`ci-ok could not be computed from run ${String(run.id)}: ${error.message}`)
+  }
+  // #1273, shape 1: a required context that has not settled is not a verdict.
+  // This lands after `loadJobs` (`:273`) and before `publish` (`:301`) on
+  // purpose — the run-level skip above inspects only the run object, so a
+  // concluded run carrying an `in_progress` job walks past it.
+  const pending = pendingRequired(result.needs)
+  if (pending.length > 0) {
+    console.log(`ci-ok-run: pending — run ${String(run.id)} has unsettled required job(s): ${pending.join(', ')}; no check run is created`)
+    return
   }
   const payload = checkRunPayload({
     headSha: String(run.head_sha),

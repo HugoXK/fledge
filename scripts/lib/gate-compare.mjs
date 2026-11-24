@@ -27,7 +27,7 @@
 // so widening that surface has to break `test/gateCompare.test.ts` rather than
 // silently widen the gate.
 //
-// The `ci-ok` job's `needs:` may *grow* — a head that adds a job of its own and
+// The aggregate job's `needs:` may *grow* — a head that adds a job of its own and
 // waits on it is not weakening the aggregate — but every base dependency and
 // every required job must still be in it, and the evaluator step must still be
 // exactly `node base/scripts/ci-ok.mjs` with the gate checked out under
@@ -39,7 +39,7 @@
 // reason, never a skipped comparison.
 //
 // #1282: the aggregate is found by an accepted id set, never by one literal.
-// `#1273` renames `ci-ok` to `ci-ok-head`, so while branches still carry the old
+// `#1273` renamed `ci-ok` to `ci-ok-head`, so while branches still carry the old
 // id the set is `['ci-ok-head', 'ci-ok']`. A head that declares none of them has
 // removed the job the three checks below read, and a head that declares two has
 // two candidates for one context: both are refusals naming what was looked for
@@ -62,8 +62,10 @@ export const GATE_COMPARE_ALLOWED_KEYS = Object.freeze(['timeout-minutes'])
 /** The step the aggregate must run, as the base tree spells it. */
 export const REQUIRED_EVALUATOR = 'node base/scripts/ci-ok.mjs'
 
-/** The aggregate id the base tree declares today; `#1273` moves it to `ci-ok-head`. */
-export const AGGREGATE_JOB = 'ci-ok'
+/** The aggregate id the base tree declares today. #1273 renamed it from
+ *  `ci-ok`; the accepted set below keeps both while branches still carry the
+ *  old id. */
+export const AGGREGATE_JOB = 'ci-ok-head'
 
 /**
  * Every aggregate id a head may declare while `#1273` moves the job from

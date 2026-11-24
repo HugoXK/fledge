@@ -10,11 +10,10 @@ name: CI verdict
 # GitHub always loads a `workflow_run` workflow from the default branch. This
 # one reads the finished `CI` run's job results, evaluates them with the default
 # branch's required list and classifier, and publishes the `ci-ok` check run
-# itself. The in-run aggregate inside `ci.yml` keeps publishing `ci-ok` for one
-# step, because on the pull request that adds this file there would otherwise be
-# no `ci-ok` at all and the change could never merge. Every check run at the head
-# sha counts, so the head's green cannot retire this red one; a follow-up renames
-# the in-run job to `ci-ok-head`, leaving one producer.
+# itself. #1273 renamed the in-run aggregate inside `ci.yml` to `ci-ok-head`, so
+# `ci-ok` has exactly one producer — this verdict — and every check run at the
+# head sha still counts: no green can retire a red one. While a required context
+# is still unsettled this job publishes nothing at all and logs `pending`.
 
 on:
   workflow_run:
