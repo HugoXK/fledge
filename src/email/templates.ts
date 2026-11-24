@@ -107,15 +107,22 @@ export function applicationReceivedEmail(user: UserRow, position: number | null)
   return { subject, text, html }
 }
 
+// #1267: both quota mails state the recipient's own grant, in the shape the
+// console's money() prints. The formatter stays here so email never imports views.
+function grantFigure(cny: number): string {
+  return `¥${cny.toFixed(2)}`
+}
+
 export function approvedEmail(user: UserRow, baseUrl: string): { subject: string; text: string; html: string } {
   const subject = '[Fledge] 你的访问申请已通过'
+  const grant = grantFigure(user.quota_cny)
   const text = [
     `@${user.login}，你好：`,
     '',
     '你的 Fledge 访问申请已经通过。登录后可以：',
     '· 绑定一个或多个 GitHub 仓库（提供 fine-grained token）；',
     '· 让 FlyBot 持续分析、提交变更并开 PR；',
-    '· 平台初始额度 1 元，用完后在设置里配置你自己的模型 API。',
+    `· 平台初始额度 ${grant}，用完后在设置里配置你自己的模型 API。`,
     '',
     'Fledge 的批准只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要分别授权。',
     '',
@@ -126,7 +133,7 @@ export function approvedEmail(user: UserRow, baseUrl: string): { subject: string
 <ul>
   <li>绑定一个或多个 GitHub 仓库（提供 fine-grained token）；</li>
   <li>让 FlyBot 持续分析、提交变更并开 PR；</li>
-  <li>平台初始额度 1 元，用完后在设置里配置你自己的模型 API。</li>
+  <li>平台初始额度 ${grant}，用完后在设置里配置你自己的模型 API。</li>
 </ul>
 <p>Fledge 的批准只覆盖 Fledge；FlyBot、Bot Social 和 ScienceDiscovery 需要分别授权。</p>
 <p><a href="${escapeHtml(baseUrl)}">登录 Fledge</a></p>`)
@@ -183,16 +190,17 @@ export function trialExpiredEmail(user: UserRow, baseUrl: string): { subject: st
 
 export function quotaExhaustedEmail(user: UserRow, baseUrl: string): { subject: string; text: string; html: string } {
   const subject = '[Fledge] 平台额度已用完，请配置自己的模型 API'
+  const grant = grantFigure(user.quota_cny)
   const text = [
     `@${user.login}，你好：`,
     '',
-    '你的 1 元平台初始额度已经用完，平台不会再替你调用模型。',
+    `你的 ${grant} 平台初始额度已经用完，平台不会再替你调用模型。`,
     '请到 Settings → Model 填入你自己的 OpenAI 兼容服务（Base URL / Key / Model），然后重新运行仓库任务。',
     '',
     `登录：${baseUrl}/settings`,
   ].join('\n')
   const html = emailShell(`<p>@${escapeHtml(user.login)}，你好：</p>
-<p>你的 1 元平台初始额度已经用完，平台不会再替你调用模型。</p>
+<p>你的 ${grant} 平台初始额度已经用完，平台不会再替你调用模型。</p>
 <p>请到 Settings → Model 填入你自己的 OpenAI 兼容服务（Base URL / Key / Model），然后重新运行仓库任务。</p>
 <p><a href="${escapeHtml(`${baseUrl}/settings`)}">登录并配置模型 API</a></p>`)
   return { subject, text, html }
