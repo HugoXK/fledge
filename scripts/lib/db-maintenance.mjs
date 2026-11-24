@@ -67,8 +67,13 @@ export function refusalSentence(code, detail = {}) {
       failed.push(`is ${age} old, window is ${String(detail.windowHours ?? '')}h`)
     }
     const manifest = String(detail.manifest ?? 'unknown')
-    if (manifest === 'differs') failed.push('its manifest sha256 differs from the bytes')
-    else if (manifest !== 'matches') failed.push(`its manifest is ${manifest}`)
+    // `differs` covers two different facts: a truncated or padded copy (the
+    // recorded size disagrees, so no sha256 was read) and a same-size copy whose
+    // bytes changed. Naming the wrong one is a false sentence to the one operator
+    // who reads it (review `6031190536`).
+    if (manifest === 'differs') {
+      failed.push(detail.manifestDetail === 'size' ? 'its manifest size differs from the bytes' : 'its manifest sha256 differs from the bytes')
+    } else if (manifest !== 'matches') failed.push(`its manifest is ${manifest}`)
     const list = failed.length === 0 ? 'no fresh copy was named' : failed.join('; ')
     return `refused: backup-too-old — ${name} ${list}; take a fresh copy with npm run db:backup`
   }

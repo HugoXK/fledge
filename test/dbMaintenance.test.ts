@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, writeSync } from 'node:fs'
+import { chmodSync, closeSync, copyFileSync, existsSync, fstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readSync, rmSync, statSync, truncateSync, writeFileSync, writeSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
@@ -181,9 +181,14 @@ test('#1261 a dry run writes no audit_log row and reports mode dry-run with afte
     const dbPath = join(dir, 'fledge.db')
     makeDb(dbPath)
     const reportPath = join(dir, 'report.json')
+    // A report left by an earlier run keeps its old permissions unless the tool
+    // chmod-s it: `writeFileSync`'s `mode` only applies at creation.
+    writeFileSync(reportPath, 'stale report from an earlier run\n')
+    chmodSync(reportPath, 0o644)
     const run = runTool(dbPath, ['--dry-run', '--now', NOW.toISOString()], { reportPath })
     assert.equal(run.status, 0, run.stderr)
     assert.equal(auditRows(dbPath), 0)
+    assert.equal(statSync(reportPath).mode & 0o777, 0o600)
 
     const report = readReport(reportPath)
     assert.equal(report.mode, 'dry-run')
@@ -421,6 +426,37 @@ test('#1261 a small copy whose bytes disagree with its manifest is still refused
     assert.equal(run.status, 3, `expected exit 3, got ${String(run.status)}: ${run.stderr}`)
     assert.match(run.stderr, /refused: backup-too-old — /)
     assert.match(run.stderr, /manifest sha256 differs from the bytes/)
+
+    const after = countersOf(dbPath)
+    assert.equal(after.pageCount, before.pageCount)
+    assert.equal(after.freelistCount, before.freelistCount)
+    assert.deepEqual(after.tables, before.tables)
+    assert.equal(auditRows(dbPath), 0)
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('#1261 a truncated copy is refused as a size mismatch, not a sha256 mismatch', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'db-maintenance-truncated-'))
+  try {
+    const dbPath = join(dir, 'fledge.db')
+    makeDb(dbPath)
+    const backupDir = join(dir, 'backups')
+    const copyPath = await makeBackup(backupDir, dbPath, NOW)
+    // The manifest still records the size the copy had when the writer finished;
+    // the file is a quarter shorter, so `readBackupStatus` reports `differs` with
+    // `manifestDetail: 'size'` and never computes a sha256 at all. The refusal is
+    // the one message an operator reads, so it must not name a check that was
+    // never run (review `6031190536`).
+    truncateSync(copyPath, Math.floor(statSync(copyPath).size * 0.75))
+    const before = countersOf(dbPath)
+    const reportPath = join(dir, 'report.json')
+    const run = runTool(dbPath, ['--backup', copyPath, '--now', NOW.toISOString()], { reportPath, backupDir })
+    assert.equal(run.status, 3, `expected exit 3, got ${String(run.status)}: ${run.stderr}`)
+    assert.match(run.stderr, /refused: backup-too-old — /)
+    assert.match(run.stderr, /its manifest size differs from the bytes/)
+    assert.doesNotMatch(run.stderr, /sha256/)
 
     const after = countersOf(dbPath)
     assert.equal(after.pageCount, before.pageCount)

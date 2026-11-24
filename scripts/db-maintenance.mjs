@@ -15,7 +15,7 @@
 //
 //   npm run db:maintenance -- --dry-run
 //   npm run db:maintenance -- --backup data/backups/fledge-2026-11-23T22-00-00-000Z.db
-import { mkdirSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import { DEFAULT_EXPECTED_HOURS, readBackupStatus } from '../src/lib/backupStatus.js'
@@ -69,8 +69,12 @@ const mode = args.dryRun === true ? 'dry-run' : 'real'
 
 function writeReport(report) {
   mkdirSync(dirname(report.report), { recursive: true })
-  // 0600 like the backup manifest: counters and paths, never a row body.
+  // 0600 like the backup manifest: counters and paths, never a row body. The
+  // `mode` only applies when the file is created, so a report left from an
+  // earlier run keeps its old permissions unless it is chmod-ed explicitly —
+  // `scripts/lib/backup-manifest.mjs:62` does the same for the same reason.
   writeFileSync(report.report, `${JSON.stringify(report, null, 2)}\n`, { mode: 0o600 })
+  chmodSync(report.report, 0o600)
 }
 
 function fail(message, error) {
@@ -161,11 +165,17 @@ async function checkBackup() {
   const newest = status.newest !== null && status.newest.name === copy.name
   const fresh = copy.ageHours !== null && copy.ageHours <= expectedHours
   let manifest = copy.manifest
-  if (newest && fresh && UNHASHED_STATES.has(manifest)) manifest = await hashAgainstManifest(wanted)
+  // Which half of the manifest disagreed, when it did: a size mismatch means no
+  // sha256 was ever computed, so a refusal that says "sha256 differs" is false.
+  let manifestDetail = copy.manifestDetail
+  if (newest && fresh && UNHASHED_STATES.has(manifest)) {
+    manifest = await hashAgainstManifest(wanted)
+    if (manifest === 'differs') manifestDetail = 'sha256'
+  }
   if (!newest || !fresh || manifest !== 'matches') {
     return {
       refusal: 'backup-too-old',
-      detail: { name: copy.name, ageHours: copy.ageHours, manifest, windowHours: expectedHours, newest, fresh },
+      detail: { name: copy.name, ageHours: copy.ageHours, manifest, manifestDetail, windowHours: expectedHours, newest, fresh },
     }
   }
   return { backup: { file: copy.name, ageHours: copy.ageHours, manifest, verifiedBytes: UNHASHED_STATES.has(copy.manifest) ? 'db-maintenance' : 'readBackupStatus', windowHours: expectedHours } }
