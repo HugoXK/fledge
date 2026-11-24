@@ -31,6 +31,24 @@ export declare function defaultAllowlistPath(): string
 /** Throws on a malformed file: an unreadable list must not allow everything. */
 export declare function readAllowlist(path?: string): string[]
 
+/** One reviewed pre-approval: an action on the list that no workflow uses yet. */
+export interface ApprovedUnusedEntry {
+  name: string
+  issue: number
+  expires_at: string
+}
+
+export interface AllowlistFile {
+  allowed_actions: string[]
+  approved_unused: ApprovedUnusedEntry[]
+}
+
+/** Both halves of the file; a missing `approved_unused` reads as an empty one. */
+export declare function readAllowlistFile(path?: string): AllowlistFile
+
+/** One message per exemption the tree's own version puts out of bounds. */
+export declare function approvedUnusedExpiryProblems(entries: ApprovedUnusedEntry[], version: string, path?: string): string[]
+
 /** `github/codeql-action/init@sha` -> `github/codeql-action`. */
 export declare function repositoryOf(value: string): string
 
