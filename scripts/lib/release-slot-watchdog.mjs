@@ -144,6 +144,11 @@ function planOf(plan) {
  * smallest reader that gets the JSON out of one. Anything unreadable answers
  * null, which the decision treats as "the plan is not known" — a miss, never a
  * silent decline.
+ *
+ * The job publishes `{ mainSha, plan, drive }`, not the plan object on its own,
+ * so the plan is read from `plan`; a bare plan keeps working (#1220). Reading
+ * only the top level called every real declined night unreadable and opened a
+ * "missed release" card for it.
  */
 export function planFromArtifactZip(bytes) {
   const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? [])
@@ -156,8 +161,7 @@ export function planFromArtifactZip(bytes) {
     return null
   }
   if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
-  if (typeof parsed.shouldRelease !== 'boolean') return null
-  return planOf(parsed)
+  return planOf(parsed) ?? planOf(parsed.plan)
 }
 
 function zipEntry(buffer, wanted) {

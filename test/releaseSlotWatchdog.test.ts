@@ -444,6 +444,44 @@ test('the plan is read out of the artifact zip the daily-release run uploads', a
   assert.deepEqual(planFromArtifactZip(zip), DECLINED_FEATURES)
 })
 
+// #1220: the shape the daily-release job actually uploads, read back from the
+// `release-plan` artifact of run 45311131982 (`2026-11-24T02:16:15Z`). The plan
+// and the drive record are wrapped, so a reader that only looks at the top level
+// calls a real declined night unreadable and opens a "missed release" card.
+const PUBLISHED_DECLINED = {
+  mainSha: 'effecdea59ee7f4b11aed9f5f4ce2feaacc8e271',
+  plan: { shouldRelease: false, reason: 'not-enough-features', total: 11, features: 1, fragments: 12, nextVersion: '0.5.1', bump: 'patch' },
+  drive: { action: 'none', reason: 'the rule is not met: not-enough-features', ciOkReads: 1, ciOkWaitedMs: 0 },
+}
+
+test('a plan artifact in the published shape is read, not called unreadable', async () => {
+  const { planFromArtifactZip } = await import('../scripts/lib/release-slot-watchdog.mjs')
+  const zip = zipOf({ 'release-plan.json': `${JSON.stringify(PUBLISHED_DECLINED)}\n` })
+  assert.deepEqual(planFromArtifactZip(zip), {
+    shouldRelease: false,
+    reason: 'not-enough-features',
+    total: 11,
+    features: 1,
+    fragments: 12,
+  })
+})
+
+test('a declined night read from the published artifact releases the slot instead of opening a card', async () => {
+  const { planFromArtifactZip, decideSlotWatchdog } = await import('../scripts/lib/release-slot-watchdog.mjs')
+  const zip = zipOf({ 'release-plan.json': `${JSON.stringify(PUBLISHED_DECLINED)}\n` })
+  const decision = decideSlotWatchdog({
+    now: '2026-11-24T03:42:41.000Z',
+    releases: [],
+    runs: [run(45311131982, 'push', '2026-11-24T02:16:15Z')],
+    issues: [],
+    plan: planFromArtifactZip(zip),
+  })
+  assert.equal(decision.action, 'declined')
+  assert.equal(decision.alarm, undefined)
+  assert.equal(decision.issue, undefined)
+  assert.equal(decision.planReason, 'not-enough-features')
+})
+
 test('an artifact zip without a plan file answers null instead of guessing', async () => {
   const { planFromArtifactZip } = await import('../scripts/lib/release-slot-watchdog.mjs')
   const zip = zipOf({ 'other.json': '{"shouldRelease":false}' })
