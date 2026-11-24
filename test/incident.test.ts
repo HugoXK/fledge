@@ -30,7 +30,7 @@ test('the config fingerprint carries names only', () => {
   assert.equal(JSON.stringify(fingerprint).includes(config.sessionSecret), false)
 })
 
-test('the bundle redacts a planted token in an audit row and a job event', () => {
+test('the bundle redacts a planted token, email and host path in an audit row and a job event', () => {
   const store = new Store(':memory:')
   try {
     const config = testConfig()
@@ -62,7 +62,9 @@ test('the bundle redacts a planted token in an audit row and a job event', () =>
     assert.equal(parsed.ok, true)
     if (!parsed.ok) return
     const token = `flg_${'A'.repeat(32)}`
-    store.audit(user.id, 'incident.test', `token ${token}`)
+    const email = 'alice@example.com'
+    const hostPath = '/home/xuke/.env'
+    store.audit(user.id, 'incident.test', `token ${token} email ${email} path ${hostPath}`)
     store.run(
       'INSERT INTO job_events (at, job_id, repo_id, user_id, kind, role, step, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       now.toISOString(),
@@ -72,7 +74,7 @@ test('the bundle redacts a planted token in an audit row and a job event', () =>
       'step',
       'dev1',
       'test',
-      `meta ${token}`,
+      `meta ${token} email ${email} path ${hostPath}`,
     )
 
     const bundle = buildIncidentBundle({ store, config, window: parsed.window, now: now.toISOString() })
@@ -88,10 +90,15 @@ test('the bundle redacts a planted token in an audit row and a job event', () =>
     const text = JSON.stringify(bundle)
     assert.equal(text.includes(token), false)
     assert.match(text, /redacted-fledge-token/)
+    assert.equal(text.includes(email), false)
+    assert.equal(text.includes(hostPath), false)
+    assert.match(text, /\[path\]/)
     assert.equal(text.includes(config.sessionSecret), false)
     const markdown = incidentMarkdown(bundle)
     assert.match(markdown, /# Fledge incident bundle/)
     assert.equal(markdown.includes(token), false)
+    assert.equal(markdown.includes(email), false)
+    assert.equal(markdown.includes(hostPath), false)
   } finally {
     store.close()
   }

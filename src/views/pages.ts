@@ -4990,7 +4990,6 @@ export function metricsPage(input: {
       <div class="row">
         <a class="btn ${windowDays === 7 ? '' : 'btn-ghost'}" href="/admin/metrics?window=7">${escapeHtml(t('7 天', '7 days'))}</a>
         <a class="btn ${windowDays === 30 ? '' : 'btn-ghost'}" href="/admin/metrics?window=30">${escapeHtml(t('30 天', '30 days'))}</a>
-        <a class="btn btn-ghost" href="/admin/incident/1h" download>${escapeHtml(t('1 小时事故包', '1h incident bundle'))}</a>
         <a class="btn btn-ghost" href="/admin">${escapeHtml(t('返回管理', 'Back to admin'))}</a>
       </div>
     </div>

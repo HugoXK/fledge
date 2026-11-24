@@ -1,7 +1,7 @@
 import type { Config } from '../config.js'
 import type { AlertView, AuditRow, DeploymentRow, JobEventRow, RepoInstanceRow, Store } from '../db.js'
 import { releaseSurface } from './releaseSurface.js'
-import { redact } from './secrets.js'
+import { maskEmail, maskIp, redact } from './secrets.js'
 
 // #1234: one read-only artifact for a support conversation. The route and the
 // CLI share this builder, so the page an operator reads and the file they attach
@@ -110,28 +110,44 @@ export interface IncidentBundle {
   configFingerprint: { sections: string[]; keys: string[] }
 }
 
+const HOST_PATH = /(?:\/Users\/|\/home\/|\/var\/|\/etc\/|\/root\/)[^\s"'<>]*/g
+const EMAIL_SHAPE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
+const IPV4_SHAPE = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g
+
+function sanitize(value: string): string {
+  return redact(
+    String(value)
+      .replace(EMAIL_SHAPE, (email) => maskEmail(email))
+      .replace(IPV4_SHAPE, (ip) => maskIp(ip)),
+  ).replace(HOST_PATH, '[path]')
+}
+
+function clean(value: string, max: number): string {
+  return sanitize(value).slice(0, max)
+}
+
 function bounded(value: string | null | undefined, max: number): string | null {
   if (value === null || value === undefined) return null
-  return redact(String(value)).slice(0, max)
+  return clean(value, max)
 }
 
 function alertOf(alert: AlertView): IncidentAlert {
   return {
-    kind: redact(alert.kind).slice(0, 80),
+    kind: clean(alert.kind, 80),
     level: alert.level,
-    repoLabel: alert.repoLabel === undefined ? null : redact(alert.repoLabel).slice(0, 200),
-    jobId: alert.jobId === undefined ? null : redact(alert.jobId).slice(0, 120),
+    repoLabel: alert.repoLabel === undefined ? null : clean(alert.repoLabel, 200),
+    jobId: alert.jobId === undefined ? null : clean(alert.jobId, 120),
     minutes: alert.minutes ?? null,
-    message: redact(alert.message).slice(0, MESSAGE_MAX),
+    message: clean(alert.message, MESSAGE_MAX),
   }
 }
 
 function jobEventOf(row: JobEventRow): IncidentJobEvent {
   return {
     at: row.at,
-    jobId: redact(row.job_id).slice(0, 120),
-    repoId: row.repo_id === null ? null : redact(row.repo_id).slice(0, 120),
-    kind: redact(row.kind).slice(0, 80),
+    jobId: clean(row.job_id, 120),
+    repoId: row.repo_id === null ? null : clean(row.repo_id, 120),
+    kind: clean(row.kind, 80),
     role: bounded(row.role, 80),
     step: bounded(row.step, 120),
     meta: bounded(row.meta, META_MAX),
@@ -141,7 +157,7 @@ function jobEventOf(row: JobEventRow): IncidentJobEvent {
 function auditOf(row: AuditRow): IncidentAudit {
   return {
     at: row.at,
-    action: redact(row.action).slice(0, 120),
+    action: clean(row.action, 120),
     detail: bounded(row.detail, DETAIL_MAX),
   }
 }
@@ -153,7 +169,7 @@ function deploymentOf(row: DeploymentRow): IncidentDeployment {
     commit: row.commit_sha,
     imageDigest: row.image_digest,
     deployedAt: row.deployed_at,
-    operator: redact(row.operator).slice(0, 80),
+    operator: clean(row.operator, 80),
     healthzOk: row.healthz_ok === 1,
     readyzOk: row.readyz_ok === 1,
     releaseUrl: bounded(row.release_url, 500),
@@ -162,8 +178,8 @@ function deploymentOf(row: DeploymentRow): IncidentDeployment {
 
 function instanceOf(row: RepoInstanceRow): { repoId: string; status: string; lastHealthAt: string | null } {
   return {
-    repoId: redact(row.repo_id).slice(0, 120),
-    status: redact(row.status).slice(0, 40),
+    repoId: clean(row.repo_id, 120),
+    status: clean(row.status, 40),
     lastHealthAt: row.last_health_at,
   }
 }
