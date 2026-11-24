@@ -34,9 +34,10 @@ test('the review policy pins the required PASS identity and keeps the owner as a
   assert.deepEqual(policy.reviewers, ['HugoXK-bot'])
 })
 
-test('a Dev-3 body and a Dev-4 body pass the shipped policy', () => {
+test('a Dev-3, Dev-4 and Dev-5 body pass the shipped policy', () => {
   assert.equal(checkAttribution(body('Fledge Platform Dev-3'), shipped), null)
   assert.equal(checkAttribution(body('Fledge Platform Dev-4'), shipped), null)
+  assert.equal(checkAttribution(body('Fledge Platform Dev-5'), shipped), null)
 })
 
 test('the shipped authors list names every bot that may write a body', () => {
@@ -47,6 +48,7 @@ test('the shipped authors list names every bot that may write a body', () => {
     'Fledge Platform Dev-2',
     'Fledge Platform Dev-3',
     'Fledge Platform Dev-4',
+    'Fledge Platform Dev-5',
   ])
 })
 
