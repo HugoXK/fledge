@@ -3,8 +3,9 @@ import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { buildApp } from '../src/app.js'
 import { Store } from '../src/db.js'
+import { randomToken, sha256Hex } from '../src/lib/secrets.js'
 import { MockRunner } from '../src/jobs/mock.js'
-import { MemoryMailer, testConfig } from './helpers.js'
+import { makeUser, MemoryMailer, testConfig } from './helpers.js'
 
 // #1243: the OpenAPI 3.1 contract for the token-authenticated API v1. The
 // document is data beside the routes it describes, so these tests pin it to
@@ -92,5 +93,82 @@ test('the contract names the bearer scheme and every error shape the route can a
     }
   } finally {
     await app.close()
+  }
+})
+
+// The document has to be answerable, not merely well-shaped: every `$ref` must
+// resolve inside the document, and a reader generating a client needs an
+// operationId and at least one response on every operation.
+function collectRefs(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const item of node) collectRefs(item, out)
+    return out
+  }
+  if (node !== null && typeof node === 'object') {
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === '$ref' && typeof value === 'string') out.push(value)
+      else collectRefs(value, out)
+    }
+  }
+  return out
+}
+
+test('every $ref in the contract resolves and every operation is answerable', async () => {
+  const { app, document } = await serveContract()
+  try {
+    for (const ref of collectRefs(document)) {
+      assert.ok(ref.startsWith('#/'), `${ref} must point inside the document`)
+      const target = ref
+        .slice(2)
+        .split('/')
+        .reduce<unknown>((node, key) => (node as Record<string, unknown> | undefined)?.[key], document)
+      assert.notEqual(target, undefined, `${ref} does not resolve`)
+    }
+    const schemes = Object.keys(((document.components ?? {}) as { securitySchemes?: Record<string, unknown> }).securitySchemes ?? {})
+    const paths = (document.paths ?? {}) as Record<string, Record<string, { operationId?: string; responses?: Record<string, unknown>; security?: Array<Record<string, unknown>> }>>
+    const operations = Object.entries(paths).flatMap(([path, item]) => Object.entries(item).map(([method, operation]) => ({ path, method, operation })))
+    assert.ok(operations.length >= 2, 'both shipped routes are described')
+    for (const { path, method, operation } of operations) {
+      assert.equal(typeof operation.operationId, 'string', `${method.toUpperCase()} ${path} needs an operationId`)
+      assert.ok(Object.keys(operation.responses ?? {}).length > 0, `${method.toUpperCase()} ${path} declares no response`)
+      for (const requirement of operation.security ?? []) {
+        for (const name of Object.keys(requirement)) {
+          assert.ok(schemes.includes(name), `${method.toUpperCase()} ${path} requires "${name}", which no securityScheme declares`)
+        }
+      }
+    }
+  } finally {
+    await app.close()
+  }
+})
+
+// The fixture half of the card's acceptance: the documented shape is the shape
+// the route actually answers with. A field renamed in the mapper without a
+// matching change in `src/api/openapi.ts` fails here.
+test('the documented job fields are the fields GET /api/v1/jobs answers with', async () => {
+  const store = new Store(':memory:')
+  const built = await buildApp({ config: testConfig(), store, mailer: new MemoryMailer(), runner: new MockRunner(), startScheduler: false })
+  try {
+    const user = makeUser(store, { login: 'openapi-owner', status: 'approved' })
+    const repo = store.createRepo({
+      id: 'repo_openapi', userId: user.id, owner: 'acme', name: 'demo', defaultBranch: 'main',
+      tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 60,
+    })
+    store.createJob({ id: 'job_openapi', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'goal', callbackHash: 'h', platformTokenHash: 'p', createdAt: '2026-11-24T01:00:00.000Z' })
+    store.updateJob('job_openapi', { status: 'succeeded', finished_at: '2026-11-24T01:01:00.000Z', pr_url: 'https://github.com/acme/demo/pull/1', issue_url: null, review_score: 91, cost_usd: 0.25 })
+    const raw = `flg_${randomToken(32)}`
+    store.createApiToken({ id: 'tok_openapi', userId: user.id, kind: 'pat', name: 'openapi', tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), repoId: null, scope: 'jobs:read', expiresAt: null })
+
+    const response = await built.app.inject({ method: 'GET', url: '/api/v1/jobs', headers: { authorization: `Bearer ${raw}` } })
+    assert.equal(response.statusCode, 200)
+    const body = response.json() as { data: Array<Record<string, unknown>>; next_cursor: string | null }
+    const contract = (await built.app.inject({ method: 'GET', url: '/api/v1/openapi.json' })).json() as {
+      components: { schemas: { JobSummary: { properties: Record<string, unknown> }; JobPage: { properties: Record<string, unknown> } } }
+    }
+    assert.deepEqual(Object.keys(body.data[0] ?? {}).sort(), Object.keys(contract.components.schemas.JobSummary.properties).sort())
+    assert.deepEqual(Object.keys(body).sort(), Object.keys(contract.components.schemas.JobPage.properties).sort())
+    assert.equal(body.next_cursor, null)
+  } finally {
+    await built.app.close()
   }
 })
