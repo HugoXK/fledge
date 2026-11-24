@@ -1650,7 +1650,10 @@ model and work type — and the facts that arrive later attach to it: a revert
 branch's recent commits, recorded once with its first instant), a follow-up issue
 whose body names the pull request, and each failing default-branch run whose head
 is the merge commit. A replayed webhook event inserts nothing because the unique
-key is `(repo_id, pr_url)`. The repository's delivery tab prints the window:
+key is `(repo_id, pr_url)`. The instant is GitHub's `merged_at` from the merge
+payload, so a redelivered or replayed event dates the delivery by the merge and
+not by the receipt; a payload that carries no `merged_at` falls back to the
+receipt time. The repository's delivery tab prints the window:
 merged, reverted, the three rates and the cost per kept change, with `—` where a
 number was never recorded and a "too few deliveries" label on a single sample.
 Each rate is a count of deliveries over merged: the post-merge failure rate is

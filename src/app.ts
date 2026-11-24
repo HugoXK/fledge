@@ -7163,9 +7163,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // beside it and is best-effort, so a token or network failure leaves the row
   // un-reverted instead of failing the webhook delivery GitHub will not resend
   // for the same reason twice.
-  const recordMergedDelivery = (repo: RepoRow, jobId: string | null, prUrl: string, title: string, mergeCommit: string | null): void => {
+  const recordMergedDelivery = (repo: RepoRow, jobId: string | null, prUrl: string, title: string, mergeCommit: string | null, mergedAt: string | null): void => {
     if (mergeCommit === null || mergeCommit === '') return
-    jobs.recordMergedDelivery({ repoId: repo.id, jobId, prUrl, mergeCommit, mergedAt: nowIso(), title })
+    // #1290: the payload carries the instant GitHub merged the pull request, so a
+    // redelivery dates the row by the merge and not by the day Fledge heard of it.
+    // A payload without one keeps the receipt instant.
+    jobs.recordMergedDelivery({ repoId: repo.id, jobId, prUrl, mergeCommit, mergedAt: mergedAt ?? nowIso(), title })
     void scanDeliveryReverts(repo).catch((error: unknown) => log.warn('delivery revert scan failed', { repo: repo.id, error: String(error) }))
   }
 
@@ -7241,21 +7244,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (event === 'pull_request') {
       const title = typeof pull.title === 'string' ? pull.title.slice(0, 200) : prUrl
       const merged = pull.merged === true
+      const pullMergedAt = typeof pull.merged_at === 'string' && Number.isFinite(Date.parse(pull.merged_at)) ? pull.merged_at : null
       const closed = action === 'closed' || pull.state === 'closed'
       store.updateJobsPrState(prUrl, merged ? 'merged' : closed ? 'closed' : 'open')
       if (existing === undefined && action !== 'opened') return
       if (existing === undefined) {
-        const created = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? nowIso() : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
-        if (merged) recordMergedDelivery(repo, created.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null)
+        const created = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? (pullMergedAt ?? nowIso()) : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
+        if (merged) recordMergedDelivery(repo, created.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null, pullMergedAt)
         return
       }
       if (closed) {
         store.updateWorkItem(existing.id, {
           state: merged ? 'merged' : 'closed',
           pr_state: merged ? 'merged' : 'closed',
-          ...(merged ? { merged_at: nowIso(), merge_commit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null } : {}),
+          ...(merged ? { merged_at: pullMergedAt ?? nowIso(), merge_commit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null } : {}),
         })
-        if (merged) recordMergedDelivery(repo, existing.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null)
+        if (merged) recordMergedDelivery(repo, existing.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null, pullMergedAt)
       } else {
         store.updateWorkItem(existing.id, { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
       }
