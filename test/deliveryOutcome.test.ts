@@ -384,6 +384,76 @@ test('a merged pull request webhook writes the delivery the repository page read
   }
 })
 
+// #1290: the payload carries the instant GitHub merged the pull request, so a
+// redelivered or replayed event must not move the merge to the day Fledge heard
+// about it. The receipt time stays as the fallback for a payload without one.
+test("a merge is recorded at the pull request's merged_at, not at receipt", async () => {
+  const { built, store, repoId, github } = await webhookApp('merged-at')
+  try {
+    const fullName = 'o/delivery-webhook-merged-at'
+    const prUrl = `https://github.com/${fullName}/pull/21`
+    const mergedAt = '2026-11-20T10:00:00Z'
+    const send = async (action: string, pull: Record<string, unknown>, delivery: string): Promise<number> => {
+      const body = Buffer.from(JSON.stringify({
+        action, installation: { id: 4242 }, repository: { full_name: fullName }, pull_request: pull,
+      }))
+      const response = await built.app.inject({
+        method: 'POST',
+        url: '/api/github/webhook',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request', 'x-github-delivery': delivery, 'x-hub-signature-256': signWebhook(body) },
+        payload: body,
+      })
+      return response.statusCode
+    }
+    // A close for a pull request Fledge never saw is dropped on purpose, so the
+    // opened event comes first and creates the item the close attaches to.
+    assert.equal(await send('opened', { number: 21, html_url: prUrl, title: 'date the merge', merged: false, state: 'open' }, 'delivery-opened-21'), 200)
+    assert.equal(await send('closed', { number: 21, html_url: prUrl, title: 'date the merge', merged: true, state: 'closed', merge_commit_sha: MERGE_A, merged_at: mergedAt }, 'delivery-merged-21'), 200)
+    const rows = store.listDeliveryOutcomes(repoId, '2000-01-01T00:00:00.000Z')
+    assert.equal(rows.length, 1, 'the merge is one delivery')
+    assert.equal(rows[0]?.merged_at, mergedAt, "the row is dated by the pull request's merged_at, not by the webhook's receipt")
+    assert.equal(store.findWorkItemByPrUrl(repoId, prUrl)?.merged_at, mergedAt, 'the board item reads the same instant as the ledger')
+  } finally {
+    // built.close() closes the store it was given.
+    await built.close()
+    await github.close()
+  }
+})
+
+test('a merge with no merged_at in the payload is still dated at receipt', async () => {
+  const { built, store, repoId, github } = await webhookApp('no-merged-at')
+  try {
+    const fullName = 'o/delivery-webhook-no-merged-at'
+    const prUrl = `https://github.com/${fullName}/pull/22`
+    const send = async (action: string, pull: Record<string, unknown>, delivery: string): Promise<number> => {
+      const body = Buffer.from(JSON.stringify({
+        action, installation: { id: 4242 }, repository: { full_name: fullName }, pull_request: pull,
+      }))
+      const response = await built.app.inject({
+        method: 'POST',
+        url: '/api/github/webhook',
+        headers: { 'content-type': 'application/json', 'x-github-event': 'pull_request', 'x-github-delivery': delivery, 'x-hub-signature-256': signWebhook(body) },
+        payload: body,
+      })
+      return response.statusCode
+    }
+    assert.equal(await send('opened', { number: 22, html_url: prUrl, title: 'no merged_at', merged: false, state: 'open' }, 'delivery-opened-22'), 200)
+    const before = Date.now()
+    const closed = { number: 22, html_url: prUrl, title: 'no merged_at', merged: true, state: 'closed', merge_commit_sha: MERGE_B }
+    assert.equal(await send('closed', closed, 'delivery-merged-22'), 200)
+    const after = Date.now()
+    assert.equal(await send('closed', closed, 'delivery-merged-22-replay'), 200)
+    const rows = store.listDeliveryOutcomes(repoId, '2000-01-01T00:00:00.000Z')
+    assert.equal(rows.length, 1, 'a replayed merge delivery inserts nothing')
+    const recorded = Date.parse(rows[0]?.merged_at ?? '')
+    assert.ok(recorded >= before - 1000 && recorded <= after + 1000, 'without a merged_at the row keeps the receipt instant')
+  } finally {
+    // built.close() closes the store it was given.
+    await built.close()
+    await github.close()
+  }
+})
+
 test('a failing default-branch run at a merge commit counts one post-merge failure per run', async () => {
   const { built, store, repoId, github } = await webhookApp('fail')
   try {
