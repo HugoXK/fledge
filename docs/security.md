@@ -1049,6 +1049,19 @@ different action. `readAllowlist` refuses to load a malformed file rather than
 returning an empty list, and a name in the list that no workflow uses is a test
 failure too — drift in either direction is how a list stops describing the tree.
 
+One state is not drift. `approved_unused` in the same file holds entries of
+exactly `name`, `issue` and `expires_at`: an action this project has pre-approved
+by a reviewed decision while no workflow uses it yet. That is the only legal way
+to land a list entry before its use, and it is bounded rather than open-ended —
+`expires_at` is a minor release version (`x.y.0`), a tree at or past that version
+fails its suite, and the message names the entry, its issue and its expiry plus
+both legal moves: delete it, or renew it with a comment on the issue saying why
+the pre-approval still stands. The entry also expires on first use: a workflow
+that uses an exempted action while the entry is still listed fails the suite, and
+the change that adds the use deletes the entry. Until the check moves into the
+base checker, this rule lives in the tree's own suite, so removing it is a
+reviewed change but not yet one the base branch can compel.
+
 CI enforces the list in the `action-pins` required job. The checker is read from
 the base branch, so the list it reads is the one already reviewed there; a pull
 request therefore cannot grant itself an action in the same commit that uses it.
@@ -1080,7 +1093,9 @@ Procedure for adding an action:
 2. Add one line to `.github/agent/action-allowlist.json` in its own reviewed
    change, with the justification in the pull request body. The suite's
    both-directions test must still pass, so a list entry that no workflow uses
-   cannot ride along.
+   cannot ride along — unless it is pre-approved in `approved_unused`, naming this
+   issue and a release version by which it expires. Pre-approval is what makes the
+   entry and its first use two changes by construction.
 3. Land it, then open the workflow change that uses the action. The gate reads the
    list from the base branch, so reversing the order reds the newer pull request
    until the list is on `main`.

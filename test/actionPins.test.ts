@@ -464,7 +464,7 @@ test('an exemption is validated like the list it sits beside', (t) => {
   assert.throws(() => readAllowlistFile(file([{ name: 'actions/cache', expires_at: '0.6.0' }])), /missing issue/)
   assert.throws(() => readAllowlistFile(file([{ ...entry, issue: 0 }])), /issue must be the number/)
   assert.throws(() => readAllowlistFile(file([{ ...entry, expires_at: '0.6.1' }])), /minor release version/)
-  assert.throws(() => readAllowlistFile(file([{ ...entry, expires_at: 'latest' }])), /no \"no expiry\" value/)
+  assert.throws(() => readAllowlistFile(file([{ ...entry, expires_at: 'latest' }])), /no "no expiry" value/)
   assert.throws(() => readAllowlistFile(file([entry, entry])), /appears more than once in approved_unused/)
   assert.throws(() => readAllowlistFile(write('shape.json', JSON.stringify({ allowed_actions: ['actions/checkout'], approved_unused: 'actions/cache' }))), /must be an array/)
 })

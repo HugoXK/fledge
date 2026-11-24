@@ -28,6 +28,14 @@ const TAG_COMMENT = /(^|\s)#\s*\S+/
 export const ALLOWLIST_FILE = '.github/agent/action-allowlist.json'
 const ACTION_REPOSITORY = /^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/
 
+// #1206, ADR 0027: an action may be pre-approved in one reviewed change and used
+// in the next. The exemption is data — `name`, `issue`, `expires_at` — so granting
+// it is a one-line reviewed diff, and a release version bounds it: the release
+// pull request that reaches `expires_at` is where a person has to decide, so a
+// lapse lands in front of a human instead of on a date nobody scheduled.
+const RELEASE_VERSION = /^(\d+)\.(\d+)\.0$/
+const APPROVED_UNUSED_FIELDS = 'expires_at,issue,name'
+
 // Resolved from this file, never from the working directory: the checker runs
 // from the base checkout, so the list it reads is the one already reviewed on
 // the base branch. A pull request therefore cannot widen the list for itself in
@@ -39,6 +47,14 @@ export function defaultAllowlistPath() {
 // Throws on a malformed file instead of returning an empty list: a gate that
 // silently allows everything when its data is unreadable is worse than no gate.
 export function readAllowlist(path = defaultAllowlistPath()) {
+  return readAllowlistFile(path).allowed_actions
+}
+
+// The same file, both halves. `allowed_actions` is what admits an action;
+// `approved_unused` names actions this project has pre-approved for a follow-up
+// change that no workflow uses yet. The exemption is validated like the list it
+// sits beside — an unvalidated exemption would be the one soft spot in the gate.
+export function readAllowlistFile(path = defaultAllowlistPath()) {
   let parsed
   try {
     parsed = JSON.parse(readFileSync(path, 'utf8'))
@@ -58,7 +74,94 @@ export function readAllowlist(path = defaultAllowlistPath()) {
   if (duplicates.length > 0) {
     throw new Error(`${path}: ${duplicates.join(', ')} appears more than once`)
   }
-  return list
+  return { allowed_actions: list, approved_unused: readApprovedUnused(parsed?.approved_unused, list, path) }
+}
+
+// A missing key is an empty one: every tree that predates this rule keeps working,
+// and the first exemption is the change that writes the key.
+function readApprovedUnused(value, allowedActions, path) {
+  if (value === undefined) return []
+  if (!Array.isArray(value)) {
+    throw new Error(`${path}: approved_unused must be an array of {name, issue, expires_at} entries`)
+  }
+  const allowed = new Set(allowedActions.map((entry) => entry.toLowerCase()))
+  const approved = []
+  const seen = new Set()
+  value.forEach((entry, index) => {
+    const problem = approvedUnusedProblem(entry, allowed, path, index)
+    if (problem !== null) throw new Error(problem)
+    const key = entry.name.toLowerCase()
+    if (seen.has(key)) throw new Error(`${path}: ${entry.name} appears more than once in approved_unused`)
+    seen.add(key)
+    approved.push({ name: entry.name, issue: entry.issue, expires_at: entry.expires_at })
+  })
+  return approved
+}
+
+// An entry is exactly three fields, because a field the reader ignores is a field
+// a reviewer may believe was checked. `name` has to be on the list it sits beside:
+// an exemption for an action the gate still refuses pre-approves nothing.
+function approvedUnusedProblem(entry, allowed, path, index) {
+  const where = `${path}: approved_unused[${index}]`
+  if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+    return `${where} must be an object with exactly name, issue and expires_at`
+  }
+  const fields = APPROVED_UNUSED_FIELDS.split(',')
+  const extra = Object.keys(entry).filter((key) => !fields.includes(key))
+  if (extra.length > 0) {
+    return `${where}: ${extra.join(', ')} is not a field of an entry (exactly name, issue and expires_at)`
+  }
+  const missing = fields.filter((key) => !(key in entry))
+  if (missing.length > 0) return `${where} is missing ${missing.join(', ')}`
+  if (typeof entry.name !== 'string' || !ACTION_REPOSITORY.test(entry.name)) {
+    return `${where}: ${JSON.stringify(entry.name)} is not an exact owner/repo name (wildcards are not allowed)`
+  }
+  if (!allowed.has(entry.name.toLowerCase())) {
+    return `${where}: ${entry.name} is not in allowed_actions, so the exemption would pre-approve an action the gate still refuses`
+  }
+  if (!Number.isInteger(entry.issue) || entry.issue <= 0) {
+    return `${where}.issue must be the number of the issue that pre-approved it`
+  }
+  if (typeof entry.expires_at !== 'string' || !RELEASE_VERSION.test(entry.expires_at)) {
+    return `${where}.expires_at must be a minor release version (x.y.0); there is no "no expiry" value`
+  }
+  return null
+}
+
+function releaseVersion(value) {
+  const match = RELEASE_VERSION.exec(String(value))
+  if (match === null) return null
+  return Number(match[1]) * 1000 + Number(match[2])
+}
+
+// The bound, as failures rather than prose. Equality fails deliberately: the
+// release pull request that bumps the tree to `expires_at` is exactly the moment a
+// person has to delete or renew the entry, so that pull request cannot go green
+// while the exemption is still there. An expiry more than two minors ahead would
+// outlive the review that justified it, and one minor would lapse before a single
+// release could carry the follow-up.
+export function approvedUnusedExpiryProblems(entries, version, path = ALLOWLIST_FILE) {
+  const current = releaseVersion(version)
+  if (current === null) {
+    return [`${path}: ${JSON.stringify(version)} is not a minor release version (x.y.0), so no exemption can be bounded against it`]
+  }
+  const problems = []
+  for (const entry of entries) {
+    const expires = releaseVersion(entry.expires_at)
+    if (expires === null) {
+      problems.push(`${path}: ${entry.name} (#${entry.issue}) has expires_at ${JSON.stringify(entry.expires_at)}, which is not a minor release version (x.y.0)`)
+      continue
+    }
+    const moves = `Delete the entry, or renew it with a new expires_at and a comment on #${entry.issue} saying why the pre-approval still stands`
+    if (current >= expires) {
+      problems.push(`${path}: ${entry.name} was pre-approved on #${entry.issue} and expires at ${entry.expires_at}; this tree is ${version}. ${moves}.`)
+      continue
+    }
+    if (expires - current > 2) {
+      problems.push(`${path}: ${entry.name} is pre-approved until ${entry.expires_at} (#${entry.issue}), more than two minors beyond this tree's ${version}; the bound may not outlive the review that justified it. ${moves}.`)
+    }
+  }
+  return problems
 }
 
 // `github/codeql-action/init@<sha>` belongs to `github/codeql-action`: the

@@ -10,5 +10,6 @@
     "aquasecurity/trivy-action",
     "github/codeql-action",
     "raven-actions/actionlint"
-  ]
+  ],
+  "approved_unused": []
 }
