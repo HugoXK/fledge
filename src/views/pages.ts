@@ -724,6 +724,9 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
   // The same two predicates the route guard calls; the page must not decide this alone.
   const oauth = oauthConfigured(config)
   const tokenLogin = tokenLoginEnabled(config)
+  // #1267: the starting grant is an operator setting, so print the configured
+  // figure in the same shape /settings prints it.
+  const grant = money(config.quota.initialCny)
   const tokenForm = `<details class="card narrow mt-24" id="token-login" open>
       <summary>${escapeHtml(t('使用 GitHub token 登录（备用）', 'Sign in with a GitHub token (fallback)'))}</summary>
       <form method="post" action="/auth/token" class="form">
@@ -754,7 +757,7 @@ export function landingPage(config: Config, viewer?: Viewer | null, devLogin = f
       <div class="loop-foot">${escapeHtml(t('一个 issue → 一个分支 → 一个 PR', 'one issue → one branch → one PR'))}</div>
     </aside>
     <div class="hero-note">
-      <p class="fine">${escapeHtml(t('首次登录需要 GitHub 授权；没有权限时先签署《免责声明》和《信息安全承诺》，提交后可在状态页查看排队位置，不要重复提交。平台初始额度 1 元；用完后配置自己的模型 API 即可继续。', 'The first sign-in needs GitHub authorization. Without access, sign the Disclaimer and the Information Security Commitment first; after submitting, the status page shows your queue position. Do not submit twice. The platform starts with 1 CNY of quota; when it runs out, add your own model API to continue.'))}</p>
+      <p class="fine">${escapeHtml(t(`首次登录需要 GitHub 授权；没有权限时先签署《免责声明》和《信息安全承诺》，提交后可在状态页查看排队位置，不要重复提交。平台初始额度 ${grant}；用完后配置自己的模型 API 即可继续。`, `The first sign-in needs GitHub authorization. Without access, sign the Disclaimer and the Information Security Commitment first; after submitting, the status page shows your queue position. Do not submit twice. The platform starts with ${grant} of quota; when it runs out, add your own model API to continue.`))}</p>
       ${oauth ? '' : `<p class="fine">${escapeHtml(t('OAuth App 尚未配置；先用 GitHub token 登录（只用于确认身份，不会保存），部署后可在 .env 补 OAuth。', 'The OAuth App is not configured yet. Use the GitHub token fallback (identity only, never stored); add OAuth in .env after deployment.'))}</p>`}
       ${tokenLogin ? tokenForm : ''}
     </div>
