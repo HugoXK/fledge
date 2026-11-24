@@ -17,6 +17,21 @@ import { encryptSecret } from '../src/lib/secrets.js'
 import { planPacketHash } from '../src/lib/planDecision.js'
 import { playbookFor } from '../src/flybot/playbook.js'
 
+const DB_HEALTH = {
+  counters: {
+    pageSize: 4096,
+    pageCount: 10,
+    freelistCount: 2,
+    bytes: 40960,
+    tables: [{ name: 'jobs', rows: 3 }, { name: 'users', rows: 1 }],
+  },
+  queries: {
+    slowest: [{ statement: 'select:jobs', count: 4, meanMs: 1.2, maxMs: 9 }],
+    slow: [{ statement: 'select:jobs', ms: 9, rows: 1, at: '2026-01-01T00:00:00.000Z' }],
+    totalQueries: 4,
+  },
+}
+
 test('healthz reports the package version', async () => {
   const config = testConfig()
   const store = new Store(':memory:')
@@ -1115,10 +1130,13 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
       failures: [{ kind: 'quota', count: 1 }],
       since: '2026-01-01T00:00:00.000Z',
       automation: { idleWithWork: [{ repo: 'o/r', seconds: 1_200 }], queueDepth: 2, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3 },
+      dbHealth: DB_HEALTH,
     })
     assert.match(page, /Delivery efficiency/)
     // #807: the automation card is on the same page as the numbers it reads.
     assert.match(page, /Automation health/)
+    assert.match(page, /SQLite health/)
+    assert.match(page, /select:jobs/)
     assert.match(page, /4\.5 s/)
     assert.match(page, /Mean over 3 dispatches/)
     assert.match(page, /Daily trend/)
@@ -1608,6 +1626,7 @@ test('admin metrics shows the failure breakdown', () => {
       failures: [{ kind: 'quota', count: 1 }, { kind: 'github', count: 1 }],
       since: '2026-01-01T00:00:00.000Z',
       automation: { idleWithWork: [], queueDepth: 0, activeJobs: 0, dispatchLatencyMs: null, dispatchSamples: 0 },
+      dbHealth: DB_HEALTH,
     })
     assert.match(page, /Failure breakdown/)
     assert.match(page, /Platform quota exhausted/)
@@ -3288,6 +3307,7 @@ function sparkMetricsPage(input: {
       failures: [],
       since: '2026-01-01T00:00:00.000Z',
       automation: { idleWithWork: [], queueDepth: 0, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3 },
+      dbHealth: DB_HEALTH,
     })
   } finally {
     store.close()

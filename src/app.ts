@@ -72,6 +72,7 @@ import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
 import { publishBackupMetrics } from './lib/backupMetrics.js'
 import { automationHealth } from './jobs/automationHealth.js'
+import { queryHealthSummary } from './lib/dbHealth.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import { previewRelease, previewAndDispatch, type ReleaseDispatchPreview } from './lib/releaseDispatch.js'
 import {
@@ -636,7 +637,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
   await assertSafeNotificationWebhook(config)
-  const store = options.store ?? openStore(config.dbPath)
+  const store = options.store ?? openStore(config.dbPath, { slowQueryMs: config.metrics.slowQueryMs })
   store.ensureSuperadmin(config.github.adminLogin)
   const orphans = store.cleanupOrphans()
   if (orphans.retries + orphans.followups + orphans.jobEvents + orphans.instances > 0) {
@@ -5769,6 +5770,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
       automation: automationHealth(),
+      dbHealth: { counters: store.databaseHealth(), queries: queryHealthSummary() },
       since,
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,

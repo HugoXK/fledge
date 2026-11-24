@@ -165,6 +165,8 @@ export interface Config {
   }
   metrics: {
     token: string
+    /** Statements at or above this many milliseconds enter the slow-query ring. */
+    slowQueryMs?: number
   }
   // Build identity stamped by the release job (src/lib/buildIdentity.ts).
   // `/healthz` serves it so a deploy can be named from outside; a local build
@@ -616,6 +618,7 @@ export function loadConfig(overrides: Partial<Config> = {}): Config {
     },
     metrics: {
       token: text('METRICS_TOKEN'),
+      slowQueryMs: Math.max(0, number('SLOW_QUERY_MS', 200)),
     },
     build: buildIdentity(),
     otel: {

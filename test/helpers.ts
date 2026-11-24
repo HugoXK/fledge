@@ -24,7 +24,7 @@ export class MemoryMailer implements Mailer {
 // its override is partial: a fixture names only the counts it cares about and
 // takes the rest from `loadConfig`, instead of every new field breaking fixtures
 // outside the slice that adds it.
-export function testConfig(overrides: Partial<Omit<Config, 'backup'>> & { backup?: Partial<Config['backup']> } = {}): Config {
+export function testConfig(overrides: Partial<Omit<Config, 'backup' | 'metrics'>> & { metrics?: Partial<Config['metrics']>; backup?: Partial<Config['backup']> } = {}): Config {
   resetGithubBudget()
   const base = loadConfig({
     env: 'test',

@@ -1808,6 +1808,23 @@ and a failed delivery can be retried. Opening checks or approving a review
 triggers an auto-merge reconcile, and the scheduler re-checks open Fledge PRs at
 most every `AUTO_MERGE_RECONCILE_MINUTES`.
 
+### Database health (#1231)
+
+Every `Store` read and write goes through one timing wrapper. The histogram
+`fledge_db_query_seconds{statement}` names the statement by its verb and table
+(`select:jobs`, `insert:quota_ledger`, `pragma:user_version`), never by its SQL
+text or a parameter, so the label set is bounded by the schema. A statement at or
+above `SLOW_QUERY_MS` (default 200) is also appended to a bounded 20-entry ring
+and logged with the same name, duration and row count; the logger redacts its
+fields, and no SQL, parameter or row body is passed.
+
+`/admin/metrics` renders the `SQLite health` card from two sources: `Store`'s own
+`databaseHealth()` reads `page_size`, `page_count`, `freelist_count` and every
+user table's `COUNT(*)` through the raw connection (so the card's own reads do
+not fill the slow-query ring), and `queryHealthSummary()` reads the histogram and
+the ring for the slowest statements and the newest slow query. The card is
+read-only; it starts the slow list empty on a restart and says so.
+
 ### Scheduled work, continuity and work items
 
 Work items are a tracking board, not a second scheduler lock. No work-item state

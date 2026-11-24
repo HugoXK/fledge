@@ -2,7 +2,9 @@ import { createRequire } from 'node:module'
 import { createHash, randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
+import { performance } from 'node:perf_hooks'
 import { log } from './lib/log.js'
+import { DEFAULT_SLOW_QUERY_MS, recordQuery, statementName, type DatabaseHealth } from './lib/dbHealth.js'
 import { nowIso } from './lib/time.js'
 import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
@@ -2853,8 +2855,10 @@ export interface FeedbackEventRow {
 
 export class Store {
   readonly db: Database
+  private readonly slowQueryMs: number
 
-  constructor(path: string) {
+  constructor(path: string, options: { slowQueryMs?: number } = {}) {
+    this.slowQueryMs = Math.max(0, options.slowQueryMs ?? DEFAULT_SLOW_QUERY_MS)
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
     this.db = new DatabaseSync(path)
     this.db.exec('PRAGMA journal_mode = WAL;')
@@ -3422,20 +3426,46 @@ export class Store {
     }
   }
 
+  // #1231: a read-only snapshot for the admin card. It uses the raw connection so
+  // the per-table COUNT(*) calls do not fill the slow-query histogram the card is
+  // about. A table name comes from sqlite_master, and the only safe interpolation
+  // is the quoted identifier.
+  databaseHealth(): DatabaseHealth {
+    const pageSize = Number((this.db.prepare('PRAGMA page_size').get() as { page_size?: number } | undefined)?.page_size ?? 0)
+    const pageCount = Number((this.db.prepare('PRAGMA page_count').get() as { page_count?: number } | undefined)?.page_count ?? 0)
+    const freelistCount = Number((this.db.prepare('PRAGMA freelist_count').get() as { freelist_count?: number } | undefined)?.freelist_count ?? 0)
+    const tables = (this.db.prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>).map((row) => {
+      const name = String(row.name)
+      const quoted = name.replaceAll('"', '""')
+      const rows = Number((this.db.prepare(`SELECT COUNT(*) AS n FROM "${quoted}"`).get() as { n?: number } | undefined)?.n ?? 0)
+      return { name, rows }
+    })
+    tables.sort((left, right) => right.rows - left.rows || left.name.localeCompare(right.name))
+    return { pageSize, pageCount, freelistCount, bytes: pageSize * pageCount, tables }
+  }
+
   close(): void {
     this.db.close()
   }
 
   get<T>(sql: string, ...params: unknown[]): T | undefined {
-    return this.db.prepare(sql).get(...clean(params)) as T | undefined
+    const started = performance.now()
+    const value = this.db.prepare(sql).get(...clean(params)) as T | undefined
+    recordQuery(statementName(sql), performance.now() - started, value === undefined ? 0 : 1, this.slowQueryMs)
+    return value
   }
 
   all<T>(sql: string, ...params: unknown[]): T[] {
-    return this.db.prepare(sql).all(...clean(params)) as T[]
+    const started = performance.now()
+    const value = this.db.prepare(sql).all(...clean(params)) as T[]
+    recordQuery(statementName(sql), performance.now() - started, value.length, this.slowQueryMs)
+    return value
   }
 
   run(sql: string, ...params: unknown[]): void {
+    const started = performance.now()
     this.db.prepare(sql).run(...clean(params))
+    recordQuery(statementName(sql), performance.now() - started, 0, this.slowQueryMs)
   }
 
   transaction<T>(fn: () => T): T {
@@ -7760,7 +7790,10 @@ export class Store {
   // Returns the number of rows the statement changed, which is how a guarded
   // transition reports whether this caller won it.
   runChanges(sql: string, ...params: unknown[]): number {
-    return Number(this.db.prepare(sql).run(...clean(params)).changes ?? 0)
+    const started = performance.now()
+    const changes = Number(this.db.prepare(sql).run(...clean(params)).changes ?? 0)
+    recordQuery(statementName(sql), performance.now() - started, changes, this.slowQueryMs)
+    return changes
   }
 
   // The terminal transition is the callback idempotency key: only the delivery
@@ -8715,8 +8748,8 @@ export class Store {
   }
 }
 
-export function openStore(path: string): Store {
-  const store = new Store(path)
+export function openStore(path: string, options: { slowQueryMs?: number } = {}): Store {
+  const store = new Store(path, options)
   log.info('database ready', { path })
   return store
 }

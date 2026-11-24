@@ -21,6 +21,12 @@ Core series:
 
 - `fledge_http_requests_total{method,route,status}` and
   `fledge_http_request_seconds`
+- `fledge_db_query_seconds{statement}` — every `Store` read/write through one
+  timer, labelled with a generated verb-and-table name (`select:jobs`,
+  `insert:quota_ledger`, `pragma:user_version`). The label never carries SQL text,
+  a parameter, a row body or a token; cardinality is bounded by the schema. A
+  statement at or above `SLOW_QUERY_MS` (default 200) also enters the bounded
+  in-process slow-query ring.
 - `fledge_jobs_total{status,kind}`, `fledge_job_seconds`,
   `fledge_job_queue_seconds`, `fledge_job_output_total`, `fledge_jobs_active`,
   `fledge_jobs_queued`
@@ -99,6 +105,13 @@ health` card — repositories with ready work and no active job, the mean dispat
 latency since the process started, and the queue depth — so an operator reading
 the page and an operator reading a dashboard are looking at one measurement, not
 two definitions of it.
+
+The same page carries a read-only `SQLite health` card: the file size, the
+freelist, the largest tables and the slowest statements, with the newest slow
+query and the configured `SLOW_QUERY_MS` threshold. The table counts are read
+from the database; the slow list is the bounded 20-entry ring and starts empty
+after a restart. It names the same `fledge_db_query_seconds` series a dashboard
+reads, so the page and the scrape cannot disagree.
 
 Automation alerts:
 
