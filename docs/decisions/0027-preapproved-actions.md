@@ -6,7 +6,7 @@ Decision owner: HugoXK
 Depends on: [`#650`](https://github.com/HugoXK/fledge/issues/650) (the allowlist, and the base-branch read that makes "reviewed first" an executable order), `docs/security.md:1035` ("Allowed GitHub Actions")
 Settles: [`#1206`](https://github.com/HugoXK/fledge/issues/1206). It records the mechanism `#1206` chose and settles the three questions the seat left open: what bounds an exemption that otherwise only expires on first use, where that bound is enforced, and in which order enforcement moves from the pull request's tree to the base branch.
 Pin: `044c7515a6111560bf96cdd20e8c724535cefc0a` — every `file:line` in this document resolves at it.
-Security: the Gate Security seat's first pass is on `#1206` (comment `7067735330`, `Date: Sat, 21 Nov 2026 19:04:05Z`). Its three findings are requirements here, not commentary; its verdict is held for this text.
+Security: the Gate Security seat's preliminary read of items 1-3 of six is transcribed on `#1206` (comment `7067735330`, `Date: Sat, 21 Nov 2026 19:04:05Z`, `Written-by: Fledge Platform Lead`). The three findings it states are requirements here, not commentary. The verdict arrived: comment `7067905546` (`Security: PASS at a38f35d41127`, `2026-11-21T19:16:54Z`), twelve minutes after the transcription and before the merge.
 
 ## Context
 
@@ -129,5 +129,5 @@ The introducing pull request is the one place this document's strongest guarante
 - `scripts/action-pins.mjs:16` (`--workflows`), `:17-18` (the list is read from the base checkout), `:19` (`--allowlist` defaults to the base copy), `:22` (the only read of the list).
 - `.github/workflows/ci.yml:546-553` (the base checkout, and the comment that the gate's code comes from the base), `:559` (the run line, and no caller passing `--allowlist`), `:3-13` (pull request, push to `main`, and the nightly schedule that runs the suite).
 - `.github/agent/action-allowlist.json:2-13` — ten names today; the key does not exist anywhere in the pinned tree.
-- Measured: `#1206` body `a38f35d41127` (3,763 bytes), Gate Security's first pass comment `7067735330` (`Date: Sat, 21 Nov 2026 19:04:05Z`), Dev-1's reproduction comment `7067263694`, the seat's review PASS `7067505308` at that body.
+- Measured: `#1206` body `a38f35d41127` (3,763 bytes), the transcription of Gate Security's preliminary read `7067735330` (`Date: Sat, 21 Nov 2026 19:04:05Z`, `Written-by: Fledge Platform Lead`), Dev-1's reproduction comment `7067263694`, the issue-review PASS `7067505308` (`Issue-review: PASS at issue #1206 body a38f35d41127`), and the Security PASS `7067905546` (`Security: PASS at a38f35d41127`, `2026-11-21T19:16:54Z`).
 - Number and duplicate check, read at `Date: Sat, 21 Nov 2026 19:11:33 GMT`: `docs/decisions/` at `044c7515` holds 29 files and stops at `0026-merge-press-actor-role.md`, so `0027` is free; no open issue, pull request or branch claims this number or this decision, and the only matches for `approved_unused` are `#1206`, `#1208` and closed `#787`.
