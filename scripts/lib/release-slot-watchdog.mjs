@@ -20,8 +20,17 @@
 //   - one card per slot, ever: the card carries a marker built from the slot,
 //     and the planner refuses when any issue (open or closed) already carries
 //     it. A rerun of the same day is therefore a no-op, not a second card.
+//   - three nights, three statements (#1222). A planner that declined is not a
+//     miss: the `daily-release` run succeeded and its `release-plan` artifact
+//     says `shouldRelease: false`, so the slot is `declined` and opens no card.
+//     A run that failed, and no run at all, are both `missed` — the two alarms
+//     the card names separately. A successful run whose plan cannot be read is
+//     still `missed`: silence would hide a real miss, so the alarm is the safe
+//     direction.
 //   - the detector is read-only except for the card. It dispatches nothing,
 //     creates no tag or release, and writes no file.
+
+import { inflateRawSync } from 'node:zlib'
 
 export const SLOT_HOUR_UTC = 2
 export const GRACE_MINUTES = 60
@@ -90,7 +99,103 @@ function runLine(run) {
   return `- run ${run.id}: event \`${run.event}\`, ${run.status}, ${conclusion}, created ${run.createdAt}${sha}`
 }
 
-function cardBody({ window, checkedAt, observed }) {
+/**
+ * Which alarm a missed night is (#1222): the workflow failed, it never ran, its
+ * plan could not be read, or it said release and shipped nothing. The card says
+ * which one in its body, so a reader does not need the workflow log.
+ */
+export const ALARMS = ['workflow-failed', 'no-run', 'plan-unavailable', 'release-not-shipped']
+
+function alarmText(alarm, observed) {
+  if (alarm === 'no-run') {
+    return 'the `daily-release` workflow did not run for this slot: the window holds no run at all, so nothing could have shipped.'
+  }
+  if (alarm === 'workflow-failed') {
+    const failed = observed.filter((run) => run.conclusion !== 'success')
+    const named = failed
+      .map((run) => `run ${run.id} concluded \`${run.conclusion === '' ? 'no conclusion' : run.conclusion}\``)
+      .join(', ')
+    return `the \`daily-release\` workflow ran for this slot and did not finish green: ${named}. The gate may never have been asked, so this is the workflow, not the rule.`
+  }
+  if (alarm === 'plan-unavailable') {
+    return 'the `daily-release` workflow ran successfully, but its `release-plan` artifact could not be read — so a declined night cannot be told from a miss, and the miss is reported.'
+  }
+  return 'the `daily-release` workflow ran successfully and the planner said release, yet no release was published inside the window.'
+}
+
+/** The plan the daily-release run publishes, or null when it cannot be read. */
+function planOf(plan) {
+  if (plan === null || typeof plan !== 'object') return null
+  if (typeof plan.shouldRelease !== 'boolean') return null
+  return {
+    shouldRelease: plan.shouldRelease,
+    reason: typeof plan.reason === 'string' ? plan.reason : '',
+    total: Number.isFinite(Number(plan.total)) ? Number(plan.total) : 0,
+    features: Number.isFinite(Number(plan.features)) ? Number(plan.features) : 0,
+    fragments: Number.isFinite(Number(plan.fragments)) ? Number(plan.fragments) : 0,
+  }
+}
+
+/**
+ * Read `release-plan.json` out of the zip the artifact download answers (#1222).
+ *
+ * Pure and dependency-free: the publish job uploads the plan as the
+ * `release-plan` artifact, GitHub serves artifacts as a zip, and this is the
+ * smallest reader that gets the JSON out of one. Anything unreadable answers
+ * null, which the decision treats as "the plan is not known" — a miss, never a
+ * silent decline.
+ */
+export function planFromArtifactZip(bytes) {
+  const buffer = Buffer.isBuffer(bytes) ? bytes : Buffer.from(bytes ?? [])
+  const entry = zipEntry(buffer, 'release-plan.json')
+  if (entry === null) return null
+  let parsed
+  try {
+    parsed = JSON.parse(entry.toString('utf8'))
+  } catch {
+    return null
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null
+  if (typeof parsed.shouldRelease !== 'boolean') return null
+  return planOf(parsed)
+}
+
+function zipEntry(buffer, wanted) {
+  if (buffer.length < 22) return null
+  const floor = Math.max(0, buffer.length - 65_557)
+  let eocd = -1
+  for (let at = buffer.length - 22; at >= floor; at -= 1) {
+    if (buffer.readUInt32LE(at) === 0x06054b50) {
+      eocd = at
+      break
+    }
+  }
+  if (eocd < 0) return null
+  const count = buffer.readUInt16LE(eocd + 10)
+  let central = buffer.readUInt32LE(eocd + 16)
+  for (let index = 0; index < count; index += 1) {
+    if (central + 46 > buffer.length || buffer.readUInt32LE(central) !== 0x02014b50) return null
+    const method = buffer.readUInt16LE(central + 10)
+    const compressed = buffer.readUInt32LE(central + 20)
+    const nameLength = buffer.readUInt16LE(central + 28)
+    const extraLength = buffer.readUInt16LE(central + 30)
+    const commentLength = buffer.readUInt16LE(central + 32)
+    const localAt = buffer.readUInt32LE(central + 42)
+    const name = buffer.toString('utf8', central + 46, central + 46 + nameLength)
+    if (name === wanted || name.endsWith(`/${wanted}`)) {
+      if (localAt + 30 > buffer.length || buffer.readUInt32LE(localAt) !== 0x04034b50) return null
+      const start = localAt + 30 + buffer.readUInt16LE(localAt + 26) + buffer.readUInt16LE(localAt + 28)
+      const data = buffer.subarray(start, start + compressed)
+      if (method === 0) return data
+      if (method === 8) return inflateRawSync(data)
+      return null
+    }
+    central += 46 + nameLength + extraLength + commentLength
+  }
+  return null
+}
+
+function cardBody({ window, checkedAt, observed, alarm }) {
   const lines = [
     `release-watchdog: the ${window.day} ${window.slot.slice(11, 16)}Z slot shipped no release`,
     '',
@@ -104,6 +209,8 @@ function cardBody({ window, checkedAt, observed }) {
     '',
     '`daily-release` runs observed in the window:',
     ...(observed.length === 0 ? ['- none: the workflow did not run for this slot'] : observed.map(runLine)),
+    '',
+    `Alarm: ${alarmText(alarm, observed)}`,
     '',
     'The detector is read-only: this card is its only write. A rerun of the same UTC day/slot opens no second card because the marker below already exists.',
     '',
@@ -119,11 +226,14 @@ function cardBody({ window, checkedAt, observed }) {
  * Decide what the slot watchdog does.
  *
  * Returns `{ action, reason, slot, day, graceEnds, checkedAt, ... }` with
- * `action` one of `invalid-clock`, `too-early`, `shipped`, `already-open` or
- * `missed`; only `missed` carries `issue: { title, body }`.
+ * `action` one of `invalid-clock`, `too-early`, `shipped`, `already-open`,
+ * `declined` or `missed`; only `missed` carries `issue: { title, body }`, and it
+ * also names its `alarm` (`workflow-failed`, `no-run`, `plan-unavailable` or
+ * `release-not-shipped`). `declined` is a successful run whose `release-plan`
+ * said `shouldRelease: false` (#1222).
  */
 export function decideSlotWatchdog(input = {}) {
-  const { now = '', graceMinutes = GRACE_MINUTES, releases = [], runs = [], issues = [] } = input
+  const { now = '', graceMinutes = GRACE_MINUTES, releases = [], runs = [], issues = [], plan = null } = input
   const window = slotFor(now, graceMinutes)
   const raw = String(now ?? '')
   if (window === null) {
@@ -170,14 +280,39 @@ export function decideSlotWatchdog(input = {}) {
   }
 
   const observed = runsOf(runs, fromMs, toMs)
+  const failed = observed.filter((run) => run.conclusion !== 'success')
+  const readPlan = planOf(plan)
+
+  // A night the planner declined says so: a successful run whose own plan says
+  // `shouldRelease: false` is the gate working, not a release going missing.
+  if (observed.length > 0 && failed.length === 0 && readPlan !== null && readPlan.shouldRelease === false) {
+    return {
+      ...base,
+      action: 'declined',
+      reason: `the planner declined this slot: ${readPlan.reason === '' ? 'no reason recorded' : readPlan.reason}`,
+      planReason: readPlan.reason,
+      observedRuns: observed,
+    }
+  }
+
+  const alarm =
+    observed.length === 0
+      ? 'no-run'
+      : failed.length > 0
+        ? 'workflow-failed'
+        : readPlan === null
+          ? 'plan-unavailable'
+          : 'release-not-shipped'
+
   return {
     ...base,
     action: 'missed',
     reason: `no release was published for the ${window.day} UTC day by ${window.graceEnds}`,
+    alarm,
     observedRuns: observed,
     issue: {
       title: `release-watchdog: the ${window.day} ${window.slot.slice(11, 16)}Z slot shipped no release`,
-      body: cardBody({ window, checkedAt: base.checkedAt, observed }),
+      body: cardBody({ window, checkedAt: base.checkedAt, observed, alarm }),
     },
   }
 }

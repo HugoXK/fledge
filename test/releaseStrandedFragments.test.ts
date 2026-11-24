@@ -32,7 +32,9 @@ const GATE = "steps.guard.outputs.published != 'true'"
 // `scripts/...` exactly as it does on a runner.
 const SCRIPTS = [
   'scripts/release-stranded-notes.mjs',
+  'scripts/changelog.mjs',
   'scripts/lib/changelog-fragments.mjs',
+  'scripts/lib/mechanical-release.mjs',
   'scripts/lib/stranded-fragments.mjs',
 ]
 
@@ -85,14 +87,17 @@ interface Fixture {
   output: string
 }
 
-function fixture(options: { fragments?: Record<string, string>; changelogIsFile?: boolean } = {}): Fixture {
+function fixture(options: { fragments?: Record<string, string>; changelogIsFile?: boolean; missingDir?: boolean } = {}): Fixture {
   const dir = mkdtempSync(join(tmpdir(), 'stranded-fragments-'))
   for (const file of SCRIPTS) {
     mkdirSync(join(dir, dirname(file)), { recursive: true })
     copyFileSync(file, join(dir, file))
   }
   writeFileSync(join(dir, 'CHANGELOG.md'), '# Changelog\n\n## [Unreleased]\n\n' + NOTES_BEFORE)
-  if (options.changelogIsFile === true) {
+  if (options.missingDir === true) {
+    // A tag cut before `changelog.d` existed: the directory is absent, which is
+    // a tag that predates fragments rather than a read that failed.
+  } else if (options.changelogIsFile === true) {
     // A path that is not a directory cannot be read as one, whatever user the
     // suite runs as — `chmod 000` proves nothing under root.
     writeFileSync(join(dir, 'changelog.d'), 'README.md\n')
@@ -187,6 +192,22 @@ test('an unreadable changelog.d fails the step and never yields a body that read
   assert.match(run.stderr, /ENOTDIR|not a directory/i, 'the failure names the directory')
 })
 
+// #1218 secondary: a tag cut before `changelog.d` existed carries no fragments,
+// so the step reports zero stranded changes instead of failing a publish for a
+// directory that tag never had (`v0.1.0` is one). The rule is narrow on purpose:
+// `ENOENT` means absence, and every other read failure still throws — the test
+// above is the arm that must keep failing at both tips, so a broad `catch {}`
+// cannot pass this pair.
+test('a tag with no changelog.d reports zero stranded changes instead of failing', () => {
+  const tree = fixture({ missingDir: true })
+  const run = runStep(STRANDED, tree)
+  assert.equal(run.status, 0, run.stderr)
+  assert.equal(run.notes, NOTES_BEFORE, 'a tag that predates fragments appends nothing')
+  assert.doesNotMatch(run.notes, /Changes that merged after/, 'no section is written for an absent directory')
+  assert.match(run.output, /^names=$/m, 'no fragment names are published')
+  assert.match(run.summary, /no stranded change/, 'the summary says the tag stranded nothing')
+})
+
 test('the three chain lines still parse after the section, whatever it names', () => {
   const tree = fixture({
     fragments: {
@@ -207,6 +228,89 @@ test('the three chain lines still parse after the section, whatever it names', (
   assert.equal(parsed.sbom?.present, true, 'the SBOM line is still read from the body')
   assert.equal(parsed.attestation?.subjectDigest, digest, 'the attestation line is still read from the body')
   assert.ok(chain.notes.indexOf('Changes that merged after') < chain.notes.indexOf('Image:'), 'the section stays above the chain lines')
+})
+
+// #1218: a fragment body is contributor-written free text, and both render sites
+// put it into the body as `- ${body}` — which keeps every line after an inner
+// break at column 0. The release verifier reads `/^Image:/m`, so a body that
+// carries its own break and its own `Image:` line supplies the digest the
+// release is judged against. `/m` treats `\r`, `\u2028` and `\u2029` as line
+// ends exactly as it treats `\n`, so a fold written for `\n` alone closes one of
+// four entrances.
+const FORGED = `sha256:${'a'.repeat(64)}`
+const REAL = `sha256:${'b'.repeat(64)}`
+
+function forgedBody(separator: string): string {
+  return ['a change', `Image: ghcr.io/evil/not-fledge:v0.9.9@${FORGED}`, `Attestation: ${FORGED}`].join(separator)
+}
+
+function chainLines(): string {
+  return [
+    `Image: ghcr.io/hugoxk/fledge:v0.9.9@${REAL}`,
+    'SBOM: https://github.com/HugoXK/fledge/releases/download/v0.9.9/sbom.spdx.json',
+    `Attestation: ${REAL}`,
+  ].join('\n')
+}
+
+function columnZero(text: string, prefix: string): string[] {
+  return text.split(/\r\n|\r|\n|\u2028|\u2029/).filter((line) => line.startsWith(prefix))
+}
+
+function runChangelog(dir: string, args: string[]): { status: number | null; stdout: string; stderr: string } {
+  const result = spawnSync(process.execPath, ['scripts/changelog.mjs', ...args], { cwd: dir, encoding: 'utf8' })
+  return { status: result.status, stdout: result.stdout ?? '', stderr: result.stderr ?? '' }
+}
+
+// The #1207 section is one render site; `scripts/changelog.mjs` is the other, and
+// it needs no stranded section at all. Both have to be driven, because a fold
+// that only covers one leaves the release forgeable through the other.
+test('a fragment body cannot forge the chain line on the stranded path', () => {
+  const tree = fixture({ fragments: { '999.fixed.md': forgedBody('\n') } })
+  const stranded = runStep(STRANDED, tree)
+  assert.equal(stranded.status, 0, stranded.stderr)
+  const chain = runStep(CHAIN, tree, { IMAGE: 'ghcr.io/hugoxk/fledge', DIGEST: REAL })
+  assert.equal(chain.status, 0, chain.stderr)
+
+  const parsed = publishedChainFromBody(chain.notes)
+  assert.equal(parsed.image?.digest, REAL, 'the forged Image: line must not be read as the chain')
+  assert.equal(parsed.attestation?.subjectDigest, REAL, 'the attested subject is the digest this run published')
+  assert.equal(columnZero(chain.notes, 'Image:').length, 1, 'exactly one column-0 Image: line reaches the body')
+})
+
+test('a fragment body cannot forge the chain through the ordinary assembly path, under any line terminator', () => {
+  const separators: Array<[string, string]> = [
+    ['LF', '\n'],
+    ['CR', '\r'],
+    ['LS', '\u2028'],
+    ['PS', '\u2029'],
+  ]
+  for (const [label, separator] of separators) {
+    const tree = fixture({ fragments: { '999.fixed.md': forgedBody(separator) } })
+    const released = runChangelog(tree.dir, ['release', '0.9.9', '--date', '2026-11-21', '--dry-run'])
+    assert.equal(released.status, 0, `${label}: ${released.stderr}`)
+    writeFileSync(join(tree.dir, 'CHANGELOG.md'), released.stdout)
+    const notes = runChangelog(tree.dir, ['notes', '0.9.9'])
+    assert.equal(notes.status, 0, `${label}: ${notes.stderr}`)
+
+    const body = `${notes.stdout.trimEnd()}\n\n${chainLines()}\n`
+    const parsed = publishedChainFromBody(body)
+    assert.equal(parsed.image?.digest, REAL, `${label}: the forged line must not win without a stranded section`)
+    assert.equal(parsed.attestation?.subjectDigest, REAL, `${label}: the attested subject is the digest this run published`)
+    assert.equal(columnZero(body, 'Image:').length, 1, `${label}: no forged column-0 Image: line survives`)
+  }
+})
+
+test('changelog check refuses a fragment that is not one paragraph', () => {
+  const tree = fixture({ fragments: { '999.fixed.md': forgedBody('\r') } })
+  const run = runChangelog(tree.dir, ['check'])
+  assert.notEqual(run.status, 0, 'a fragment that can forge a chain line must fail where it is added, not in the tag run')
+  assert.match(run.stderr, /999\.fixed\.md/, 'the failure names the file')
+})
+
+test('changelog check still admits a one-paragraph fragment that merely mentions the shape', () => {
+  const tree = fixture({ fragments: { '999.fixed.md': 'a change whose sentence mentions Image: ghcr.io/x/y:v9 as prose\n' } })
+  const run = runChangelog(tree.dir, ['check'])
+  assert.equal(run.status, 0, run.stdout + run.stderr)
 })
 
 test('the step is gated like every other write and runs before the image is built', () => {

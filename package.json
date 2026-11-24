@@ -22,6 +22,7 @@
     "mail:probe": "node scripts/mail-probe.mjs",
     "db:backup": "node scripts/backup.mjs",
     "db:restore-drill": "node scripts/restore-drill.mjs",
+    "db:maintenance": "tsx scripts/db-maintenance.mjs",
     "role:set": "node scripts/set-role.mjs",
     "role:set:dev": "tsx scripts/set-role.ts",
     "evolution:export": "tsx scripts/evolution-shadow.ts",

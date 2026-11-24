@@ -57,10 +57,26 @@ test('a directory with no markdown at all counts zero', () => {
   }
 })
 
-test('a directory that cannot be read fails instead of counting zero', () => {
+// #1218: "no changelog.d" is not "cannot be read". A tag cut before the
+// directory existed carries zero fragments, and the stranded step must report
+// that rather than fail a publish for a file the tag never had. #548's rule
+// stays for every other read failure, so the second arm is a path that exists
+// and is not a directory: `chmod 000` proves nothing under root, and every user
+// gets ENOTDIR from a path that is a file.
+test('a tree with no changelog.d is zero fragments, not a failed read', () => {
   const dir = join(scratch(), 'absent')
-  assert.throws(() => countFragments(dir), /ENOENT/, 'an unreadable directory is not "zero fragments"')
+  assert.deepEqual(fragmentNames(dir), [], 'a directory that does not exist holds no fragments')
+  assert.equal(countFragments(dir), 0, 'a tag cut before changelog.d existed has zero fragments')
   const run = runCount(dir)
+  assert.equal(run.status, 0, 'the count exits 0 when the directory is absent')
+  assert.equal(run.stdout.trim(), '0', 'and the planner reads zero, which is a legitimate answer')
+})
+
+test('a changelog.d that cannot be read fails instead of counting zero', () => {
+  const file = join(scratch(), 'changelog.d')
+  writeFileSync(file, 'not a directory\n')
+  assert.throws(() => countFragments(file), /ENOTDIR/, 'an unreadable directory is not "zero fragments"')
+  const run = runCount(file)
   assert.notEqual(run.status, 0, 'the count must exit non-zero when it could not measure')
   assert.match(run.stderr, /cannot read/, 'and it says which directory it could not read')
   assert.equal(run.stdout.trim(), '', 'nothing that reads as a count reaches the planner')

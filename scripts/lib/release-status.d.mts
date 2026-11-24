@@ -80,6 +80,8 @@ export interface ReleaseStatusInput {
   healthz?: ReleaseHealthFixture | null
   /** `sha256:…` of the image this host would run, read locally by the caller. */
   localImageDigest?: string | null
+  /** True where the caller holds a digest and an absent one must be red, not `skipped` (#1218). */
+  requireLocalImageDigest?: boolean | null
 }
 
 export interface ReleaseStatus {

@@ -2543,6 +2543,10 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         recentAuthAt: viewer.recentAuthAt,
         repo,
         canMaintain: role === 'maintainer',
+        // #1255: the same verdict admission reads, so the page with Run now and
+        // the next-run line says why both are refused instead of letting the
+        // redirect's `?error=` be the first mention of it.
+        clock: githubApp.clockState(),
         // #1118: the text the Lead is sent for this repository, hashed, so the page
         // names the record's value and not only its version.
         playbookTextHash: playbookTextHash(playbookFor('lead', teamLabelFor(repo.upstream_name), repo.goal)),

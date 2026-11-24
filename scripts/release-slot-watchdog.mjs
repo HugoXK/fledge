@@ -9,8 +9,14 @@
 // host clock is never consulted and no wall-clock subtraction is made from it.
 // The only write is the one card; the detector dispatches no workflow, creates
 // no tag or release and writes no file.
+//
+// #1222: a successful `daily-release` run that published nothing is the planner
+// saying "not tonight", so the decision reads the run's own `release-plan`
+// artifact. The artifact is GitHub's zip; `planFromArtifactZip` gets the JSON
+// out of it. An unreadable artifact is not a decline: the night is reported as a
+// miss, because silence would hide a real one.
 
-import { GRACE_MINUTES, decideSlotWatchdog } from './lib/release-slot-watchdog.mjs'
+import { GRACE_MINUTES, decideSlotWatchdog, planFromArtifactZip, slotFor } from './lib/release-slot-watchdog.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -48,6 +54,57 @@ async function request(path, options = {}) {
   return { data, date }
 }
 
+/** Download one artifact by id: the download endpoint answers a zip, not JSON. */
+async function download(path) {
+  const response = await fetch(`${API}${path}`, {
+    headers: {
+      authorization: `Bearer ${TOKEN}`,
+      accept: 'application/vnd.github+json',
+      'x-github-api-version': '2022-11-28',
+      'user-agent': 'fledge-release-slot-watchdog',
+    },
+    redirect: 'follow',
+    signal: AbortSignal.timeout(30_000),
+  })
+  if (!response.ok) throw new Error(`GitHub ${response.status} ${path}`)
+  return Buffer.from(await response.arrayBuffer())
+}
+
+function runsInWindow(runs, apiDate) {
+  const window = slotFor(apiDate, GRACE_MINUTES)
+  if (window === null) return []
+  const from = Date.parse(window.slot)
+  const to = from + 24 * 60 * 60 * 1000
+  return runs.filter((run) => {
+    const created = Date.parse(String(run?.created_at ?? ''))
+    return !Number.isNaN(created) && created >= from && created < to
+  })
+}
+
+/**
+ * The plan the slot's own runs published, newest successful run first. Null when
+ * there is nothing to read: the decision then reports the miss rather than a
+ * decline. A download error is logged and treated as unknown, never as silence.
+ */
+async function readPlan(runs) {
+  const green = runs
+    .filter((run) => String(run?.conclusion ?? '') === 'success' && Number(run?.id ?? 0) > 0)
+    .sort((a, b) => String(b.created_at ?? '').localeCompare(String(a.created_at ?? '')))
+  for (const run of green) {
+    try {
+      const listed = await request(`/repos/${REPO}/actions/runs/${Number(run.id)}/artifacts?per_page=100`)
+      const artifacts = Array.isArray(listed.data?.artifacts) ? listed.data.artifacts : []
+      const artifact = artifacts.find((entry) => entry?.name === 'release-plan' && entry?.expired !== true)
+      if (artifact === undefined) continue
+      const plan = planFromArtifactZip(await download(`/repos/${REPO}/actions/artifacts/${Number(artifact.id)}/zip`))
+      if (plan !== null) return plan
+    } catch (error) {
+      console.error(`release-slot-watchdog: could not read the release-plan artifact of run ${Number(run.id)}: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+  return null
+}
+
 async function main() {
   if (TOKEN === '') fail('GITHUB_TOKEN is not set')
   if (!/^[^/\s]+\/[^/\s]+$/.test(REPO)) fail('GITHUB_REPOSITORY is not owner/name')
@@ -74,17 +131,32 @@ async function main() {
     if (batch.data.length < 100) break
   }
 
+  // The plan is only asked for once the grace window has passed: a night still
+  // inside it is `too-early` and must cost no artifact read.
+  const window = slotFor(apiDate, GRACE_MINUTES)
+  const plan =
+    window !== null && Date.parse(apiDate) >= Date.parse(window.graceEnds)
+      ? await readPlan(runsInWindow(workflowRuns, apiDate))
+      : null
+
   const decision = decideSlotWatchdog({
     now: apiDate,
     graceMinutes: GRACE_MINUTES,
     releases: releases.data,
     runs: workflowRuns,
     issues,
+    plan,
   })
 
   console.log(`release-slot-watchdog: ${decision.action} — ${decision.reason}`)
 
   if (decision.action === 'invalid-clock') fail(decision.reason)
+  if (decision.action === 'declined') {
+    // The planner's own answer, recorded in the run's artifact and this log:
+    // a night the gate correctly declined says its piece without a card.
+    console.log(`release-slot-watchdog: declined — ${decision.reason}; no card`)
+    return
+  }
   if (decision.action === 'missed') {
     const issue = decision.issue
     if (issue === undefined) fail('the planner said missed without a card')

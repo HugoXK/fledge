@@ -12,17 +12,24 @@
 // turns that set into the text the notes gain, so the workflow, the tests and
 // the #80 line cannot describe the same change differently.
 
+import { foldFragmentBody } from './changelog-fragments.mjs'
+
 export const STRANDED_HEADING = '## Changes that merged after these notes were assembled'
 
 /**
  * The section a release's notes gain for the fragments the fold could not see.
+ *
+ * The body is folded here rather than trusted from the caller (#1218): this is
+ * one of the two sites that render a fragment body into the published notes, and
+ * a body with a line break of its own would put its next line at column 0, where
+ * the release verifier reads the chain and where a `## [` line ends the section.
  *
  * @param {{ name: string, body: string }[]} fragments - sorted, as `fragmentNames` returns them.
  * @returns {string} markdown to append, or '' when nothing was stranded.
  */
 export function strandedSection(fragments) {
   if (fragments.length === 0) return ''
-  const entries = fragments.map((fragment) => `- ${fragment.body}`)
+  const entries = fragments.map((fragment) => `- ${foldFragmentBody(fragment.body)}`)
   return [
     '',
     STRANDED_HEADING,
