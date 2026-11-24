@@ -2,8 +2,10 @@
 
 ## The rule
 
-Every user starts with **1 CNY** of platform-funded model usage
-(`INITIAL_QUOTA_CNY`). When it is gone, the platform stops paying and tells the
+Every user starts with the configured platform grant,
+**`INITIAL_QUOTA_CNY`** (default 1 CNY), of platform-funded model usage; the
+landing page and the approval and quota-exhausted mails print that figure in the
+console's `¥0.00` shape. When it is gone, the platform stops paying and tells the
 user to configure their own OpenAI-compatible model service. Their jobs then run
 on their key, with no platform metering.
 
