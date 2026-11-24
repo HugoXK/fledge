@@ -7,7 +7,10 @@ import { availableParallelism, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { chromium } from 'playwright'
+import AxeBuilder from '@axe-core/playwright'
 import {
+  AXE_WAIVERS,
+  axeFailures,
   cellLabel,
   focusFailures,
   leftoverFailures,
@@ -271,6 +274,28 @@ async function checkGatePage(
     }
     return { controls, names, baseline, html: document.documentElement.outerHTML }
   })
+
+  // #1240: axe reads the document in the state the screenshots capture — after
+  // navigation settled and before the tab walk below focuses anything, because a
+  // focused ring is a transient style and not the resting page. Only serious and
+  // critical impacts fail, and the runner passes its own calendar day so a
+  // waiver's expiry is judged rather than remembered.
+  const analysis = await new AxeBuilder({ page }).analyze()
+  const axeViolations = analysis.violations.map((violation) => ({
+    id: violation.id,
+    impact: violation.impact ?? null,
+    help: violation.help,
+    targets: violation.nodes.map((node) => node.target.join(' ')).slice(0, 3),
+  }))
+  const axePrefix = `${locale} width=${String(width)} scheme=${scheme} ${path}`
+  for (const message of axeFailures({
+    violations: axeViolations,
+    waivers: AXE_WAIVERS,
+    path,
+    today: new Date().toISOString().slice(0, 10),
+  })) {
+    failures.push(`${axePrefix}: ${message}`)
+  }
 
   // A programmatic `focus()` does not match `:focus-visible` in this browser, so
   // the resting style stays put and every control reads as unringed. Tabbing is

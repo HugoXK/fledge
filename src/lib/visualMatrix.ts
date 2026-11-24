@@ -375,3 +375,79 @@ export function shardFailures(
   }
   return failures
 }
+
+// #1240: the four checks above judge what the browser computed — boxes, rings,
+// names, overflow — so a landmark, a role, a label association or a contrast
+// pair that does not move a box stayed invisible. axe is that semantic layer, and
+// it reads the same gate cells: every path in the matrix, both locales, both
+// schemes at 360/768/1280, so axe never judges a page the matrix does not render.
+export const AXE_FAILING_IMPACTS = ['serious', 'critical'] as const
+
+export type AxeImpact = (typeof AXE_FAILING_IMPACTS)[number]
+
+/** One axe violation, narrowed to the facts a failure message needs. */
+export interface AxeViolation {
+  /** The rule id, e.g. `image-alt`. */
+  readonly id: string
+  /** axe's impact for this rule; `null` when it declares none. */
+  readonly impact: string | null
+  /** The rule's one-line help, so the message says what is wrong, not only which rule. */
+  readonly help: string
+  /** Selectors of the elements the rule hit, best first. */
+  readonly targets: readonly string[]
+}
+
+/**
+ * A rule waived on one path until a date. The expiry is part of the entry rather
+ * than a note beside it: an allowlist without dates becomes a permanent list of
+ * things nobody looks at, and a lapsed entry has to fail instead of keep hiding.
+ */
+export interface AxeWaiver {
+  readonly rule: string
+  readonly path: string
+  /** `YYYY-MM-DD`; the waiver holds through that day and lapses the next. */
+  readonly expires: string
+}
+
+/** No rule is waived: the matrix renders clean at the tip that added axe (#1240). */
+export const AXE_WAIVERS: readonly AxeWaiver[] = []
+
+const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
+
+export interface AxeReport {
+  readonly violations: readonly AxeViolation[]
+  readonly waivers: readonly AxeWaiver[]
+  /** The page these violations were measured on; a waiver names exactly one path. */
+  readonly path: string
+  /** The runner's calendar day as `YYYY-MM-DD`; the test passes a fixed day. */
+  readonly today: string
+}
+
+/**
+ * Every reason the semantic pass must not read green: each serious or critical
+ * violation from a rule that is not waived on this path and today, named with
+ * its rule, impact and the elements it hit. A waiver with no `YYYY-MM-DD` expiry
+ * is refused outright — an entry that cannot be dated cannot be trusted to
+ * lapse — and a lapsed one stays visible in the message it no longer hides.
+ */
+export function axeFailures(report: AxeReport): string[] {
+  const failures: string[] = []
+  for (const waiver of report.waivers) {
+    if (!ISO_DATE.test(waiver.expires)) {
+      failures.push(
+        `axe waiver for ${waiver.rule} on ${waiver.path} has no YYYY-MM-DD expiry: ${waiver.expires}`,
+      )
+    }
+  }
+  for (const violation of report.violations) {
+    if (violation.impact !== 'serious' && violation.impact !== 'critical') continue
+    const waiver = report.waivers.find(
+      (entry) => entry.rule === violation.id && entry.path === report.path && ISO_DATE.test(entry.expires),
+    )
+    if (waiver !== undefined && waiver.expires >= report.today) continue
+    const targets = violation.targets.length === 0 ? 'no element reported' : violation.targets.slice(0, 3).join(', ')
+    const lapsed = waiver === undefined ? '' : ` (its waiver expired on ${waiver.expires})`
+    failures.push(`axe ${violation.id} (${String(violation.impact)}) on ${targets}${lapsed}: ${violation.help}`)
+  }
+  return failures
+}

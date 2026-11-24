@@ -3168,14 +3168,17 @@ overflow and on the `/settings#tokens` anchor. The second is the measured gate:
 the same six paths at `GATE_WIDTHS` (360, 768, 1280) in `GATE_SCHEMES` (light and
 dark) in both locales, three widths by two schemes because a scheme the host
 happened to carry is not a decision the matrix made. `src/lib/visualMatrix.ts`
-holds the constants and four pure checkers, so each rule can be pinned with a
+holds the constants and five pure checkers, so each rule can be pinned with a
 broken fixture without a browser: `touchFailures` holds every control the product
 styles as one (`button`, `.btn`, `input`, `select`, `textarea`, `summary`,
 `.section-nav a`) to the `--touch` 44px floor; `focusFailures` requires one of
 outline width/style, box-shadow, border colour or background colour to change
 when the control is focused; `nameFailures` requires an icon-only `button` or `a`
 to carry `aria-label` or `title`; `leftoverFailures` scans the rendered document
-for `{infoTip(`, `class="undefined"`, `[object Object]` and an unrendered `${`.
+for `{infoTip(`, `class="undefined"`, `[object Object]` and an unrendered `${`;
+and `axeFailures` refuses every serious or critical axe-core violation that no
+waiver names for that path, an entry that has to carry a `YYYY-MM-DD` expiry so
+an allowlist cannot outlive the reason for it (#1240).
 A failure names all four coordinates and the control
 (`en width=768 scheme=dark /settings: select is 292x43px, under the 44px touch
 floor`), so a red job points at one row instead of a screenshot.
