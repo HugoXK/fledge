@@ -107,6 +107,27 @@ can land.
 - Revoke stays one click in Settings and writes `token.revoked` to the audit log;
   the list shows the scope, the expiry date and the last-used time.
 
+### Tamper-evident audit log (#1233)
+
+`audit_log` rows carry `prev_hash` and `hash`. Each hash is SHA-256 over the
+row's `id`, `at`, `user_id`, `action`, `detail` and `prev_hash` in one canonical
+JSON array with a `v1` prefix, so an edit, delete or reorder that does not
+recompute the whole chain is visible at the first broken id. `Store.audit`
+writes the link inside a savepoint, including when the caller is already in a
+transaction. Rows written before the chain have a NULL hash and are reported as
+**unverified**, never forged; the first hashed row is recorded in the
+`audit_chain_start_id` setting.
+
+`npm run audit:verify -- --db <copy.db>` opens a copy read-only, walks the chain
+and exits non-zero at the first edited, deleted or reordered row; `--json` prints
+the same result. It never writes and never needs the platform key.
+
+This is a hash chain, not a signature: an administrator who can rewrite the
+database can also recompute every following hash and rebuild a consistent chain.
+The guarantee is against an edit, delete or reorder that leaves the rest of the
+chain in place. A retention purge deletes rows by design, so a later verification
+reports the first gap; that is a recorded deletion, not silent tampering.
+
 ### Sessions
 
 - 32-byte random session id; only its SHA-256 hash is stored.
