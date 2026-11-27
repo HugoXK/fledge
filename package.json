@@ -27,6 +27,7 @@
     "db:maintenance": "tsx scripts/db-maintenance.mjs",
     "role:set": "node scripts/set-role.mjs",
     "role:set:dev": "tsx scripts/set-role.ts",
+    "rotate:drill": "tsx scripts/rotation-drill.ts",
     "evolution:export": "tsx scripts/evolution-shadow.ts",
     "evolution:report": "tsx scripts/evolution-shadow.ts --report",
     "db:restore-drill:ci": "node scripts/restore-drill-ci.mjs",

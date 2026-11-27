@@ -905,6 +905,21 @@ User model base URLs are validated before saving and before use:
   `scripts/rotate-instance-tokens.mjs`; the GitHub development PAT is outside
   Fledge and must be rotated in GitHub settings.
 
+### Rotation drill
+
+`npm run rotate:drill` is a dry run: it prints the steps and writes nothing.
+With `--apply` it creates a throwaway database under the temporary directory,
+mints a job token and an instance token, proves both are accepted, revokes and
+replaces them, re-seals a bridge token, and fails unless both old values are
+refused and both replacements work. Every step writes one `rotation.drill.*`
+audit row; no token value is printed or stored in the row.
+
+The drill refuses `NODE_ENV=production`, the configured `DB_PATH`/`DATA_DIR`, and
+any path outside the temporary directory. `--db <path>` is only for a caller
+that wants to inspect the throwaway copy; `--keep` keeps the default temporary
+directory. `scripts/rotate-instance-tokens.mjs` remains the production rotation;
+the drill proves the revocation rule, it does not replace the rotation.
+
 DNS rebinding is not fully mitigated; deploy behind an egress policy if users
 are untrusted.
 
