@@ -241,6 +241,7 @@ test('the recorded baseline is every high alert at its sha and every entry is a 
   // top-of-file registrations and the gateway pair do not move. Nothing is
   // added or dismissed.
   assert.deepEqual([...keys].sort(), [
+    'js/insufficient-password-hash|src/lib/secrets.ts|99',
     'js/missing-rate-limiting|src/app.ts|3753',
     'js/missing-rate-limiting|src/app.ts|639',
     'js/missing-rate-limiting|src/app.ts|674',
@@ -252,7 +253,10 @@ test('the recorded baseline is every high alert at its sha and every entry is a 
   ])
   const dismissed = baseline.alerts.filter((alert) => alert.dismissed === true)
   // #928: the four `js/missing-rate-limiting` results (#62-#65) are dismissed in
-  // the alert UI since 2026-11-12, so the file records all seven as dismissed.
+  // the alert UI since 2026-11-12. #1316 adds alert #185
+  // (`js/insufficient-password-hash`, the generic `sha256Hex` helper; no caller
+  // hashes a password), dismissed in the alert UI as a false positive after the
+  // caller audit, so the file records all eight as dismissed.
   // An open entry would be one carrying an expiry, and that date is the red this
   // card removed; nothing in this file may expire.
   assert.equal(dismissed.length, baseline.alerts.length, 'every recorded result is a dismissal')

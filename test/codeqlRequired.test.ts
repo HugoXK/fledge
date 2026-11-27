@@ -96,8 +96,10 @@ test('the live CodeQL baseline is well-formed, owned and unexpired', () => {
   const checked = validateBaseline(baseline, Date.now())
   assert.deepEqual(checked.errors, [], 'the recorded baseline must pass its own reader')
   // #928: the four rate-limiting results (#62-#65) are dismissed in the alert UI
-  // since 2026-11-12, so the file records all seven as dismissed and none expires.
-  assert.equal(checked.entries.filter((entry) => entry.dismissed === true).length, 7, 'every recorded result is a dismissal')
+  // since 2026-11-12; #1316 adds alert #185 (`js/insufficient-password-hash`),
+  // dismissed as a false positive after the caller audit, so the file records
+  // all eight as dismissed and none expires.
+  assert.equal(checked.entries.filter((entry) => entry.dismissed === true).length, 8, 'every recorded result is a dismissal')
   assert.equal(checked.entries.filter((entry) => entry.dismissed !== true).length, 0, 'no result is left open with an expiry')
 })
 
