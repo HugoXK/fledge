@@ -57,6 +57,14 @@
       "severity": "high",
       "reason": "alert #42, dismissed false positive in the alert UI",
       "dismissed": true
+    },
+    {
+      "ruleId": "js/insufficient-password-hash",
+      "path": "src/lib/secrets.ts",
+      "line": 99,
+      "severity": "high",
+      "reason": "accepted false positive after the caller audit in #1316: sha256Hex() at src/lib/secrets.ts:98-100 is the generic SHA-256 helper, and every caller hashes a 256-bit random token or a content digest (session token src/app.ts:1110/1125, OAuth state 1374/1383/1405, job token 2742/5620/5683, gateway token src/flybot/instances.ts:250, bundle digest src/strategy/bundle.ts:43). Fledge has no password authentication: no passwordHash/bcrypt/scrypt/argon call exists in src/. CodeQL action 4.39.4 started emitting this result (gate step of run 45972931133); the code is unchanged. The expiry forces a re-check when the query pack or the callers change.",
+      "dismissed": true
     }
   ]
 }
