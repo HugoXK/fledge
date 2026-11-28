@@ -885,7 +885,7 @@ and the connection. Deploy behind an egress policy when the network is hostile.
 
 ### SSRF guard
 
-User model base URLs are validated before saving and before use:
+User model base URLs are validated before saving and re-validated on every call, before a connection is opened:
 
 - HTTPS only for public hosts.
 - HTTP and private/loopback/link-local addresses are accepted only when
@@ -894,7 +894,15 @@ User model base URLs are validated before saving and before use:
   model form. This is an explicit trust decision: the gateway host must be able
   to reach that address.
 - Without the opt-in, IP literals in private/loopback/link-local ranges are
-  rejected and hostnames are resolved and checked.
+  rejected and hostnames are resolved and every answer checked.
+- The guard runs again at use time on every model call: the host is resolved
+  once, every answer is checked, and the approved addresses are pinned into the
+  connection (`lookup`), so a second DNS answer is never used. A host that
+  resolves public at save and private at use is refused before the connection;
+  a mixed answer is refused, never narrowed to the public address. The refusal
+  is terminal (no retry, no fallback), consumes no quota, and the log line
+  carries a category, never the provider key or the resolved address. A 3xx from
+  the provider is returned to the caller and never followed.
 - Credentials in the URL are rejected.
 - Model connection keys are encrypted with the platform key and never rendered;
   a repository can only select connections owned by the same user.
@@ -920,8 +928,10 @@ that wants to inspect the throwaway copy; `--keep` keeps the default temporary
 directory. `scripts/rotate-instance-tokens.mjs` remains the production rotation;
 the drill proves the revocation rule, it does not replace the rotation.
 
-DNS rebinding is not fully mitigated; deploy behind an egress policy if users
-are untrusted.
+A host that resolves to a blocked address at use time is refused, and the
+connection is pinned to the addresses the guard approved, so a second lookup
+cannot reopen the check/connect window on this path. Egress policy remains
+defense in depth for the whole process, not a replacement for this guard.
 
 ### Provider policy
 
