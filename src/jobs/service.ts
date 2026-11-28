@@ -61,7 +61,8 @@ import { GithubApp } from '../repos/app.js'
 import { parseIssueUrl, parsePrUrl } from './prUrl.js'
 import { promoteDiscoveredIssue } from './discoveryPromotion.js'
 import { buildCarryOver, buildRunDigest, carryOverPullState, decideNextJob, failureStreak, lastDurationMs, lastWorkSucceeded, MIN_DISCOVERY_INTERVAL_MINUTES, parseCarryOverLink, type CarryOverReader, type OutputKind } from './continuity.js'
-import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatched, type DispatchBlockReason } from './automationHealth.js'
+import { clearIdleWithWork, readySinceMs, recordBlockedDispatch, recordDispatched, recordLeaseAge, type DispatchBlockReason } from './automationHealth.js'
+import { LeaseHeartbeats } from './leaseHeartbeat.js'
 import { isTemporalStatus, summariseDelta, type TemporalDelta, type TemporalStatus } from '../lib/temporal.js'
 import { planTick, scheduleFromRow, type TickPlan } from '../schedules/tick.js'
 import { parseRunNowKey } from '../schedules/runNow.js'
@@ -465,7 +466,7 @@ export class Jobs {
   private stopped = false
   private lastPruneAt = 0
   private readonly credentialCache = new Map<string, { at: number }>()
-  private readonly leaseTimers = new Map<string, NodeJS.Timeout>()
+  private readonly leaseHeartbeats = new LeaseHeartbeats()
   private readonly quotaNotifier: QuotaNotifier
   // Tests inject a fake; production binds the platform model inside
   // `adversarialPass`. Null means "use the configured platform model, or skip
@@ -1659,7 +1660,7 @@ export class Jobs {
       const attempt = this.store.startJobAttempt(job.id, 'inline', 5 * 60_000)
       if (attempt === undefined) return { ok: false, job: this.store.getJob(job.id), error: '任务已被派发或结束' }
       attemptEpoch = attempt.epoch
-      this.startLeaseHeartbeat(job.id, 'inline', 5 * 60_000)
+      this.leaseHeartbeats.start(this.store, job.id, 'inline', 5 * 60_000)
       observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
       this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
       if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
@@ -1718,7 +1719,7 @@ export class Jobs {
       // lease a newer dispatch now holds.
       const startFailed = this.store.failJobAttempt(job.id, attemptEpoch, redact(message).slice(0, 1000), startCode)
       if (startFailed) {
-        this.clearLeaseHeartbeat(job.id)
+        this.leaseHeartbeats.clear(job.id)
         if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
         else this.store.updateRepo(repo.id, { last_status: 'failed' })
         this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
@@ -1885,7 +1886,7 @@ export class Jobs {
       }
     }
     this.store.releaseJobLease(jobId)
-    this.clearLeaseHeartbeat(jobId)
+    this.leaseHeartbeats.clear(jobId)
     incCounter('fledge_jobs_total', { status: result.status, kind: job.kind }, 1, 'Jobs by terminal status')
     const started = Date.parse(job.started_at ?? job.created_at)
     const ended = Date.parse(nowIso())
@@ -4803,7 +4804,7 @@ export class Jobs {
     // #247: the attempt row and the running transition are one commit.
     const attempt = this.store.startJobAttempt(job.id, worker, 5 * 60_000)
     if (attempt === undefined) return
-    this.startLeaseHeartbeat(job.id, worker, 5 * 60_000)
+    this.leaseHeartbeats.start(this.store, job.id, worker, 5 * 60_000)
     observeHistogram('fledge_job_queue_seconds', Math.max(0, (Date.now() - Date.parse(job.created_at)) / 1000), { kind }, 'Time from enqueue to dispatch')
     this.store.recordJobEvent({ jobId: job.id, repoId: repo.id, userId: user.id, kind: 'job.running', step: kind })
     if (kind === 'review') this.store.updateRepo(repo.id, { last_review_status: 'running' })
@@ -4871,7 +4872,7 @@ export class Jobs {
       const startCode: FailureCode = providerRefusalCode(message) ?? 'BRIDGE_ERROR'
       const startFailed = this.store.failJobAttempt(job.id, attempt.epoch, redact(message).slice(0, 1000), startCode)
       if (startFailed) {
-        this.clearLeaseHeartbeat(job.id)
+        this.leaseHeartbeats.clear(job.id)
         if (kind === 'review') this.store.updateRepo(repo.id, { last_review_at: nowIso(), last_review_status: 'failed' })
         else this.store.updateRepo(repo.id, { last_status: 'failed' })
         this.store.notify(user.id, 'job', `${kind === 'review' ? '审核' : '任务'} ${job.id} 启动失败：${redact(message)}`, startCode)
@@ -4881,23 +4882,6 @@ export class Jobs {
         jobLog.warn('late queued dispatch failure refused', { error: message })
       }
       jobLog.error('queued job start failed', { error: message })
-    }
-  }
-
-  private startLeaseHeartbeat(jobId: string, owner: string, leaseMs: number): void {
-    this.clearLeaseHeartbeat(jobId)
-    const timer = setInterval(() => {
-      if (!this.store.renewJobLease(jobId, owner, leaseMs)) this.clearLeaseHeartbeat(jobId)
-    }, Math.max(1000, Math.floor(leaseMs / 5)))
-    timer.unref()
-    this.leaseTimers.set(jobId, timer)
-  }
-
-  private clearLeaseHeartbeat(jobId: string): void {
-    const timer = this.leaseTimers.get(jobId)
-    if (timer !== undefined) {
-      clearInterval(timer)
-      this.leaseTimers.delete(jobId)
     }
   }
 
@@ -4987,6 +4971,7 @@ export class Jobs {
       incCounter('fledge_lease_expired_total', { kind: job.kind }, 1, 'Jobs whose worker lease expired')
       this.finish(job.id, { status: 'failed', error: '任务租约过期：worker 未续约。', errorCode: 'JOB_LEASE_EXPIRED' }, revoke, null, null, null, null, true)
     }
+    recordLeaseAge(this.store)
     this.store.deleteExpiredJobTokens()
     if (Date.now() - this.lastPruneAt > 60 * 60 * 1_000) {
       this.lastPruneAt = Date.now()
