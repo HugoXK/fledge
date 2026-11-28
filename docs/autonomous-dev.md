@@ -112,10 +112,47 @@ Add a changelog fragment for a user-visible change. Update the owned doc or add
 - T0/T1: `ci-ok` green, mergeable, design-conformant.
 - T2/T3: a PASS at the same tip from another identity (the tip author never
   PASSes it) with a real `Ran:` command.
-- Enqueue with `gh pr merge --auto --squash --match-head-commit <sha>`.
+- Enqueue with `gh pr merge --auto --squash --match-head-commit <sha>`. A green
+  T0/T1 pull request that nobody enqueued is merged by the `merge-clean` drain
+  below, a direct squash pinned to the head SHA it read.
 - Never `--admin`; never force-push `main`; never bypass a required check.
 - After merge: fetch, fast-forward `main`, delete the branch/worktree, and file
   follow-ups as issues (not TODOs).
+
+### Clean T0/T1 drain
+
+`.github/workflows/merge-clean.yml` runs every ten minutes and on
+`workflow_dispatch`. It is the queue entry `CLEAN` does not provide: a pull
+request with every required check green sits in `CLEAN`, and
+`enablePullRequestAutoMerge` refuses with "Pull request is in clean status", so a
+green T0/T1 tip waited for a person to press squash (#1272).
+
+- `node scripts/merge-clean.mjs --dry-run` prints one line per open pull request
+  as `PR <n> head=<sha> tier=<T0|T1> action=<enqueue|skip:reason>` and performs
+  no write.
+- It merges only an open, non-draft pull request whose head repository is the
+  base repository, whose base ref is the default branch, whose computed tier is
+  T0/T1, whose `ci-ok`, `review-gate` and `pr-lint` checks are successful at the
+  head SHA, and which is not already queued. A T2/T3 tip reads `skip:tierT2` /
+  `skip:tierT3`: it still needs a PASS.
+- A veto blocks: a `review:changes` label, any `CHANGES_REQUESTED` review, or a
+  `hold`/`state:hold` label reads `skip:changes` or `skip:hold`. The gate returns
+  `ok` for a T0/T1 tip before it reads verdicts, so the drain reads both labels
+  and reviews itself; the hold label alone blocks, stricter than the documented
+  label-plus-comment pair.
+- A fork head reads `skip:fork` and a base that is not the default branch reads
+  `skip:base`; the merge targets nothing else.
+- The tier is computed from the diff with `tierForChanges`; a `risk:T*` label is
+  never read as a tier. The file list is capped, so a list that fills the cap
+  reads `skip:files-truncated` instead of tiering an incomplete diff.
+- The newest run of a required check decides, ordered by `started_at`: a newer
+  `queued`/`in_progress` run reads `skip:checks`, because a pending run never
+  counts as green.
+- The merge is a direct squash merge pinned to the head SHA the decision names.
+  A head that moved between the checks and the read reads `skip:head-moved`; a
+  move after the read is refused by the merge API and reported as "merge not
+  taken", never merged. Any other refusal prints one reason line and the run
+  ends instead of retrying.
 
 ### Missing CI backstop
 
