@@ -231,7 +231,7 @@ test('an existing tag is refused in the plan words, before any write', async () 
 test('a stale session cannot tag from the readiness page, and GitHub is never read', async () => {
   const h = await harness()
   try {
-    h.store.db.exec(`UPDATE sessions SET recent_auth_at = NULL WHERE id_hash = '${sha256Hex(h.session.raw)}'`)
+    h.store.run(`UPDATE sessions SET recent_auth_at = NULL WHERE id_hash = '${sha256Hex(h.session.raw)}'`)
     const response = await h.submit()
     assert.equal(response.statusCode, 302)
     const location = String(response.headers.location)

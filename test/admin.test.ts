@@ -404,9 +404,9 @@ test('a CSV export refuses instead of silently stopping at 5000 rows', async () 
     const { cookie } = sessionFor(built, admin)
 
     // Exactly at the cap the file is still served whole: header plus 5000 rows.
-    store.db.exec('BEGIN')
+    store.run('BEGIN')
     for (let i = 0; i < 5000; i += 1) store.audit(user.id, 'bulk.export', `row ${String(i)}`)
-    store.db.exec('COMMIT')
+    store.run('COMMIT')
     const auditAtCap = await built.app.inject({ method: 'GET', url: '/admin/export/audit.csv?action=bulk', headers: { cookie } })
     assert.equal(auditAtCap.statusCode, 200)
     assert.equal(auditAtCap.body.trimEnd().split('\n').length, 5001, 'one header plus every row at the cap')
@@ -424,18 +424,20 @@ test('a CSV export refuses instead of silently stopping at 5000 rows', async () 
     // The job export has the same contract.
     // One queued job per repo is the schema's rule, so each bulk job is settled
     // before the next one is inserted.
-    const settleJob = store.db.prepare("UPDATE jobs SET status = 'succeeded' WHERE id = ?")
-    store.db.exec('BEGIN')
-    for (let i = 0; i < 5000; i += 1) {
-      store.createJob({ id: `job_bulk_${String(i)}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: `bulk job ${String(i)}`, callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
-      settleJob.run(`job_bulk_${String(i)}`)
+    const settleJob = (id: string): void => {
+      store.run("UPDATE jobs SET status = 'succeeded' WHERE id = ?", id)
     }
-    store.db.exec('COMMIT')
+    store.transaction(() => {
+      for (let i = 0; i < 5000; i += 1) {
+        store.createJob({ id: `job_bulk_${String(i)}`, repoId: repo.id, userId: user.id, trigger: 'manual', goal: `bulk job ${String(i)}`, callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
+        settleJob(`job_bulk_${String(i)}`)
+      }
+    })
     const jobsAtCap = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv', headers: { cookie } })
     assert.equal(jobsAtCap.statusCode, 200)
     assert.equal(jobsAtCap.body.trimEnd().split('\n').length, 5001)
     store.createJob({ id: 'job_bulk_5000', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'bulk job 5000', callbackHash: 'cb', platformTokenHash: '', kind: 'iterate' })
-    settleJob.run('job_bulk_5000')
+    settleJob('job_bulk_5000')
     const jobsOverCap = await built.app.inject({ method: 'GET', url: '/admin/export/jobs.csv', headers: { cookie } })
     assert.equal(jobsOverCap.statusCode, 400)
     assert.match(jobsOverCap.body, /5001/)

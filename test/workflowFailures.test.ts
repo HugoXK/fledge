@@ -79,7 +79,7 @@ async function setup(): Promise<{ store: Store; built: Built; cookie: string; re
 }
 
 function failureCount(store: Store): number {
-  const row = store.db.prepare('SELECT COUNT(*) AS n FROM workflow_failures').get() as { n: number }
+  const row = store.get('SELECT COUNT(*) AS n FROM workflow_failures') as { n: number }
   return Number(row.n)
 }
 

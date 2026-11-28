@@ -1,4 +1,5 @@
-import { createRequire } from 'node:module'
+import { SqliteDialect } from './db/sqlite.js'
+import type { SqlDialect } from './db/dialect.js'
 import { createHash, randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
@@ -41,8 +42,6 @@ import type { SkillBundleSourceRow } from './lib/skillBundle.js'
 // restart.
 const PAT_EXPIRY_BACKFILL_KEY = 'pat_expiry_backfilled'
 
-const require = createRequire(import.meta.url)
-
 // #636 review: the quota and the repository budgets are CNY figures computed as
 // `USD amount * USD_CNY_RATE`, so they may only read rows billed in USD. A row
 // priced in another currency stays in `costByCurrency`, which keeps the buckets
@@ -51,20 +50,6 @@ const require = createRequire(import.meta.url)
 function usdBilled(prefix = ''): string {
   return `(${prefix}currency IS NULL OR ${prefix}currency = 'USD')`
 }
-
-interface Statement {
-  run(...params: unknown[]): { changes: number | bigint; lastInsertRowid: number | bigint }
-  get(...params: unknown[]): unknown
-  all(...params: unknown[]): unknown[]
-}
-
-interface Database {
-  exec(sql: string): void
-  prepare(sql: string): Statement
-  close(): void
-}
-
-const { DatabaseSync } = require('node:sqlite') as { DatabaseSync: new (path: string) => Database }
 
 // The schema version this build writes. Exported because the previous-release
 // restore check (#652) has to prove a fixture written by an older build still
@@ -2859,20 +2844,20 @@ export interface FeedbackEventRow {
 }
 
 export class Store {
-  readonly db: Database
+  readonly dialect: SqlDialect
 
   constructor(path: string) {
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
-    this.db = new DatabaseSync(path)
-    this.db.exec('PRAGMA journal_mode = WAL;')
-    this.db.exec('PRAGMA foreign_keys = ON;')
-    this.db.exec('PRAGMA busy_timeout = 5000;')
+    this.dialect = new SqliteDialect(path)
+    this.dialect.exec('PRAGMA journal_mode = WAL;')
+    this.dialect.exec('PRAGMA foreign_keys = ON;')
+    this.dialect.exec('PRAGMA busy_timeout = 5000;')
     const previousVersion = Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
     if (previousVersion > SCHEMA_VERSION) {
-      this.db.close()
+      this.dialect.close()
       throw new Error(`database schema version ${previousVersion} is newer than this build supports (${String(SCHEMA_VERSION)})`)
     }
-    this.db.exec(SCHEMA)
+    this.dialect.exec(SCHEMA)
     this.migrateFeedbackTriageColumns()
     this.migrateColumns()
     this.migrateAuditColumns()
@@ -2902,7 +2887,7 @@ export class Store {
       this.run('UPDATE repos SET role_checked_at = ? WHERE repo_role IS NOT NULL AND role_checked_at IS NULL', nowIso())
     }
     this.migrateIdentity()
-    this.db.exec(`PRAGMA user_version = ${Math.max(previousVersion, SCHEMA_VERSION)};`)
+    this.dialect.exec(`PRAGMA user_version = ${Math.max(previousVersion, SCHEMA_VERSION)};`)
   }
 
   // #544 slice 3B-B2: a database written by slice B1 already has the occurrence
@@ -2916,14 +2901,14 @@ export class Store {
   // no bound, which is exactly the behaviour it had.
   private migrateScheduleMisfireColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
-    if (!columns.includes('grace_ms')) this.db.exec('ALTER TABLE schedules ADD COLUMN grace_ms INTEGER')
+    if (!columns.includes('grace_ms')) this.dialect.exec('ALTER TABLE schedules ADD COLUMN grace_ms INTEGER')
   }
 
   // #544 slice 6: the run budget adds one nullable column. A row written before
   // it keeps no limit, which is the behaviour it had; nothing else is rewritten.
   private migrateScheduleBudgetColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
-    if (!columns.includes('daily_runs')) this.db.exec('ALTER TABLE schedules ADD COLUMN daily_runs INTEGER')
+    if (!columns.includes('daily_runs')) this.dialect.exec('ALTER TABLE schedules ADD COLUMN daily_runs INTEGER')
   }
 
   // #544 slice 9: the pause state adds two columns. A row written before them is
@@ -2931,8 +2916,8 @@ export class Store {
   // rewritten, and the default is what makes that true without a backfill.
   private migrateSchedulePauseColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(schedules)').map((column) => column.name)
-    if (!columns.includes('status')) this.db.exec("ALTER TABLE schedules ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
-    if (!columns.includes('paused_at')) this.db.exec('ALTER TABLE schedules ADD COLUMN paused_at INTEGER')
+    if (!columns.includes('status')) this.dialect.exec("ALTER TABLE schedules ADD COLUMN status TEXT NOT NULL DEFAULT 'active'")
+    if (!columns.includes('paused_at')) this.dialect.exec('ALTER TABLE schedules ADD COLUMN paused_at INTEGER')
   }
 
   // #544: the console answers a scheduled run's delivery through the job the
@@ -2942,7 +2927,7 @@ export class Store {
   // wrong one. Such rows answer `none` for an old run, never a fabricated state.
   private migrateNotificationJobColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(notification_outbox)').map((column) => column.name)
-    if (!columns.includes('job_id')) this.db.exec('ALTER TABLE notification_outbox ADD COLUMN job_id TEXT')
+    if (!columns.includes('job_id')) this.dialect.exec('ALTER TABLE notification_outbox ADD COLUMN job_id TEXT')
     this.run('CREATE INDEX IF NOT EXISTS notification_outbox_job_idx ON notification_outbox(job_id, created_at DESC)')
   }
 
@@ -2979,8 +2964,8 @@ export class Store {
   private migrateTestRunsShape(): void {
     const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(test_runs)').map((row) => row.name))
     if (columns.size === 0 || columns.has('head_sha')) return
-    this.db.exec('DROP TABLE test_runs')
-    this.db.exec(TEST_RUNS_SCHEMA)
+    this.dialect.exec('DROP TABLE test_runs')
+    this.dialect.exec(TEST_RUNS_SCHEMA)
   }
 
   migrateIndexes(): void {
@@ -3187,10 +3172,10 @@ export class Store {
   // an older database gains the retry columns in place.
   private migrateFeedbackTriageColumns(): void {
     const columns = this.all<{ name: string }>('PRAGMA table_info(feedback_triage)').map((column) => column.name)
-    if (!columns.includes('lead_delivered_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_delivered_at TEXT')
-    if (!columns.includes('lead_attempts')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_attempts INTEGER NOT NULL DEFAULT 0')
-    if (!columns.includes('lead_last_error')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_last_error TEXT')
-    if (!columns.includes('lead_next_attempt_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_next_attempt_at TEXT')
+    if (!columns.includes('lead_delivered_at')) this.dialect.exec('ALTER TABLE feedback_triage ADD COLUMN lead_delivered_at TEXT')
+    if (!columns.includes('lead_attempts')) this.dialect.exec('ALTER TABLE feedback_triage ADD COLUMN lead_attempts INTEGER NOT NULL DEFAULT 0')
+    if (!columns.includes('lead_last_error')) this.dialect.exec('ALTER TABLE feedback_triage ADD COLUMN lead_last_error TEXT')
+    if (!columns.includes('lead_next_attempt_at')) this.dialect.exec('ALTER TABLE feedback_triage ADD COLUMN lead_next_attempt_at TEXT')
   }
 
   // #1233: the chain columns are additive. A row written before them keeps
@@ -3440,31 +3425,37 @@ export class Store {
   }
 
   close(): void {
-    this.db.close()
+    this.dialect.close()
+  }
+
+  // #1229: the health probe that replaces the raw `db` handle `/readyz` used to
+  // read. It is a port call, not a driver call, so the driver stays in the
+  // adapter.
+  ping(): void {
+    this.dialect.ping()
   }
 
   get<T>(sql: string, ...params: unknown[]): T | undefined {
-    return this.db.prepare(sql).get(...clean(params)) as T | undefined
+    return this.dialect.prepare(sql).get(...clean(params)) as T | undefined
   }
 
   all<T>(sql: string, ...params: unknown[]): T[] {
-    return this.db.prepare(sql).all(...clean(params)) as T[]
+    return this.dialect.prepare(sql).all(...clean(params)) as T[]
   }
 
   run(sql: string, ...params: unknown[]): void {
-    this.db.prepare(sql).run(...clean(params))
+    this.dialect.prepare(sql).run(...clean(params))
+  }
+
+  // The port's script entry: a seed can carry more than one statement, which a
+  // prepared `run` executes only the first of. It is a port call, not a raw
+  // handle, so the driver stays in the adapter.
+  exec(sql: string): void {
+    this.dialect.exec(sql)
   }
 
   transaction<T>(fn: () => T): T {
-    this.db.exec('BEGIN IMMEDIATE')
-    try {
-      const value = fn()
-      this.db.exec('COMMIT')
-      return value
-    } catch (error) {
-      this.db.exec('ROLLBACK')
-      throw error
-    }
+    return this.dialect.transaction(fn)
   }
 
   // #541: one idempotent backfill for the identity rows this slice reads. The
@@ -3657,7 +3648,7 @@ export class Store {
     },
   ): boolean {
     const at = nowIso()
-    const result = this.db
+    const result = this.dialect
       .prepare(
         `UPDATE users SET status = 'pending', disclaimer_name = ?, disclaimer_version = ?, disclaimer_accepted_at = ?,
          security_version = ?, security_accepted_at = ?, agreement_hash = ?, application_submitted_at = ?,
@@ -4045,7 +4036,7 @@ export class Store {
     model?: string | null
     playbook?: string | null
   }): void {
-    this.db.prepare(
+    this.dialect.prepare(
       `INSERT INTO delivery_outcomes (id, repo_id, job_id, pr_url, merge_commit, merged_at, title, cost_usd, model, playbook)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT (repo_id, pr_url) DO NOTHING`,
@@ -4069,7 +4060,7 @@ export class Store {
   // The first sighting of a revert wins: the scanner may see the same history
   // twice, and a second sighting must not move the clock or double the count.
   markDeliveryReverted(input: { repoId: string; mergeCommit: string; revertCommit: string; revertedAt: string }): boolean {
-    const result = this.db.prepare(
+    const result = this.dialect.prepare(
       'UPDATE delivery_outcomes SET reverted_at = ?, revert_commit = ? WHERE repo_id = ? AND merge_commit = ? AND reverted_at IS NULL',
     ).run(...clean([input.revertedAt, input.revertCommit, input.repoId, input.mergeCommit]))
     return Number(result.changes) > 0
@@ -4078,7 +4069,7 @@ export class Store {
   // A failing check after the merge is one fact per failing run, not one per
   // repository, so the column counts rather than flips.
   recordPostMergeFailure(repoId: string, mergeCommit: string, at: string): boolean {
-    const result = this.db.prepare(
+    const result = this.dialect.prepare(
       'UPDATE delivery_outcomes SET post_merge_failures = post_merge_failures + 1, last_failure_at = ? WHERE repo_id = ? AND merge_commit = ?',
     ).run(...clean([at, repoId, mergeCommit]))
     return Number(result.changes) > 0
@@ -5322,7 +5313,7 @@ export class Store {
     const repoHash = input.repoId === null || input.repoId === undefined ? null : this.productDigest(`repo:${salt}:${input.repoId}`)
     const subject = input.subject ?? input.repoId ?? ''
     const id = this.productDigest(`${salt}:${input.name}:${subject}`)
-    const insert = this.db.prepare('INSERT OR IGNORE INTO product_events (id, name, at, repo_hash, duration_ms) VALUES (?, ?, ?, ?, ?)')
+    const insert = this.dialect.prepare('INSERT OR IGNORE INTO product_events (id, name, at, repo_hash, duration_ms) VALUES (?, ?, ?, ?, ?)')
     return insert.run(...clean([id, input.name, input.at ?? nowIso(), repoHash, duration === null ? null : Math.round(duration)])).changes > 0
   }
 
@@ -6421,7 +6412,7 @@ export class Store {
     /** #544: the config/authorization this row was written under; null is unknown. */
     snapshotJson?: string | null
   }): { row: ScheduleOccurrenceRow; created: boolean } {
-    const result = this.db.prepare(
+    const result = this.dialect.prepare(
       `INSERT INTO schedule_occurrences
          (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, snapshot_json)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -6462,7 +6453,7 @@ export class Store {
     // logical time steps forward until the triple is free. The command key is
     // checked first: a replay must never be mistaken for a collision.
     for (let offset = 0; offset < 1_000; offset += 1) {
-      const result = this.db.prepare(
+      const result = this.dialect.prepare(
         `INSERT INTO schedule_occurrences
            (id, schedule_id, repo_id, logical_time, timing_revision, state, reason, missed, job_id, decided_at, dispatched_at, lag_ms, command_key, snapshot_json)
          VALUES (?, ?, ?, ?, ?, 'claimed', NULL, 0, NULL, ?, NULL, NULL, ?, ?)
@@ -6822,7 +6813,7 @@ export class Store {
   }): { row: NotificationOutboxRow; created: boolean } {
     const now = input.now ?? Date.now()
     const dueAt = input.dueAtMs ?? now
-    const result = this.db.prepare(
+    const result = this.dialect.prepare(
       `INSERT INTO notification_outbox
          (id, transport, destination, user_id, job_id, payload_json, idempotency_key, state, attempts, next_attempt_at, created_at, updated_at)
        VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?)
@@ -6877,7 +6868,7 @@ export class Store {
       const claimed: NotificationOutboxRow[] = []
       for (const row of due) {
         const token = randomBytes(8).toString('hex')
-        const changed = this.db.prepare(
+        const changed = this.dialect.prepare(
           `UPDATE notification_outbox
               SET state = 'sending', lease_token = ?, lease_expires_at = ?, attempts = attempts + 1, updated_at = ?
             WHERE id = ? AND state IN ('pending', 'retry')`,
@@ -7777,7 +7768,7 @@ export class Store {
   // Returns the number of rows the statement changed, which is how a guarded
   // transition reports whether this caller won it.
   runChanges(sql: string, ...params: unknown[]): number {
-    return Number(this.db.prepare(sql).run(...clean(params)).changes ?? 0)
+    return Number(this.dialect.prepare(sql).run(...clean(params)).changes ?? 0)
   }
 
   // The terminal transition is the callback idempotency key: only the delivery
@@ -8390,7 +8381,7 @@ export class Store {
     const at = nowIso()
     // SAVEPOINT works inside the caller's transaction as well as outside one, so
     // an audit written by a guarded transition cannot turn into a half row.
-    this.db.exec('SAVEPOINT audit_chain')
+    this.dialect.exec('SAVEPOINT audit_chain')
     try {
       const previous = this.get<{ hash: string | null }>('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1')
       const prevHash = previous?.hash ?? null
@@ -8400,10 +8391,10 @@ export class Store {
       if ((previous === undefined || previous.hash === null) && this.getSetting('audit_chain_start_id') === undefined) {
         this.setSetting('audit_chain_start_id', String(id))
       }
-      this.db.exec('RELEASE audit_chain')
+      this.dialect.exec('RELEASE audit_chain')
     } catch (error) {
-      try { this.db.exec('ROLLBACK TO audit_chain') } catch { /* the savepoint may already be gone */ }
-      try { this.db.exec('RELEASE audit_chain') } catch { /* the savepoint may already be gone */ }
+      try { this.dialect.exec('ROLLBACK TO audit_chain') } catch { /* the savepoint may already be gone */ }
+      try { this.dialect.exec('RELEASE audit_chain') } catch { /* the savepoint may already be gone */ }
       throw error
     }
   }

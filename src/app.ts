@@ -1204,7 +1204,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
 
   app.get('/readyz', async (_request, reply) => {
     try {
-      store.db.prepare('SELECT 1').get()
+      store.ping()
     } catch {
       return reply.code(503).send({ ok: false, db: false })
     }

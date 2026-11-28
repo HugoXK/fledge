@@ -513,8 +513,12 @@ and a skipped check never read the same. The writer of that field is the drill's
   `errors/<ref>/report` form and never prints a stack. `src/app.ts` passes the
   status it is about to reply at each call site, and the 2xx reuse for the
   "report sent" confirmation shows no code.
-- **SQLite** via Node's built-in `node:sqlite` (WAL, foreign keys). The database
-  file is the only state; the mail outbox is a development artifact.
+- **SQLite** via Node's built-in `node:sqlite` (WAL, foreign keys), behind one
+  dialect port: `src/db/dialect.ts` declares the seam, `src/db/sqlite.ts` is the
+  only production adapter, and `test/dbContract.test.ts` runs the same
+  CRUD/transaction/constraint/migration cases through `Store` and through the
+  port. The database file is the only state; the mail outbox is a development
+  artifact.
 - **Sessions** are random 32-byte tokens, stored as SHA-256 hashes; the cookie is
   HttpOnly/SameSite=Lax.
 - **Job terminal transitions** are conditional writes (`UPDATE … WHERE status IN

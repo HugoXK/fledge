@@ -250,8 +250,8 @@ test('a schedule row written before the pause columns existed is active, not pau
     store.saveSchedule({ id: 'sch_pause_migrate', repoId: repo.id, kind: 'interval', everyMs: HOUR })
     // The shape of a file written by an earlier slice: the two columns are gone,
     // which is what the in-place migration has to notice and add back.
-    store.db.exec('ALTER TABLE schedules DROP COLUMN status')
-    store.db.exec('ALTER TABLE schedules DROP COLUMN paused_at')
+    store.run('ALTER TABLE schedules DROP COLUMN status')
+    store.run('ALTER TABLE schedules DROP COLUMN paused_at')
     store.close()
 
     const reopened = new Store(path)

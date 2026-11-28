@@ -119,7 +119,7 @@ test('an old-shape test_runs ledger is migrated on open', () => {
       store.recordTestRuns('repo_old', 'job_old', 'b'.repeat(40), [{ name: 'test (22)', passed: false }])
       assert.deepEqual(store.testRunHistory('repo_old').map((entry) => entry.passed), [true, false], 'a run at each head sha is recorded on the migrated ledger')
 
-      const columns = (store.db.prepare('PRAGMA table_info(test_runs)').all() as Array<{ name: string }>)
+      const columns = (store.all('PRAGMA table_info(test_runs)') as Array<{ name: string }>)
         .map((column) => column.name)
       assert.deepEqual(columns, ['id', 'repo_id', 'job_id', 'head_sha', 'name', 'passed', 'recorded_at'], 'the old key is replaced by the head-sha shape')
     } finally {

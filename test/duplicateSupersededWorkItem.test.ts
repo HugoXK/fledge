@@ -33,13 +33,13 @@ test('a superseded duplicate resets its work item to triaged', () => {
     })
     // A file written before the invariant existed may already hold two active
     // rows for one repository; seed exactly that so reopening has to resolve it.
-    store.db.exec('DROP INDEX IF EXISTS jobs_one_active_per_repo')
+    store.run('DROP INDEX IF EXISTS jobs_one_active_per_repo')
     store.createJob({ id: 'job_item_old', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'old', callbackHash: 'cb_old', platformTokenHash: '', workItemId: 'work_item_dupe' })
     store.createJob({ id: 'job_item_new', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'new', callbackHash: 'cb_new', platformTokenHash: '' })
     store.updateJob('job_item_old', { status: 'running' })
     store.updateJob('job_item_new', { status: 'running' })
-    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:01.000Z' WHERE id = 'job_item_old'")
-    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:02.000Z' WHERE id = 'job_item_new'")
+    store.run("UPDATE jobs SET created_at = '2026-01-01T00:00:01.000Z' WHERE id = 'job_item_old'")
+    store.run("UPDATE jobs SET created_at = '2026-01-01T00:00:02.000Z' WHERE id = 'job_item_new'")
     // The dispatching job had already moved the item to in_progress.
     store.createWorkItem({ id: 'work_item_dupe', repoId: repo.id, userId: user.id, title: 'claim this', state: 'in_progress', jobId: 'job_item_old' })
     store.close()

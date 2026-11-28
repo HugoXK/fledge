@@ -3376,7 +3376,7 @@ test('the daily sparkline ends on the day the store returns first', () => {
       for (let n = 0; n < count; n += 1) {
         const id = `job_spark_${day}_${String(n)}`
         makeTerminalJob(store, { id, repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: `cb-${id}`, platformTokenHash: '', kind: 'iterate' })
-        store.db.exec(`UPDATE jobs SET created_at = '${day}T09:00:00.000Z' WHERE id = '${id}'`)
+        store.run(`UPDATE jobs SET created_at = '${day}T09:00:00.000Z' WHERE id = '${id}'`)
       }
     }
     seed('2026-01-01', 1)
