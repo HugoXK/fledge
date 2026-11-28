@@ -1,6 +1,7 @@
 import type { LeaseQueryReader } from '../lib/leaseHealth.js'
 import { lastReapedLease, oldestLiveLease } from '../lib/leaseHealth.js'
 import { clearGauge, incCounter, metricsSnapshot, observeHistogram, setGauge } from '../lib/metrics.js'
+import { queryHealthSummary, readDatabaseHealth, type DatabaseHealth, type HealthHandle, type QueryHealthSummary } from '../lib/dbHealth.js'
 
 // #807: the console could say when the last run happened, not whether the
 // platform was keeping the team busy. These are the numbers that answer that
@@ -101,6 +102,12 @@ export interface ReapedLeaseHealth {
   kind: string
   repo: string
   ageSeconds: number
+}
+
+// #1231: the admin metrics page reads two payloads in one line; keeping the
+// pair here means `src/app.ts` adds no line for the database card.
+export function adminHealthPayload(store: LeaseQueryReader & { db: HealthHandle }): { automation: AutomationHealthSummary; dbHealth: { counters: DatabaseHealth; queries: QueryHealthSummary } } {
+  return { automation: automationHealth(store), dbHealth: { counters: readDatabaseHealth(store.db), queries: queryHealthSummary() } }
 }
 
 export interface AutomationHealthSummary {
