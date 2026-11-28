@@ -8,11 +8,7 @@
 // branch's copy, inside the publisher that runs on `workflow_run` (so the code
 // doing the comparison always comes from the default branch), and refuses every
 // required job whose definition differs. Every key of the job is compared, not
-// only `run:`/`uses:`, because any key can decide a conclusion. The one shape
-// that is allowed to grow is `steps:`: a new step cannot remove or change a
-// base step, so the comparator requires every base step to survive, in order,
-// and lets a head insert another one (#1270). A removed, changed or reordered
-// base step still refuses.
+// only `run:`/`uses:`, because any key can decide a conclusion.
 //
 // Only `timeout-minutes:` is allowlisted, and only because it cannot flip a
 // conclusion: a shorter timeout fails a job, a longer one lets it finish.
@@ -31,7 +27,7 @@
 // so widening that surface has to break `test/gateCompare.test.ts` rather than
 // silently widen the gate.
 //
-// The `ci-ok` job's `needs:` may *grow* — a head that adds a job of its own and
+// The aggregate job's `needs:` may *grow* — a head that adds a job of its own and
 // waits on it is not weakening the aggregate — but every base dependency and
 // every required job must still be in it, and the evaluator step must still be
 // exactly `node base/scripts/ci-ok.mjs` with the gate checked out under
@@ -41,6 +37,14 @@
 // Fail closed: a duplicated top-level key, a duplicated job id, a duplicated job
 // key, an unreadable line or an empty `jobs:` mapping is a refusal with a
 // reason, never a skipped comparison.
+//
+// #1282: the aggregate is found by an accepted id set, never by one literal.
+// `#1273` renamed `ci-ok` to `ci-ok-head`, so while branches still carry the old
+// id the set is `['ci-ok-head', 'ci-ok']`. A head that declares none of them has
+// removed the job the three checks below read, and a head that declares two has
+// two candidates for one context: both are refusals naming what was looked for
+// and what the head declares, because a lookup miss must never read as a pass.
+// The success line names the id it actually checked.
 //
 // Nothing from a workflow text is echoed verbatim: a message names the file, a
 // required job id or key name that matches `[A-Za-z0-9_-]{1,40}`, and nothing a
@@ -58,8 +62,18 @@ export const GATE_COMPARE_ALLOWED_KEYS = Object.freeze(['timeout-minutes'])
 /** The step the aggregate must run, as the base tree spells it. */
 export const REQUIRED_EVALUATOR = 'node base/scripts/ci-ok.mjs'
 
-/** The required aggregate job, whose `needs` and step are pinned separately. */
-export const AGGREGATE_JOB = 'ci-ok'
+/** The aggregate id the base tree declares today. #1273 renamed it from
+ *  `ci-ok`; the accepted set below keeps both while branches still carry the
+ *  old id. */
+export const AGGREGATE_JOB = 'ci-ok-head'
+
+/**
+ * Every aggregate id a head may declare while `#1273` moves the job from
+ * `ci-ok` to `ci-ok-head`. Explicit data, not a fallback: an id outside this set
+ * is never looked up, so a rename away from it is a refusal rather than a
+ * skipped check. Narrow it in a later card, once no branch names the old id.
+ */
+export const AGGREGATE_JOBS = Object.freeze(['ci-ok-head', 'ci-ok'])
 
 /** The label that records a reviewed workflow change (owner-applied). */
 export const WORKFLOW_CHANGE_LABEL = 'ci-workflow-change'
@@ -333,12 +347,26 @@ function stepsPreserved(baseJob, headJob) {
   return true
 }
 
+// The job ids a head declares, for the refusal that has to say what it found
+// instead of an accepted aggregate id. Only ids that parse as a plain name are
+// quoted; any other is counted rather than echoed.
+function declaredJobIds(jobs) {
+  const named = []
+  let unquoted = 0
+  for (const id of jobs.keys()) {
+    if (KEY_NAME.test(id)) named.push(`\`${id}\``)
+    else unquoted += 1
+  }
+  const list = named.length === 0 ? 'no job id the comparator can name' : named.join(', ')
+  return unquoted === 0 ? list : `${list} (and ${String(unquoted)} more it will not quote)`
+}
+
 /**
  * Compare the head's workflow with the base tree's. `ok` is true only when every
  * top-level block other than `jobs:` matches, every required job is defined
  * identically (allowlisted keys aside), every required display name belongs to
- * exactly one job, the aggregate still depends on all of them, and its step
- * still runs the base evaluator.
+ * exactly one job, exactly one accepted aggregate id is declared, and that
+ * aggregate depends on every required job and runs the base evaluator.
  */
 export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
   const problems = []
@@ -402,6 +430,18 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
         refuse(`required job \`${id}\` loses \`${name}:\` in the pull request's ${GATE_COMPARE_FILE}${DOOR}`)
         continue
       }
+      // The aggregate may wait on more than the base did, but never on less:
+      // `needsIds` has already refused a list it cannot read. Any accepted id
+      // counts, so `#1273`'s rename does not lose the allowance.
+      if (AGGREGATE_JOBS.includes(id) && name === 'needs') {
+        const headNeeds = needsIds(headJob)
+        for (const dependency of needsIds(baseJob)) {
+          if (!headNeeds.includes(dependency)) {
+            refuse(`the pull request's \`${id}\` does not depend on required job \`${dependency}\``)
+          }
+        }
+        continue
+      }
       // `steps:` may grow only at the end: the base list has to stay a prefix,
       // so a step added after the last base step is a strengthening while one
       // inserted before or between base steps is refused. The comparator cannot
@@ -410,17 +450,6 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
       if (name === 'steps') {
         if (!stepsPreserved(baseJob, headJob)) {
           refuse(`required job \`${id}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
-        }
-        continue
-      }
-      // The aggregate may wait on more than the base did, but never on less:
-      // `needsIds` has already refused a list it cannot read.
-      if (id === AGGREGATE_JOB && name === 'needs') {
-        const headNeeds = needsIds(headJob)
-        for (const dependency of needsIds(baseJob)) {
-          if (!headNeeds.includes(dependency)) {
-            refuse(`the pull request's \`${AGGREGATE_JOB}\` does not depend on required job \`${dependency}\``)
-          }
         }
         continue
       }
@@ -478,57 +507,70 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
     refuse(`the pull request's ${GATE_COMPARE_FILE} gives jobs \`${seen}\` and \`${job.id}\` the same display name${DOOR}`)
   }
 
-  // The aggregate is not a check the publisher waits on, so it is not in
-  // `required`, but it is the gate: pin every key the base tree sets, allowing
-  // only `needs` to grow and `timeout-minutes` as the one allowlisted key. A
-  // step inserted between the `path: base` checkout and the evaluator could
-  // rewrite the evaluator it is about to run, which the command-string check
-  // below cannot see.
-  const aggregate = headJobs.get(AGGREGATE_JOB)
-  const baseAggregate = baseJobs.get(AGGREGATE_JOB)
-  if (baseAggregate === undefined) {
-    refuse(`the base tree's ${GATE_COMPARE_FILE} has no \`${AGGREGATE_JOB}\` job, so this pull request cannot be judged against it`)
-  } else if (aggregate === undefined) {
-    refuse(`required job \`${AGGREGATE_JOB}\` is absent from the pull request's ${GATE_COMPARE_FILE}${DOOR}`)
+  // The aggregate is found by an accepted id, never by one literal. A head that
+  // declares none of them has removed the job the three checks below read; a
+  // head that declares two has two candidates for the same context. Both are
+  // refusals — a lookup miss is "not checked", which is exactly what a green
+  // verdict must not mean.
+  const aggregateIds = AGGREGATE_JOBS.filter((id) => headJobs.has(id))
+  let aggregateClause = ''
+  if (aggregateIds.length === 0) {
+    const looked = AGGREGATE_JOBS.map((id) => `\`${id}\``).join(' or ')
+    refuse(`the pull request's ${GATE_COMPARE_FILE} declares no aggregate job the gate accepts (looked for ${looked}; the head declares ${declaredJobIds(headJobs)}), so the aggregate checks are not skipped${DOOR}`)
+  } else if (aggregateIds.length > 1) {
+    refuse(`the pull request's ${GATE_COMPARE_FILE} declares more than one aggregate job (\`${aggregateIds.join('` and `')}\`), so the gate cannot tell which one it checks${DOOR}`)
   } else {
-    for (const [name, baseKey] of baseAggregate.keys) {
-      if (allowlisted.has(name)) continue
-      const headKey = aggregate.keys.get(name)
-      if (headKey === undefined) {
-        refuse(`the pull request's \`${AGGREGATE_JOB}\` loses \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
-        continue
-      }
-      // `needs` may grow; the dependency set is checked below.
-      if (name === 'needs') continue
-      if (name === 'steps') {
-        if (!stepsPreserved(baseAggregate, aggregate)) {
-          refuse(`the pull request's \`${AGGREGATE_JOB}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
+    const aggregateId = aggregateIds[0]
+    const aggregate = headJobs.get(aggregateId)
+    // Pin the aggregate's own shape, not only its command string: a step
+    // inserted between the `path: base` checkout and the evaluator could
+    // rewrite the evaluator it is about to run. The base's accepted id may
+    // differ from the head's after #1273's rename, so the comparison is
+    // against the base's aggregate and it skips `name:` only on that rename;
+    // `needs` growth is checked below.
+    const baseAggregateIds = AGGREGATE_JOBS.filter((id) => baseJobs.has(id))
+    const baseAggregate = baseAggregateIds.length === 1 ? baseJobs.get(baseAggregateIds[0]) : undefined
+    if (baseAggregate !== undefined) {
+      for (const [name, baseKey] of baseAggregate.keys) {
+        if (allowlisted.has(name)) continue
+        const headKey = aggregate.keys.get(name)
+        if (headKey === undefined) {
+          refuse(`the pull request's \`${aggregateId}\` loses \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
+          continue
         }
-        continue
+        if (name === 'needs') continue
+        if (name === 'name' && baseAggregate.id !== aggregate.id) continue
+        if (name === 'steps') {
+          if (!stepsPreserved(baseAggregate, aggregate)) {
+            refuse(`the pull request's \`${aggregateId}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
+          }
+          continue
+        }
+        if (baseKey.lines.join('\n') === headKey.lines.join('\n')) continue
+        const key = differingKey(baseKey.lines, headKey.lines)
+        refuse(
+          key === null
+            ? `the pull request's \`${aggregateId}\` differs from the base tree in ${GATE_COMPARE_FILE}${DOOR}`
+            : `the pull request's \`${aggregateId}\` changes \`${key}:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR}`,
+        )
       }
-      if (baseKey.lines.join('\n') === headKey.lines.join('\n')) continue
-      const key = differingKey(baseKey.lines, headKey.lines)
-      refuse(
-        key === null
-          ? `the pull request's \`${AGGREGATE_JOB}\` differs from the base tree in ${GATE_COMPARE_FILE}${DOOR}`
-          : `the pull request's \`${AGGREGATE_JOB}\` changes \`${key}:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR}`,
-      )
-    }
-    for (const name of aggregate.keys.keys()) {
-      if (allowlisted.has(name) || baseAggregate.keys.has(name)) continue
-      refuse(`the pull request's \`${AGGREGATE_JOB}\` gains \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
+      for (const name of aggregate.keys.keys()) {
+        if (allowlisted.has(name) || baseAggregate.keys.has(name)) continue
+        refuse(`the pull request's \`${aggregateId}\` gains \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
+      }
     }
     const headNeeds = needsIds(aggregate)
     for (const id of requiredIds) {
-      if (!headNeeds.includes(id)) refuse(`the pull request's \`${AGGREGATE_JOB}\` does not depend on required job \`${id}\``)
+      if (!headNeeds.includes(id)) refuse(`the pull request's \`${aggregateId}\` does not depend on required job \`${id}\``)
     }
     if (!runCommands(aggregate).includes(REQUIRED_EVALUATOR)) {
-      refuse(`the pull request's \`${AGGREGATE_JOB}\` does not run the base evaluator \`${REQUIRED_EVALUATOR}\``)
+      refuse(`the pull request's \`${aggregateId}\` does not run the base evaluator \`${REQUIRED_EVALUATOR}\``)
     }
     const checkout = /^[ \t]*path:[ \t]*base[ \t]*$/
     if (!aggregate.keys.get('steps')?.lines.some((line) => checkout.test(line))) {
-      refuse(`the pull request's \`${AGGREGATE_JOB}\` does not check the gate out under \`path: base\``)
+      refuse(`the pull request's \`${aggregateId}\` does not check the gate out under \`path: base\``)
     }
+    aggregateClause = `\`${aggregateId}\` runs \`${REQUIRED_EVALUATOR}\``
   }
 
   if (problems.length > 0) return { ok: false, problems, lines: [] }
@@ -536,7 +578,7 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
     ok: true,
     problems: [],
     lines: [
-      `gate-compare: the pull request's ${GATE_COMPARE_FILE} matches the base tree outside \`jobs:\`, defines all ${String(requiredIds.length)} required job(s) as the base tree does (allowlisted: ${GATE_COMPARE_ALLOWED_KEYS.join(', ')}), gives each required display name to one job, and \`${AGGREGATE_JOB}\` runs \`${REQUIRED_EVALUATOR}\``,
+      `gate-compare: the pull request's ${GATE_COMPARE_FILE} matches the base tree outside \`jobs:\`, defines all ${String(requiredIds.length)} required job(s) as the base tree does (allowlisted: ${GATE_COMPARE_ALLOWED_KEYS.join(', ')}), gives each required display name to one job, and ${aggregateClause}`,
     ],
   }
 }

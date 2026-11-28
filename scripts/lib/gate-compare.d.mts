@@ -26,6 +26,7 @@ export declare const GATE_COMPARE_FILE: string
 export declare const GATE_COMPARE_ALLOWED_KEYS: readonly ['timeout-minutes']
 export declare const REQUIRED_EVALUATOR: string
 export declare const AGGREGATE_JOB: string
+export declare const AGGREGATE_JOBS: readonly string[]
 export declare const WORKFLOW_CHANGE_LABEL: string
 
 export declare class GateWorkflowError extends Error {

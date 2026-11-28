@@ -37,7 +37,8 @@ function runUrlOf(repository, serverUrl, runId) {
 async function main() {
   const repository = process.env.GITHUB_REPOSITORY ?? ''
   const needs = readNeeds()
-  const aggregate = needs['ci-ok']
+  // #1273 renamed the in-run aggregate; the `needs` key moves with the job id.
+  const aggregate = needs['ci-ok-head']
   const failingJobs = failingJobsFrom(needs)
 
   const listed = gh(issueListArgs())

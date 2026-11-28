@@ -103,9 +103,9 @@ test('the removed Node 22 leg does not leave a job that a source diff can skip',
   }
 })
 
-test('ci-ok still requires both remaining full-suite jobs', () => {
+test('ci-ok-head still requires both remaining full-suite jobs', () => {
   const text = read('.github/workflows/ci.yml')
-  const needs = /^ {4}needs:\s*\[([^\]]+)\]$/m.exec(job(text, 'ci-ok').body)?.[1] ?? ''
+  const needs = /^ {4}needs:\s*\[([^\]]+)\]$/m.exec(job(text, 'ci-ok-head').body)?.[1] ?? ''
   const names = needs.split(',').map((value) => value.trim())
-  for (const id of ['test', 'coverage']) assert.ok(names.includes(id), `ci-ok must still need ${id}; a job dropped from the aggregate would make the gate vacuous`)
+  for (const id of ['test', 'coverage']) assert.ok(names.includes(id), `ci-ok-head must still need ${id}; a job dropped from the aggregate would make the gate vacuous`)
 })

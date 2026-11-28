@@ -107,6 +107,27 @@ can land.
 - Revoke stays one click in Settings and writes `token.revoked` to the audit log;
   the list shows the scope, the expiry date and the last-used time.
 
+### Tamper-evident audit log (#1233)
+
+`audit_log` rows carry `prev_hash` and `hash`. Each hash is SHA-256 over the
+row's `id`, `at`, `user_id`, `action`, `detail` and `prev_hash` in one canonical
+JSON array with a `v1` prefix, so an edit, delete or reorder that does not
+recompute the whole chain is visible at the first broken id. `Store.audit`
+writes the link inside a savepoint, including when the caller is already in a
+transaction. Rows written before the chain have a NULL hash and are reported as
+**unverified**, never forged; the first hashed row is recorded in the
+`audit_chain_start_id` setting.
+
+`npm run audit:verify -- --db <copy.db>` opens a copy read-only, walks the chain
+and exits non-zero at the first edited, deleted or reordered row; `--json` prints
+the same result. It never writes and never needs the platform key.
+
+This is a hash chain, not a signature: an administrator who can rewrite the
+database can also recompute every following hash and rebuild a consistent chain.
+The guarantee is against an edit, delete or reorder that leaves the rest of the
+chain in place. A retention purge deletes rows by design, so a later verification
+reports the first gap; that is a recorded deletion, not silent tampering.
+
 ### Sessions
 
 - 32-byte random session id; only its SHA-256 hash is stored.
@@ -884,6 +905,21 @@ User model base URLs are validated before saving and before use:
   `scripts/rotate-instance-tokens.mjs`; the GitHub development PAT is outside
   Fledge and must be rotated in GitHub settings.
 
+### Rotation drill
+
+`npm run rotate:drill` is a dry run: it prints the steps and writes nothing.
+With `--apply` it creates a throwaway database under the temporary directory,
+mints a job token and an instance token, proves both are accepted, revokes and
+replaces them, re-seals a bridge token, and fails unless both old values are
+refused and both replacements work. Every step writes one `rotation.drill.*`
+audit row; no token value is printed or stored in the row.
+
+The drill refuses `NODE_ENV=production`, the configured `DB_PATH`/`DATA_DIR`, and
+any path outside the temporary directory. `--db <path>` is only for a caller
+that wants to inspect the throwaway copy; `--keep` keeps the default temporary
+directory. `scripts/rotate-instance-tokens.mjs` remains the production rotation;
+the drill proves the revocation rule, it does not replace the rotation.
+
 DNS rebinding is not fully mitigated; deploy behind an egress policy if users
 are untrusted.
 
@@ -1049,6 +1085,25 @@ different action. `readAllowlist` refuses to load a malformed file rather than
 returning an empty list, and a name in the list that no workflow uses is a test
 failure too — drift in either direction is how a list stops describing the tree.
 
+One state is not drift. `approved_unused` in the same file holds entries of
+exactly `name`, `issue` and `expires_at`: an action this project has pre-approved
+by a reviewed decision while no workflow uses it yet. That is the only legal way
+to land a list entry before its use, and it is bounded rather than open-ended —
+`expires_at` is a minor release version (`x.y.0`), a tree whose minor is at or
+past that version fails its suite, and the message names the entry, its issue and
+its expiry plus both legal moves: delete it, or renew it with a comment on the
+issue saying why the pre-approval still stands. The tree is read as the checkout
+it is: any released `x.y.z` counts, and it is bounded as the minor it belongs to,
+so `0.5.1` is bounded as `0.5.0` — a valid entry does not die on the patch
+releases the daily cadence produces (`docs/decisions/0008-release-cadence.md`).
+The bound only applies once there is an entry to bound: an empty
+`approved_unused` stays green on any version, so the check cannot red a release
+over a list it did not add to. The entry also expires on first use: a workflow
+that uses an exempted action while the entry is still listed fails the suite, and
+the change that adds the use deletes the entry. Until the check moves into the
+base checker, this rule lives in the tree's own suite, so removing it is a
+reviewed change but not yet one the base branch can compel.
+
 CI enforces the list in the `action-pins` required job. The checker is read from
 the base branch, so the list it reads is the one already reviewed there; a pull
 request therefore cannot grant itself an action in the same commit that uses it.
@@ -1080,7 +1135,9 @@ Procedure for adding an action:
 2. Add one line to `.github/agent/action-allowlist.json` in its own reviewed
    change, with the justification in the pull request body. The suite's
    both-directions test must still pass, so a list entry that no workflow uses
-   cannot ride along.
+   cannot ride along — unless it is pre-approved in `approved_unused`, naming this
+   issue and a release version by which it expires. Pre-approval is what makes the
+   entry and its first use two changes by construction.
 3. Land it, then open the workflow change that uses the action. The gate reads the
    list from the base branch, so reversing the order reds the newer pull request
    until the list is on `main`.

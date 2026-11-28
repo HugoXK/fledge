@@ -3045,6 +3045,7 @@ const quotaBannerSetup = (modelConfigured: boolean) => ({
   platformQuotaUnlimited: false,
   platformQuotaComfortCny: 50,
   instanceReady: true,
+  instancesUsed: true,
   jobs: 3,
   firstJobStatus: 'merged',
   firstPrUrl: 'https://github.com/o/r/pull/1',

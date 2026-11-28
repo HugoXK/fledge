@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { ALLOWLIST_FILE, checkActorGates, checkWorkflow, readAllowlist, repositoryOf, scanActorGates, scanWorkflows } from '../scripts/lib/action-pins.mjs'
+import { ALLOWLIST_FILE, approvedUnusedExpiryProblems, checkActorGates, checkWorkflow, readAllowlist, readAllowlistFile, repositoryOf, scanActorGates, scanWorkflows } from '../scripts/lib/action-pins.mjs'
 
 // A real pin, the one this repository uses for actions/checkout.
 const PIN = '11d5960a326750d5838078e36cf38b85af677262'
@@ -400,8 +400,10 @@ test('the workflow tree in this repository passes the allowlist, not just the pi
 // the tree that nobody added to the list (the gate would red the night after the
 // merge) and an entry nobody uses (the next reader cannot tell whether it is a
 // leftover or a mistake). Both are cheap to assert here and invisible otherwise.
-test('the allowlist and the workflow tree name exactly the same repositories', () => {
-  const directory = '.github/workflows'
+// #1206 adds one legal state to the second direction: a name pre-approved in
+// `approved_unused`, which expires on first use — so the moment a workflow uses
+// it, the entry has to be gone, and that is asserted rather than remembered.
+function usedRepositories(directory: string): Set<string> {
   const used = new Set<string>()
   for (const name of readdirSync(directory)) {
     if (!/\.ya?ml$/i.test(name)) continue
@@ -413,9 +415,111 @@ test('the allowlist and the workflow tree name exactly the same repositories', (
       used.add(repositoryOf(value))
     }
   }
-  const listed = new Set<string>(readAllowlist())
-  assert.deepEqual([...used].filter((repo) => !listed.has(repo)), [], 'a workflow uses an action the list does not name')
-  assert.deepEqual([...listed].filter((repo) => !used.has(repo)), [], 'the list names an action no workflow uses')
+  return used
+}
+
+test('the allowlist and the workflow tree name exactly the same repositories', () => {
+  const { allowed_actions: listed, approved_unused: approved } = readAllowlistFile()
+  const used = usedRepositories('.github/workflows')
+  const exempt = new Set<string>(approved.map((entry: { name: string }) => entry.name.toLowerCase()))
+  assert.deepEqual(
+    [...used].filter((repo) => !listed.some((name: string) => name.toLowerCase() === repo.toLowerCase())),
+    [],
+    'a workflow uses an action the list does not name',
+  )
+  assert.deepEqual(
+    [...listed].filter((name: string) => !used.has(name.toLowerCase()) && !exempt.has(name.toLowerCase())),
+    [],
+    'the list names an action no workflow uses',
+  )
+  assert.deepEqual(
+    approved.filter((entry: { name: string }) => used.has(entry.name.toLowerCase())).map((entry: { name: string; issue: number }) => `${entry.name} (#${entry.issue})`),
+    [],
+    'an exemption outlived its purpose: a workflow uses the action, so the entry must be deleted in the change that adds the use',
+  )
+})
+
+test('an exemption is validated like the list it sits beside', (t) => {
+  const dir = mkdtempSync(join(tmpdir(), 'action-exempt-'))
+  t.after(() => rmSync(dir, { recursive: true, force: true }))
+  const write = (name: string, body: string): string => {
+    const path = join(dir, name)
+    writeFileSync(path, body)
+    return path
+  }
+  let counter = 0
+  const file = (approved: unknown): string =>
+    write(`approved-${counter++}.json`, JSON.stringify({ allowed_actions: ['actions/checkout', 'actions/cache'], approved_unused: approved }))
+  const entry = { name: 'actions/cache', issue: 1206, expires_at: '0.6.0' }
+
+  assert.deepEqual(readAllowlistFile(file([entry])).approved_unused, [entry])
+  // A missing key is an empty one, so every tree that predates the rule keeps working.
+  assert.deepEqual(readAllowlistFile(write('none.json', JSON.stringify({ allowed_actions: ['actions/checkout'] }))).approved_unused, [])
+  // An exemption for an action the gate refuses pre-approves nothing.
+  assert.throws(() => readAllowlistFile(file([{ ...entry, name: 'evil/tool' }])), /not in allowed_actions/)
+  // An entry names a repository exactly, never a pattern.
+  assert.throws(() => readAllowlistFile(file([{ ...entry, name: 'actions/*' }])), /wildcards are not allowed/)
+  // Exactly three fields: a field the reader ignores is one a reviewer may believe.
+  assert.throws(() => readAllowlistFile(file([{ ...entry, approved_by: 'me' }])), /not a field of an entry/)
+  assert.throws(() => readAllowlistFile(file([{ name: 'actions/cache', expires_at: '0.6.0' }])), /missing issue/)
+  assert.throws(() => readAllowlistFile(file([{ ...entry, issue: 0 }])), /issue must be the number/)
+  assert.throws(() => readAllowlistFile(file([{ ...entry, expires_at: '0.6.1' }])), /minor release version/)
+  assert.throws(() => readAllowlistFile(file([{ ...entry, expires_at: 'latest' }])), /no "no expiry" value/)
+  assert.throws(() => readAllowlistFile(file([entry, entry])), /appears more than once in approved_unused/)
+  assert.throws(() => readAllowlistFile(write('shape.json', JSON.stringify({ allowed_actions: ['actions/checkout'], approved_unused: 'actions/cache' }))), /must be an array/)
+})
+
+test('an exemption lapses at its release version and cannot outrun two minors', () => {
+  const entries = (expires_at: string) => [{ name: 'actions/cache', issue: 1206, expires_at }]
+
+  // One minor ahead is the designed case, and two is the far edge.
+  assert.deepEqual(approvedUnusedExpiryProblems(entries('0.6.0'), '0.5.0'), [])
+  assert.deepEqual(approvedUnusedExpiryProblems(entries('0.7.0'), '0.5.0'), [])
+  // A third outlives the review that justified it.
+  assert.match(approvedUnusedExpiryProblems(entries('0.8.0'), '0.5.0').join('\n'), /more than two minors beyond this tree's 0\.5\.0/)
+
+  // Equality fails deliberately: the release pull request that reaches `expires_at`
+  // is exactly where a person has to delete or renew the entry.
+  const lapsed = approvedUnusedExpiryProblems(entries('0.6.0'), '0.6.0')
+  assert.equal(lapsed.length, 1)
+  assert.match(String(lapsed[0]), /actions\/cache/)
+  assert.match(String(lapsed[0]), /#1206/)
+  assert.match(String(lapsed[0]), /0\.6\.0/)
+  assert.match(String(lapsed[0]), /Delete the entry, or renew it with a new expires_at and a comment on #1206/)
+
+  // An entry's own `expires_at` is a release version, because a person writes it;
+  // there is no "no expiry" value and no patch expiry.
+  assert.match(approvedUnusedExpiryProblems(entries('0.6.1'), '0.5.0').join('\n'), /not a minor release version/)
+
+  // The tree version is the day the check runs, not the week the tree released:
+  // ADR 0008 bumps the patch on every day but the week's first, so `0.5.1` is a
+  // normal checkout and its bound is the minor it belongs to (`0.5.0`). An entry
+  // that is in bounds therefore has to stay green on a patch release, and lapse
+  // when the minor reaches its expiry.
+  assert.deepEqual(approvedUnusedExpiryProblems(entries('0.6.0'), '0.5.1'), [])
+  assert.deepEqual(approvedUnusedExpiryProblems(entries('0.7.0'), '0.5.2'), [])
+  assert.match(approvedUnusedExpiryProblems(entries('0.6.0'), '0.6.1').join('\n'), /expires at 0\.6\.0/)
+  assert.match(approvedUnusedExpiryProblems(entries('0.8.0'), '0.5.1').join('\n'), /more than two minors beyond this tree's 0\.5\.1/)
+  // Only a real version can bound anything.
+  assert.match(approvedUnusedExpiryProblems(entries('0.6.0'), 'latest').join('\n'), /not a release version/)
+
+  // The shipped file is whatever the tree carries. What has to hold is that its
+  // entries are bounded by this tree's version, never that the list happens to be
+  // empty: #1206's acceptance case is a shipped one-name exemption, so pinning `[]`
+  // would red the very state this card exists to allow.
+  const shipped = readAllowlistFile().approved_unused
+  const treeVersion = JSON.parse(readFileSync('package.json', 'utf8')).version as string
+  assert.deepEqual(
+    approvedUnusedExpiryProblems(shipped, treeVersion),
+    [],
+    "the shipped approved_unused entries must be bounded by this tree's version",
+  )
+  // Nothing to bound at any version, including a patch release of the same minor.
+  assert.deepEqual(approvedUnusedExpiryProblems([], '0.5.1'), [])
+  assert.deepEqual(approvedUnusedExpiryProblems([], '0.5.0'), [])
+  // `expires_at` and the tree version stay separate rules: the entry is a promise
+  // and the tree is a clock, so a malformed promise is refused on any tree.
+  assert.match(approvedUnusedExpiryProblems(entries('0.6.1'), '0.5.1').join('\n'), /not a minor release version/)
 })
 
 test('a malformed allowlist refuses to load instead of allowing everything', (t) => {

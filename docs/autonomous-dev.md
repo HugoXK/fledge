@@ -112,10 +112,47 @@ Add a changelog fragment for a user-visible change. Update the owned doc or add
 - T0/T1: `ci-ok` green, mergeable, design-conformant.
 - T2/T3: a PASS at the same tip from another identity (the tip author never
   PASSes it) with a real `Ran:` command.
-- Enqueue with `gh pr merge --auto --squash --match-head-commit <sha>`.
+- Enqueue with `gh pr merge --auto --squash --match-head-commit <sha>`. A green
+  T0/T1 pull request that nobody enqueued is merged by the `merge-clean` drain
+  below, a direct squash pinned to the head SHA it read.
 - Never `--admin`; never force-push `main`; never bypass a required check.
 - After merge: fetch, fast-forward `main`, delete the branch/worktree, and file
   follow-ups as issues (not TODOs).
+
+### Clean T0/T1 drain
+
+`.github/workflows/merge-clean.yml` runs every ten minutes and on
+`workflow_dispatch`. It is the queue entry `CLEAN` does not provide: a pull
+request with every required check green sits in `CLEAN`, and
+`enablePullRequestAutoMerge` refuses with "Pull request is in clean status", so a
+green T0/T1 tip waited for a person to press squash (#1272).
+
+- `node scripts/merge-clean.mjs --dry-run` prints one line per open pull request
+  as `PR <n> head=<sha> tier=<T0|T1> action=<enqueue|skip:reason>` and performs
+  no write.
+- It merges only an open, non-draft pull request whose head repository is the
+  base repository, whose base ref is the default branch, whose computed tier is
+  T0/T1, whose `ci-ok`, `review-gate` and `pr-lint` checks are successful at the
+  head SHA, and which is not already queued. A T2/T3 tip reads `skip:tierT2` /
+  `skip:tierT3`: it still needs a PASS.
+- A veto blocks: a `review:changes` label, any `CHANGES_REQUESTED` review, or a
+  `hold`/`state:hold` label reads `skip:changes` or `skip:hold`. The gate returns
+  `ok` for a T0/T1 tip before it reads verdicts, so the drain reads both labels
+  and reviews itself; the hold label alone blocks, stricter than the documented
+  label-plus-comment pair.
+- A fork head reads `skip:fork` and a base that is not the default branch reads
+  `skip:base`; the merge targets nothing else.
+- The tier is computed from the diff with `tierForChanges`; a `risk:T*` label is
+  never read as a tier. The file list is capped, so a list that fills the cap
+  reads `skip:files-truncated` instead of tiering an incomplete diff.
+- The newest run of a required check decides, ordered by `started_at`: a newer
+  `queued`/`in_progress` run reads `skip:checks`, because a pending run never
+  counts as green.
+- The merge is a direct squash merge pinned to the head SHA the decision names.
+  A head that moved between the checks and the read reads `skip:head-moved`; a
+  move after the read is refused by the merge API and reported as "merge not
+  taken", never merged. Any other refusal prints one reason line and the run
+  ends instead of retrying.
 
 ### Missing CI backstop
 
@@ -235,7 +272,33 @@ newer base: it voids the PASS and makes the same change be judged twice. Fix the
 branch, push a new tip, and ask for a verdict at that tip. Resolve a real
 conflict inside the branch; never rewrite a tip that was already reviewed.
 
+## UI evidence capture (#1271)
+
+A user-visible console change needs a BEFORE/AFTER record. The repository has one
+command for it:
+
+```sh
+npm run evidence:ui -- --issue 1230 --path /admin/metrics --selector '#sqlite-health'
+npm run evidence:ui -- --issue 1263 --path '/repos/repo_evidence_ui#repo-settings' \
+  --selector 'details[data-advanced="repo-settings"]' --open summary
+```
+
+It refuses a dirty worktree, builds the base (`origin/main` by default) and head
+(`HEAD` by default) in throwaway worktrees, seeds one shared fixture database
+(the dev user, a repository with branch protection, a live lease and a reaped
+attempt), starts each app on a loopback port, signs in with the dev login, clicks
+every `--open` selector and screenshots the same `--selector` at each locale and
+width. It writes `docs/images/<issue>/` on an `evidence/<issue>` branch and prints
+a ready-to-paste body table. `--push` pushes that branch; without it the temporary
+worktree is kept for the printed push command. It never opens a pull request and
+never moves the tip. `--dry-run` prints the plan only.
+
+The fixture is code, not production data. A selector that cannot be found fails
+the command instead of producing a blank image, and a missing Playwright browser
+is named instead of silently skipped.
+
 ## Risk tiers
+
 
 `node scripts/risk-gate.mjs --base origin/main` is the source of truth. It prints
 a report and a final machine-readable line:
@@ -274,13 +337,11 @@ as the checks API reports them, in
 [`.github/agent/required-checks.md`](../.github/agent/required-checks.md); that
 file is the record and not the gate — branch protection is an owner action.
 
-`ci-ok` is also published by `ci-ok-publish.yml`, a `workflow_run` workflow that
+`ci-ok` is published by `ci-ok-publish.yml`, a `workflow_run` workflow that
 GitHub always takes from the default branch, so the copy that judges a change is
-never the one under test. The aggregate job inside `ci.yml` keeps publishing the
-same context for one step — the pull request that adds the publisher would
-otherwise carry no `ci-ok` and could never merge; every check run at the head sha
-counts, so the head's green cannot retire the publisher's red — and a follow-up
-renames it to `ci-ok-head`. See
+never the one under test. The aggregate job inside `ci.yml` is `ci-ok-head` since
+`#1273`, so the required context has one producer; every check run at the head sha
+counts, so the head's green cannot retire the publisher's red. See
 [Gate integrity](#gate-integrity-the-evaluator-runs-from-the-base-branch).
 
 `ci-ok` is green only when all of these are green at the same tip:
@@ -417,7 +478,7 @@ the base branch into `base/` and executed from there:
 | `workflow-lint` | `node base/scripts/workflow-injection.mjs --workflows .github/workflows --allowlist base/.github/agent/workflow-injection-allowlist.json` |
 | `reserved-contexts` | `node base/scripts/reserved-contexts.mjs --workflows .github/workflows` |
 | `codeql-required` | `node base/scripts/codeql-required.mjs` |
-| `ci-ok` (the in-run aggregate, until the follow-up renames it) | `node base/scripts/ci-ok.mjs` |
+| `ci-ok-head` (the in-run aggregate; a branch still carrying the pre-`#1273` id `ci-ok` is accepted while the transition runs) | `node base/scripts/ci-ok.mjs` |
 | `ci-ok` (the publisher's verdict) | `node base/scripts/ci-ok-run.mjs`, run by `ci-ok-publish.yml` |
 | CodeQL gate | `node base/scripts/codeql-gate.mjs --sarif codeql-results --baseline base/.github/agent/codeql-baseline.json` |
 
@@ -434,6 +495,16 @@ there is the file the next step executes — so a branch that rewrites
 `scripts/ci-ok.mjs` is visible as a mismatch instead of an invisible
 substitution. It is evidence, not a gate: the verdict still comes from the base
 file.
+
+The workflow comparator finds the aggregate by an accepted id set
+(`ci-ok-head`, `ci-ok`) instead of one literal. A head that declares none of them
+is refused, naming the ids it looked for and the ids it declares; a head that
+declares both is refused by both names. The three checks behind that lookup —
+every required job in the aggregate's `needs:`, the base evaluator's command, and
+the `path: base` checkout — decide whether the base tree's gate is still the
+thing that runs, so a lookup miss is never a skip. The success line names the id
+it actually checked, and the set is narrowed in a later card once no branch
+carries the old id.
 
 The `changes` job also runs `scripts/gate-integrity.mjs`, which writes every
 gate file in the diff into the job summary. It fails closed when the diff cannot
@@ -453,12 +524,11 @@ always loads a `workflow_run` workflow from the default branch, so the file that
 decides is never the one under test. It reads the finished run's job results from
 the API, re-derives the change flags with the default branch's `ci-changes.mjs`
 over the same diff, evaluates the default branch's `REQUIRED_JOBS` and
-`SKIP_WHEN`, and creates the `ci-ok` check run itself. The in-run aggregate still
-publishes the same context in this step, but it is never read as evidence — the
-publisher matches required jobs by name and answers `null` for both `ci-ok` and
-`ci-ok-head` — so a head that rewrites its `run:` line to `exit 0` changes only
-that job's own result, and every check run at the head sha counts, so the
-publisher's red still blocks. A required job the head deletes or renames is
+`SKIP_WHEN`, and creates the `ci-ok` check run itself. The in-run aggregate
+publishes `ci-ok-head`, and it is never read as evidence — the publisher matches
+required jobs by name and answers `null` for both `ci-ok` and `ci-ok-head` — so a
+head that rewrites its `run:` line to `exit 0` changes only that job's own result,
+and every check run at the head sha counts, so the publisher's red still blocks. A required job the head deletes or renames is
 reported missing by name, which is red — the same answer as dropping it from
 `needs` inside the run. A run the platform `cancelled` publishes nothing, because
 the run that replaced it owns the verdict. A `pull_request` run whose payload no
@@ -508,7 +578,7 @@ about to run, so pinning the command string alone is not enough. A step added
 after the last base step cannot change what the base steps read, but it can
 publish outputs or artifacts a later job consumes; that is outside what this
 comparator judges. The
-`ci-ok` job's `needs` may grow but not shrink, and its step must still be exactly
+aggregate's `needs` may grow but not shrink, and its step must still be exactly
 `node base/scripts/ci-ok.mjs` with the gate checked out under `path: base`. The
 comparator is `scripts/lib/gate-compare.mjs`, and it fails closed: a duplicated
 top-level key, a duplicated job, a duplicated key or a line it cannot read is a
@@ -541,9 +611,9 @@ enumerates the open pull request heads and publishes a red `ci-ok` where the
 newest verdict that names a policy was computed under a different policy, so a
 green verdict does not outlive the required set it was computed under — a head
 whose verdict predates a newly required job stops being satisfying the moment that
-job reaches `main`. Two shapes are deliberately not verdicts. The in-run `ci-ok`
-job in `.github/workflows/ci.yml` publishes the same check name, finishes before
-the publisher and names no policy (it is the aggregate #855 removed as evidence);
+job reaches `main`. Two shapes are deliberately not verdicts. The in-run
+`ci-ok-head` job in `.github/workflows/ci.yml` finishes before the publisher and
+names no policy (it is the aggregate #855 removed as evidence);
 while a `ci-ok-publish.yml` run for the head is queued or in progress the sweep
 skips that head, because its verdict is imminent and a red published against the
 aggregate would be permanent. Once the CI workflow has finished and no publisher
@@ -855,7 +925,9 @@ node scripts/action-pins.mjs   # checks the tree: 40-hex pin plus `# <version>` 
 
 `pr-lint` checks the PR body (`Written-by:`, `Fixes #N` / `No-issue:`, `Ran:`,
 `Not run:`), the changelog fragment and docs obligations, the `Written-by`
-writer, and any `risk:T*` label against the computed tier.
+writer, and any `risk:T*` label against the computed tier. A `Ran:` or
+`Not run:` line counts only as real body text: the same word inside a fenced code
+block is an example, so it satisfies neither rule (#1294).
 
 One exemption is structural and keyed on a **pair**: when the pull request's
 author login is exactly `dependabot[bot]` *and* the body's first line starts with

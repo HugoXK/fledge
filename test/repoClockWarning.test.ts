@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import test from 'node:test'
+import test, { after } from 'node:test'
 import { Store } from '../src/db.js'
 import { dashboardPage, repoPage } from '../src/views/pages.js'
 import type { ClockState } from '../src/repos/app.js'
@@ -25,47 +25,64 @@ const failing: ClockState = {
   thresholdSeconds: 120,
 }
 
-function renderRepo(clock?: ClockState): string {
+// #1300: one literal instant, used for both stamps and asserted on the page.
+// The old fixture built a fresh store per render, so the job carried a
+// wall-clock `created_at` read at call time and the two pages could differ by
+// one second when a boundary fell between them. The page is now a function of
+// the record: every render below reads one job that was built once with these
+// stamps, and the rendered line is the literal below, not "now".
+const FIXED_AT = '2026-11-23T21:25:43.500Z'
+const FIXED_LABEL = '2026-11-23 21:25:43 UTC'
+
+function makeRepoFixture(): { store: Store; render: (clock?: ClockState) => string } {
   const config = testConfig()
   const store = new Store(':memory:')
-  try {
-    const user = makeUser(store, { login: 'clock-repo-user', status: 'approved' })
-    const repo = store.createRepo({
-      id: 'repo_clock',
-      userId: user.id,
-      owner: 'acme',
-      name: 'demo',
-      defaultBranch: 'main',
-      tokenEnc: 'x',
-      permission: 'admin',
-      repoRole: 'maintainer',
-      goal: '',
-      autoIterate: true,
-      intervalMinutes: 1440,
-    })
-    const job = makeTerminalJob(store, {
-      id: 'job_clock',
-      repoId: repo.id,
-      userId: user.id,
-      trigger: 'manual',
-      goal: 'g',
-      callbackHash: 'h',
-      platformTokenHash: 't',
-      kind: 'iterate',
-      baseBranch: 'main',
-    })
-    return repoPage({
-      config,
-      locale: 'en',
-      viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
-      repo,
-      jobs: [job],
-      prJobs: [job],
-      ...(clock === undefined ? {} : { clock }),
-    })
-  } finally {
-    store.close()
-  }
+  const user = makeUser(store, { login: 'clock-repo-user', status: 'approved' })
+  const repo = store.createRepo({
+    id: 'repo_clock',
+    userId: user.id,
+    owner: 'acme',
+    name: 'demo',
+    defaultBranch: 'main',
+    tokenEnc: 'x',
+    permission: 'admin',
+    repoRole: 'maintainer',
+    goal: '',
+    autoIterate: true,
+    intervalMinutes: 1440,
+  })
+  const job = makeTerminalJob(store, {
+    id: 'job_clock',
+    repoId: repo.id,
+    userId: user.id,
+    trigger: 'manual',
+    goal: 'g',
+    callbackHash: 'h',
+    platformTokenHash: 't',
+    kind: 'iterate',
+    baseBranch: 'main',
+    createdAt: FIXED_AT,
+  }, { finishedAt: FIXED_AT })
+  const render = (clock?: ClockState): string => repoPage({
+    config,
+    locale: 'en',
+    viewer: { user: store.userById(user.id)!, csrfToken: 'csrf' },
+    repo,
+    jobs: [job],
+    prJobs: [job],
+    ...(clock === undefined ? {} : { clock }),
+  })
+  return { store, render }
+}
+
+// #1300: one store and one job for the whole file, so `renderRepo` can keep the
+// call shape these tests already had. The record is the fixture; the wall clock
+// is no longer an input to any assertion here.
+const repoFixture = makeRepoFixture()
+after(() => repoFixture.store.close())
+
+function renderRepo(clock?: ClockState): string {
+  return repoFixture.render(clock)
 }
 
 function textOf(html: string): string {
@@ -94,6 +111,7 @@ test('the repository page is unchanged for an ok clock and for no reading at all
   assert.equal(renderRepo(ok).includes('id="clock-fail"'), false, 'an ok clock paints nothing')
   assert.equal(renderRepo(undefined).includes('id="clock-fail"'), false, 'no reading paints nothing')
   assert.equal(renderRepo(ok), renderRepo(undefined), 'an ok clock renders exactly like an absent one')
+  assert.ok(textOf(renderRepo(ok)).includes(FIXED_LABEL), `the page renders the stored instant ${FIXED_LABEL}, not the wall clock`)
 })
 
 test('both pages render the same banner markup and sentence for the same clock', () => {

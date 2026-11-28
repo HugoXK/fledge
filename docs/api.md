@@ -91,7 +91,7 @@ All browser routes are HTML. Machine routes are JSON. Errors use:
 | GET | `/admin/webhooks` | superadmin | Recent GitHub webhook deliveries, filters and retry state |
 | POST | `/admin/webhooks/:id/retry` | superadmin + CSRF | Retry one failed delivery from its stored payload |
 | GET | `/admin/metrics` | superadmin | Product funnel, delivery efficiency, daily trend, failure breakdown, cost breakdown, actionable alerts, team participation, attribution and stage metrics (`?window=7 or 30`) |
-| POST | `/settings/model` | approved + CSRF | Save/clear own model |
+| POST | `/settings/providers/:id/models` | approved + CSRF | Save an own model after a 1-token test; there is no `/settings/model` form post |
 | POST | `/settings/notifications` | approved + CSRF | Notification email, job/question mail, per-job success mail, daily digest, test mail |
 | POST | `/settings/tokens` | approved + CSRF | Create a `flg_` token |
 | POST | `/settings/tokens/:id/revoke` | owner + CSRF | Revoke a token |
@@ -230,6 +230,32 @@ Answers the caller's own jobs, newest first, as:
   section contains a token or a secret.
 - Write endpoints (`POST /api/v1/jobs`, `pause`, `resume`, `cancel`) are a later
   slice and a separate scope, `jobs:write`. v1 is read-only today.
+
+### `GET /api/v1/openapi.json`
+
+The machine-readable contract for this API, as an OpenAPI 3.1 document:
+
+```bash
+curl 'http://localhost:8080/api/v1/openapi.json'
+```
+
+- It needs no token. The document names the instance's routes, parameters, the
+  bearer scheme and the error envelopes, never a job, a user or a secret, so a
+  client can be generated before one is minted.
+- The paths it declares are exactly the `/api/v1/*` routes `src/app.ts`
+  registers — `GET /api/v1/jobs` and this route. The document lives in
+  `src/api/openapi.ts`, and `test/openapi.test.ts` fails in both directions: a
+  registered route missing from the contract, and a contract path with no route.
+  The check reads every registration verb and either quote style, through the
+  reader it shares with the endpoint-table check (`test/apiDocReader.ts`), so a
+  `POST` or a double-quoted registration cannot slip past it. It counts path
+  declarations in the contract's source too, because a duplicate key inside the
+  `paths` literal collapses before the served document could show it.
+- Session-only routes, the console pages and callbacks are not in it. The
+  OpenAI-compatible `/v1/*` gateway keeps its own shape and is also absent.
+- When a status code or a field changes, `src/api/openapi.ts` changes in the same
+  pull request: a stale contract is worse than none, because a generated client
+  would encode the stale one.
 
 ## Read-only metrics
 

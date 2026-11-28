@@ -121,8 +121,13 @@ issue → claim → worktree/branch → red test → fix → gates → PR
    may never PASS it, so a reviewer always signs another identity's work. The
    review format is fixed; see below.
 8. **Merge.** Enqueue with `gh pr merge --auto --squash --match-head-commit
-   <sha>` after the guard script agrees. Auto-merge (or the merge queue when
-   available) performs the squash merge. Never use `--admin`, never force-push
+   <sha>` after the guard script agrees. A green T0/T1 pull request that sits in
+   `CLEAN` is merged by the scheduled `merge-clean` drain instead
+   ([Clean T0/T1 drain](docs/autonomous-dev.md#clean-t0t1-drain)): a direct
+   squash pinned to the head SHA it read, which skips a `review:changes`, a
+   `state:hold`, a fork head, a non-default base and a newer pending run of a
+   required check. Auto-merge (or the merge queue when available) performs the
+   squash merge for everything else. Never use `--admin`, never force-push
    `main`.
 9. **Release.** The release routine owns `CHANGELOG.md` and the version. It
    assembles `changelog.d/` fragments and creates the tag.

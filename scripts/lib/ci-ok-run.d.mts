@@ -2,9 +2,23 @@
 // finished `CI` run's job list and publishes the `ci-ok` check run itself, so
 // the suite needs the pure half to assert what a head cannot do.
 export interface FinishedJob {
+  id?: number
   name?: string
   status?: string
   conclusion?: string | null
+  completed_at?: string | null
+}
+
+/** One job object seen for a required context, as the published summary quotes
+ *  it (#1273). `status` and `conclusion` are whitelisted values or `unknown`. */
+export interface SeenConclusion {
+  key: string
+  name: string
+  id: number | null
+  status: string
+  conclusion: string
+  completedAt: string
+  result: string
 }
 
 export interface JobResult {
@@ -16,6 +30,8 @@ export interface AggregateVerdict {
   lines: string[]
   problems: string[]
   ok: boolean
+  /** Present on a verdict built from a job list; a hand-built red may omit it. */
+  seen?: SeenConclusion[]
 }
 
 export interface AggregateInput {
@@ -49,9 +65,15 @@ export declare const HEAD_AGGREGATE_JOB: string
 export declare const CHECK_STATUS: string
 export declare const CHECK_CONCLUSIONS: Readonly<{ pass: string; fail: string }>
 export declare const SKIP_REASONS: Readonly<{ superseded: string; merged: string; notARun: string }>
+/** #1273: the word an unsettled job object gets; red, and not `missing`. */
+export declare const PENDING: string
 export declare function runIdFrom(input?: { args?: string[]; env?: Record<string, string | undefined> }): number
 export declare function jobKey(name: string, required?: string[]): string | null
+export declare function conclusionsSeen(jobs: FinishedJob[], required?: string[]): SeenConclusion[]
 export declare function needsFromJobs(jobs: FinishedJob[], required?: string[]): Record<string, JobResult>
+/** The required contexts whose evidence is unsettled; non-empty means the
+ *  publisher creates no check run. */
+export declare function pendingRequired(needs: Record<string, JobResult> | null | undefined | unknown, required?: string[]): string[]
 export declare function verdict(input: AggregateInput): AggregateVerdict
 export declare function baseShas(run: FinishedRun | null): string[]
 export declare function lostItsBase(run: FinishedRun | null): boolean

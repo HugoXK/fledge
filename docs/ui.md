@@ -608,7 +608,7 @@ Since #870 the job also runs a measured gate next to the screenshot sweep: the
 six paths at 360, 768 and 1280 px, each rendered in a light and a dark context,
 in both languages (three widths by two schemes, deliberately not the nine-width
 sweep — a width added there photographs one surface and must not become a gate
-every page has to pass). Four things are checked per page, each a pure function
+every page has to pass). Four things are checked per page over the collected
 in `src/lib/visualMatrix.ts`, over the controls the walk actually collects: the
 selector `button`, `.btn`, `input`, `select`, `textarea`, `summary` and
 `.section-nav a`, kept only where `checkVisibility()` reports the element as
@@ -622,6 +622,21 @@ and background colour; an icon-only `button` or `a` carries `aria-label` or
 `<label>`, which is the box a pointer hits. A failure names all four coordinates
 and the control (`en width=768 scheme=dark /settings: summary is 572x43px, under
 the 44px touch floor`).
+
+A fifth check reads the whole rendered document rather than the controls: since
+#1240 the same gate cells run axe-core (`@axe-core/playwright`), and every
+`serious` or `critical` violation fails the cell with the rule id and the element
+it hit. `moderate` and `minor` findings are recorded in the axe result but do not
+fail, because a best-practice hint is not a defect the gate forces into this PR.
+A rule can be waived only by an entry in `AXE_WAIVERS` naming the rule, one path
+and a `YYYY-MM-DD` expiry; an entry with no dated expiry is refused, and a lapsed
+entry no longer hides the violation it names. The list ships empty: the three
+findings the pass reported when it landed were fixed instead — the chat launcher
+painted `--accent` behind `--accent-ink` (about 1.5:1 in the dark palette) and now
+pairs `--accent-strong` with that ink like every button; a `.link` inside a
+sentence had no underline, so it was marked by colour alone (WCAG 1.4.1); and the
+wordmark carried `aria-label="Fledge"`, which the visible text "F Fledge羽巢"
+does not contain (WCAG 2.5.3), so the visible wordmark is now the whole name.
 
 That measured set is not every control on the page, and the gate does not claim
 it is. Three surfaces stay outside it: the controls inside the four closed

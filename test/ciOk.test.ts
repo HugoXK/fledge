@@ -235,8 +235,8 @@ test('ci runs nightly and can be dispatched by hand, and only a pull request can
 test('the needs list in ci.yml and the required list in the script agree', async () => {
   const required = await requiredJobs()
   const workflow = readFileSync(workflowPath, 'utf8')
-  const start = workflow.indexOf('\n  ci-ok:')
-  assert.ok(start !== -1, 'ci.yml must declare the ci-ok job')
+  const start = workflow.indexOf('\n  ci-ok-head:')
+  assert.ok(start !== -1, 'ci.yml must declare the ci-ok-head job')
   const match = /needs:\s*\[([^\]]*)\]/.exec(workflow.slice(start))
   assert.ok(match !== null, 'the ci-ok job must declare needs as an inline list so it can be read here')
   const listed = match[1]!.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
@@ -265,7 +265,7 @@ test('the UI mock snapshot is a required pull-request job', async () => {
     assert.ok(match !== null, `the ${job} job must declare needs as an inline list so it can be read here`)
     return match[1]!.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
   }
-  assert.ok(needsOf('ci-ok').includes('mock-check'), 'ci-ok must wait on mock-check, or the required context never sees it')
+  assert.ok(needsOf('ci-ok-head').includes('mock-check'), 'ci-ok-head must wait on mock-check, or the required context never sees it')
   assert.ok(needsOf('main-health').includes('mock-check'), 'main-health mirrors ci-ok so the tracker can name the job that failed')
 
   const jobStart = workflow.indexOf('\n  mock-check:')

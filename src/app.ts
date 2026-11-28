@@ -39,6 +39,7 @@ import { parseAttributionJson } from './lib/attribution.js'
 import { decisionWithAnswer, jobIdFromQuestionId, jobQuestionId, storedDecision } from './lib/uncertainty.js'
 import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
+import { openApiDocument } from './api/openapi.js'
 import { parseVerification } from './lib/verification.js'
 import { cachedRouterProbe } from './lib/routerHealth.js'
 import { changeStoryAttribution, readChangeStory, type ChangeStory } from './lib/changeStory.js'
@@ -1649,6 +1650,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       platformQuotaUnlimited: setupQuota.unlimited,
       platformQuotaComfortCny: config.quota.comfortCny,
       instanceReady: allRepos.some((repo) => store.getRepoInstance(repo.id)?.status === 'ready'),
+      instancesUsed: config.flybot.instanceImage !== '',
       jobs: setupJobsTotal,
       firstJobStatus: firstJob?.status ?? null,
       firstPrUrl: firstJob?.pr_url ?? null,
@@ -1761,6 +1763,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     const page = rows.slice(0, limit)
     const last = page[page.length - 1]
     return { data: page.map(jobSummary), next_cursor: rows.length > limit && last !== undefined ? last.id : null }
+  })
+
+  // #1243: the contract is public — it names the instance's routes, not its
+  // data — so a control room can generate a client before it holds a token. It
+  // sits beside the route it describes, and `test/openapi.test.ts` refuses a
+  // `/api/v1/*` route that the document does not declare.
+  app.get('/api/v1/openapi.json', async (_request, reply) => {
+    return reply.header('cache-control', 'no-store').send(openApiDocument())
   })
 
   app.get('/console', async (request, reply) => {
@@ -7154,9 +7164,12 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   // beside it and is best-effort, so a token or network failure leaves the row
   // un-reverted instead of failing the webhook delivery GitHub will not resend
   // for the same reason twice.
-  const recordMergedDelivery = (repo: RepoRow, jobId: string | null, prUrl: string, title: string, mergeCommit: string | null): void => {
+  const recordMergedDelivery = (repo: RepoRow, jobId: string | null, prUrl: string, title: string, mergeCommit: string | null, mergedAt: string | null): void => {
     if (mergeCommit === null || mergeCommit === '') return
-    jobs.recordMergedDelivery({ repoId: repo.id, jobId, prUrl, mergeCommit, mergedAt: nowIso(), title })
+    // #1290: the payload carries the instant GitHub merged the pull request, so a
+    // redelivery dates the row by the merge and not by the day Fledge heard of it.
+    // A payload without one keeps the receipt instant.
+    jobs.recordMergedDelivery({ repoId: repo.id, jobId, prUrl, mergeCommit, mergedAt: mergedAt ?? nowIso(), title })
     void scanDeliveryReverts(repo).catch((error: unknown) => log.warn('delivery revert scan failed', { repo: repo.id, error: String(error) }))
   }
 
@@ -7232,21 +7245,22 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     if (event === 'pull_request') {
       const title = typeof pull.title === 'string' ? pull.title.slice(0, 200) : prUrl
       const merged = pull.merged === true
+      const pullMergedAt = typeof pull.merged_at === 'string' && Number.isFinite(Date.parse(pull.merged_at)) ? pull.merged_at : null
       const closed = action === 'closed' || pull.state === 'closed'
       store.updateJobsPrState(prUrl, merged ? 'merged' : closed ? 'closed' : 'open')
       if (existing === undefined && action !== 'opened') return
       if (existing === undefined) {
-        const created = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? nowIso() : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
-        if (merged) recordMergedDelivery(repo, created.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null)
+        const created = store.createWorkItem({ id: randomId('work'), repoId: repo.id, userId: repo.user_id, title, prUrl, state: merged ? 'merged' : closed ? 'closed' : 'pr_ready', prState: merged ? 'merged' : closed ? 'closed' : 'open', mergedAt: merged ? (pullMergedAt ?? nowIso()) : null, mergeCommit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null })
+        if (merged) recordMergedDelivery(repo, created.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null, pullMergedAt)
         return
       }
       if (closed) {
         store.updateWorkItem(existing.id, {
           state: merged ? 'merged' : 'closed',
           pr_state: merged ? 'merged' : 'closed',
-          ...(merged ? { merged_at: nowIso(), merge_commit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null } : {}),
+          ...(merged ? { merged_at: pullMergedAt ?? nowIso(), merge_commit: typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null } : {}),
         })
-        if (merged) recordMergedDelivery(repo, existing.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null)
+        if (merged) recordMergedDelivery(repo, existing.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null, pullMergedAt)
       } else {
         store.updateWorkItem(existing.id, { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
       }

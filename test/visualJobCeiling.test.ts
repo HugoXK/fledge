@@ -59,8 +59,8 @@ test('the visual job keeps its name and its place in the required set', () => {
   assert.match(workflow, /\n {2}visual:\n/, 'the visual job was renamed or removed')
   assert.match(
     workflow,
-    /needs: \[ci-ok,[^\]]*\bvisual\b[^\]]*\]/,
-    'the visual job is not in the aggregate ci-ok needs, so a red matrix would not fail the required check',
+    /needs: \[ci-ok-head,[^\]]*\bvisual\b[^\]]*\]/,
+    'the visual job is not in the aggregate ci-ok-head needs, so a red matrix would not fail the required check',
   )
 })
 

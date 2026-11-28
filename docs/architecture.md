@@ -260,7 +260,12 @@ and a skipped check never read the same. The writer of that field is the drill's
   step's state is read from the database on the request, so a cookie, a second
   browser or a cleared store cannot change which step is next. The pure state
   machine decides the single primary action; a step whose prerequisite is
-  missing states the reason instead of offering a control. The model-provider
+  missing states the reason instead of offering a control. The workspace step
+  answers the deployment, not only the rows: with an empty
+  `FLYBOT_INSTANCE_IMAGE` the deployment runs no per-repository workspaces, so
+  that step reads done and the first job is not blocked on it; a deployment that
+  sets an image keeps the step and the blocker until a workspace is ready. The
+  model-provider
   step is optional while the platform model is configured
   (`PLATFORM_LLM_BASE_URL` and `PLATFORM_LLM_KEY`) and the account's platform
   quota is not exhausted: it reads as satisfied by the platform quota, keeps the
@@ -1017,6 +1022,13 @@ mapper is the boundary: the row also holds a callback hash, a platform token
 hash and a callback secret, and none of them is in the response. See
 `docs/api.md` for the contract.
 
+`GET /api/v1/openapi.json` serves that contract as an OpenAPI 3.1 document
+(`src/api/openapi.ts`) without a token, because it names the instance's routes
+and not its data. The document is data beside the routes, and
+`test/openapi.test.ts` pins it to the `/api/v1/*` registrations in `src/app.ts`
+in both directions, so a new public route cannot ship undocumented. The gateway
+routes under `/v1/*` are not in it: they follow the OpenAI shape, not this one.
+
 ### Model gateway
 
 `/v1/*` is OpenAI-compatible and authenticated with `flg_` tokens. A token
@@ -1643,7 +1655,10 @@ model and work type — and the facts that arrive later attach to it: a revert
 branch's recent commits, recorded once with its first instant), a follow-up issue
 whose body names the pull request, and each failing default-branch run whose head
 is the merge commit. A replayed webhook event inserts nothing because the unique
-key is `(repo_id, pr_url)`. The repository's delivery tab prints the window:
+key is `(repo_id, pr_url)`. The instant is GitHub's `merged_at` from the merge
+payload, so a redelivered or replayed event dates the delivery by the merge and
+not by the receipt; a payload that carries no `merged_at` falls back to the
+receipt time. The repository's delivery tab prints the window:
 merged, reverted, the three rates and the cost per kept change, with `—` where a
 number was never recorded and a "too few deliveries" label on a single sample.
 Each rate is a count of deliveries over merged: the post-merge failure rate is
@@ -2840,6 +2855,21 @@ listing, and every row links to the page that already owns it.
 | `budget_scopes` | one stored CNY cap per scope — `repository` keyed by repository id, `principal` keyed by `principal:user:<id>` — with the action it takes (`alert`/`pause`/`cancel`); a missing row means no cap, never a zero cap, and the job scope keeps reading `repos.job_budget_cny` (#697) |
 | `settings` | small key/value flags (e.g. quota notice dedupe); age-based pruning reclaims the per-job plan markers (`plan_expired:`, `plan_reminded:`) on the same window as the `jobs` rows |
 
+### Audit hash chain (#1233)
+
+`audit_log` is append-only in code and linked in storage. Each new row carries a
+`prev_hash` equal to the previous row's `hash`, and its own `hash` is SHA-256 over
+`id`, `at`, `user_id`, `action`, `detail` and `prev_hash` (canonical JSON, `v1`
+prefix). `Store.audit` writes the row and its link in one savepoint, so a caller
+that is already inside a transaction cannot leave a half row. Rows written before
+the chain keep a NULL hash and are reported unverified, not forged; the first
+hashed row is recorded in the `audit_chain_start_id` setting.
+
+`npm run audit:verify -- --db <copy.db>` uses a read-only `DatabaseSync` and the
+shared `verifyAuditChain` function, exits non-zero at the first edit, delete or
+reorder and prints `--json` for a machine. The chain is not a signature: an
+administrator who rewrites every following hash can rebuild it.
+
 ## Deployment records
 
 A release and a deployment are separate events. `scripts/verify-release.mjs`
@@ -3173,14 +3203,17 @@ overflow and on the `/settings#tokens` anchor. The second is the measured gate:
 the same six paths at `GATE_WIDTHS` (360, 768, 1280) in `GATE_SCHEMES` (light and
 dark) in both locales, three widths by two schemes because a scheme the host
 happened to carry is not a decision the matrix made. `src/lib/visualMatrix.ts`
-holds the constants and four pure checkers, so each rule can be pinned with a
+holds the constants and five pure checkers, so each rule can be pinned with a
 broken fixture without a browser: `touchFailures` holds every control the product
 styles as one (`button`, `.btn`, `input`, `select`, `textarea`, `summary`,
 `.section-nav a`) to the `--touch` 44px floor; `focusFailures` requires one of
 outline width/style, box-shadow, border colour or background colour to change
 when the control is focused; `nameFailures` requires an icon-only `button` or `a`
 to carry `aria-label` or `title`; `leftoverFailures` scans the rendered document
-for `{infoTip(`, `class="undefined"`, `[object Object]` and an unrendered `${`.
+for `{infoTip(`, `class="undefined"`, `[object Object]` and an unrendered `${`;
+and `axeFailures` refuses every serious or critical axe-core violation that no
+waiver names for that path, an entry that has to carry a `YYYY-MM-DD` expiry so
+an allowlist cannot outlive the reason for it (#1240).
 A failure names all four coordinates and the control
 (`en width=768 scheme=dark /settings: select is 292x43px, under the 44px touch
 floor`), so a red job points at one row instead of a screenshot.

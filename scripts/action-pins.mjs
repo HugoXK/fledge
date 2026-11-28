@@ -2,7 +2,7 @@
 // Supply-chain gate 1, wired into CI: scan the real workflow tree and fail the
 // job on any action reference that is not a 40-hex pin with its tag comment, or
 // that names an action outside the reviewed allowlist.
-import { ALLOWLIST_FILE, defaultAllowlistPath, readAllowlist, scanActorGates, scanWorkflows } from './lib/action-pins.mjs'
+import { ALLOWLIST_FILE, defaultAllowlistPath, readAllowlistFile, scanActorGates, scanWorkflows } from './lib/action-pins.mjs'
 
 // #640: the checker runs from the base branch, but the workflows it reads are
 // the pull request's own — they are the data under test, so the directory is an
@@ -17,9 +17,15 @@ const directory = argument('--workflows', '.github/workflows')
 // #650: the list is read relative to this script, which in CI is the base
 // checkout, so a pull request cannot add its own action to the list.
 const allowlistPath = argument('--allowlist', defaultAllowlistPath())
+// #1206: the file carries two halves. The list admits an action; `approved_unused`
+// names actions pre-approved for a follow-up change, and the report says how many
+// there are so an exemption never reads as an ordinary entry.
 let allowlist
+let approvedUnused
 try {
-  allowlist = readAllowlist(allowlistPath)
+  const file = readAllowlistFile(allowlistPath)
+  allowlist = file.allowed_actions
+  approvedUnused = file.approved_unused
 } catch (error) {
   console.error(`action-pins: ${error.message}`)
   process.exit(1)
@@ -75,4 +81,5 @@ if (gates.findings.length > 0) {
   process.exit(1)
 }
 
-console.log(`action-pins: ok (${report.checked} pinned references across ${report.files.length} workflow files, all on the ${allowlist.length}-action allowlist; ${gates.checked} actions: write job(s) gated on the actor)`)
+const preApproved = approvedUnused.length === 0 ? '' : `, ${approvedUnused.length} action(s) pre-approved and not used yet`
+console.log(`action-pins: ok (${report.checked} pinned references across ${report.files.length} workflow files, all on the ${allowlist.length}-action allowlist${preApproved}; ${gates.checked} actions: write job(s) gated on the actor)`)

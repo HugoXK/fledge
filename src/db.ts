@@ -13,6 +13,7 @@ import { normalizeProviderRegion, parseProviderAllowlist } from './gateway/model
 import { loopFunnel, loopMetrics, PRODUCT_EVENT_NAMES, rescueSummary, returningRepositories, spanMetrics, type ProductLoopSnapshot, type StageRow } from './metrics/product.js'
 import { quotaExhausted } from './gateway/quota.js'
 import { randomId, redact } from './lib/secrets.js'
+import { auditHash } from './lib/auditChain.js'
 import { followUpLinks, type DeliveryOutcomeRow } from './lib/deliveryOutcome.js'
 import { actionIdFor, type ActionKind } from './lib/actionsNeeded.js'
 import { DEFAULT_PAT_EXPIRY_DAYS } from './lib/tokens.js'
@@ -861,6 +862,10 @@ export interface AuditRow {
   user_id: string | null
   action: string
   detail: string | null
+  /** The hash of the preceding row; null on the first hashed row and on legacy rows. */
+  prev_hash: string | null
+  /** The row's own chain hash; null on rows written before the chain existed. */
+  hash: string | null
 }
 
 // #540: one row per command a caller asked for. `accepted` is the reservation
@@ -1768,7 +1773,9 @@ CREATE TABLE IF NOT EXISTS audit_log (
   at TEXT NOT NULL,
   user_id TEXT,
   action TEXT NOT NULL,
-  detail TEXT
+  detail TEXT,
+  prev_hash TEXT,
+  hash TEXT
 );
 
 CREATE TABLE IF NOT EXISTS events (
@@ -2868,6 +2875,7 @@ export class Store {
     this.db.exec(SCHEMA)
     this.migrateFeedbackTriageColumns()
     this.migrateColumns()
+    this.migrateAuditColumns()
     this.migrateRepoColumns()
     this.migrateProviderColumns()
     this.migrateProviderModelColumns()
@@ -3183,6 +3191,15 @@ export class Store {
     if (!columns.includes('lead_attempts')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_attempts INTEGER NOT NULL DEFAULT 0')
     if (!columns.includes('lead_last_error')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_last_error TEXT')
     if (!columns.includes('lead_next_attempt_at')) this.db.exec('ALTER TABLE feedback_triage ADD COLUMN lead_next_attempt_at TEXT')
+  }
+
+  // #1233: the chain columns are additive. A row written before them keeps
+  // NULL and is reported unverified by `audit:verify`, never treated as a forged
+  // link. No backfill rewrites history.
+  private migrateAuditColumns(): void {
+    const columns = new Set(this.all<{ name: string }>('PRAGMA table_info(audit_log)').map((row) => row.name))
+    if (!columns.has('prev_hash')) this.run('ALTER TABLE audit_log ADD COLUMN prev_hash TEXT')
+    if (!columns.has('hash')) this.run('ALTER TABLE audit_log ADD COLUMN hash TEXT')
   }
 
   private migrateColumns(): void {
@@ -8370,7 +8387,25 @@ export class Store {
   }
 
   audit(userId: string | null, action: string, detail: string | null = null): void {
-    this.run('INSERT INTO audit_log (at, user_id, action, detail) VALUES (?, ?, ?, ?)', nowIso(), userId, action, detail)
+    const at = nowIso()
+    // SAVEPOINT works inside the caller's transaction as well as outside one, so
+    // an audit written by a guarded transition cannot turn into a half row.
+    this.db.exec('SAVEPOINT audit_chain')
+    try {
+      const previous = this.get<{ hash: string | null }>('SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1')
+      const prevHash = previous?.hash ?? null
+      this.run('INSERT INTO audit_log (at, user_id, action, detail, prev_hash) VALUES (?, ?, ?, ?, ?)', at, userId, action, detail, prevHash)
+      const id = Number(this.get<{ id: number }>('SELECT last_insert_rowid() AS id')?.id ?? 0)
+      this.run('UPDATE audit_log SET hash = ? WHERE id = ?', auditHash({ id, at, user_id: userId, action, detail, prev_hash: prevHash }), id)
+      if ((previous === undefined || previous.hash === null) && this.getSetting('audit_chain_start_id') === undefined) {
+        this.setSetting('audit_chain_start_id', String(id))
+      }
+      this.db.exec('RELEASE audit_chain')
+    } catch (error) {
+      try { this.db.exec('ROLLBACK TO audit_chain') } catch { /* the savepoint may already be gone */ }
+      try { this.db.exec('RELEASE audit_chain') } catch { /* the savepoint may already be gone */ }
+      throw error
+    }
   }
 
   // #540: a resource's revision is 1 until something bumps it, so a page rendered

@@ -96,8 +96,10 @@ test('the live CodeQL baseline is well-formed, owned and unexpired', () => {
   const checked = validateBaseline(baseline, Date.now())
   assert.deepEqual(checked.errors, [], 'the recorded baseline must pass its own reader')
   // #928: the four rate-limiting results (#62-#65) are dismissed in the alert UI
-  // since 2026-11-12, so the file records all seven as dismissed and none expires.
-  assert.equal(checked.entries.filter((entry) => entry.dismissed === true).length, 7, 'every recorded result is a dismissal')
+  // since 2026-11-12; #1316 adds alert #185 (`js/insufficient-password-hash`),
+  // dismissed as a false positive after the caller audit, so the file records
+  // all eight as dismissed and none expires.
+  assert.equal(checked.entries.filter((entry) => entry.dismissed === true).length, 8, 'every recorded result is a dismissal')
   assert.equal(checked.entries.filter((entry) => entry.dismissed !== true).length, 0, 'no result is left open with an expiry')
 })
 
@@ -227,16 +229,16 @@ test('codeql-required is in ci-ok needs, is never skippable, and adds no merge_g
   )
 
   const ci = readFileSync(ciWorkflowPath, 'utf8')
-  const start = ci.indexOf('\n  ci-ok:')
-  assert.ok(start !== -1, 'ci.yml must declare the ci-ok job')
+  const start = ci.indexOf('\n  ci-ok-head:')
+  assert.ok(start !== -1, 'ci.yml must declare the ci-ok-head job')
   const needs = /needs:\s*\[([^\]]*)\]/.exec(ci.slice(start))
-  assert.ok(needs !== null, 'the ci-ok job must declare needs as an inline list so it can be read here')
+  assert.ok(needs !== null, 'the ci-ok-head job must declare needs as an inline list so it can be read here')
   const listed = needs[1]!.split(',').map((entry) => entry.trim()).filter((entry) => entry !== '')
   assert.ok(listed.includes('codeql-required'), `ci-ok needs must include codeql-required, found ${listed.join(', ')}`)
 
   const jobStart = ci.indexOf('\n  codeql-required:')
   assert.ok(jobStart !== -1, 'ci.yml must declare the codeql-required job')
-  const job = ci.slice(jobStart, ci.indexOf('\n  ci-ok:', jobStart))
+  const job = ci.slice(jobStart, ci.indexOf('\n  ci-ok-head:', jobStart))
   // #640: the decision script runs from the base branch tree, so a pull request
   // cannot edit the code that reads its own analysis.
   assert.match(job, /run: node base\/scripts\/codeql-required\.mjs/, 'the job must run the base branch copy of the decision script')

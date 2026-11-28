@@ -8,7 +8,14 @@ import type { Translate } from '../i18n.js'
 
 export type SetupStepKey = 'repo' | 'role' | 'model' | 'instance' | 'job'
 
-export interface SetupState {
+/**
+ * Whether this deployment runs per-repository workspaces at all. An empty
+ * `FLYBOT_INSTANCE_IMAGE` means it runs without containers, so a workspace
+ * cannot be started and must be neither a step nor a blocker (#1281).
+ */
+export interface SetupWorkspaces { instancesUsed: boolean }
+
+export interface SetupState extends SetupWorkspaces {
   repos: number
   roleChosen: boolean
   // A provider with at least one model exists, but it may not be selected by a
@@ -141,7 +148,7 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
     {
       key: 'instance',
       title: t('启动工作区', 'Start workspace'),
-      done: state.instanceReady,
+      done: !state.instancesUsed || state.instanceReady,
       action: { href: repoHref, label: t('打开仓库启动', 'Open the repository') },
       blocked: !state.modelConfigured && !state.platformAvailable
         ? state.providerConfigured
@@ -154,7 +161,7 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
       title: t('运行第一个任务', 'Run the first job'),
       done: state.jobs > 0,
       action: { href: repoHref, label: t('运行任务', 'Run a job') },
-      blocked: !state.instanceReady ? t('先启动实例。', 'Start the instance first.') : null,
+      blocked: state.instancesUsed && !state.instanceReady ? t('先启动工作区。', 'Start the workspace first.') : null,
     },
   ]
   const done = steps.filter((step) => step.done).length
