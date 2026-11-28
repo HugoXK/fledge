@@ -59,3 +59,16 @@ export function readBaseLedger({ ref, readAt, fetchRef }) {
   if (!fetchRef(ref)) return null
   return readAt(ref)
 }
+
+/**
+ * Which events carry a base branch to compare against. A pull request and a
+ * merge-group entry do; `push`, `schedule` and `workflow_dispatch` do not, and a
+ * depth-1 clone on those must read the working tree rather than fail closed
+ * (#1333 hotfix: the nightly and the repair dispatch were red because `schedule`
+ * and `workflow_dispatch` matched the old "anything but push" test).
+ */
+export function isPullRequestEvent({ eventName, baseRef }) {
+  if (eventName === 'pull_request' || eventName === 'merge_group') return true
+  if (eventName === '') return (baseRef ?? '') !== ''
+  return false
+}

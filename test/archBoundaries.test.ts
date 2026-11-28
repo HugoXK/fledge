@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { checkArchitecture, checkFileSizes, checkImports } from '../scripts/lib/arch-boundaries.mjs'
-import { readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
+import { isPullRequestEvent, readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -205,4 +205,37 @@ test('a base that cannot be fetched stays unreadable, so the run fails closed', 
   })
   assert.equal(content, null)
   assert.equal(fetches, 1)
+})
+
+test('only pull_request and merge_group carry a base branch to judge against', () => {
+  assert.equal(isPullRequestEvent({ eventName: 'pull_request', baseRef: 'main' }), true)
+  assert.equal(isPullRequestEvent({ eventName: 'merge_group', baseRef: '' }), true)
+  // A local run has no event name but may carry a base ref from the caller.
+  assert.equal(isPullRequestEvent({ eventName: '', baseRef: 'main' }), true)
+  assert.equal(isPullRequestEvent({ eventName: '', baseRef: '' }), false)
+  // These three have no base to read and must not fail closed (#1333 hotfix:
+  // the nightly CI and the repair dispatch went red on the old "not push" test).
+  assert.equal(isPullRequestEvent({ eventName: 'schedule', baseRef: '' }), false)
+  assert.equal(isPullRequestEvent({ eventName: 'workflow_dispatch', baseRef: '' }), false)
+  assert.equal(isPullRequestEvent({ eventName: 'push', baseRef: '' }), false)
+})
+
+test('a schedule run reads the working-tree ledger and exits 0', () => {
+  const script = fileURLToPath(new URL('../scripts/arch-boundaries.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [script], {
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'schedule', GITHUB_BASE_REF: '' },
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /\(ledger from head\)/)
+})
+
+test('a dispatch run reads the working-tree ledger and exits 0', () => {
+  const script = fileURLToPath(new URL('../scripts/arch-boundaries.mjs', import.meta.url))
+  const result = spawnSync(process.execPath, [script], {
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_EVENT_NAME: 'workflow_dispatch', GITHUB_BASE_REF: '' },
+  })
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /\(ledger from head\)/)
 })
