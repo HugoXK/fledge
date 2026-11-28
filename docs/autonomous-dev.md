@@ -621,7 +621,18 @@ run is pending, the absence of any verdict at all is a missing verdict rather th
 a head still warming up — which is how the sweep closes the trigger's own evasion:
 a head that renames `name: CI` produces no publisher run at all. Intended
 recomputation, not evasion, is why the sweep reads the workflow by *path* rather
-than by name. The sweep is idempotent (its own red already names the current
+than by name.
+
+The same sweep also asks a second question about the green it finds (#1338): when
+did it start, and when did the base last change a gate input? A `ci-ok` that
+started before the base's last change to `.github/workflows/ci*.yml`,
+`scripts/ci-ok.mjs`, the arch ratchet or the review policy is red at the unchanged
+head, with the line `freshness: ci-ok started …, before <sha> added <file> on …`.
+The comparison is `scripts/lib/ci-freshness.mjs`, it is fail-closed (a check with
+no `started_at`, an unreadable base or an unresolvable commit refuses with its own
+line), and the sweep needs the default branch's history for it (`fetch-depth: 0`).
+A stale head is cleared by a push or a close/reopen; an empty commit does not
+clear it. The sweep is idempotent (its own red already names the current
 policy), skips drafts and heads whose CI has not finished, and writes nothing but
 check runs: it pushes no branch, merges nothing and changes no file. A pull
 request that carries a superseded verdict is fixed by a new commit, which starts a

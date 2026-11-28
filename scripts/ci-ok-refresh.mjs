@@ -23,6 +23,7 @@ import { spawnSync } from 'node:child_process'
 
 import { REQUIRED_JOBS } from './ci-ok.mjs'
 import { policyIdentity, refreshDecision } from './lib/ci-ok-refresh.mjs'
+import { freshnessPayload, freshnessRefusal, GATE_PATHS, parseGateChange } from './lib/ci-freshness.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
@@ -92,6 +93,21 @@ async function checkRuns(headSha) {
   return Array.isArray(body?.check_runs) ? body.check_runs : []
 }
 
+// #1338: the base's last change to a gate input. The default-branch checkout
+// carries full history for this read (`fetch-depth: 0` in the workflow); a
+// checkout without it fails closed rather than assuming the head is fresh.
+function baseGateChange() {
+  const result = spawnSync('git', ['-C', CHECKOUT, 'log', '-1', '--format=%H%n%cI%n%s', '--name-only', '--', ...GATE_PATHS], { encoding: 'utf8' })
+  if (result.status !== 0) return { error: `git log exited ${String(result.status ?? 'null')}` }
+  return parseGateChange(result.stdout) ?? { error: 'the gate history did not resolve' }
+}
+
+function newestVerdict(checks) {
+  const completed = (Array.isArray(checks) ? checks : []).filter((check) => check?.name === 'ci-ok' && check?.status === 'completed')
+  if (completed.length === 0) return null
+  return completed.reduce((newest, check) => (Date.parse(check.completed_at) > Date.parse(newest.completed_at) ? check : newest))
+}
+
 async function runsState(headSha) {
   const body = await api(`/repos/${REPO}/actions/runs?head_sha=${headSha}&per_page=100`)
   const runs = Array.isArray(body?.workflow_runs) ? body.workflow_runs : []
@@ -144,6 +160,8 @@ async function main() {
   if (gateSha === '') fail('the default branch checkout has no scripts/ci-ok.mjs blob')
   const policy = policyIdentity({ required: REQUIRED_JOBS, gateSha })
   console.log(`ci-ok-refresh: policy required=${policy.requiredHash} gate=${policy.gateSha}`)
+  const gate = baseGateChange()
+  if ('error' in gate) console.log(`ci-ok-refresh: base gate change unreadable (${gate.error}); every head will be judged stale`)
   const pulls = await openPullRequests()
   let published = 0
   let skipped = 0
@@ -155,10 +173,33 @@ async function main() {
       continue
     }
     const runs = await runsState(headSha)
+    let checks
+    try {
+      checks = await checkRuns(headSha)
+    } catch (error) {
+      // #1338: an unreadable check is refused, not assumed fresh.
+      const detail = (error instanceof Error ? error.message : String(error)).slice(0, 160)
+      await publish(freshnessPayload({ headSha, policy, refusal: `freshness: the ci-ok check cannot be read (${detail}); refusing` }))
+      published += 1
+      console.log(`#${String(pull.number)} ${headSha.slice(0, 12)} red stale-freshness unreadable`)
+      continue
+    }
+    // #1338: freshness comes before the policy probe. A verdict older than the
+    // base's gate change is red at this unchanged head, whatever its policy says.
+    const newest = newestVerdict(checks)
+    if (newest !== null && !String(newest?.output?.summary ?? '').includes('reason: stale-freshness')) {
+      const refusal = freshnessRefusal({ checkName: 'ci-ok', startedAt: newest.started_at, base: gate })
+      if (refusal !== null) {
+        await publish(freshnessPayload({ headSha, policy, refusal }))
+        published += 1
+        console.log(`#${String(pull.number)} ${headSha.slice(0, 12)} red stale-freshness`)
+        continue
+      }
+    }
     const decision = refreshDecision({
       headSha,
       policy,
-      checks: await checkRuns(headSha),
+      checks,
       ciCompleted: runs.ciCompleted,
       publisherPending: runs.publisherPending,
     })

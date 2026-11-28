@@ -51,6 +51,10 @@ jobs:
           # pull request's tree.
           ref: ${{ github.event.repository.default_branch }}
           persist-credentials: false
+          # #1338: the sweep compares a head's check run against the last change
+          # to a gate input on the default branch, so it needs that history.
+          # Without it the script fails closed and reddens every head.
+          fetch-depth: 0
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: 22
