@@ -1,0 +1,56 @@
+name: Merge clean
+
+# A green T0/T1 pull request sits in `CLEAN` until a person presses squash:
+# `enablePullRequestAutoMerge` refuses with "Pull request is in clean status",
+# so `CLEAN` is not a queue entry. This job is that missing queue entry for the
+# one class the policy already allows to merge without a PASS (#1272).
+#
+# It never widens that class: the tier comes from `tierForChanges` over the
+# pull-request file list, a T2/T3 tip is reported and left for its PASS, a
+# `hold` label blocks, a queued pull request is skipped, and every merge is a
+# direct squash merge pinned to the head SHA it read. The automatic token is
+# used only as a request header; a merge made with it starts no `push`
+# workflow, so `main` is observed by `ci.yml`'s own schedule instead.
+
+on:
+  schedule:
+    # Every ten minutes. The drain is a queue entry, not a hot path: a green
+    # tip can wait one tick, and a shorter interval buys nothing because the
+    # required checks themselves take longer than that to finish.
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: merge-clean
+  cancel-in-progress: false
+
+jobs:
+  merge-clean:
+    name: merge a green T0/T1 pull request
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      checks: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The rules and the planner are read from the default branch, never
+          # from a pull request whose diff could rewrite the rule that judges
+          # it. `persist-credentials: false` keeps the checkout token out of the
+          # git config, because the merge credential is passed as an env var.
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Merge the green T0/T1 pull requests
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_API_URL: ${{ github.api_url }}
+        run: node scripts/merge-clean.mjs

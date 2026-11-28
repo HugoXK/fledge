@@ -117,6 +117,29 @@ Add a changelog fragment for a user-visible change. Update the owned doc or add
 - After merge: fetch, fast-forward `main`, delete the branch/worktree, and file
   follow-ups as issues (not TODOs).
 
+### Clean T0/T1 drain
+
+`.github/workflows/merge-clean.yml` runs every ten minutes and on
+`workflow_dispatch`. It is the queue entry `CLEAN` does not provide: a pull
+request with every required check green sits in `CLEAN`, and
+`enablePullRequestAutoMerge` refuses with "Pull request is in clean status", so a
+green T0/T1 tip waited for a person to press squash (#1272).
+
+- `node scripts/merge-clean.mjs --dry-run` prints one line per open pull request
+  as `PR <n> head=<sha> tier=<T0|T1> action=<enqueue|skip:reason>` and performs
+  no write.
+- It merges only an open, non-draft, same-repo pull request whose computed tier
+  is T0/T1, whose `ci-ok`, `review-gate` and `pr-lint` checks are successful at
+  the head SHA, which carries no `hold` label, and which is not already queued.
+  A T2/T3 tip reads `skip:tierT2` / `skip:tierT3`: it still needs a PASS.
+- The tier is computed from the diff with `tierForChanges`; a `risk:T*` label is
+  never read as a tier.
+- The merge is a direct squash merge pinned to the head SHA the decision names.
+  When the head moves between the checks and the merge, the line reads
+  `skip:head-moved` and nothing is merged on the stale read; when the API
+  refuses for another reason the run prints one reason line and ends instead of
+  retrying.
+
 ### Missing CI backstop
 
 `.github/workflows/ci-watchdog.yml` runs hourly and on
