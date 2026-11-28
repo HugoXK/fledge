@@ -756,7 +756,13 @@ edit. It cannot answer "is the code *this pull request adds* covered", because a
 `src/**`.
 
 The changed-lines floor is `scripts/coverage-diff.mjs`, run by the `coverage` job
-on a pull request after the report is written. It takes the added `src/**` lines
+on a pull request after the report is written. A `workflow_dispatch` run has no
+pull-request base or body, so it fails closed
+(`coverage: mode=dispatch-fail-closed`) instead of publishing a green `coverage`
+at the dispatched commit (#1335); the pull-request path prints
+`coverage: mode=pull_request`. `schedule` and `push` run only on the default
+branch, whose head is never a pull request's head, so they keep skipping the
+step. It takes the added `src/**` lines
 of `git diff <base>...<head>`, joins them to the report Node printed (the
 uncovered line ranges, per file), and fails when the added code lines are below
 80% covered. `<head>` is the checked-out commit, not the pull request's head sha:

@@ -63,7 +63,14 @@ test('the coverage job appends the failure step after the coverage step', () => 
   const failure = stepHeader(job, FAILURE_STEP)
   assert.notEqual(measure, -1, 'the coverage step must exist')
   assert.ok(failure > measure, 'the failure step must come after the coverage step')
-  assert.doesNotMatch(job.slice(failure), /\n      - /, 'the failure step must be the last step in the job')
+  // #1335 appended one last step, the dispatch mode guard (#1335). The failure
+  // step still owns the containment decision: a failing step stops the job, so
+  // nothing after it can mask this one, and the guard is the only later step.
+  const laterSteps = job
+    .slice(failure)
+    .split('\n')
+    .filter((line) => line.startsWith('      - '))
+  assert.deepEqual(laterSteps.slice(1), ['      - name: Name the coverage mode and refuse a dispatched run'])
 })
 
 test('a recorded suite failure fails the step', () => {
