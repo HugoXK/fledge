@@ -106,6 +106,38 @@ Add a changelog fragment for a user-visible change. Update the owned doc or add
 - Findings are fixed on the same branch; push a new tip and reply once.
 - A tip move voids the PASS. One tip carries one conclusion.
 - A non-blocking finding outside the diff becomes a follow-up issue immediately.
+- A repaired tip, or a body-only evidence edit, asks for one new read: see
+  “Re-review after a change request” below.
+
+### Re-review after a change request
+
+A change request is not a dead end, and it does not need the reviewer to happen to
+look again. `.github/workflows/rereview.yml` turns two events into one request; the
+decision is `scripts/lib/rereview.mjs`, and `scripts/rereview.mjs` performs it:
+
+- **the head moved** after `CHANGES_REQUESTED` (`pull_request: synchronize`) — the
+  blocker was fixed and pushed, and the newest verdict still points at the old tree;
+- **a maintainer wrote** `Re-review: <reason>` on the pull request
+  (`issue_comment`) — the only form that works when the tip does not move and only
+  the evidence changed, such as a body edit.
+
+Either source posts one comment `Re-review: <reason> — head <sha>`, asks the base
+branch policy's `requiredPass` account for one review, and re-runs the newest
+completed `Review gate` run at that head while it is at attempt 1 (one re-run), so
+the check is re-decided and not just the thread. The comment is written last: it is
+the record that a request is open, so a failed write leaves nothing to no-op
+against. The marker is accepted on its own line anywhere in a comment body, which
+is the rule the library and the workflow guard share. The write job's concurrency
+group is the head SHA: a second event at the same head queues behind the first,
+then finds its request open and writes nothing. A verdict review submitted at that
+head after the request answers it; a `COMMENTED` review does not.
+
+The request is never a PASS and carries no evidence — the reviewer still checks out
+the head, re-runs the gates and writes the verdict at it. A head with no
+`CHANGES_REQUESTED` at its base, a marker with no reason, and a comment from a
+non-maintainer are refused by name in the job log. `node scripts/rereview.mjs
+--dry-run` prints one line per open pull request (`PR <n> head=<sha>
+decision=<request|no-op|refused> reason=<code>`) and performs no write.
 
 ### 8. Merge
 

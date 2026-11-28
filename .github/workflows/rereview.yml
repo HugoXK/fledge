@@ -1,0 +1,108 @@
+name: Re-review
+
+on:
+  pull_request:
+    types: [synchronize]
+  issue_comment:
+    types: [created]
+
+# Default-deny for the whole workflow: the plan job reads, and the request job
+# below adds only the three write scopes a request needs.
+permissions:
+  contents: read
+
+jobs:
+  # #1274: a change request has no re-review trigger. This job is the decision
+  # only — it resolves the head and prints what scripts/lib/rereview.mjs decided,
+  # so the write job runs (and takes its concurrency slot) only when a request is
+  # actually due.
+  plan:
+    name: plan
+    # The comment source is a maintainer's comment only: on a public repository a
+    # stranger can comment, and that must not reach a job with write scopes. A
+    # fork's pull request is skipped for the same reason its token is read-only.
+    # An ordinary comment by a maintainer starts nothing either: only the marker
+    # is a trigger, and the marker is accepted on its own line anywhere in the
+    # body — the same rule scripts/lib/rereview.mjs applies, so a maintainer and
+    # the bot that reads the request agree on one contract.
+    if: |
+      (github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) ||
+      (github.event_name == 'issue_comment' && github.event.issue.pull_request != null && contains(github.event.comment.body, 'Re-review:') && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: read
+      issues: read
+    outputs:
+      number: ${{ steps.plan.outputs.number }}
+      head: ${{ steps.plan.outputs.head }}
+      decision: ${{ steps.plan.outputs.decision }}
+    steps:
+      # The base branch, never the pull request head: this trigger is policy, so a
+      # pull request must not be able to rewrite the code that decides to ask.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      - name: Decide whether this event asks for a re-review
+        id: plan
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # A pull request event takes this workflow from the head, while the code
+          # it runs is the base checkout: the pull request that lands this file has
+          # neither on its base branch, so that one bootstrap is named and skipped.
+          # A base tree that carries the workflow but has lost its entrypoint is a
+          # red gate, not a skip.
+          if [ ! -f scripts/rereview.mjs ]; then
+            if [ ! -f .github/workflows/rereview.yml ]; then
+              echo "rereview: the base tree predates this workflow (this pull request introduces it); nothing to plan"
+              exit 0
+            fi
+            echo "rereview: the base tree carries the workflow but not scripts/rereview.mjs" >&2
+            exit 1
+          fi
+          node scripts/rereview.mjs --plan >> "$GITHUB_OUTPUT"
+
+  request:
+    name: request
+    needs: plan
+    # The write job repeats both guards rather than trusting the plan job: the
+    # association check has to sit on the job that holds the write scopes, so a
+    # stranger's comment or a fork's pull request can never reach it.
+    if: |
+      needs.plan.outputs.decision == 'request' && (
+        (github.event_name == 'pull_request' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.pull_request.author_association)) ||
+        (github.event_name == 'issue_comment' && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+      )
+    # One request per head: a second event at the same head waits here, then finds
+    # the first request open and writes nothing. Two sources, one conclusion.
+    concurrency:
+      group: rereview-${{ needs.plan.outputs.head }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+      actions: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          ref: ${{ github.event.pull_request.base.sha || github.event.repository.default_branch }}
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+      # One comment naming the request and the head, one review asked from the
+      # reviewer the base branch's policy names, one re-run of the newest
+      # completed `Review gate` run at that head. The decision is re-read inside
+      # the job, so a queued second trigger becomes a no-op instead of a second
+      # request.
+      - name: Post one request at the head
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: node scripts/rereview.mjs
