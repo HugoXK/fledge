@@ -39,8 +39,9 @@ not a conclusion.
 
 ## Architecture boundaries
 
-- `npm run arch:check` is a step in the `lint` CI job and a test in the suite.
-  It reads the tree, not the diff.
+- `npm run arch:check` is the local command; the gate's only CI carrier is the
+  suite test `test/archBoundaries.test.ts`, which runs under `npm test` in the
+  `test (24)` job. It reads the tree, not the diff.
 - A view may import `db` row types; it may not import the store. The store must
   not import `app`, a view or a job. A job must not import a view. A view may
   import only `src/jobs/continuity.ts` and `src/jobs/automationHealth.ts` from
@@ -49,6 +50,16 @@ not a conclusion.
   are recorded in `scripts/lib/arch-grandfather.json` at their current size; an
   entry may not grow, and it must be deleted once the file is at or below 1,200
   lines.
+
+  The baseline is sampled from `main` at the commit where the gate is
+  introduced. The size rule is a ratchet: every entry may only decrease, and an
+  entry whose file is at or below 1,200 lines must be deleted. The one permitted
+  exception is a re-record to the size measured at a named commit, approved in a
+  decision record (for the 2026-11-27 re-record, `docs/decisions/0030-arch-grandfather-rebaseline.md`)
+  and named in the pull request that makes it; after it lands the new number is
+  a **ceiling** — growth beyond it is a new violation and the fix is splitting
+  the file, never raising the entry again. Growth with no such record is a silent
+  raise and must be read as a violation.
 - A type-only import is erased at build time and is allowed across a boundary;
   the gate is about runtime coupling.
 
