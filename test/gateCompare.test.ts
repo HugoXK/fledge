@@ -178,14 +178,65 @@ test('a required job may gain a step only after its last base step', () => {
   assert.equal(reorderedResult.ok, false, 'reordering the base steps must not pass')
   assert.match(reorderedResult.problems.join('\n'), /`steps:`/)
 
-  // The aggregate is checked separately, not as a required job: its step list
-  // may grow anywhere, while the evaluator step and the `path: base` checkout
-  // still have to survive.
+  // The aggregate follows the same prefix rule: a step may follow the evaluator,
+  // not precede it.
   const aggregateAppended = MINI.replace(
     '      - run: node base/scripts/ci-ok.mjs\n',
     '      - run: node base/scripts/ci-ok.mjs\n      - name: extra\n        run: echo extra\n',
   )
   assert.equal(compareGate({ base: MINI, head: aggregateAppended, required: ['build'] }).ok, true)
+})
+
+test('the aggregate cannot gain a step before its evaluator or change its shape', () => {
+  // The review's counterexample: a step between the `path: base` checkout and
+  // the evaluator rewrites the evaluator it is about to run.
+  const tamper = '      - run: echo "process.exit(0)" > base/scripts/ci-ok.mjs\n'
+  const marker = '      - name: Name the evaluator that comes from the base tree'
+  const tampered = ci.replace(marker, tamper + marker)
+  assert.notEqual(tampered, ci, 'the fixture inserted the tampering step')
+  const tamperedResult = compareGate({ base: ci, head: tampered })
+  assert.equal(tamperedResult.ok, false, 'a step before the evaluator must not pass')
+  assert.match(tamperedResult.problems.join('\n'), /`ci-ok`/)
+  assert.match(tamperedResult.problems.join('\n'), /`steps:`/)
+
+  // The same insertion on the small fixture, between checkout and evaluator.
+  const miniTampered = MINI.replace(
+    '      - run: node base/scripts/ci-ok.mjs\n',
+    '      - name: tamper\n        run: echo x > base/scripts/ci-ok.mjs\n      - run: node base/scripts/ci-ok.mjs\n',
+  )
+  const miniResult = compareGate({ base: MINI, head: miniTampered, required: ['build'] })
+  assert.equal(miniResult.ok, false, 'an inserted aggregate step must not pass')
+
+  // The aggregate's own keys are pinned too, not only its steps: a job-level
+  // `continue-on-error` would report `success` whatever the evaluator says.
+  const loose = editJob(ci, AGGREGATE_JOB, (block) => [...block.slice(0, 1), '    continue-on-error: true', ...block.slice(1)])
+  const looseResult = compareGate({ base: ci, head: loose })
+  assert.equal(looseResult.ok, false, 'a new aggregate key must not pass')
+  assert.match(looseResult.problems.join('\n'), /gains `continue-on-error:`/)
+})
+
+test('a step body line re-indented inside its block scalar is refused', () => {
+  const base = [
+    'name: CI',
+    'on:',
+    '  pull_request:',
+    'jobs:',
+    '  build:',
+    '    name: build',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    '      - name: one',
+    '        run: |',
+    '          echo one',
+    '          echo two',
+    '',
+  ].join('\n')
+  // Two more leading spaces are content in a block scalar, so this head changes
+  // the command the step runs while a per-line trim would call it equal.
+  const head = base.replace('          echo two', '            echo two')
+  assert.notEqual(head, base)
+  const result = compareGate({ base, head, required: ['build'] })
+  assert.equal(result.ok, false, 'an indentation change inside a step body must be refused')
 })
 
 test('the checked-in workflow is its own base, so an untouched pull request is allowed', () => {

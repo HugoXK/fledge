@@ -303,9 +303,16 @@ function stepBlocks(job) {
   return blocks
 }
 
-/** A step compared by content, not by how deeply it happens to be indented. */
+/**
+ * A step compared by content, with only the step's own leading indent removed.
+ * Deeper whitespace stays significant: a `run: |` body line moved out of the
+ * block scalar compares differently, which trimming every line would hide.
+ */
 function normalizeStep(block) {
-  return block.map((line) => line.trim()).join('\n')
+  const first = block[0] ?? ''
+  const indent = first.length - first.trimStart().length
+  const strip = new RegExp(`^ {0,${String(indent)}}`)
+  return block.map((line) => line.replace(strip, '').trimEnd()).join('\n')
 }
 
 /**
@@ -471,8 +478,46 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
     refuse(`the pull request's ${GATE_COMPARE_FILE} gives jobs \`${seen}\` and \`${job.id}\` the same display name${DOOR}`)
   }
 
+  // The aggregate is not a check the publisher waits on, so it is not in
+  // `required`, but it is the gate: pin every key the base tree sets, allowing
+  // only `needs` to grow and `timeout-minutes` as the one allowlisted key. A
+  // step inserted between the `path: base` checkout and the evaluator could
+  // rewrite the evaluator it is about to run, which the command-string check
+  // below cannot see.
   const aggregate = headJobs.get(AGGREGATE_JOB)
-  if (aggregate !== undefined) {
+  const baseAggregate = baseJobs.get(AGGREGATE_JOB)
+  if (baseAggregate === undefined) {
+    refuse(`the base tree's ${GATE_COMPARE_FILE} has no \`${AGGREGATE_JOB}\` job, so this pull request cannot be judged against it`)
+  } else if (aggregate === undefined) {
+    refuse(`required job \`${AGGREGATE_JOB}\` is absent from the pull request's ${GATE_COMPARE_FILE}${DOOR}`)
+  } else {
+    for (const [name, baseKey] of baseAggregate.keys) {
+      if (allowlisted.has(name)) continue
+      const headKey = aggregate.keys.get(name)
+      if (headKey === undefined) {
+        refuse(`the pull request's \`${AGGREGATE_JOB}\` loses \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
+        continue
+      }
+      // `needs` may grow; the dependency set is checked below.
+      if (name === 'needs') continue
+      if (name === 'steps') {
+        if (!stepsPreserved(baseAggregate, aggregate)) {
+          refuse(`the pull request's \`${AGGREGATE_JOB}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
+        }
+        continue
+      }
+      if (baseKey.lines.join('\n') === headKey.lines.join('\n')) continue
+      const key = differingKey(baseKey.lines, headKey.lines)
+      refuse(
+        key === null
+          ? `the pull request's \`${AGGREGATE_JOB}\` differs from the base tree in ${GATE_COMPARE_FILE}${DOOR}`
+          : `the pull request's \`${AGGREGATE_JOB}\` changes \`${key}:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR}`,
+      )
+    }
+    for (const name of aggregate.keys.keys()) {
+      if (allowlisted.has(name) || baseAggregate.keys.has(name)) continue
+      refuse(`the pull request's \`${AGGREGATE_JOB}\` gains \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
+    }
     const headNeeds = needsIds(aggregate)
     for (const id of requiredIds) {
       if (!headNeeds.includes(id)) refuse(`the pull request's \`${AGGREGATE_JOB}\` does not depend on required job \`${id}\``)

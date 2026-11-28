@@ -499,9 +499,15 @@ the base command text matching, and the test run becomes a no-op. The residual i
 explicit: the comparator cannot allow an arbitrary pre-step, because it cannot
 judge what a new first step does before the gate, so a genuinely needed pre-step
 has to come from the base tree itself, not from the head being compared. The
-aggregate is checked separately rather than as a required job: it may still gain
-a step anywhere, and what is pinned is that it runs `node base/scripts/ci-ok.mjs`
-and checks the gate out under `path: base`. The
+aggregate is checked separately rather than as a required job, and it is pinned
+the same way: every key the base tree sets has to match (only `timeout-minutes:`
+is allowlisted), its steps have to stay a prefix, and the evaluator step and the
+`path: base` checkout have to survive in place. That order is the point — a step
+inserted between the checkout and the evaluator could rewrite the evaluator it is
+about to run, so pinning the command string alone is not enough. A step added
+after the last base step cannot change what the base steps read, but it can
+publish outputs or artifacts a later job consumes; that is outside what this
+comparator judges. The
 `ci-ok` job's `needs` may grow but not shrink, and its step must still be exactly
 `node base/scripts/ci-ok.mjs` with the gate checked out under `path: base`. The
 comparator is `scripts/lib/gate-compare.mjs`, and it fails closed: a duplicated
