@@ -53,16 +53,35 @@ function argument(name) {
 // one instead of being interpreted as a flag (`--help`, `--output=…`). The value
 // is operator/local input, which makes this hardening rather than a live hole —
 // but "only the operator can reach it" is an assumption, not a control.
-function readAt(ref) {
+function showRevision(revision, endOfOptions) {
   try {
-    return execFileSync('git', ['show', '--end-of-options', `${ref}:${LEDGER}`], {
+    const content = execFileSync('git', endOfOptions ? ['show', '--end-of-options', revision] : ['show', revision], {
       cwd: root,
       encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
+      stdio: ['ignore', 'pipe', 'pipe'],
     })
-  } catch {
-    return null
+    return { content, error: null }
+  } catch (error) {
+    const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : ''
+    const first = stderr.trim().split('\n')[0] ?? ''
+    return { content: null, error: first === '' ? String(error) : first }
   }
+}
+
+function readAtDetailed(ref) {
+  const revision = `${ref}:${LEDGER}`
+  const strict = showRevision(revision, true)
+  if (strict.content !== null) return strict
+  // Git builds disagree about `--end-of-options` in front of a `<rev>:<path>`
+  // argument (the flag is accepted here on 2.43 and refused on the CI runner),
+  // so a ref that is not option-shaped is retried without it. An option-shaped
+  // ref is never retried: that is the shape the flag exists to refuse.
+  if (ref.startsWith('-')) return strict
+  return showRevision(revision, false)
+}
+
+function readAt(ref) {
+  return readAtDetailed(ref).content
 }
 
 // A pull-request checkout names only the merge ref, so `origin/<base>` has to be
@@ -160,8 +179,9 @@ for (const candidate of candidates) {
   if (content === null && mergeGroup && candidate.ref === 'HEAD^1') {
     deepenFailure = deepenOneCommit()
     if (deepenFailure === null) {
-      content = readAt('HEAD^1')
-      if (content === null) deepenFailure = 'HEAD^1 still unreadable after the deepen'
+      const parent = readAtDetailed('HEAD^1')
+      content = parent.content
+      if (content === null) deepenFailure = `HEAD^1 still unreadable after the deepen (${parent.error ?? 'no stderr'})`
     }
   }
   if (content !== null) {
