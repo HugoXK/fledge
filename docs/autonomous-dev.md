@@ -489,10 +489,19 @@ against the required list, so a required display name belongs to exactly one job
 and a second job claiming it is refused as a collision (a matrix-shaped name such
 as `test (${{ matrix.node }})` is reserved by its literal prefix). Only
 `timeout-minutes:` is allowlisted, because it cannot flip a conclusion. `steps:`
-is the one key that may grow: every base step must still appear unchanged and in
-the same order, so a new step is allowed, while a removed, changed or reordered
-base step is refused (#1270). The aggregate may also gain a step; its evaluator
-step and `path: base` checkout still have to survive. The
+is the one key that may grow, and only at its end: the base steps must stay a
+prefix of the head's list — unchanged, in the same order and at the same
+position — so a step added after the last base step is allowed, while a step
+removed, changed, reordered or inserted before or between base steps is refused
+(#1270). Matching the base steps as a subsequence was the hole the review found:
+a head could put `npm pkg set scripts.test='exit 0'` ahead of `npm test`, keep
+the base command text matching, and the test run becomes a no-op. The residual is
+explicit: the comparator cannot allow an arbitrary pre-step, because it cannot
+judge what a new first step does before the gate, so a genuinely needed pre-step
+has to come from the base tree itself, not from the head being compared. The
+aggregate is checked separately rather than as a required job: it may still gain
+a step anywhere, and what is pinned is that it runs `node base/scripts/ci-ok.mjs`
+and checks the gate out under `path: base`. The
 `ci-ok` job's `needs` may grow but not shrink, and its step must still be exactly
 `node base/scripts/ci-ok.mjs` with the gate checked out under `path: base`. The
 comparator is `scripts/lib/gate-compare.mjs`, and it fails closed: a duplicated

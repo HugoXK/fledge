@@ -309,17 +309,19 @@ function normalizeStep(block) {
 }
 
 /**
- * Every base step must still appear, unchanged and in the same order, in the
- * head. A new step may be inserted anywhere; a removed, changed or reordered
- * base step is not a new step and is refused.
+ * The base steps must be a prefix of the head's steps: every base step survives
+ * unchanged, in the same order and at the same position, so a step may only be
+ * added after the last base step. A subsequence match would allow a step
+ * inserted ahead of a base step — #1270's review showed a head can then put
+ * `npm pkg set scripts.test='exit 0'` before `npm test` and keep the base text
+ * matching — so position, not mere presence, is the invariant.
  */
 function stepsPreserved(baseJob, headJob) {
   const head = stepBlocks(headJob).map(normalizeStep)
-  let cursor = 0
-  for (const step of stepBlocks(baseJob).map(normalizeStep)) {
-    const found = head.indexOf(step, cursor)
-    if (found === -1) return false
-    cursor = found + 1
+  const base = stepBlocks(baseJob).map(normalizeStep)
+  if (head.length < base.length) return false
+  for (let index = 0; index < base.length; index += 1) {
+    if (head[index] !== base[index]) return false
   }
   return true
 }
@@ -393,12 +395,14 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
         refuse(`required job \`${id}\` loses \`${name}:\` in the pull request's ${GATE_COMPARE_FILE}${DOOR}`)
         continue
       }
-      // `steps:` may grow, but every base step has to survive unchanged and in
-      // order. This is the one key where an addition is a strengthening, not a
-      // substitution; a removed, changed or reordered base step still refuses.
+      // `steps:` may grow only at the end: the base list has to stay a prefix,
+      // so a step added after the last base step is a strengthening while one
+      // inserted before or between base steps is refused. The comparator cannot
+      // allow an arbitrary pre-step; a step that must run first has to come from
+      // the base tree, not from the head being judged.
       if (name === 'steps') {
         if (!stepsPreserved(baseJob, headJob)) {
-          refuse(`required job \`${id}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (a new step is allowed; a removed, changed or reordered base step is not)`)
+          refuse(`required job \`${id}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
         }
         continue
       }

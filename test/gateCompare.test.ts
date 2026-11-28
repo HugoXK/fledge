@@ -124,10 +124,40 @@ const STEP_BASE = MINI.replace(
   '    steps:\n      - name: one\n        run: echo one\n      - name: two\n        run: echo two\n',
 )
 
-test('a required job may gain a step; removing, changing or reordering a base step is refused', () => {
-  const added = STEP_BASE.replace('      - name: two', '      - name: three\n        run: echo three\n      - name: two')
-  assert.notEqual(added, STEP_BASE)
-  assert.equal(compareGate({ base: STEP_BASE, head: added, required: ['build'] }).ok, true, 'a new step is allowed')
+test('a required job may gain a step only after its last base step', () => {
+  // A step appended after the last base step is the only addition the
+  // comparator can allow: the base list stays a prefix, so no base command can
+  // be displaced. #1270's review showed why insertion is refused — a head that
+  // puts `npm pkg set scripts.test='exit 0'` ahead of `npm test` keeps the base
+  // text matched as a subsequence while the test command becomes a no-op.
+  const appended = STEP_BASE.replace(
+    '        run: echo two\n',
+    '        run: echo two\n      - name: three\n        run: echo three\n',
+  )
+  assert.notEqual(appended, STEP_BASE)
+  assert.equal(
+    compareGate({ base: STEP_BASE, head: appended, required: ['build'] }).ok,
+    true,
+    'a step appended after the last base step is allowed',
+  )
+
+  const inserted = STEP_BASE.replace('      - name: two', '      - name: three\n        run: echo three\n      - name: two')
+  assert.notEqual(inserted, STEP_BASE)
+  const insertedResult = compareGate({ base: STEP_BASE, head: inserted, required: ['build'] })
+  assert.equal(insertedResult.ok, false, 'a step inserted before a base step must not pass')
+  assert.match(insertedResult.problems.join('\n'), /`steps:`/)
+  assert.match(insertedResult.problems.join('\n'), /prefix|after the last base step/)
+
+  // The review's counterexample, on the real workflow: the base command text is
+  // still present after the inserted step, so a subsequence match would pass.
+  const realPreStep = editJob(ci, 'mock-check', (block) => {
+    const at = block.findIndex((line) => /^ {6}- /.test(line))
+    assert.notEqual(at, -1)
+    return [...block.slice(0, at), '      - run: npm pkg set scripts.test=true', ...block.slice(at)]
+  })
+  const realPreStepResult = compareGate({ base: ci, head: realPreStep })
+  assert.equal(realPreStepResult.ok, false, 'a pre-step ahead of a base step must not pass')
+  assert.match(realPreStepResult.problems.join('\n'), /`mock-check`/)
 
   const removed = STEP_BASE.replace('      - name: two\n        run: echo two\n', '')
   assert.notEqual(removed, STEP_BASE)
@@ -148,13 +178,14 @@ test('a required job may gain a step; removing, changing or reordering a base st
   assert.equal(reorderedResult.ok, false, 'reordering the base steps must not pass')
   assert.match(reorderedResult.problems.join('\n'), /`steps:`/)
 
-  // The aggregate may also gain a step; its base steps (the evaluator and the
-  // `path: base` checkout) must survive.
-  const aggregateAdded = MINI.replace(
+  // The aggregate is checked separately, not as a required job: its step list
+  // may grow anywhere, while the evaluator step and the `path: base` checkout
+  // still have to survive.
+  const aggregateAppended = MINI.replace(
     '      - run: node base/scripts/ci-ok.mjs\n',
-    '      - name: extra\n        run: echo extra\n      - run: node base/scripts/ci-ok.mjs\n',
+    '      - run: node base/scripts/ci-ok.mjs\n      - name: extra\n        run: echo extra\n',
   )
-  assert.equal(compareGate({ base: MINI, head: aggregateAdded, required: ['build'] }).ok, true)
+  assert.equal(compareGate({ base: MINI, head: aggregateAppended, required: ['build'] }).ok, true)
 })
 
 test('the checked-in workflow is its own base, so an untouched pull request is allowed', () => {
