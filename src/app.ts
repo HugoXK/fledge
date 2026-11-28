@@ -5775,7 +5775,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
-      automation: automationHealth(store),
+      automation: automationHealth(),
       since,
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,

@@ -77,18 +77,6 @@ groups:
           summary: Fledge p95 dispatch latency is above 15 minutes
           runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
 
-      - alert: FledgeLeaseReaped
-        # #1230: a worker that stopped renewing loses its lease and the reaper
-        # writes a terminal `reaped` attempt. One is enough to look, so there is
-        # no `for` delay; the 15-minute increase keeps a reaped lease visible for
-        # a window instead of paging on a raw counter that never resets.
-        expr: increase(fledge_lease_expired_total[15m]) > 0
-        labels:
-          severity: warning
-        annotations:
-          summary: Fledge reaped a job lease whose worker stopped renewing it
-          runbook_url: https://github.com/HugoXK/fledge/blob/main/docs/observability.md
-
       - alert: FledgeRouterUnavailable
         # #282: the shared model router is a dependency with its own health
         # endpoint. `fledge_router_up` is absent — not 0 — when
