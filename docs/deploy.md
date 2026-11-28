@@ -1518,11 +1518,6 @@ problem through `OPS_ALERT_COOLDOWN_MINUTES`: a stale copy, a failed drill, or a
 drill older than the expected interval. A platform that has never written a copy
 raises nothing; the card's `no backup copy recorded yet` is the answer there.
 
-`FledgeLeaseReaped` is the lease rule: it pages when
-`increase(fledge_lease_expired_total[15m]) > 0`, because the reaper writes a
-terminal `reaped` attempt when a worker stops renewing. The admin Automation
-health card names the oldest live lease and the last reaped attempt; the series
-and their presence rules are in `docs/observability.md`.
 
 Back up `.env` separately (it contains the encryption key). Without
 `TOKEN_ENCRYPTION_KEY`, stored GitHub/model tokens cannot be decrypted.

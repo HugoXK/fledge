@@ -40,19 +40,9 @@ Core series:
   dispatch, and a repository that is merely throttled shows `cooldown` — so a
   `cooldown` on a repository whose last work job succeeded means something other
   than the success wait held it.
-- `fledge_queue_depth`, `fledge_lease_expired_total{kind}`,
+- `fledge_queue_depth`, `fledge_lease_expired_total`,
   `fledge_admission_rejected_total{reason}`, `fledge_meta_issue_total`,
   `fledge_auto_merge_candidates`, `fledge_ops_alerts_open`
-- `fledge_job_lease_age_seconds` — the age of the oldest lease the platform
-  still holds, published on each scheduler tick. The series is **absent** when no
-  lease is live, so an empty panel means "no live lease", not "the scheduler is
-  silent". The `/admin/metrics` automation card names the job, kind and
-  repository behind the reading.
-- `fledge_job_lease_renew_failures_total{kind}` — a live job's heartbeat renewal
-  was refused because the lease moved; a terminal row releasing its lease is the
-  normal end and is not counted. The reaper's own count is
-  `fledge_lease_expired_total{kind}`, which counts the terminal `reaped`
-  attempt.
 - `fledge_retries_total{kind}`, `fledge_merges_total{result}`,
   `fledge_path_guard_blocked_total`, `fledge_verification_failed_total`
 - `fledge_gateway_requests_total{tenant}` — only while
@@ -104,13 +94,11 @@ Core series:
   leaving the previous reading, so an empty panel means "unknown", and a
   deployment with no `MODEL_ROUTER_URL` publishes none of these series.
 
-The `/admin/metrics` page carries the same numbers as one `Automation health`
-card — repositories with ready work and no active job, the mean dispatch latency
-since the process started, the queue depth, the oldest live lease and the last
-reaped lease — so an operator reading the page and an operator reading a
-dashboard are looking at one measurement, not two definitions of it. The counter
-rows restart from zero with the process; the two lease rows are read from the
-database, so a reap survives a restart.
+The `/admin/metrics` page carries the same three numbers as one `Automation
+health` card — repositories with ready work and no active job, the mean dispatch
+latency since the process started, and the queue depth — so an operator reading
+the page and an operator reading a dashboard are looking at one measurement, not
+two definitions of it.
 
 Automation alerts:
 
@@ -128,11 +116,6 @@ Automation alerts:
 - `FledgeDispatchLatencyHigh` pages when the p95 dispatch latency is above 15
   minutes. Thresholds are configured in the rules file; the store threshold is
   configured by `AUTOMATION_IDLE_ALERT_MINUTES`.
-- `FledgeLeaseReaped` pages when `increase(fledge_lease_expired_total[15m]) > 0`:
-  a worker stopped renewing and the reaper wrote a terminal `reaped` attempt. The
-  counter names the job kind; the admin card names the job, kind and repository.
-  A refused renewal that has not been reaped yet is
-  `fledge_job_lease_renew_failures_total{kind}`.
 - Labels carry a `owner/name` repository label, the job kind and the reason. No
   issue title, URL, token or email reaches a metric label: the dispatcher passes
   only those three values.

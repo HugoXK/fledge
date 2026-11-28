@@ -10,7 +10,7 @@ import {
   recordBlockedDispatch,
   recordDispatched,
 } from '../src/jobs/automationHealth.js'
-import { incCounter, metricsSnapshot, renderMetrics, resetMetrics, setGauge } from '../src/lib/metrics.js'
+import { metricsSnapshot, renderMetrics, resetMetrics, setGauge } from '../src/lib/metrics.js'
 import { automationHealthCard } from '../src/views/pages.js'
 
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -127,8 +127,6 @@ test('the summary reads the three numbers off the same registry, and says nothin
     activeJobs: null,
     dispatchLatencyMs: null,
     dispatchSamples: 0,
-    lease: null,
-    lastReaped: null,
   })
 
   const now = Date.parse('2026-11-16T12:00:00.000Z')
@@ -153,15 +151,11 @@ test('the card names the three numbers in both languages and has an empty state'
     activeJobs: 1,
     dispatchLatencyMs: 4500,
     dispatchSamples: 7,
-    lease: { jobId: 'job_1', kind: 'iterate', repo: 'octo/demo', ageSeconds: 300, expiresInSeconds: 120 },
-    lastReaped: { jobId: 'job_0', kind: 'review', repo: 'octo/demo', ageSeconds: 600 },
   }, 30)
   assert.match(en, /Automation health/)
   assert.match(en, /1 repository with ready work/)
   assert.match(en, /4\.5 s/)
   assert.match(en, />3</) // queue depth
-  assert.match(en, /Oldest live lease: job_1/)
-  assert.match(en, /Last reaped: job_0/)
   assert.match(en, /30 minutes/)
 
   const zh = automationHealthCard('zh', {
@@ -170,8 +164,6 @@ test('the card names the three numbers in both languages and has an empty state'
     activeJobs: 0,
     dispatchLatencyMs: null,
     dispatchSamples: 0,
-    lease: null,
-    lastReaped: null,
   }, 30)
   assert.match(zh, /自动化健康/)
   assert.match(zh, /还没有测量/)
@@ -209,18 +201,3 @@ test('the dispatch-latency alert rule pages on a series the code really records'
     assert.match(rendered, new RegExp(`^${name}(_bucket)?[{ ]`, 'm'), `the rule names ${name}, which the code does not record`)
   }
 })
-
-test('the lease-reaped alert reads the counter the tick records', () => {
-  resetMetrics()
-  incCounter('fledge_lease_expired_total', { kind: 'iterate' }, 1, 'Jobs whose worker lease expired')
-  const rendered = renderMetrics()
-  const rules = readFileSync(`${root}/deploy/prometheus/fledge-alerts.yml`, 'utf8')
-  const block = /- alert: FledgeLeaseReaped[\s\S]*?(?=\n\s*- alert:|\s*$)/.exec(rules)
-  assert.ok(block, 'deploy/prometheus/fledge-alerts.yml must page on a reaped lease')
-  const named = new Set([...block[0].matchAll(/fledge_[a-z0-9_]+/g)].map((match) => match[0]))
-  assert.ok(named.size > 0, 'the rule must name the series it reads')
-  for (const name of named) {
-    assert.match(rendered, new RegExp(`^${name}(_bucket)?[{ ]`, 'm'), `the rule names ${name}, which the code does not record`)
-  }
-})
-

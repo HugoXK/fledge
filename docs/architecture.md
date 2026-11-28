@@ -2318,22 +2318,6 @@ branch and repository contents with the repository token. A 401/403 marks `repos
 The repository page shows the credential banner until a refresh or a successful
 preflight clears it.
 
-### Lease health (#1230)
-
-A running job holds a worker lease; the heartbeat renews it every fifth of the
-lease window, and a renewal refused because another worker took the row is a lost
-lease. The scheduler publishes `fledge_job_lease_age_seconds` for the oldest
-lease still held, on every tick, and removes the series when no lease is live so
-an empty panel means "none" rather than a stale reading. A live job's refused
-renewal increments `fledge_job_lease_renew_failures_total{kind}`; the reaper's
-terminal `reaped` attempt increments `fledge_lease_expired_total{kind}`.
-`FledgeLeaseReaped` pages on the 15-minute increase of the reaped counter.
-
-The `/admin/metrics` automation card reads the same rows from the database
-instead of the process counters: it names the oldest live lease (job, kind,
-repository, age and expiry) and the newest reaped attempt (job, kind, repository
-and age). The lease rows survive a restart even though the counters do not.
-
 ### The model router as a dependency
 
 The shared model router serves every model call the bridge and the gateway make,
