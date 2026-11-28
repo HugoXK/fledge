@@ -766,8 +766,13 @@ still the pull request's own change; the two line numbers only agree when both
 sides describe the same tree, and with the head sha a base that moved inside a
 file the pull request edits made an uncovered line read as covered. Only added
 lines under `src/**` are measured, and only ones that can execute: comments,
-imports, type declarations, generated files and `*.d.ts` are not counted, because
-the report can never list them as uncovered. An uncovered added line is printed
+static imports, declaration heads, generated files and `*.d.ts` are not counted,
+because the report can never list them as uncovered. A declaration member is
+exempt only when its right-hand side is a type expression (`instancesUsed:
+boolean`), so a line that carries a value, a call or an operator (`key:
+'instance',`) stays measured, and a dynamic `import(...)` call or a one-line
+`namespace` body is code; ADR [0029](decisions/0029-coverage-measurement-semantics.md)
+records the rule and its residual. An uncovered added line is printed
 as `path:line` in the step log, so the fix is a test for that line rather than a
 request for a higher total. A changed file the report has no row for is the same
 failure: Node prints a file only when the suite loaded it, so a new module no test

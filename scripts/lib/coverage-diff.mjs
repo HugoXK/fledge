@@ -5,11 +5,13 @@
 // produced, and answers one question: are the lines this diff adds covered?
 //
 // The report is Node's test-runner report. It lists only the *uncovered* lines,
-// so a line is judged by that list rather than by a per-line hit count: a line
-// the report does not list as uncovered was executed or has nothing for a test
-// to execute. Changed lines that are comments, imports, type declarations,
-// punctuation or generated code are therefore not measured at all — the report
-// could never list them, and counting them would only dilute the ratio.
+// so a line is judged by that list rather than by a per-line hit count. Which
+// changed lines are measured is a line-shape rule, not a promise that the report
+// agrees: comments, static imports, declaration heads and declaration members
+// whose right-hand side is a type expression are exempt, because no test can
+// execute them, while a line that carries a value, a call or an operator is
+// measured. ADR 0029 (`docs/decisions/0029-coverage-measurement-semantics.md`)
+// records the rule and its residual.
 //
 // A file with no row at all is the one case the report cannot speak to: Node
 // prints a file only when the suite loaded it, so a new module no test imports
@@ -31,17 +33,41 @@ export function isGeneratedPath(path) {
   return GENERATED.some((pattern) => pattern.test(normalized))
 }
 
-// A line worth measuring. The list is an allowlist for code and an explicit
-// deny for the three kinds #641 says are not executable: comments, imports and
-// type declarations. A line that holds only punctuation (`}`, `),`, `]:`) is not
-// executable either, which is why the test is "carries a name or a literal".
+// A declaration member: `name: Type`, with optional `readonly` and `?`, and an
+// optional `,`/`;` terminator. The right-hand side must parse as a type
+// expression, and a custom type name here starts uppercase or is a built-in
+// keyword: that is what separates `instancesUsed: boolean` and
+// `items: string[]` from a value such as `key: 'instance',` or
+// `key: other.value,`. A lowercase right-hand side stays measured, because it is
+// far more often a value than a lowercase type alias; the ADR records that
+// residual.
+const TYPE_NAME =
+  '(?:(?:boolean|number|string|any|unknown|never|void|object|symbol|bigint|null|undefined)|[A-Z][A-Za-z0-9_$]*(?:\\.[A-Za-z_$][A-Za-z0-9_$]*)*)(?:<[^<>]*>)?(?:\\[\\])*'
+const DECLARATION_MEMBER = new RegExp(
+  `^(?:readonly\\s+)?[A-Za-z_$][A-Za-z0-9_$]*\\??\\s*:\\s*${TYPE_NAME}(?:\\s*\\|\\s*${TYPE_NAME})*\\s*[,;]?$`,
+)
+
+// `namespace A { const x = 1 }` runs statements on the same line; the header
+// `namespace A {` and the empty `namespace A {}` declare only. The keyword list
+// this replaces measured neither, so it hid an executable body.
+function namespaceIsDeclaration(trimmed) {
+  const open = trimmed.indexOf('{')
+  if (open === -1) return true
+  return trimmed.slice(open + 1).replace(/\}\s*$/, '').trim() === ''
+}
+
+// A line worth measuring. Comments, static imports and declaration heads are
+// not executable, and a declaration member is not either. `import(` and
+// `import.meta` are expressions, not static imports, so they stay measured.
 export function isMeasuredLine(line) {
   const trimmed = String(line ?? '').trim()
   if (trimmed === '') return false
   if (/^(?:\/\/|\/\*|\*(?:\/|\s|$)|\*\/)/.test(trimmed)) return false
-  if (/^import\b/.test(trimmed)) return false
+  if (/^import\b/.test(trimmed) && !/^import\s*[.(]/.test(trimmed)) return false
   if (/^export\s+(?:type|interface|declare)\b/.test(trimmed)) return false
-  if (/^(?:type|interface|declare|namespace)\b/.test(trimmed)) return false
+  if (/^(?:type|interface|declare)\b/.test(trimmed)) return false
+  if (/^(?:declare\s+)?namespace\b/.test(trimmed)) return !namespaceIsDeclaration(trimmed)
+  if (DECLARATION_MEMBER.test(trimmed)) return false
   if (!/[A-Za-z0-9_$]/.test(trimmed)) return false
   return true
 }

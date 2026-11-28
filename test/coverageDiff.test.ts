@@ -139,6 +139,55 @@ test('only code lines are measured: comments, imports, types and punctuation are
   assert.equal(isMeasuredLine('  ),'), false)
 })
 
+// #1302's false positive and #1313's false negative, as line-level cases. The
+// classifier must tell a declaration member from a value by the right-hand side
+// the line carries, and must measure a one-line namespace body and a dynamic
+// import call, which the old keyword list dropped.
+test('a declaration member is not measured, while a value and executable keywords are', () => {
+  assert.equal(isMeasuredLine('  instancesUsed: boolean'), false, 'an interface member is a declaration')
+  assert.equal(isMeasuredLine('  readonly token?: string'), false, 'so is an optional readonly member')
+  assert.equal(isMeasuredLine('  items: string[]'), false, 'so is an array type member')
+  assert.equal(isMeasuredLine("      key: 'instance',"), true, 'a string value is code, not a type')
+  assert.equal(isMeasuredLine('      key: other.value,'), true, 'an identifier value is code')
+  assert.equal(isMeasuredLine('namespace Hidden { const value = Math.random() }'), true, 'a one-line namespace body carries code')
+  assert.equal(isMeasuredLine('namespace Hidden {'), false, 'a namespace header alone declares')
+  assert.equal(isMeasuredLine("import('./x.js').then((m) => m.run())"), true, 'a dynamic import call runs code')
+  assert.equal(isMeasuredLine('import.meta.url'), true, 'import.meta is a value, not a static import')
+  assert.equal(isMeasuredLine('  import { readFileSync } from "node:fs"'), false, 'a static import still does not measure')
+})
+
+// The false negative end to end: a diff of code the report lists as uncovered
+// must never become the `skip` path, because `skip` exits 0 on a red report.
+test('a diff of a one-line namespace body and a dynamic import is measured, not skipped', () => {
+  const hidden = `diff --git a/src/lib/hidden.ts b/src/lib/hidden.ts
+--- /dev/null
++++ b/src/lib/hidden.ts
+@@ -0,0 +1,2 @@
++namespace Hidden { const value = Math.random() }
++import('./x.js').then((m) => m.run())
+`
+  const report = `# start of coverage report
+# ------------------------------------------------------
+# file               | line % | branch % | funcs % | uncovered lines
+# ------------------------------------------------------
+# src                |        |          |         |
+#  lib               |        |          |         |
+#   hidden.ts        |  50.00 |    50.00 |   50.00 | 1-2
+# ------------------------------------------------------
+# all files          |  50.00 |    50.00 |   50.00 |
+# ------------------------------------------------------
+# end of coverage report
+`
+  const verdict = evaluateChangedLines({ diff: hidden, report, floor: 80 })
+  assert.equal(verdict.code, 'BELOW_FLOOR', 'the executable lines must not fall through to the skip path')
+  assert.equal(verdict.measured, 2)
+  assert.equal(verdict.covered, 0)
+  assert.deepEqual(verdict.violations, [
+    { path: 'src/lib/hidden.ts', line: 1 },
+    { path: 'src/lib/hidden.ts', line: 2 },
+  ])
+})
+
 // The defect #641 describes: the total stays above 84% because the tree is large
 // and well covered, while the branch in the diff has no test at all. The gate
 // must fail this diff and pass the one beside it.
