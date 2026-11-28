@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { checkArchitecture, checkFileSizes, checkImports } from '../scripts/lib/arch-boundaries.mjs'
-import { selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
+import { readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -174,4 +174,35 @@ test('a local run reads the head ledger and the report says so', () => {
   const chosen = selectLedger({ baseRef: null, baseContent: null, headContent: JSON.stringify({ 'src/big.ts': 20 }) })
   assert.equal(chosen.source, 'head')
   assert.equal(violationLine({ file: 'src/big.ts', line: 1, rule: 'grandfathered-growth', reason: 'growth' }, { ledgerSource: chosen.source, headLedger: { 'src/big.ts': 30 } }), 'src/big.ts:1 grandfathered-growth: growth')
+})
+
+test('an absent base ref is fetched once and then read', () => {
+  let fetches = 0
+  let stored: string | null = null
+  const content = readBaseLedger({
+    ref: 'origin/main',
+    readAt: () => stored,
+    fetchRef: () => {
+      fetches += 1
+      stored = JSON.stringify({ 'src/big.ts': 10 })
+      return true
+    },
+  })
+  assert.equal(fetches, 1)
+  assert.ok(content !== null, 'the fetched base must be readable')
+  assert.deepEqual(JSON.parse(content), { 'src/big.ts': 10 })
+})
+
+test('a base that cannot be fetched stays unreadable, so the run fails closed', () => {
+  let fetches = 0
+  const content = readBaseLedger({
+    ref: 'origin/main',
+    readAt: () => null,
+    fetchRef: () => {
+      fetches += 1
+      return false
+    },
+  })
+  assert.equal(content, null)
+  assert.equal(fetches, 1)
 })

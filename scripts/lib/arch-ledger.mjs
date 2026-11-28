@@ -45,3 +45,17 @@ export function violationLine(violation, { ledgerSource, headLedger = {} }) {
     : ''
   return `${violation.file}:${String(violation.line)} ${violation.rule}: ${violation.reason}${source}`
 }
+
+/**
+ * Reads the base ledger, fetching the ref once when it is not present. A
+ * pull-request checkout names only `refs/pull/<n>/merge`, so `origin/<base>` is
+ * absent even with full history; fetching it here keeps the resolution inside
+ * the gate instead of editing a required job's steps, which the comparator
+ * refuses (#1333).
+ */
+export function readBaseLedger({ ref, readAt, fetchRef }) {
+  const first = readAt(ref)
+  if (first !== null) return first
+  if (!fetchRef(ref)) return null
+  return readAt(ref)
+}

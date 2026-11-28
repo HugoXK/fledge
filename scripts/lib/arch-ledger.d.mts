@@ -27,3 +27,9 @@ export function violationLine(
   violation: LedgerViolation,
   input: { ledgerSource: string; headLedger?: Record<string, number> },
 ): string
+
+export function readBaseLedger(input: {
+  ref: string
+  readAt: (ref: string) => string | null
+  fetchRef: (ref: string) => boolean
+}): string | null

@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { checkArchitecture } from './lib/arch-boundaries.mjs'
-import { selectLedger, violationLine } from './lib/arch-ledger.mjs'
+import { readBaseLedger, selectLedger, violationLine } from './lib/arch-ledger.mjs'
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -56,6 +56,24 @@ function readAt(ref) {
   }
 }
 
+// A pull-request checkout names only the merge ref, so `origin/<base>` has to be
+// fetched before it can be read. The gate owns that fetch: a required job's
+// steps may only grow at the end (#1276), so this cannot live in `ci.yml`.
+function fetchRef(ref) {
+  const branch = ref.startsWith('origin/') ? ref.slice('origin/'.length) : ref
+  try {
+    execFileSync('git', ['fetch', '--no-tags', '--depth=1', 'origin', `+refs/heads/${branch}:refs/remotes/origin/${branch}`], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 60_000,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
+
 const envBase = process.env.GITHUB_BASE_REF === undefined || process.env.GITHUB_BASE_REF === ''
   ? null
   : `origin/${process.env.GITHUB_BASE_REF}`
@@ -76,7 +94,7 @@ else {
 let baseRef = null
 let baseContent = null
 for (const candidate of candidates) {
-  const content = readAt(candidate.ref)
+  const content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
   if (content !== null) {
     baseRef = candidate.ref
     baseContent = content
