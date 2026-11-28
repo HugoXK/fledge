@@ -208,8 +208,11 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Measure and enforce the coverage floor
-        # `tee` keeps the report for the summary below; the bash shell CI uses is
-        # `-eo pipefail`, so the threshold's exit code is still the step's.
+        # `tee` keeps the report for the summary below; the explicit `bash`
+        # shell is `bash --noprofile --norc -eo pipefail {0}`, so the suite's
+        # exit status is the step's and a red suite cannot report a green
+        # `coverage` check through `tee` (#1312).
+        shell: bash
         run: npm run test:coverage 2>&1 | tee coverage.txt
       - name: Enforce the changed-lines floor
         # #641: the floor above is one number over `src/**`, so a large covered
