@@ -182,8 +182,15 @@ through `24h`; anything else is a 400. The bundle carries the release surface,
 build commit and time, schema version, user/repository/job counts, the
 `/readyz`-style database, instance, clock and router readings, open alerts,
 recent job events, audit rows, the latest deployment and a config fingerprint of
-**names only**. Every string is passed through `redact()` and capped; the bundle
-contains no request body, query, cookie, token, email or host path.
+**names only**. Every string is passed through `redact()` and capped; absolute
+host paths are masked as `[path]` — any `/`-rooted token with at least two
+segments whose `/` is not part of a URL, and the Windows `C:\...` form — so the
+bundle contains no request body, query, cookie, token, email or host path.
+
+The role is deliberate. This is an operator artifact, not an admin-wide page: a
+plain admin gets the same 403 as any other non-superadmin account, and a
+superadmin browsing in preview mode is redirected to `/console` instead of
+receiving the bundle.
 
 `npm run incident:bundle -- --db <copy.db> [--window 6h] [--format markdown]`
 prints the same artifact from a copy. It refuses the configured `DB_PATH` or

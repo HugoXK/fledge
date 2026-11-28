@@ -110,7 +110,11 @@ export interface IncidentBundle {
   configFingerprint: { sections: string[]; keys: string[] }
 }
 
-const HOST_PATH = /(?:\/Users\/|\/home\/|\/var\/|\/etc\/|\/root\/)[^\s"'<>]*/g
+// Any `/`-rooted token with at least two segments is a host path; the lookbehind
+// keeps a URL path (`https://host/path`) intact because its `/` follows `:`, a
+// word character or another `/`. Windows drive paths are masked in the same pass.
+const HOST_PATH =
+  /(?<![:\w/])(?:\/(?:[A-Za-z0-9._~%+-]+\/)+[A-Za-z0-9._~%+-]*|[A-Za-z]:[\\/][^\s"'<>]*)/g
 const EMAIL_SHAPE = /[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g
 const IPV4_SHAPE = /\b\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}\b/g
 

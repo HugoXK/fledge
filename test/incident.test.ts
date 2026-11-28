@@ -64,7 +64,10 @@ test('the bundle redacts a planted token, email and host path in an audit row an
     const token = `flg_${'A'.repeat(32)}`
     const email = 'alice@example.com'
     const hostPath = '/home/xuke/.env'
-    store.audit(user.id, 'incident.test', `token ${token} email ${email} path ${hostPath}`)
+    const dataPath = '/opt/fledge/data/fledge.db'
+    const windowsPath = 'C:\\Users\\fledge\\AppData\\Local\\fledge\\fledge.db'
+    const url = 'https://fledge.example.com/admin/metrics'
+    store.audit(user.id, 'incident.test', `token ${token} email ${email} path ${hostPath} data ${dataPath} win ${windowsPath} url ${url}`)
     store.run(
       'INSERT INTO job_events (at, job_id, repo_id, user_id, kind, role, step, meta) VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
       now.toISOString(),
@@ -74,7 +77,7 @@ test('the bundle redacts a planted token, email and host path in an audit row an
       'step',
       'dev1',
       'test',
-      `meta ${token} email ${email} path ${hostPath}`,
+      `meta ${token} email ${email} path ${hostPath} data ${dataPath} win ${windowsPath} url ${url}`,
     )
 
     const bundle = buildIncidentBundle({ store, config, window: parsed.window, now: now.toISOString() })
@@ -92,6 +95,9 @@ test('the bundle redacts a planted token, email and host path in an audit row an
     assert.match(text, /redacted-fledge-token/)
     assert.equal(text.includes(email), false)
     assert.equal(text.includes(hostPath), false)
+    assert.equal(text.includes(dataPath), false)
+    assert.equal(text.includes(windowsPath), false)
+    assert.equal(text.includes(url), true, 'a URL path is not a host path')
     assert.match(text, /\[path\]/)
     assert.equal(text.includes(config.sessionSecret), false)
     const markdown = incidentMarkdown(bundle)
@@ -99,6 +105,9 @@ test('the bundle redacts a planted token, email and host path in an audit row an
     assert.equal(markdown.includes(token), false)
     assert.equal(markdown.includes(email), false)
     assert.equal(markdown.includes(hostPath), false)
+    assert.equal(markdown.includes(dataPath), false)
+    assert.equal(markdown.includes(windowsPath), false)
+    assert.equal(markdown.includes(url), true, 'a URL path is not a host path')
   } finally {
     store.close()
   }
@@ -110,8 +119,10 @@ test('the admin route exports JSON and markdown, refuses a wide window, and is s
   try {
     const admin = makeUser(store, { login: 'incident-admin', superadmin: true, status: 'approved' })
     const normal = makeUser(store, { login: 'incident-user', status: 'approved' })
+    const plainAdmin = makeUser(store, { login: 'incident-plain-admin', admin: true, status: 'approved' })
     const adminSession = sessionFor(built, admin)
     const normalSession = sessionFor(built, normal)
+    const plainAdminSession = sessionFor(built, plainAdmin)
 
     const json = await built.app.inject({ method: 'GET', url: '/admin/incident/1h', headers: { cookie: adminSession.cookie } })
     assert.equal(json.statusCode, 200, json.body)
@@ -130,6 +141,9 @@ test('the admin route exports JSON and markdown, refuses a wide window, and is s
 
     const refused = await built.app.inject({ method: 'GET', url: '/admin/incident/1h', headers: { cookie: normalSession.cookie } })
     assert.equal(refused.statusCode, 403)
+
+    const adminRefused = await built.app.inject({ method: 'GET', url: '/admin/incident/1h', headers: { cookie: plainAdminSession.cookie } })
+    assert.equal(adminRefused.statusCode, 403, 'a plain admin is not the intended role')
   } finally {
     await built.close()
   }
