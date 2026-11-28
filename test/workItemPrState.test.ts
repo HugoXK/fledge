@@ -11,11 +11,11 @@ import { MemoryMailer, makeUser, testConfig } from './helpers.js'
 // not itself a close. GitHub sends `labeled` for an open pull request, and this
 // project's own controller adds the risk-tier label after the pull request
 // exists, so the delivery is routine rather than exotic.
-const SECRET = 'work-item-pr-state-secret-1284'
+const SIGNING_KEY = 'work-item-pr-state-signing-key-1284'
 
 function signed(body: unknown): { raw: string; signature: string } {
   const raw = JSON.stringify(body)
-  return { raw, signature: `sha256=${createHmac('sha256', SECRET).update(raw).digest('hex')}` }
+  return { raw, signature: `sha256=${createHmac('sha256', SIGNING_KEY).update(raw).digest('hex')}` }
 }
 
 // The route refuses with 503 unless the GitHub App itself is configured, so the
@@ -26,7 +26,7 @@ function appConfig() {
       id: '1',
       slug: 'fledge-platform',
       privateKeyPath: '/tmp/fake.pem',
-      webhookSecret: SECRET,
+      webhookSecret: SIGNING_KEY,
       webhookSecretPrevious: '',
       webhookSecretPreviousUntil: '',
       useUserToken: false,

@@ -9,7 +9,7 @@ import { makeUser, MemoryMailer, testConfig } from './helpers.js'
 // a pull request, even when the maintainer already merged or closed the item.
 // One issue keeps one pull request, so a later job legitimately reports the URL
 // of a pull request whose item is terminal — that report must link, not reopen.
-const SECRET = 'work-item-job-end-secret-1284'
+const SIGNING_KEY = 'work-item-job-end-signing-key-1284'
 const PR_URL = 'https://github.com/o/r/pull/9'
 
 function setup() {
@@ -40,13 +40,13 @@ async function finish(store: Store, jobs: Jobs, userId: string, repoId: string, 
     userId,
     trigger: 'manual',
     goal: 'keep the terminal state',
-    callbackHash: sha256Hex(SECRET),
+    callbackHash: sha256Hex(SIGNING_KEY),
     platformTokenHash: '',
     kind: 'iterate',
     workItemId: itemId,
   })
   store.updateJob(jobId, { status: 'running', started_at: new Date().toISOString() })
-  await jobs.handleCallback(jobId, SECRET, { status: 'succeeded', prUrl: PR_URL, summary: 'done' })
+  await jobs.handleCallback(jobId, SIGNING_KEY, { status: 'succeeded', prUrl: PR_URL, summary: 'done' })
 }
 
 test('a job reporting a merged pull request URL leaves the work item merged', async () => {
