@@ -944,8 +944,9 @@ and a skipped check never read the same. The writer of that field is the drill's
   direct `assigned → pr_ready` edge a job takes when it reports its pull request
   while the row still reads `assigned`). A `merged` or `closed` item is terminal
   for these writers too: a later job reporting the same pull request's URL links
-  itself without reopening the item, and a non-closing `pull_request` delivery
-  refreshes the title only. Jobs
+  itself without reopening the item, a non-closing `pull_request` delivery
+  refreshes the title only, and a `pull_request_review` submission does not
+  change its state. Jobs
   link to a work item, and issue/PR/review webhooks keep state and PR outcome in
   sync. Issue labels map `priority:high|medium|low` (or `p0`–`p3`) to work-item
   priority, and an `agent-ready` label moves a proposed item to triaged. A
