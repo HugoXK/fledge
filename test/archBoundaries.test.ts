@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { checkArchitecture, checkFileSizes, checkImports } from '../scripts/lib/arch-boundaries.mjs'
+import { readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -102,4 +103,106 @@ test('checkArchitecture reports the sizes it checked', () => {
   assert.equal(result.checked.files, 2)
   assert.equal(result.checked.imports, 1)
   assert.equal(result.checked.grandfathered, 1)
+})
+
+test('the size ratchet reads the ceiling from the base ref, not the pull request head', () => {
+  const base = JSON.stringify({ 'src/big.ts': 10 })
+  const head = JSON.stringify({ 'src/big.ts': 20 })
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: base, headContent: head })
+  assert.equal(chosen.source, 'base:origin/main')
+  const files = [{ path: 'src/big.ts', content: Array.from({ length: 15 }, (_, i) => `// ${String(i)}`).join('\n') }]
+  const result = checkArchitecture({ files, grandfather: chosen.ledger })
+  const growth = result.violations.find((violation) => violation.rule === 'grandfathered-growth')
+  assert.ok(growth, 'a file grown past the base ceiling must be refused')
+  assert.match(growth.reason, /15 lines, above its recorded 10/)
+  // The same tree judged against the head ledger does not see growth at all,
+  // which is exactly the bypass this rule removes.
+  const headResult = checkArchitecture({ files, grandfather: JSON.parse(head) })
+  assert.equal(headResult.violations.some((violation) => violation.rule === 'grandfathered-growth'), false)
+})
+
+test('a named base ref that cannot be read fails closed instead of reading the head', () => {
+  assert.throws(
+    () => selectLedger({ baseRef: 'origin/main', baseContent: null, headContent: JSON.stringify({ 'src/big.ts': 20 }) }),
+    /refusing to read the ceiling from the pull request head/,
+  )
+})
+
+test('a local run with no base ref still reads the head ledger and says so', () => {
+  const head = JSON.stringify({ 'src/big.ts': 20 })
+  const chosen = selectLedger({ baseRef: null, baseContent: null, headContent: head })
+  assert.equal(chosen.source, 'head')
+  assert.deepEqual(chosen.ledger, { 'src/big.ts': 20 })
+})
+
+function bigFile(lines: number) {
+  return [{ path: 'src/big.ts', content: Array.from({ length: lines }, (_, i) => `// ${String(i)}`).join('\n') }]
+}
+
+test('a ceiling the base branch already carried is not growth', () => {
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: JSON.stringify({ 'src/big.ts': 9000 }), headContent: JSON.stringify({ 'src/big.ts': 8999 }) })
+  const result = checkArchitecture({ files: bigFile(8999), grandfather: chosen.ledger })
+  assert.equal(result.violations.some((violation) => violation.rule === 'grandfathered-growth'), false)
+})
+
+test('a tip that deletes its own entry cannot hide growth', () => {
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: JSON.stringify({ 'src/big.ts': 1000 }), headContent: JSON.stringify({}) })
+  const result = checkArchitecture({ files: bigFile(1500), grandfather: chosen.ledger })
+  const growth = result.violations.find((violation) => violation.rule === 'grandfathered-growth')
+  assert.ok(growth, 'deleting the entry must not remove the ceiling')
+  assert.match(growth.reason, /1500 lines, above its recorded 1000/)
+})
+
+test('a tip that lowers its own entry cannot make the base refusal disappear', () => {
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: JSON.stringify({ 'src/big.ts': 5000 }), headContent: JSON.stringify({ 'src/big.ts': 1000 }) })
+  const result = checkArchitecture({ files: bigFile(6000), grandfather: chosen.ledger })
+  const growth = result.violations.find((violation) => violation.rule === 'grandfathered-growth')
+  assert.ok(growth, 'a lowered head entry must not remove the base ceiling')
+  assert.match(growth.reason, /6000 lines, above its recorded 5000/)
+})
+
+test('the growth refusal names the judging ledger and the head entry', () => {
+  const line = violationLine(
+    { file: 'src/big.ts', line: 1, rule: 'grandfathered-growth', reason: '3000 lines, above its recorded 5000; split the file instead of raising the entry' },
+    { ledgerSource: 'base:origin/main', headLedger: { 'src/big.ts': 6000 } },
+  )
+  assert.match(line, /ceiling from base:origin\/main/)
+  assert.match(line, /head entry 6000/)
+})
+
+test('a local run reads the head ledger and the report says so', () => {
+  const chosen = selectLedger({ baseRef: null, baseContent: null, headContent: JSON.stringify({ 'src/big.ts': 20 }) })
+  assert.equal(chosen.source, 'head')
+  assert.equal(violationLine({ file: 'src/big.ts', line: 1, rule: 'grandfathered-growth', reason: 'growth' }, { ledgerSource: chosen.source, headLedger: { 'src/big.ts': 30 } }), 'src/big.ts:1 grandfathered-growth: growth')
+})
+
+test('an absent base ref is fetched once and then read', () => {
+  let fetches = 0
+  let stored: string | null = null
+  const content = readBaseLedger({
+    ref: 'origin/main',
+    readAt: () => stored,
+    fetchRef: () => {
+      fetches += 1
+      stored = JSON.stringify({ 'src/big.ts': 10 })
+      return true
+    },
+  })
+  assert.equal(fetches, 1)
+  assert.ok(content !== null, 'the fetched base must be readable')
+  assert.deepEqual(JSON.parse(content), { 'src/big.ts': 10 })
+})
+
+test('a base that cannot be fetched stays unreadable, so the run fails closed', () => {
+  let fetches = 0
+  const content = readBaseLedger({
+    ref: 'origin/main',
+    readAt: () => null,
+    fetchRef: () => {
+      fetches += 1
+      return false
+    },
+  })
+  assert.equal(content, null)
+  assert.equal(fetches, 1)
 })
