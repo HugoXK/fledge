@@ -42,6 +42,8 @@ import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { openApiDocument } from './api/openapi.js'
 import { parseVerification } from './lib/verification.js'
 import { cachedRouterProbe } from './lib/routerHealth.js'
+import { registerIncidentRoute } from './lib/incidentRoute.js'
+import { queryText } from './lib/queryText.js'
 import { changeStoryAttribution, readChangeStory, type ChangeStory } from './lib/changeStory.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl, parsePrUrl } from './jobs/prUrl.js'
@@ -364,11 +366,6 @@ function jobSummary(job: JobRow): {
     reviewScore: job.review_score,
     costUsd: job.cost_usd,
   }
-}
-
-function queryText(request: FastifyRequest, name: string): string | undefined {
-  const value = (request.query as Record<string, unknown> | undefined)?.[name]
-  return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
 // The preview's query is a closed set of names, so it is read into a literal:
@@ -5784,6 +5781,9 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       error: request.flash?.error?.text,
     }))
   })
+
+  // #1234: the route module owns the superadmin rule and the redacted builder.
+  registerIncidentRoute(app, { store, config, clockState: () => githubApp.clockState() })
 
   const adminVisibleUserIds = (viewer: { user: UserRow }): string[] | null => {
     if (viewer.user.role === 'superadmin') return null
