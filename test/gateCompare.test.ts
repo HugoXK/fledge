@@ -199,14 +199,6 @@ test('a required job may gain a step only after its last base step', () => {
   const reorderedResult = compareGate({ base: STEP_BASE, head: reordered, required: ['build'] })
   assert.equal(reorderedResult.ok, false, 'reordering the base steps must not pass')
   assert.match(reorderedResult.problems.join('\n'), /`steps:`/)
-
-  // The aggregate follows the same prefix rule: a step may follow the evaluator,
-  // not precede it.
-  const aggregateAppended = MINI.replace(
-    '      - run: node base/scripts/ci-ok.mjs\n',
-    '      - run: node base/scripts/ci-ok.mjs\n      - name: extra\n        run: echo extra\n',
-  )
-  assert.equal(compareGate({ base: MINI, head: aggregateAppended, required: ['build'] }).ok, true)
 })
 
 test('the aggregate cannot gain a step before its evaluator or change its shape', () => {
@@ -235,6 +227,65 @@ test('the aggregate cannot gain a step before its evaluator or change its shape'
   const looseResult = compareGate({ base: ci, head: loose })
   assert.equal(looseResult.ok, false, 'a new aggregate key must not pass')
   assert.match(looseResult.problems.join('\n'), /gains `continue-on-error:`/)
+})
+
+test('the aggregate steps are an exact sequence: no step may be added, removed, reordered or rewritten', () => {
+  // #1304: #1276's prefix allowance must not reach the aggregate. Its steps run
+  // the base evaluator, so a step *after* the evaluator can undo what it
+  // concluded — and the prefix rule accepts exactly that shape. The aggregate is
+  // carved out: only an unchanged step list passes, whichever position moved.
+  const appended = MINI.replace(
+    '      - run: node base/scripts/ci-ok.mjs\n',
+    '      - run: node base/scripts/ci-ok.mjs\n      - name: extra\n        run: echo extra\n',
+  )
+  assert.notEqual(appended, MINI)
+  const appendedResult = compareGate({ base: MINI, head: appended, required: ['build'] })
+  assert.equal(appendedResult.ok, false, 'a step appended after the aggregate evaluator must not pass')
+  const appendedText = appendedResult.problems.join('\n')
+  assert.match(appendedText, /`ci-ok`/)
+  assert.match(appendedText, /`steps:`/)
+  assert.match(appendedText, /adds a step after the base steps/)
+
+  // The same shape on the real workflow: the aggregate there ends with the
+  // "Every required job passed" step, so an appended step is what runs last.
+  const realAppended = editJob(ci, AGGREGATE_JOB, (block) => [
+    ...block,
+    '      - name: after',
+    '        run: echo after',
+  ])
+  assert.notEqual(realAppended, ci)
+  const realAppendedText = compareGate({ base: ci, head: realAppended }).problems.join('\n')
+  assert.match(realAppendedText, /`ci-ok-head`/)
+  assert.match(realAppendedText, /`steps:`/)
+  assert.match(realAppendedText, /adds a step after the base steps/)
+
+  const removed = MINI.replace('      - run: node base/scripts/ci-ok.mjs\n', '')
+  assert.notEqual(removed, MINI)
+  const removedText = compareGate({ base: MINI, head: removed, required: ['build'] }).problems.join('\n')
+  assert.match(removedText, /`steps:`/)
+  assert.match(removedText, /removes the base step at position 2/)
+
+  const reordered = MINI.replace(
+    '      - uses: actions/checkout@0000000000000000000000000000000000000000\n        with:\n          path: base\n      - run: node base/scripts/ci-ok.mjs\n',
+    '      - run: node base/scripts/ci-ok.mjs\n      - uses: actions/checkout@0000000000000000000000000000000000000000\n        with:\n          path: base\n',
+  )
+  assert.notEqual(reordered, MINI)
+  const reorderedText = compareGate({ base: MINI, head: reordered, required: ['build'] }).problems.join('\n')
+  assert.match(reorderedText, /`steps:`/)
+  assert.match(reorderedText, /reorders the step at position 1/)
+
+  const rewritten = MINI.replace(
+    '      - uses: actions/checkout@0000000000000000000000000000000000000000\n',
+    '      - uses: actions/checkout@1111111111111111111111111111111111111111\n',
+  )
+  assert.notEqual(rewritten, MINI)
+  const rewrittenText = compareGate({ base: MINI, head: rewritten, required: ['build'] }).problems.join('\n')
+  assert.match(rewrittenText, /`steps:`/)
+  assert.match(rewrittenText, /rewrites the step at position 1/)
+
+  // Companion: the aggregate's unchanged steps still pass on both fixtures.
+  assert.equal(compareGate({ base: MINI, head: MINI, required: ['build'] }).ok, true)
+  assert.equal(compareGate({ base: ci, head: ci }).ok, true)
 })
 
 test('a base tree with no accepted aggregate job is refused, not silently accepted', () => {

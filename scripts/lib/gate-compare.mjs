@@ -34,6 +34,12 @@
 // `path: base`. That is the #855 invariant, now pinned against a head that
 // rewrites the workflow that calls it.
 //
+// #1304: the aggregate's `steps:` are an exact sequence, not a prefix. #1276
+// lets a required job gain a step at the end; the aggregate is carved out of
+// that allowance because its own steps are what produce the verdict, so a step
+// appended after the evaluator is the same tampering as one inserted before it.
+// The refusal names `steps:` and the position, never the step's content.
+//
 // Fail closed: a duplicated top-level key, a duplicated job id, a duplicated job
 // key, an unreadable line or an empty `jobs:` mapping is a refusal with a
 // reason, never a skipped comparison.
@@ -347,6 +353,41 @@ function stepsPreserved(baseJob, headJob) {
   return true
 }
 
+/**
+ * The aggregate's step list has to match the base exactly: no step may be added,
+ * removed, reordered or rewritten. #1276 lets a required job grow at the end,
+ * and the aggregate is carved out on purpose — its last steps are what decide
+ * the verdict the gate reads, so an appended step is the same class of tampering
+ * as an inserted one. The clause names the key and the position, never the
+ * step's content, because the refusal is written from the head's file.
+ */
+function stepSequenceProblem(baseJob, headJob) {
+  const base = stepBlocks(baseJob).map(normalizeStep)
+  const head = stepBlocks(headJob).map(normalizeStep)
+  const baseLength = base.length
+  const headLength = head.length
+  let prefix = 0
+  while (prefix < baseLength && prefix < headLength && base[prefix] === head[prefix]) prefix += 1
+  if (prefix === baseLength && prefix === headLength) return null
+  if (headLength > baseLength) {
+    let suffix = 0
+    const shorter = Math.min(baseLength - prefix, headLength - prefix)
+    while (suffix < shorter && base[baseLength - 1 - suffix] === head[headLength - 1 - suffix]) suffix += 1
+    if (prefix === baseLength) {
+      return `adds a step after the base steps (position ${String(prefix + 1)} of ${String(headLength)}; the base has ${String(baseLength)})`
+    }
+    if (prefix + suffix >= baseLength) return `adds a step before the base step at position ${String(prefix + 1)}`
+    return `adds a step at position ${String(prefix + 1)}`
+  }
+  if (headLength < baseLength) return `removes the base step at position ${String(prefix + 1)}`
+  const restOfBase = base.slice(prefix).sort()
+  const restOfHead = head.slice(prefix).sort()
+  const sameContent = restOfBase.every((step, index) => step === restOfHead[index])
+  return sameContent
+    ? `reorders the step at position ${String(prefix + 1)}`
+    : `rewrites the step at position ${String(prefix + 1)}`
+}
+
 // The job ids a head declares, for the refusal that has to say what it found
 // instead of an accepted aggregate id. Only ids that parse as a plain name are
 // quoted; any other is counted rather than echoed.
@@ -547,8 +588,9 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
         if (name === 'needs') continue
         if (name === 'name' && baseAggregate.id !== aggregate.id) continue
         if (name === 'steps') {
-          if (!stepsPreserved(baseAggregate, aggregate)) {
-            refuse(`the pull request's \`${aggregateId}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
+          const problem = stepSequenceProblem(baseAggregate, aggregate)
+          if (problem !== null) {
+            refuse(`the pull request's \`${aggregateId}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the aggregate's steps must match the base exactly: the head ${problem})`)
           }
           continue
         }
