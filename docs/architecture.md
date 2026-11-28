@@ -2537,7 +2537,8 @@ The superadmin deletion (#691) sits on the same delete path. `GET
 /admin/users/:id/delete` is a read-only preview: it counts the account's
 repositories, jobs (all, running and queued), FlyBot instances, API tokens,
 GitHub installation records, error reports and feedback triage rows, names the
-backup window, and says that the GitHub
+configured backup keep count (`BACKUP_KEEP_ENCRYPTED`, a number of copies per
+class rather than a window in days), and says that the GitHub
 App installation itself is not uninstalled — it keeps its repository access and
 its webhooks until an operator removes it on GitHub; the preview writes no audit
 row.
