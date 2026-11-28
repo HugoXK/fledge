@@ -1,4 +1,4 @@
-# 0030 — a re-review is requested by one trigger with two sources: a head that moved after `CHANGES_REQUESTED`, or a maintainer's `Re-review:` comment
+# 0031 — a re-review is requested by one trigger with two sources: a head that moved after `CHANGES_REQUESTED`, or a maintainer's `Re-review:` comment
 
 Status: **accepted** — the card's issue review passed at body `03d7ec760e8c` and the T3 review at the tip carries the rule; implemented in the same pull request as [`#1274`](https://github.com/HugoXK/fledge/issues/1274)
 Date: 2026-11-28
