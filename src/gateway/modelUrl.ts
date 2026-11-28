@@ -66,7 +66,47 @@ export function providerPolicyRefusal(provider: ProviderIdentity, policy: Provid
   return null
 }
 
-export async function assertSafeModelUrl(raw: string, allowPrivate: boolean): Promise<string> {
+export type ModelAddressResolver = (hostname: string) => Promise<Array<{ address: string; family: number }>>
+
+export interface PinnedModelDestination {
+  url: string
+  addresses: Array<{ address: string; family: number }>
+}
+
+const RESOLVE_TIMEOUT_MS = 5_000
+
+const defaultResolver: ModelAddressResolver = (hostname) => lookup(hostname, { all: true })
+
+// #1319: a seam for the test that must replay two DNS answers (public when the
+// provider is saved, loopback when it is used). Production never sets it; the
+// default is node:dns. Each node:test file runs in its own process, so the
+// override cannot leak between suites.
+let resolverForTest: ModelAddressResolver | null = null
+
+export function setModelAddressResolverForTest(resolver: ModelAddressResolver | null): void {
+  resolverForTest = resolver
+}
+
+function activeResolver(): ModelAddressResolver {
+  return resolverForTest ?? defaultResolver
+}
+
+async function resolveAddresses(resolver: ModelAddressResolver, hostname: string): Promise<Array<{ address: string; family: number }>> {
+  let timer: NodeJS.Timeout | undefined
+  try {
+    return await Promise.race([
+      resolver(hostname),
+      new Promise<never>((_resolve, reject) => {
+        timer = setTimeout(() => reject(new Error('解析域名超时')), RESOLVE_TIMEOUT_MS)
+        timer.unref()
+      }),
+    ])
+  } finally {
+    if (timer !== undefined) clearTimeout(timer)
+  }
+}
+
+function parseModelBaseUrl(raw: string): URL {
   let url: URL
   try {
     url = new URL(raw)
@@ -75,26 +115,42 @@ export async function assertSafeModelUrl(raw: string, allowPrivate: boolean): Pr
   }
   if (url.username !== '' || url.password !== '') throw new Error('Base URL 不能包含用户名或密码')
   if (url.protocol !== 'https:' && url.protocol !== 'http:') throw new Error('Base URL 必须是 https:// 或 http://')
+  return url
+}
+
+// #1319: the save-time guard and the use-time guard are one function. It
+// resolves the host once and returns the addresses the caller may connect to,
+// so the connection can pin them instead of asking DNS again. The URL keeps the
+// hostname for Host/SNI and for the caller's own record.
+export async function resolveSafeModelUrl(raw: string, allowPrivate: boolean, resolver: ModelAddressResolver = activeResolver()): Promise<PinnedModelDestination> {
+  const url = parseModelBaseUrl(raw)
   const host = url.hostname.replace(/^\[|\]$/g, '')
-  if (allowPrivate) return url.toString().replace(/\/$/, '')
-  const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1'
-  if (url.protocol === 'http:') throw new Error('公网模型服务必须使用 https://')
-  if (loopback) throw new Error('不允许使用本机/内网地址')
-  if (isIP(host) !== 0) {
-    if (isBlockedIpAddress(host)) throw new Error('不允许使用内网地址')
-    return url.toString().replace(/\/$/, '')
+  const family = isIP(host)
+  if (!allowPrivate) {
+    const loopback = host === 'localhost' || host === '127.0.0.1' || host === '::1'
+    if (url.protocol === 'http:') throw new Error('公网模型服务必须使用 https://')
+    if (loopback) throw new Error('不允许使用本机/内网地址')
+    if (family !== 0 && isBlockedIpAddress(host)) throw new Error('不允许使用内网地址')
   }
-  let addresses
+  if (family !== 0) {
+    return { url: url.toString().replace(/\/$/, ''), addresses: [{ address: host, family: family === 6 ? 6 : 4 }] }
+  }
+  let addresses: Array<{ address: string; family: number }>
   try {
-    addresses = await lookup(host, { all: true })
-  } catch {
+    addresses = await resolveAddresses(resolver, host)
+  } catch (error) {
+    if (error instanceof Error && error.message === '解析域名超时') throw error
     throw new Error('无法解析这个域名')
   }
   if (addresses.length === 0) throw new Error('无法解析这个域名')
-  for (const entry of addresses) {
-    if (isBlockedIpAddress(entry.address)) {
-      throw new Error('不允许使用解析到内网地址的域名')
+  if (!allowPrivate) {
+    for (const entry of addresses) {
+      if (isBlockedIpAddress(entry.address)) throw new Error('不允许使用解析到内网地址的域名')
     }
   }
-  return url.toString().replace(/\/$/, '')
+  return { url: url.toString().replace(/\/$/, ''), addresses }
+}
+
+export async function assertSafeModelUrl(raw: string, allowPrivate: boolean, resolver?: ModelAddressResolver): Promise<string> {
+  return (await resolveSafeModelUrl(raw, allowPrivate, resolver)).url
 }

@@ -1,6 +1,7 @@
 import http from 'node:http'
 import https from 'node:https'
 import { StringDecoder } from 'node:string_decoder'
+import type { LookupFunction } from 'node:net'
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify'
 import type { Config } from '../config.js'
 import type { RepoProviderModelRow, Store, UsageDetail, UserRow } from '../db.js'
@@ -10,7 +11,7 @@ import { headerCost, quotaView } from './quota.js'
 import { fallbackPriceTable, parsePriceTable, requestCost, type PriceTable } from '../metrics/cost.js'
 import { modelOrder, retiredModelFailure, retryableModelFailure } from './modelFallback.js'
 import { nowIso } from '../lib/time.js'
-import { parseProviderAllowlist, providerPolicyRefusal } from './modelUrl.js'
+import { parseProviderAllowlist, providerPolicyRefusal, resolveSafeModelUrl, type PinnedModelDestination } from './modelUrl.js'
 import { parseModelRun } from '../lib/modelRun.js'
 import type { ModelAttempt, ModelFallback } from '../lib/modelRun.js'
 import { rateLimitKey, RateLimiter } from '../lib/rateLimit.js'
@@ -73,10 +74,28 @@ function targetFor(user: UserRow, config: Config, body: ChatBody, repoModel?: Re
   return { baseUrl: config.llm.baseUrl, key: config.llm.key, model: config.llm.model, platformFunded: true }
 }
 
-function upstreamRequest(url: URL, headers: Record<string, string>, body: string, timeoutMs: number): Promise<{ res: http.IncomingMessage; status: number; headers: http.IncomingHttpHeaders }> {
+// #1319: the guard already resolved and checked every address; hand `host:port`
+// only those addresses, never a second DNS answer. The hostname stays on the URL
+// so Host, SNI and certificate matching keep working.
+function pinnedLookup(addresses: ReadonlyArray<{ address: string; family: number }>): LookupFunction {
+  return (_hostname, options, callback) => {
+    if (options.all === true) {
+      callback(null, addresses.map((entry) => ({ address: entry.address, family: entry.family })))
+      return
+    }
+    const first = addresses[0]
+    if (first === undefined) {
+      callback(Object.assign(new Error('no validated address'), { code: 'ENOTFOUND' }), '', 0)
+      return
+    }
+    callback(null, first.address, first.family)
+  }
+}
+
+function upstreamRequest(url: URL, headers: Record<string, string>, body: string, timeoutMs: number, lookup?: LookupFunction): Promise<{ res: http.IncomingMessage; status: number; headers: http.IncomingHttpHeaders }> {
   return new Promise((resolve, reject) => {
     const mod = url.protocol === 'https:' ? https : http
-    const request = mod.request(url, { method: 'POST', headers }, (res) => {
+    const request = mod.request(url, { method: 'POST', headers, ...(lookup === undefined ? {} : { lookup }) }, (res) => {
       resolve({ res, status: res.statusCode ?? 502, headers: res.headers })
     })
     request.on('error', reject)
@@ -302,6 +321,26 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
         await deps.onQuotaBlocked?.(auth.user)
         return quotaError(reply, auth.user, config)
       }
+      // #1319: a stored base URL is re-checked on every call, not only when the
+      // provider was saved. The guard resolves once and the connection is pinned
+      // to the addresses it approved, so a DNS rebind between save and use cannot
+      // reach a new destination. A refusal is terminal: no retry, no fallback.
+      let pinned: PinnedModelDestination | null = null
+      if (!attemptTarget.platformFunded) {
+        const allowPrivate = candidate !== undefined ? candidate.allow_private === 1 : auth.user.allow_private_models === 1
+        try {
+          pinned = await resolveSafeModelUrl(attemptTarget.baseUrl, allowPrivate)
+        } catch {
+          log.warn('gateway destination refused', { code: 'FLEDGE_MODEL_DESTINATION_REFUSED' })
+          return reply.code(502).send({
+            error: {
+              type: 'provider_destination_refused',
+              code: 'FLEDGE_MODEL_DESTINATION_REFUSED',
+              message: 'The model provider destination was refused: the resolved address is not allowed.',
+            },
+          })
+        }
+      }
       const payload: ChatBody = { ...body, model: attemptTarget.model }
       if (stream) {
         const existing = body.stream_options
@@ -310,7 +349,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
           include_usage: true,
         }
       }
-      const attemptUrl = new URL(`${attemptTarget.baseUrl}/chat/completions`)
+      const attemptUrl = new URL(`${pinned?.url ?? attemptTarget.baseUrl}/chat/completions`)
       const attemptHeaders: Record<string, string> = {
         'content-type': 'application/json',
         accept: stream ? 'text/event-stream' : 'application/json',
@@ -321,7 +360,7 @@ export function registerGateway(app: FastifyInstance, deps: GatewayDeps): void {
       const attemptName = { modelId: candidate?.id ?? attemptTarget.model, label: candidate?.label ?? attemptTarget.model }
       let answer: Awaited<ReturnType<typeof upstreamRequest>>
       try {
-        answer = await upstreamRequest(attemptUrl, attemptHeaders, JSON.stringify(payload), stream ? 30 * 60_000 : 3 * 60_000)
+        answer = await upstreamRequest(attemptUrl, attemptHeaders, JSON.stringify(payload), stream ? 30 * 60_000 : 3 * 60_000, pinned === null ? undefined : pinnedLookup(pinned.addresses))
       } catch (error) {
         // Unreachable is the one retryable failure with no answer to forward.
         log.error('gateway upstream failed', { error: String(error), platformFunded: attemptTarget.platformFunded })
