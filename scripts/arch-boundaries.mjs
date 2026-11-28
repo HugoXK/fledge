@@ -97,6 +97,17 @@ const mergeGroup = eventName === 'merge_group'
 // deepens its own clone: passing `merge_group.base_sha` through an env var would
 // need a `.github/workflows/**` edit, and a required job's `steps:` may only grow
 // at the end (#1276), which `gate-compare` enforces.
+function gitTry(args) {
+  try {
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 })
+    return null
+  } catch (error) {
+    const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : ''
+    const first = stderr.trim().split('\n')[0] ?? ''
+    return first === '' ? String(error) : first
+  }
+}
+
 function deepenOneCommit() {
   try {
     const shallow = execFileSync('git', ['rev-parse', '--is-shallow-repository'], {
@@ -104,17 +115,17 @@ function deepenOneCommit() {
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
-    if (shallow !== 'true') return false
-    execFileSync('git', ['fetch', '--no-tags', '--deepen=1', 'origin'], {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-      timeout: 60_000,
-    })
-    return true
-  } catch {
-    return false
+    if (shallow !== 'true') return null
+  } catch (error) {
+    return error instanceof Error ? error.message : String(error)
   }
+  const one = gitTry(['fetch', '--no-tags', '--deepen=1', 'origin'])
+  if (one === null) return null
+  // A deepen can be refused by a transport that will not negotiate one more
+  // commit; `--unshallow` is the same in-script fetch with a wider ask, and it is
+  // the fallback `scripts/ci-changes.mjs` already uses for the same reason.
+  const all = gitTry(['fetch', '--no-tags', '--unshallow', 'origin'])
+  return all ?? one
 }
 
 // The ceiling is looked for in this order and the first readable source wins:
@@ -130,10 +141,12 @@ else {
 }
 let baseRef = null
 let baseContent = null
+let deepenFailure = null
 for (const candidate of candidates) {
   let content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
-  if (content === null && mergeGroup && candidate.ref === 'HEAD^1' && deepenOneCommit()) {
-    content = readAt('HEAD^1')
+  if (content === null && mergeGroup && candidate.ref === 'HEAD^1') {
+    deepenFailure = deepenOneCommit()
+    if (deepenFailure === null) content = readAt('HEAD^1')
   }
   if (content !== null) {
     baseRef = candidate.ref
@@ -147,9 +160,10 @@ for (const candidate of candidates) {
 // head is the bypass itself, so the run fails instead of falling back.
 const inCi = (process.env.GITHUB_ACTIONS ?? '') === 'true'
 if (inCi && onPullRequest && baseContent === null) {
+  const reason = mergeGroup && deepenFailure !== null ? ` (deepen: ${deepenFailure})` : ''
   console.error(
     mergeGroup
-      ? 'arch: cannot read the base ledger in CI for a merge_group entry; refusing to judge the queue entry against its own ceiling map'
+      ? `arch: cannot read the base ledger in CI for a merge_group entry; refusing to judge the queue entry against its own ceiling map${reason}`
       : 'arch: cannot read the base ledger in CI; refusing to judge the pull request against its own ceiling map',
   )
   process.exit(1)
