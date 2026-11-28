@@ -111,11 +111,10 @@ const onPullRequest = isPullRequestEvent({ eventName, baseRef: process.env.GITHU
 const mergeGroup = eventName === 'merge_group'
 
 // #1348: a `merge_group` checkout is the queue's merge commit, one commit deep,
-// so its first parent — the base tip the entry is built on — is grafted away and
-// `HEAD^1` is unreadable until one more commit of history is fetched. The gate
-// deepens its own clone: passing `merge_group.base_sha` through an env var would
-// need a `.github/workflows/**` edit, and a required job's `steps:` may only grow
-// at the end (#1276), which `gate-compare` enforces.
+// so its first parent — the base tip the entry is built on — is grafted away.
+// The gate supplies that base itself: passing `merge_group.base_sha` through an
+// env var would need a `.github/workflows/**` edit, and a required job's
+// `steps:` may only grow at the end (#1276), which `gate-compare` enforces.
 function gitTry(args) {
   try {
     execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 })
@@ -127,32 +126,36 @@ function gitTry(args) {
   }
 }
 
-function deepenOneCommit() {
-  let shallow = ''
+function gitOutput(args) {
   try {
-    shallow = execFileSync('git', ['rev-parse', '--is-shallow-repository'], {
-      cwd: root,
-      encoding: 'utf8',
-      stdio: ['ignore', 'pipe', 'ignore'],
-    }).trim()
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 })
   } catch (error) {
-    return error instanceof Error ? error.message : String(error)
+    const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : ''
+    const first = stderr.trim().split('\n')[0] ?? ''
+    return first === '' ? String(error) : first
   }
-  if (shallow !== 'true') return `HEAD^1 unreadable and the checkout is not shallow (${shallow})`
-  // Three widening asks, cheapest first: one more commit, an explicit depth of
-  // two, then the whole history. Each keeps the fetch in-script; the refusal
-  // names the last thing git said so a queue red is diagnosable from the job log.
-  let last = ''
-  for (const args of [
-    ['fetch', '--no-tags', '--deepen=1', 'origin'],
-    ['fetch', '--no-tags', '--depth=2', 'origin'],
-    ['fetch', '--no-tags', '--unshallow', 'origin'],
-  ]) {
-    const failure = gitTry(args)
-    if (failure === null) return null
-    last = failure
-  }
-  return last
+}
+
+/**
+ * The base ledger of a `merge_group` entry whose checkout carries no queue ref.
+ *
+ * The base tip is the merge commit's first parent, and at depth 1 that object is
+ * grafted away. Deepening the clone was measured not to rewrite the graft on the
+ * CI runner, and even after the parent object is fetched by sha the graft keeps
+ * `HEAD^1` unresolvable — so the parent sha is read from the commit object and
+ * the ledger is read at that sha. One commit of history is still all the gate
+ * asks the remote for, and the report line stays `base:HEAD^1` because that is
+ * what the lane is, even when the sha below it is what git could resolve.
+ */
+function readMergeParent() {
+  const raw = gitOutput(['cat-file', '-p', 'HEAD'])
+  const parent = raw.split('\n').find((line) => line.startsWith('parent '))?.slice('parent '.length).trim()
+  if (parent === undefined || parent === '') return { content: null, error: 'the checkout is not a merge commit' }
+  const direct = readAtDetailed(parent)
+  if (direct.content !== null) return direct
+  const fetchFailure = gitTry(['fetch', '--no-tags', '--depth=1', 'origin', parent])
+  if (fetchFailure !== null) return { content: null, error: fetchFailure }
+  return readAtDetailed(parent)
 }
 
 // The ceiling is looked for in this order and the first readable source wins:
@@ -166,23 +169,20 @@ if (explicitBase !== null) candidates.push({ ref: explicitBase, strict: true })
 else {
   if (envBase !== null) candidates.push({ ref: envBase, strict: false })
   // A real queue entry names its base branch in `GITHUB_REF`, so it reads the
-  // same remote ledger a pull request does; the deepen below is only for a
-  // checkout that carries no queue ref.
+  // same remote ledger a pull request does; the first-parent lane below is only
+  // for a checkout that carries no queue ref.
   if (queueBase !== null) candidates.push({ ref: `origin/${queueBase}`, strict: false })
   if (onPullRequest) candidates.push({ ref: 'HEAD^1', strict: false })
 }
 let baseRef = null
 let baseContent = null
-let deepenFailure = null
+let parentFailure = null
 for (const candidate of candidates) {
   let content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
   if (content === null && mergeGroup && candidate.ref === 'HEAD^1') {
-    deepenFailure = deepenOneCommit()
-    if (deepenFailure === null) {
-      const parent = readAtDetailed('HEAD^1')
-      content = parent.content
-      if (content === null) deepenFailure = `HEAD^1 still unreadable after the deepen (${parent.error ?? 'no stderr'})`
-    }
+    const parent = readMergeParent()
+    content = parent.content
+    if (content === null) parentFailure = parent.error ?? 'the first parent could not be read'
   }
   if (content !== null) {
     baseRef = candidate.ref
@@ -196,7 +196,7 @@ for (const candidate of candidates) {
 // head is the bypass itself, so the run fails instead of falling back.
 const inCi = (process.env.GITHUB_ACTIONS ?? '') === 'true'
 if (inCi && onPullRequest && baseContent === null) {
-  const reason = mergeGroup && deepenFailure !== null ? ` (deepen: ${deepenFailure})` : ''
+  const reason = mergeGroup && parentFailure !== null ? ` (first parent: ${parentFailure})` : ''
   console.error(
     mergeGroup
       ? `arch: cannot read the base ledger in CI for a merge_group entry; refusing to judge the queue entry against its own ceiling map${reason}`

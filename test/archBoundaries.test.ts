@@ -285,7 +285,9 @@ function headLaneFixture(): string {
  * A real depth-1 clone whose HEAD is a merge commit: first parent is the base
  * tip, and the parent is grafted away exactly as GitHub's `merge_group`
  * checkout has it. Preconditions are asserted, so the fixture cannot quietly
- * degrade into a full clone and make the merge_group test vacuous.
+ * degrade into a full clone and make the merge_group test vacuous. The clone
+ * carries no queue ref, so these tests exercise the first-parent lane rather
+ * than the `GITHUB_REF` branch lane a real queue entry uses.
  */
 function mergeGroupFixture({ withOrigin = true }: { withOrigin?: boolean } = {}): string {
   const origin = mkdtempSync(join(tmpdir(), 'arch-origin-'))
@@ -328,7 +330,7 @@ test('a pull_request run whose base cannot be read refuses at spawn level', () =
   assert.match(result.stderr, /refusing to judge the pull request against its own ceiling map/)
 })
 
-test('a merge_group entry deepens one commit and reads the base lane', () => {
+test('a merge_group entry reads the base ledger at its first parent', () => {
   const clone = mergeGroupFixture()
   const result = runArch(clone, { GITHUB_EVENT_NAME: 'merge_group' })
 
@@ -336,7 +338,7 @@ test('a merge_group entry deepens one commit and reads the base lane', () => {
   assert.match(result.stdout, /\(ledger from base:HEAD\^1\)/)
 })
 
-test('a merge_group entry whose deepen cannot run keeps the named refusal', () => {
+test('a merge_group entry whose first parent cannot be fetched keeps the named refusal', () => {
   const clone = mergeGroupFixture({ withOrigin: false })
   const result = runArch(clone, { GITHUB_EVENT_NAME: 'merge_group' })
 
