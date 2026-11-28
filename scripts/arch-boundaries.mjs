@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { checkArchitecture } from './lib/arch-boundaries.mjs'
-import { readBaseLedger, selectLedger, violationLine } from './lib/arch-ledger.mjs'
+import { isPullRequestEvent, readBaseLedger, selectLedger, violationLine } from './lib/arch-ledger.mjs'
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -78,7 +78,7 @@ const envBase = process.env.GITHUB_BASE_REF === undefined || process.env.GITHUB_
   ? null
   : `origin/${process.env.GITHUB_BASE_REF}`
 const explicitBase = argument('--base') ?? (process.env.ARCH_BASE_REF === undefined || process.env.ARCH_BASE_REF === '' ? null : process.env.ARCH_BASE_REF)
-const onPullRequest = (process.env.GITHUB_EVENT_NAME ?? '') !== '' && (process.env.GITHUB_EVENT_NAME ?? '') !== 'push'
+const onPullRequest = isPullRequestEvent({ eventName: process.env.GITHUB_EVENT_NAME ?? '', baseRef: process.env.GITHUB_BASE_REF ?? '' })
 
 // The ceiling is looked for in this order and the first readable source wins:
 // an explicit `--base`, the `GITHUB_BASE_REF` remote, then `HEAD^1` of the merge

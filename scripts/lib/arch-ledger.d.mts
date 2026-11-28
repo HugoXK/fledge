@@ -33,3 +33,5 @@ export function readBaseLedger(input: {
   readAt: (ref: string) => string | null
   fetchRef: (ref: string) => boolean
 }): string | null
+
+export function isPullRequestEvent(input: { eventName?: string; baseRef?: string }): boolean
