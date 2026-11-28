@@ -40,7 +40,8 @@ const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
 // block-quote item — GitHub renders `- ``` ` and `> ``` ` as code, so the
 // scanner has to see the opener, or the quoted `Ran:` counts as evidence and the
 // two-space close later reads as a new opener. One container level is stripped
-// before either fence pattern runs; evidence lines are still kept as written.
+// before the *open* pattern on every line, because the opener is what carries
+// the marker; evidence lines are still kept as written.
 const CONTAINER_PREFIX = /^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|> ?)/
 
 function fenceText(line) {
@@ -52,15 +53,21 @@ function unfenced(body) {
   let fence = null
   for (const line of String(body ?? '').split(/\r?\n/)) {
     if (fence === null) {
-      const open = FENCE_OPEN.exec(fenceText(line))
+      const opener = fenceText(line)
+      const open = FENCE_OPEN.exec(opener)
       if (open === null) {
         kept.push(line)
         continue
       }
-      fence = { char: open[1][0], length: open[1].length }
+      // Whether this fence lives inside a container is part of its state. A
+      // fence opened by a marker may be closed by a bare run or by a run that
+      // carries the same kind of marker; a plain fence may not — inside it a
+      // line like `- ``` ` is content, and letting it close the fence would turn
+      // the following quoted text into evidence (#1303's review).
+      fence = { char: open[1][0], length: open[1].length, container: opener !== line }
       continue
     }
-    const close = FENCE_CLOSE.exec(fenceText(line))
+    const close = FENCE_CLOSE.exec(fence.container ? fenceText(line) : line)
     if (close !== null && close[1][0] === fence.char && close[1].length >= fence.length) fence = null
   }
   return kept.join('\n')

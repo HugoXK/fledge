@@ -455,6 +455,27 @@ Not run: Docker image
   assert.deepEqual(checkBody(body, POLICY), [])
 })
 
+test('a plain fence is not closed by a content line that looks like a container fence', async () => {
+  // The reverse direction of #1303's fix: stripping the container prefix from
+  // the close line unconditionally let a plain fence close early on a content
+  // line such as `- ````, so quoted text after it counted as evidence again.
+  // A prefix is a close only when the fence itself was opened inside one.
+  const { checkBody, hasRanSection } = await bodyRules()
+  const body = `Written-by: HugoXK
+
+Fixes #96
+
+\`\`\`
+- \`\`\`
+Ran: false-evidence
+\`\`\`
+
+Not run: Docker image
+`
+  assert.equal(hasRanSection(body), false, 'the `- ```` ` line is content, not a close')
+  assert.deepEqual(checkBody(body, POLICY), ['the PR body needs a "Ran:" section'])
+})
+
 test('the shipped policy keeps attribution and verdict authorship apart', async () => {
   const { checkBody } = await bodyRules()
   const policy = JSON.parse(readFileSync(new URL('../.github/agent/review-policy.json', import.meta.url), 'utf8')) as {
