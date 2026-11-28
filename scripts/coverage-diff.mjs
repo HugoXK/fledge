@@ -37,6 +37,35 @@ const floor = Number(argument('--floor', '80'))
 
 if (!Number.isInteger(floor) || floor < 0 || floor > 100) fail(`--floor must be a whole percentage, got ${argument('--floor', '80')}`)
 
+// #1335: a `workflow_dispatch` run has no pull-request base and no pull-request
+// body, so the floor step is skipped while the job still published a green
+// `coverage` conclusion at the dispatched sha — a paint a person with workflow-run
+// permission could lay over a red pull request. The mode is printed on every
+// path, and a dispatch fails closed: the only conclusion it can publish under
+// that name is one `ci-ok` never accepts.
+const event = argument('--event', process.env.GITHUB_EVENT_NAME ?? 'pull_request')
+const modeOnly = process.argv.includes('--mode-only')
+
+function refuseDispatch() {
+  console.log('coverage: mode=dispatch-fail-closed')
+  console.error('coverage-diff: a workflow_dispatch run has no pull-request base or body, so the changed-lines floor cannot be enforced; refusing to publish a coverage conclusion ci-ok would accept')
+  process.exit(1)
+}
+
+function nameMode() {
+  console.log(event === 'pull_request' ? 'coverage: mode=pull_request' : `coverage: mode=not-gating (${event})`)
+}
+
+if (event === 'workflow_dispatch') refuseDispatch()
+if (modeOnly) {
+  // The job's last step: it records the mode and is what fails a dispatched run,
+  // so the gate's decision is visible from the log even when the floor step was
+  // skipped.
+  nameMode()
+  process.exit(0)
+}
+nameMode()
+
 let report
 try {
   report = readFileSync(reportPath, 'utf8')

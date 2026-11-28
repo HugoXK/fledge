@@ -442,6 +442,57 @@ test('the workflow measures the checked-out tree, not the head sha', () => {
   assert.match(ci.slice(invocation, ci.indexOf('\n', invocation)), /--head\s+HEAD\b/)
 })
 
+// #1335: a `workflow_dispatch` run has no pull-request base or body, so the
+// changed-lines step was skipped and the job published a green `coverage`
+// conclusion at the dispatched sha. That is a paint: a person with workflow-run
+// permission could dispatch at a red pull request's head and leave a success
+// where `ci-ok` reads. A dispatched run now fails closed, so the only
+// conclusion it can publish under that name is one `ci-ok` never accepts.
+test('a dispatched coverage run fails closed instead of publishing a green conclusion', (t) => {
+  const dir = tempDir(t)
+  const diffFile = join(dir, 'change.diff')
+  const reportFile = join(dir, 'coverage.txt')
+  writeFileSync(diffFile, COVERED_DIFF)
+  writeFileSync(reportFile, REPORT)
+
+  const dispatch = runGate(diffFile, reportFile, ['--event', 'workflow_dispatch'])
+  assert.equal(dispatch.code, 1, 'a dispatched run may not pass the floor it cannot enforce')
+  assert.match(dispatch.stdout, /coverage: mode=dispatch-fail-closed/)
+  assert.doesNotMatch(`${dispatch.stdout}${dispatch.stderr}`, /coverage-diff: ok/)
+
+  // The same fixture on the pull-request path is green and names its mode.
+  const pull = runGate(diffFile, reportFile, ['--event', 'pull_request'])
+  assert.equal(pull.code, 0, pull.stderr)
+  assert.match(pull.stdout, /coverage: mode=pull_request/)
+})
+
+// The script-level refusal is only reached if the job routes a dispatched run
+// into it, and the step that does so has to be appended: the comparator refuses
+// any rewrite of a required job's own step definitions, so the floor step stays
+// byte-for-byte the base tree's and the last step carries the refusal.
+test('the coverage job routes a dispatched run through the fail-closed step', () => {
+  const ci = readFileSync(fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)), 'utf8')
+  const guard = ci.indexOf('Name the coverage mode and refuse a dispatched run')
+  assert.notEqual(guard, -1, 'ci.yml must carry the fail-closed dispatch step')
+  const invocation = ci.indexOf('scripts/coverage-diff.mjs', guard)
+  assert.notEqual(invocation, -1, 'the step must run scripts/coverage-diff.mjs')
+  const line = ci.slice(invocation, ci.indexOf('\n', invocation))
+  assert.match(line, /--event/)
+  assert.match(line, /--mode-only/)
+  assert.ok(
+    ci.indexOf('Fail when the suite reported a failure') < guard,
+    'the refusal is appended after the existing steps, which #1276 allows',
+  )
+
+  // The floor step's own definition is the base tree's: changing it in place is
+  // refused by the comparator (a required job's steps may only grow at the end).
+  const floor = ci.indexOf('Enforce the changed-lines floor')
+  assert.notEqual(floor, -1)
+  const floorInvocation = ci.indexOf('scripts/coverage-diff.mjs', floor)
+  const floorBlock = ci.slice(floor, ci.indexOf('\n', floorInvocation))
+  assert.doesNotMatch(floorBlock, /--event|workflow_dispatch/, 'the floor step must stay as the base tree spells it')
+})
+
 // `git diff` C-quotes a path that holds a non-ASCII byte unless it is told not
 // to. The quoted name starts with `"`, fails the `src/` test, and the whole file
 // disappears — which the gate prints as `skip`, exit 0, not as a refusal. The

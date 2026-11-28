@@ -146,7 +146,10 @@ red — the two words are distinct on purpose, because `missing` sends a reader 
 look for a job that did run. When one context carries several conclusions at one
 commit, the newest settled one decides, and every conclusion seen is recorded in
 the published summary, so "two conclusions" can be told from "no conclusions"
-without re-querying the API. `ci-ok` has one workflow-file producer,
+without re-querying the API. A `workflow_dispatch` run must not be able to
+publish a green `coverage` at a commit whose pull-request run is red: the step
+fails closed on dispatch and prints `coverage: mode=dispatch-fail-closed`, so a
+dispatch can never satisfy the check (#1335). `ci-ok` has one workflow-file producer,
 `ci-ok-publish.yml`; `ci-ok-refresh.yml` posts a red `ci-ok` through the API on
 every push to `main`, and `scripts/lib/reserved-contexts.mjs` reads job ids and
 job-level `name:` values, so that producer sits outside the scanner's view by

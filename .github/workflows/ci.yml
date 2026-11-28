@@ -251,6 +251,18 @@ jobs:
             echo "the suite reported a failure; see coverage.txt" >&2
             exit 1
           fi
+      # #1335: a `workflow_dispatch` run has no pull-request base and no
+      # pull-request body, so the floor step above is skipped — and the job still
+      # reported success at the dispatched sha, which let a dispatch paint a red
+      # pull request's `coverage` green. This last step names the mode the run
+      # measured in, and on a dispatch it fails: the only `coverage` conclusion a
+      # dispatched run can publish is one `ci-ok` never accepts. It is appended,
+      # never inserted, because a required job's own step definitions must stay
+      # as the base tree spells them (#1276).
+      - name: Name the coverage mode and refuse a dispatched run
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: node scripts/coverage-diff.mjs --event "$EVENT_NAME" --mode-only
 
   build:
     name: build
