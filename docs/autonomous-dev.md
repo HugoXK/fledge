@@ -768,11 +768,14 @@ file the pull request edits made an uncovered line read as covered. Only added
 lines under `src/**` are measured, and only ones that can execute: comments,
 static imports, declaration heads, generated files and `*.d.ts` are not counted,
 because the report can never list them as uncovered. A declaration member is
-exempt only when its right-hand side is a type expression (`instancesUsed:
-boolean`), so a line that carries a value, a call or an operator (`key:
-'instance',`) stays measured, and a dynamic `import(...)` call or a one-line
-`namespace` body is code; ADR [0029](decisions/0029-coverage-measurement-semantics.md)
-records the rule and its residual. An uncovered added line is printed
+exempt only when its right-hand side is a type expression: a built-in keyword, a
+capitalized type name with generic arguments and array suffixes, a `readonly`
+array, a function type, or a union of those with literal types allowed inside
+the union (`instancesUsed: boolean`, `x: A<B<C>>`). A lone literal, a call, any
+other operator or a lowercase right-hand side stays measured (`key: 'instance',`),
+and a dynamic `import(...)` call or a one-line `namespace` body with statements
+is code; ADR [0029](decisions/0029-coverage-measurement-semantics.md) records the
+rule and its residual. An uncovered added line is printed
 as `path:line` in the step log, so the fix is a test for that line rather than a
 request for a higher total. A changed file the report has no row for is the same
 failure: Node prints a file only when the suite loaded it, so a new module no test

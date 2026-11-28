@@ -1,8 +1,8 @@
 # 0029 — coverage measurement: a measured line is executable code, and the type/value boundary is decided on the line
 
-Status: **accepted** (implemented in the same pull request as [`#1313`](https://github.com/HugoXK/fledge/issues/1313))
+Status: **proposed** — awaiting the Lead's explicit sign-off on the rule and the T3 PASS (implemented in the same pull request as [`#1313`](https://github.com/HugoXK/fledge/issues/1313))
 Date: 2026-11-28
-Decision owner: Fledge Platform Dev-2
+Decision owner: Fledge Platform Lead (sign-off); written by Fledge Platform Dev-2
 Settles: [`#1313`](https://github.com/HugoXK/fledge/issues/1313), which folds in the Lead's four T3 conditions. It records the rule the classifier applies and rejects the alternative that card named.
 Pin: `4099d7f85df8ba801edf0fbbc6ff7b4350ca41da` — every `file:line` here resolves at it.
 
@@ -35,12 +35,13 @@ enclosing block are not read.
 
 1. **A declaration member is not measured only when its right-hand side is a
    type expression.** `name: Type`, with optional `readonly`/`?` and optional
-   `,`/`;`, is exempt when `Type` is a built-in type keyword or a capitalized
-   type name, including arrays, generics and unions. A line whose right-hand side
-   is a string or numeric literal, a call, an operator or a lowercase identifier
-   stays measured: those are values far more often than lowercase type aliases,
-   and the pair (`instancesUsed: boolean` unmeasured, `key: 'instance',`
-   measured) is the boundary the review checks.
+   `,`/`;`, is exempt when `Type` is a built-in type keyword; a capitalized
+   (possibly dotted) type name with generic arguments and array suffixes; a
+   `readonly` array; a function type `(params) => T`; or a union of those, with
+   literal types allowed inside a union. A lone literal (`key: 'instance',`), a
+   call, any other operator, or a lowercase identifier stays measured: those are
+   values far more often than types, and the pair (`instancesUsed: boolean`
+   unmeasured, `key: 'instance',` measured) is the boundary the review checks.
 2. **A one-line `namespace` body is measured when the line retains statements
    after `{`.** A namespace header alone and an empty body declare only.
 3. **Static imports stay unmeasured; `import(` and `import.meta` are measured.**
@@ -64,12 +65,17 @@ enclosing block are not read.
 
 ## Consequences
 
-- The residual is explicit: a lowercase type alias (`id: uuid`) is measured, and
-  an object literal whose value is a capitalized identifier (`node:
-  SomeComponent`) is not. Both are rarer than the two errors this closes, and
-  either can be corrected by the block-resolving alternative above.
+- The residual is explicit: a lowercase type alias (`id: uuid`) is measured; an
+  object literal whose value is a capitalized identifier (`node: SomeComponent`)
+  or an arrow function returning a capitalized name is exempt; and a member whose
+  type is a lone literal (`kind: 'a'`) is measured, because the line cannot tell
+  it from a value. These are rarer than the two errors this closes, and the
+  block-resolving alternative above would remove them.
 - The rule is checkable by reading the one line it is given, which is what lets
   the red tests stay line-level.
 - This is gate contract, so a future change to this rule is a T3 diff with a PASS
   at its tip; the tests in `test/coverageDiff.test.ts` name every case the
   contract has to keep.
+- The number is assigned by merge order: #1315's record also plans `0029`. If
+  that pull request lands first, this file is renumbered to `0030` in the same
+  rebase and the ADR link in `docs/autonomous-dev.md` follows it.
