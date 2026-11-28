@@ -7262,14 +7262,14 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         })
         if (merged) recordMergedDelivery(repo, existing.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null, pullMergedAt)
       } else {
-        store.updateWorkItem(existing.id, { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
+        store.updateWorkItem(existing.id, existing.state === 'merged' || existing.state === 'closed' ? { title } : { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
       }
       return
     }
     if (existing === undefined) return
     const review = typeof body.review === 'object' && body.review !== null ? (body.review as Record<string, unknown>) : {}
     const state = review.state === 'approved' ? 'approved' : review.state === 'changes_requested' ? 'changes_requested' : 'in_review'
-    store.updateWorkItem(existing.id, { state })
+    if (existing.state !== 'merged' && existing.state !== 'closed') store.updateWorkItem(existing.id, { state })
   }
 
   const processGithubWebhook = async (event: string, body: Record<string, unknown>, delivery: string): Promise<void> => {

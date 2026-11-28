@@ -1736,16 +1736,22 @@ export class Jobs {
   private syncWorkItemForJob(job: JobRow, result: { status: 'succeeded' | 'failed' | 'quota_exhausted'; prUrl: string | null; issueUrl: string | null }): void {
     const existing = job.work_item_id === null ? undefined : this.store.getWorkItem(job.work_item_id)
     if (existing !== undefined) {
-      const prState = result.prUrl === null ? existing.pr_state : 'open'
+      // #1284: a terminal item stays terminal. One issue keeps one pull request,
+      // so a later job reports the URL of a pull request whose item the
+      // maintainer already merged or closed; that report links, never reopens.
+      const terminal = existing.state === 'merged' || existing.state === 'closed'
+      const prState = terminal || result.prUrl === null ? existing.pr_state : 'open'
       // Every terminal status without a pull request returns an active item to the
       // board: a failed job and a quota-refused one both leave the work undone.
       const active = existing.state === 'in_progress' || existing.state === 'assigned'
       const terminalWithoutPr = result.status === 'failed' || result.status === 'quota_exhausted'
-      const state = result.status === 'succeeded' && result.prUrl !== null
-        ? 'pr_ready'
-        : terminalWithoutPr && active
-          ? 'triaged'
-          : existing.state
+      const state = terminal
+        ? existing.state
+        : result.status === 'succeeded' && result.prUrl !== null
+          ? 'pr_ready'
+          : terminalWithoutPr && active
+            ? 'triaged'
+            : existing.state
       this.store.updateWorkItem(existing.id, {
         state,
         ...(result.prUrl === null ? {} : { pr_url: result.prUrl, pr_state: prState }),
