@@ -141,6 +141,137 @@ const MINI = [
 
 const mini = (edit: (text: string) => string): string => edit(MINI)
 
+const STEP_BASE = MINI.replace(
+  '    steps:\n      - run: npm run build\n',
+  '    steps:\n      - name: one\n        run: echo one\n      - name: two\n        run: echo two\n',
+)
+
+test('a required job may gain a step only after its last base step', () => {
+  // A step appended after the last base step is the only addition the
+  // comparator can allow: the base list stays a prefix, so no base command can
+  // be displaced. #1270's review showed why insertion is refused — a head that
+  // puts `npm pkg set scripts.test='exit 0'` ahead of `npm test` keeps the base
+  // text matched as a subsequence while the test command becomes a no-op.
+  const appended = STEP_BASE.replace(
+    '        run: echo two\n',
+    '        run: echo two\n      - name: three\n        run: echo three\n',
+  )
+  assert.notEqual(appended, STEP_BASE)
+  assert.equal(
+    compareGate({ base: STEP_BASE, head: appended, required: ['build'] }).ok,
+    true,
+    'a step appended after the last base step is allowed',
+  )
+
+  const inserted = STEP_BASE.replace('      - name: two', '      - name: three\n        run: echo three\n      - name: two')
+  assert.notEqual(inserted, STEP_BASE)
+  const insertedResult = compareGate({ base: STEP_BASE, head: inserted, required: ['build'] })
+  assert.equal(insertedResult.ok, false, 'a step inserted before a base step must not pass')
+  assert.match(insertedResult.problems.join('\n'), /`steps:`/)
+  assert.match(insertedResult.problems.join('\n'), /prefix|after the last base step/)
+
+  // The review's counterexample, on the real workflow: the base command text is
+  // still present after the inserted step, so a subsequence match would pass.
+  const realPreStep = editJob(ci, 'mock-check', (block) => {
+    const at = block.findIndex((line) => /^ {6}- /.test(line))
+    assert.notEqual(at, -1)
+    return [...block.slice(0, at), '      - run: npm pkg set scripts.test=true', ...block.slice(at)]
+  })
+  const realPreStepResult = compareGate({ base: ci, head: realPreStep })
+  assert.equal(realPreStepResult.ok, false, 'a pre-step ahead of a base step must not pass')
+  assert.match(realPreStepResult.problems.join('\n'), /`mock-check`/)
+
+  const removed = STEP_BASE.replace('      - name: two\n        run: echo two\n', '')
+  assert.notEqual(removed, STEP_BASE)
+  const removedResult = compareGate({ base: STEP_BASE, head: removed, required: ['build'] })
+  assert.equal(removedResult.ok, false, 'a removed base step must not pass')
+  assert.match(removedResult.problems.join('\n'), /`steps:`/)
+
+  const changed = STEP_BASE.replace('        run: echo two', '        run: echo changed')
+  const changedResult = compareGate({ base: STEP_BASE, head: changed, required: ['build'] })
+  assert.equal(changedResult.ok, false, 'a changed base step must not pass')
+  assert.match(changedResult.problems.join('\n'), /`steps:`/)
+
+  const reordered = STEP_BASE.replace(
+    '      - name: one\n        run: echo one\n      - name: two\n        run: echo two\n',
+    '      - name: two\n        run: echo two\n      - name: one\n        run: echo one\n',
+  )
+  const reorderedResult = compareGate({ base: STEP_BASE, head: reordered, required: ['build'] })
+  assert.equal(reorderedResult.ok, false, 'reordering the base steps must not pass')
+  assert.match(reorderedResult.problems.join('\n'), /`steps:`/)
+
+  // The aggregate follows the same prefix rule: a step may follow the evaluator,
+  // not precede it.
+  const aggregateAppended = MINI.replace(
+    '      - run: node base/scripts/ci-ok.mjs\n',
+    '      - run: node base/scripts/ci-ok.mjs\n      - name: extra\n        run: echo extra\n',
+  )
+  assert.equal(compareGate({ base: MINI, head: aggregateAppended, required: ['build'] }).ok, true)
+})
+
+test('the aggregate cannot gain a step before its evaluator or change its shape', () => {
+  // The review's counterexample: a step between the `path: base` checkout and
+  // the evaluator rewrites the evaluator it is about to run.
+  const tamper = '      - run: echo "process.exit(0)" > base/scripts/ci-ok.mjs\n'
+  const marker = '      - name: Name the evaluator that comes from the base tree'
+  const tampered = ci.replace(marker, tamper + marker)
+  assert.notEqual(tampered, ci, 'the fixture inserted the tampering step')
+  const tamperedResult = compareGate({ base: ci, head: tampered })
+  assert.equal(tamperedResult.ok, false, 'a step before the evaluator must not pass')
+  assert.match(tamperedResult.problems.join('\n'), /`ci-ok-head`/)
+  assert.match(tamperedResult.problems.join('\n'), /`steps:`/)
+
+  // The same insertion on the small fixture, between checkout and evaluator.
+  const miniTampered = MINI.replace(
+    '      - run: node base/scripts/ci-ok.mjs\n',
+    '      - name: tamper\n        run: echo x > base/scripts/ci-ok.mjs\n      - run: node base/scripts/ci-ok.mjs\n',
+  )
+  const miniResult = compareGate({ base: MINI, head: miniTampered, required: ['build'] })
+  assert.equal(miniResult.ok, false, 'an inserted aggregate step must not pass')
+
+  // The aggregate's own keys are pinned too, not only its steps: a job-level
+  // `continue-on-error` would report `success` whatever the evaluator says.
+  const loose = editJob(ci, AGGREGATE_JOB, (block) => [...block.slice(0, 1), '    continue-on-error: true', ...block.slice(1)])
+  const looseResult = compareGate({ base: ci, head: loose })
+  assert.equal(looseResult.ok, false, 'a new aggregate key must not pass')
+  assert.match(looseResult.problems.join('\n'), /gains `continue-on-error:`/)
+})
+
+test('a base tree with no accepted aggregate job is refused, not silently accepted', () => {
+  // The policy tree is what the gate is judged against; without an aggregate in
+  // it there is no evaluator to compare the head's against, so silence must not
+  // read as a pass.
+  const baseWithoutAggregate = editJob(MINI, 'ci-ok', () => [])
+  assert.notEqual(baseWithoutAggregate, MINI, 'the fixture removed the aggregate job')
+  const result = compareGate({ base: baseWithoutAggregate, head: MINI, required: ['build'] })
+  assert.equal(result.ok, false, 'a base with no aggregate cannot judge the head')
+  assert.match(result.problems.join('\n'), /the base tree's .*declares no aggregate job/)
+})
+
+test('a step body line re-indented inside its block scalar is refused', () => {
+  const base = [
+    'name: CI',
+    'on:',
+    '  pull_request:',
+    'jobs:',
+    '  build:',
+    '    name: build',
+    '    runs-on: ubuntu-latest',
+    '    steps:',
+    '      - name: one',
+    '        run: |',
+    '          echo one',
+    '          echo two',
+    '',
+  ].join('\n')
+  // Two more leading spaces are content in a block scalar, so this head changes
+  // the command the step runs while a per-line trim would call it equal.
+  const head = base.replace('          echo two', '            echo two')
+  assert.notEqual(head, base)
+  const result = compareGate({ base, head, required: ['build'] })
+  assert.equal(result.ok, false, 'an indentation change inside a step body must be refused')
+})
+
 test('the checked-in workflow is its own base, so an untouched pull request is allowed', () => {
   const result = compareGate({ base: ci, head: ci })
   assert.equal(result.ok, true, result.problems.join('\n'))
@@ -168,7 +299,7 @@ test('acceptance 1: a required job stubbed to `run: true` is refused, naming the
   assert.equal(result.ok, false)
   const text = result.problems.join('\n')
   assert.match(text, /`mock-check`/, 'the refusal names the required job')
-  assert.match(text, /`run:`/, 'the refusal names the differing body key')
+  assert.match(text, /`steps:`/, 'the refusal names the changed step list')
   assert.equal(result.lines.length, 0, 'a refusal carries no informational line that could be read as a pass')
 })
 
@@ -197,7 +328,7 @@ test('acceptance 3a: a step-level `continue-on-error: true` is refused, and the 
   const head = stepLevelContinueOnError()
   const result = compareGate({ base: ci, head })
   assert.equal(result.ok, false)
-  assert.match(result.problems.join('\n'), /`continue-on-error:`/)
+  assert.match(result.problems.join('\n'), /`steps:`/)
   assert.match(result.problems.join('\n'), /`mock-check`/, 'the key is named together with the job it would hide')
 })
 

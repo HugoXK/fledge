@@ -288,6 +288,65 @@ function isLiteralName(value) {
   return value !== '' && !value.startsWith('|') && !value.startsWith('>') && !value.includes('${{')
 }
 
+/**
+ * The individual list items under a job's `steps:`, each as its original lines.
+ * The first `- ` line after `steps:` sets the list's indentation; a nested list
+ * item inside a step is deeper, so it stays in that step's block.
+ */
+function stepBlocks(job) {
+  const key = job.keys.get('steps')
+  if (key === undefined) return []
+  const lines = key.lines.slice(1)
+  const blocks = []
+  let current = null
+  let itemIndent = null
+  for (const line of lines) {
+    const item = /^([ \t]*)-[ \t]+(.*)$/.exec(line)
+    if (item !== null) {
+      const indent = item[1].length
+      if (itemIndent === null) itemIndent = indent
+      if (indent === itemIndent) {
+        if (current !== null) blocks.push(current)
+        current = [line]
+        continue
+      }
+    }
+    if (current !== null) current.push(line)
+  }
+  if (current !== null) blocks.push(current)
+  return blocks
+}
+
+/**
+ * A step compared by content, with only the step's own leading indent removed.
+ * Deeper whitespace stays significant: a `run: |` body line moved out of the
+ * block scalar compares differently, which trimming every line would hide.
+ */
+function normalizeStep(block) {
+  const first = block[0] ?? ''
+  const indent = first.length - first.trimStart().length
+  const strip = new RegExp(`^ {0,${String(indent)}}`)
+  return block.map((line) => line.replace(strip, '').trimEnd()).join('\n')
+}
+
+/**
+ * The base steps must be a prefix of the head's steps: every base step survives
+ * unchanged, in the same order and at the same position, so a step may only be
+ * added after the last base step. A subsequence match would allow a step
+ * inserted ahead of a base step — #1270's review showed a head can then put
+ * `npm pkg set scripts.test='exit 0'` before `npm test` and keep the base text
+ * matching — so position, not mere presence, is the invariant.
+ */
+function stepsPreserved(baseJob, headJob) {
+  const head = stepBlocks(headJob).map(normalizeStep)
+  const base = stepBlocks(baseJob).map(normalizeStep)
+  if (head.length < base.length) return false
+  for (let index = 0; index < base.length; index += 1) {
+    if (head[index] !== base[index]) return false
+  }
+  return true
+}
+
 // The job ids a head declares, for the refusal that has to say what it found
 // instead of an accepted aggregate id. Only ids that parse as a plain name are
 // quoted; any other is counted rather than echoed.
@@ -383,6 +442,17 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
         }
         continue
       }
+      // `steps:` may grow only at the end: the base list has to stay a prefix,
+      // so a step added after the last base step is a strengthening while one
+      // inserted before or between base steps is refused. The comparator cannot
+      // allow an arbitrary pre-step; a step that must run first has to come from
+      // the base tree, not from the head being judged.
+      if (name === 'steps') {
+        if (!stepsPreserved(baseJob, headJob)) {
+          refuse(`required job \`${id}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
+        }
+        continue
+      }
       if (baseKey.lines.join('\n') === headKey.lines.join('\n')) continue
       const key = differingKey(baseKey.lines, headKey.lines)
       refuse(
@@ -452,6 +522,49 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
   } else {
     const aggregateId = aggregateIds[0]
     const aggregate = headJobs.get(aggregateId)
+    // Pin the aggregate's own shape, not only its command string: a step
+    // inserted between the `path: base` checkout and the evaluator could
+    // rewrite the evaluator it is about to run. The base's accepted id may
+    // differ from the head's after #1273's rename, so the comparison is
+    // against the base's aggregate and it skips `name:` only on that rename;
+    // `needs` growth is checked below.
+    const baseAggregateIds = AGGREGATE_JOBS.filter((id) => baseJobs.has(id))
+    const baseAggregate = baseAggregateIds.length === 1 ? baseJobs.get(baseAggregateIds[0]) : undefined
+    if (baseAggregateIds.length === 0) {
+      const looked = AGGREGATE_JOBS.map((id) => `\`${id}\``).join(' or ')
+      refuse(`the base tree's ${GATE_COMPARE_FILE} declares no aggregate job the gate accepts (looked for ${looked}), so this pull request cannot be judged against it`)
+    } else if (baseAggregateIds.length > 1) {
+      refuse(`the base tree's ${GATE_COMPARE_FILE} declares more than one aggregate job (\`${baseAggregateIds.join('` and `')}\`), so the gate cannot tell which one it checks`)
+    }
+    if (baseAggregate !== undefined) {
+      for (const [name, baseKey] of baseAggregate.keys) {
+        if (allowlisted.has(name)) continue
+        const headKey = aggregate.keys.get(name)
+        if (headKey === undefined) {
+          refuse(`the pull request's \`${aggregateId}\` loses \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
+          continue
+        }
+        if (name === 'needs') continue
+        if (name === 'name' && baseAggregate.id !== aggregate.id) continue
+        if (name === 'steps') {
+          if (!stepsPreserved(baseAggregate, aggregate)) {
+            refuse(`the pull request's \`${aggregateId}\` changes \`steps:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR} (the base steps must stay a prefix: a step may only be added after the last base step, never before or between them)`)
+          }
+          continue
+        }
+        if (baseKey.lines.join('\n') === headKey.lines.join('\n')) continue
+        const key = differingKey(baseKey.lines, headKey.lines)
+        refuse(
+          key === null
+            ? `the pull request's \`${aggregateId}\` differs from the base tree in ${GATE_COMPARE_FILE}${DOOR}`
+            : `the pull request's \`${aggregateId}\` changes \`${key}:\` from the base tree in ${GATE_COMPARE_FILE}${DOOR}`,
+        )
+      }
+      for (const name of aggregate.keys.keys()) {
+        if (allowlisted.has(name) || baseAggregate.keys.has(name)) continue
+        refuse(`the pull request's \`${aggregateId}\` gains \`${name}:\` in ${GATE_COMPARE_FILE}${DOOR}`)
+      }
+    }
     const headNeeds = needsIds(aggregate)
     for (const id of requiredIds) {
       if (!headNeeds.includes(id)) refuse(`the pull request's \`${aggregateId}\` does not depend on required job \`${id}\``)
