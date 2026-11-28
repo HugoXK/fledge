@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { checkArchitecture, checkFileSizes, checkImports } from '../scripts/lib/arch-boundaries.mjs'
+import { selectLedger } from '../scripts/lib/arch-ledger.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -102,4 +103,34 @@ test('checkArchitecture reports the sizes it checked', () => {
   assert.equal(result.checked.files, 2)
   assert.equal(result.checked.imports, 1)
   assert.equal(result.checked.grandfathered, 1)
+})
+
+test('the size ratchet reads the ceiling from the base ref, not the pull request head', () => {
+  const base = JSON.stringify({ 'src/big.ts': 10 })
+  const head = JSON.stringify({ 'src/big.ts': 20 })
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: base, headContent: head })
+  assert.equal(chosen.source, 'base:origin/main')
+  const files = [{ path: 'src/big.ts', content: Array.from({ length: 15 }, (_, i) => `// ${String(i)}`).join('\n') }]
+  const result = checkArchitecture({ files, grandfather: chosen.ledger })
+  const growth = result.violations.find((violation) => violation.rule === 'grandfathered-growth')
+  assert.ok(growth, 'a file grown past the base ceiling must be refused')
+  assert.match(growth.reason, /15 lines, above its recorded 10/)
+  // The same tree judged against the head ledger does not see growth at all,
+  // which is exactly the bypass this rule removes.
+  const headResult = checkArchitecture({ files, grandfather: JSON.parse(head) })
+  assert.equal(headResult.violations.some((violation) => violation.rule === 'grandfathered-growth'), false)
+})
+
+test('a named base ref that cannot be read fails closed instead of reading the head', () => {
+  assert.throws(
+    () => selectLedger({ baseRef: 'origin/main', baseContent: null, headContent: JSON.stringify({ 'src/big.ts': 20 }) }),
+    /refusing to read the ceiling from the pull request head/,
+  )
+})
+
+test('a local run with no base ref still reads the head ledger and says so', () => {
+  const head = JSON.stringify({ 'src/big.ts': 20 })
+  const chosen = selectLedger({ baseRef: null, baseContent: null, headContent: head })
+  assert.equal(chosen.source, 'head')
+  assert.deepEqual(chosen.ledger, { 'src/big.ts': 20 })
 })

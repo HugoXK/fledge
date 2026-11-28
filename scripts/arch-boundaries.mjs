@@ -6,9 +6,11 @@
 // Reads the tree, not a git diff: the gate is about the shape the next reader
 // sees, not only the lines this pull request touched.
 
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { checkArchitecture } from './lib/arch-boundaries.mjs'
+import { selectLedger } from './lib/arch-ledger.mjs'
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -33,10 +35,64 @@ const files = walk(sourceRoot)
   }))
   .sort((left, right) => left.path.localeCompare(right.path))
 
-const grandfatherPath = join(root, 'scripts/lib/arch-grandfather.json')
-const grandfather = existsSync(grandfatherPath)
-  ? JSON.parse(readFileSync(grandfatherPath, 'utf8'))
-  : {}
+// #1333: the ceiling map belongs to the base branch. Reading it from the tree
+// under test lets a pull request raise its own limit in the same diff, which is
+// the bypass this gate exists to refuse. A named base ref must be readable; a
+// local run without one reads the working tree and says so in the report line.
+const LEDGER = 'scripts/lib/arch-grandfather.json'
+const grandfatherPath = join(root, LEDGER)
+const headContent = existsSync(grandfatherPath) ? readFileSync(grandfatherPath, 'utf8') : null
+
+function argument(name) {
+  const at = process.argv.indexOf(name)
+  return at < 0 ? null : (process.argv[at + 1] ?? null)
+}
+
+function readAt(ref) {
+  try {
+    return execFileSync('git', ['show', `${ref}:${LEDGER}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+  } catch {
+    return null
+  }
+}
+
+const envBase = process.env.GITHUB_BASE_REF === undefined || process.env.GITHUB_BASE_REF === ''
+  ? null
+  : `origin/${process.env.GITHUB_BASE_REF}`
+const explicitBase = argument('--base') ?? (process.env.ARCH_BASE_REF === undefined || process.env.ARCH_BASE_REF === '' ? null : process.env.ARCH_BASE_REF)
+const onPullRequest = (process.env.GITHUB_EVENT_NAME ?? '') !== '' && (process.env.GITHUB_EVENT_NAME ?? '') !== 'push'
+
+// The ceiling is looked for in this order and the first readable source wins:
+// an explicit `--base`, the `GITHUB_BASE_REF` remote, then `HEAD^1` of the merge
+// commit GitHub checks out for a pull request (its first parent is the base tip).
+// Only an explicitly named base is strict: a default that cannot be read falls
+// back to the working tree and the report line says which ledger judged the run.
+const candidates = []
+if (explicitBase !== null) candidates.push({ ref: explicitBase, strict: true })
+else {
+  if (envBase !== null) candidates.push({ ref: envBase, strict: false })
+  if (onPullRequest) candidates.push({ ref: 'HEAD^1', strict: false })
+}
+let baseRef = null
+let baseContent = null
+for (const candidate of candidates) {
+  const content = readAt(candidate.ref)
+  if (content !== null) {
+    baseRef = candidate.ref
+    baseContent = content
+    break
+  }
+  if (candidate.strict) baseRef = candidate.ref
+}
+
+let chosen
+try {
+  chosen = selectLedger({ baseRef, baseContent, headContent, strict: explicitBase !== null })
+} catch (error) {
+  console.error(error instanceof Error ? error.message : String(error))
+  process.exit(1)
+}
+const { ledger: grandfather, source: ledgerSource } = chosen
 
 const result = checkArchitecture({ files, grandfather })
 for (const violation of result.violations) {
@@ -47,5 +103,5 @@ if (result.violations.length > 0) {
   process.exit(1)
 }
 console.log(
-  `arch: ${String(result.checked.files)} files, ${String(result.checked.imports)} imports, ${String(result.checked.grandfathered)} grandfathered`,
+  `arch: ${String(result.checked.files)} files, ${String(result.checked.imports)} imports, ${String(result.checked.grandfathered)} grandfathered (ledger from ${ledgerSource})`,
 )
