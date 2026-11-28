@@ -4842,17 +4842,33 @@ export function automationHealthCard(locale: Locale, summary: AutomationHealthSu
   const queueBody = summary.queueDepth === null
     ? t('还没有测量。', 'Not measured yet.')
     : t('等待 worker 的任务数。', 'Jobs waiting for a worker.')
+  const lease = summary.lease
+  const leaseBody = lease === null
+    ? t('没有存活的租约。', 'No live lease.')
+    : t(
+        `最老的存活租约：${lease.jobId}（${lease.kind}，${lease.repo}），已持有 ${automationWaitText(t, lease.ageSeconds)}${lease.expiresInSeconds === null ? '' : `，${automationWaitText(t, lease.expiresInSeconds)} 后到期`}。`,
+        `Oldest live lease: ${lease.jobId} (${lease.kind}, ${lease.repo}), held for ${automationWaitText(t, lease.ageSeconds)}${lease.expiresInSeconds === null ? '' : `, expires in ${automationWaitText(t, lease.expiresInSeconds)}`}.`,
+      )
+  const reaped = summary.lastReaped
+  const reapedBody = reaped === null
+    ? t('没有租约被回收的记录。', 'No reaped lease recorded.')
+    : t(
+        `最近回收：${reaped.jobId}（${reaped.kind}，${reaped.repo}），${automationWaitText(t, reaped.ageSeconds)} 前。`,
+        `Last reaped: ${reaped.jobId} (${reaped.kind}, ${reaped.repo}), ${automationWaitText(t, reaped.ageSeconds)} ago.`,
+      )
   return `<section class="card">
     <h2>${escapeHtml(t('自动化健康', 'Automation health'))}</h2>
-    <p class="muted">${escapeHtml(t('读取刚结束的调度检查；数字来自进程内的计数器，重启后从零开始。', 'From the dispatch check that just ran; the numbers come from in-process counters and restart from zero.'))}</p>
+    <p class="muted">${escapeHtml(t('读取刚结束的调度检查；计数器重启后从零开始，租约记录来自数据库。', 'From the dispatch check that just ran; the counters restart from zero, while the lease rows are read from the database.'))}</p>
     <div class="list">
       <div class="list-row"><div class="list-main"><strong>${idle}</strong><small>${escapeHtml(idleBody)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${escapeHtml(automationLatencyText(t, summary.dispatchLatencyMs))}</strong><small>${escapeHtml(latencyBody)}</small></div></div>
       <div class="list-row"><div class="list-main"><strong>${summary.queueDepth === null ? '—' : summary.queueDepth}</strong><small>${escapeHtml(queueBody)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${lease === null ? '—' : escapeHtml(automationWaitText(t, lease.ageSeconds))}</strong><small>${escapeHtml(leaseBody)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${reaped === null ? '—' : escapeHtml(automationWaitText(t, reaped.ageSeconds))}</strong><small>${escapeHtml(reapedBody)}</small></div></div>
     </div>
     <p class="fine">${escapeHtml(t(
-      `有就绪工作却没有任务在跑，超过 ${idleAlertMinutes} 分钟就会告警；本页只读，不会触发派发。`,
-      `An alert fires when ready work waits more than ${idleAlertMinutes} minutes with no job running; this page is read-only and dispatches nothing.`,
+      `有就绪工作却没有任务在跑，超过 ${idleAlertMinutes} 分钟就会告警；租约被回收也会告警。本页只读，不会触发派发。`,
+      `An alert fires when ready work waits more than ${idleAlertMinutes} minutes with no job running, and when a lease is reaped; this page is read-only and dispatches nothing.`,
     ))}</p>
   </section>`
 }
