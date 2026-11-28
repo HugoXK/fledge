@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { checkArchitecture } from './lib/arch-boundaries.mjs'
-import { selectLedger } from './lib/arch-ledger.mjs'
+import { selectLedger, violationLine } from './lib/arch-ledger.mjs'
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -85,6 +85,14 @@ for (const candidate of candidates) {
   if (candidate.strict) baseRef = candidate.ref
 }
 
+// #1333: in CI the base is expected. If it cannot be read there, judging the
+// head is the bypass itself, so the run fails instead of falling back.
+const inCi = (process.env.GITHUB_ACTIONS ?? '') === 'true'
+if (inCi && onPullRequest && baseContent === null) {
+  console.error('arch: cannot read the base ledger in CI; refusing to judge the pull request against its own ceiling map')
+  process.exit(1)
+}
+
 let chosen
 try {
   chosen = selectLedger({ baseRef, baseContent, headContent, strict: explicitBase !== null })
@@ -94,9 +102,10 @@ try {
 }
 const { ledger: grandfather, source: ledgerSource } = chosen
 
+const headLedger = headContent === null ? {} : JSON.parse(headContent)
 const result = checkArchitecture({ files, grandfather })
 for (const violation of result.violations) {
-  console.error(`${violation.file}:${String(violation.line)} ${violation.rule}: ${violation.reason}`)
+  console.error(violationLine(violation, { ledgerSource, headLedger }))
 }
 if (result.violations.length > 0) {
   console.error(`arch: ${String(result.violations.length)} violation(s)`)

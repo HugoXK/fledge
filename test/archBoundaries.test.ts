@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
 import { checkArchitecture, checkFileSizes, checkImports } from '../scripts/lib/arch-boundaries.mjs'
-import { selectLedger } from '../scripts/lib/arch-ledger.mjs'
+import { selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -133,4 +133,45 @@ test('a local run with no base ref still reads the head ledger and says so', () 
   const chosen = selectLedger({ baseRef: null, baseContent: null, headContent: head })
   assert.equal(chosen.source, 'head')
   assert.deepEqual(chosen.ledger, { 'src/big.ts': 20 })
+})
+
+function bigFile(lines: number) {
+  return [{ path: 'src/big.ts', content: Array.from({ length: lines }, (_, i) => `// ${String(i)}`).join('\n') }]
+}
+
+test('a ceiling the base branch already carried is not growth', () => {
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: JSON.stringify({ 'src/big.ts': 9000 }), headContent: JSON.stringify({ 'src/big.ts': 8999 }) })
+  const result = checkArchitecture({ files: bigFile(8999), grandfather: chosen.ledger })
+  assert.equal(result.violations.some((violation) => violation.rule === 'grandfathered-growth'), false)
+})
+
+test('a tip that deletes its own entry cannot hide growth', () => {
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: JSON.stringify({ 'src/big.ts': 1000 }), headContent: JSON.stringify({}) })
+  const result = checkArchitecture({ files: bigFile(1500), grandfather: chosen.ledger })
+  const growth = result.violations.find((violation) => violation.rule === 'grandfathered-growth')
+  assert.ok(growth, 'deleting the entry must not remove the ceiling')
+  assert.match(growth.reason, /1500 lines, above its recorded 1000/)
+})
+
+test('a tip that lowers its own entry cannot make the base refusal disappear', () => {
+  const chosen = selectLedger({ baseRef: 'origin/main', baseContent: JSON.stringify({ 'src/big.ts': 5000 }), headContent: JSON.stringify({ 'src/big.ts': 1000 }) })
+  const result = checkArchitecture({ files: bigFile(6000), grandfather: chosen.ledger })
+  const growth = result.violations.find((violation) => violation.rule === 'grandfathered-growth')
+  assert.ok(growth, 'a lowered head entry must not remove the base ceiling')
+  assert.match(growth.reason, /6000 lines, above its recorded 5000/)
+})
+
+test('the growth refusal names the judging ledger and the head entry', () => {
+  const line = violationLine(
+    { file: 'src/big.ts', line: 1, rule: 'grandfathered-growth', reason: '3000 lines, above its recorded 5000; split the file instead of raising the entry' },
+    { ledgerSource: 'base:origin/main', headLedger: { 'src/big.ts': 6000 } },
+  )
+  assert.match(line, /ceiling from base:origin\/main/)
+  assert.match(line, /head entry 6000/)
+})
+
+test('a local run reads the head ledger and the report says so', () => {
+  const chosen = selectLedger({ baseRef: null, baseContent: null, headContent: JSON.stringify({ 'src/big.ts': 20 }) })
+  assert.equal(chosen.source, 'head')
+  assert.equal(violationLine({ file: 'src/big.ts', line: 1, rule: 'grandfathered-growth', reason: 'growth' }, { ledgerSource: chosen.source, headLedger: { 'src/big.ts': 30 } }), 'src/big.ts:1 grandfathered-growth: growth')
 })

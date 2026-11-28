@@ -33,3 +33,15 @@ export function selectLedger({ baseRef, baseContent, headContent, strict = true 
   if (headContent === null || headContent === undefined) return { ledger: {}, source: 'head (no ledger)' }
   return { ledger: JSON.parse(headContent), source: 'head' }
 }
+
+/**
+ * One violation as the gate prints it. A growth refusal names the ledger that
+ * judged it and the entry the tip claims, because "above its recorded 10" means
+ * nothing when the tip wrote that 10 itself (#1333).
+ */
+export function violationLine(violation, { ledgerSource, headLedger = {} }) {
+  const source = violation.rule === 'grandfathered-growth' && String(ledgerSource).startsWith('base:')
+    ? ` [ceiling from ${ledgerSource}, head entry ${String(headLedger[violation.file] ?? 'none')}]`
+    : ''
+  return `${violation.file}:${String(violation.line)} ${violation.rule}: ${violation.reason}${source}`
+}

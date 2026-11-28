@@ -15,3 +15,15 @@ export interface LedgerSelection {
 }
 
 export function selectLedger(input: LedgerSelectionInput): LedgerSelection
+
+export interface LedgerViolation {
+  file: string
+  line: number
+  rule: string
+  reason: string
+}
+
+export function violationLine(
+  violation: LedgerViolation,
+  input: { ledgerSource: string; headLedger?: Record<string, number> },
+): string
