@@ -106,8 +106,8 @@ export interface ReapedLeaseHealth {
 
 // #1231: the admin metrics page reads two payloads in one line; keeping the
 // pair here means `src/app.ts` adds no line for the database card.
-export function adminHealthPayload(store: LeaseQueryReader & { db: HealthHandle }): { automation: AutomationHealthSummary; dbHealth: { counters: DatabaseHealth; queries: QueryHealthSummary } } {
-  return { automation: automationHealth(store), dbHealth: { counters: readDatabaseHealth(store.db), queries: queryHealthSummary() } }
+export function adminHealthPayload(store: LeaseQueryReader & { healthHandle(): HealthHandle }): { automation: AutomationHealthSummary; dbHealth: { counters: DatabaseHealth; queries: QueryHealthSummary } } {
+  return { automation: automationHealth(store), dbHealth: { counters: readDatabaseHealth(store.healthHandle()), queries: queryHealthSummary() } }
 }
 
 export interface AutomationHealthSummary {

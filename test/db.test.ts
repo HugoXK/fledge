@@ -145,7 +145,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     const store = new Store(path)
     const user = makeUser(store, { login: 'migrate-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_migrate', userId: user.id, owner: 'o', name: 'migrate', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: null, goal: '', autoIterate: false, intervalMinutes: 1440 })
-    store.db.exec('PRAGMA user_version = 14;')
+    store.run('PRAGMA user_version = 14;')
     store.close()
 
     const reopened = new Store(path)
@@ -153,7 +153,7 @@ test('the role backfill runs once and future schema versions are refused', () =>
     assert.notEqual(reopened.getRepo(repo.id)?.role_checked_at, null)
     // The job-attempts table moved the build's schema to 46 and the release run
     // analysis to 47, so the first refused version is 48.
-    reopened.db.exec('PRAGMA user_version = 49;')
+    reopened.run('PRAGMA user_version = 49;')
     reopened.close()
 
     assert.throws(() => new Store(path), /newer than this build/)
@@ -174,7 +174,7 @@ test('a database written before queue tickets backfills them in arrival order (#
     store.createJob({ id: 'job_ticket_early', repoId: earlier.id, userId: user.id, trigger: 'schedule', goal: 'early', callbackHash: 'cb_early', platformTokenHash: '', createdAt: '2026-01-01T00:00:01.000Z' })
     // The shape of an older file: the column is absent, so every row ranks by
     // the clock it was written with.
-    store.db.exec('ALTER TABLE jobs DROP COLUMN queue_seq')
+    store.run('ALTER TABLE jobs DROP COLUMN queue_seq')
     store.close()
 
     const reopened = new Store(path)
@@ -203,15 +203,15 @@ test('a database with two active jobs for one repository opens and keeps the run
     const runningRepo = store.createRepo({ id: 'repo_dupe_running', userId: user.id, owner: 'o', name: 'dupe-running', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     // A file written before the invariant may already hold two active rows for
     // one repository; seed exactly that so reopening has to resolve it.
-    store.db.exec('DROP INDEX IF EXISTS jobs_one_active_per_repo')
+    store.run('DROP INDEX IF EXISTS jobs_one_active_per_repo')
     store.createJob({ id: 'job_dupe_old', repoId: queuedRepo.id, userId: user.id, trigger: 'manual', goal: 'old', callbackHash: 'cb_old', platformTokenHash: '' })
     store.createJob({ id: 'job_dupe_new', repoId: queuedRepo.id, userId: user.id, trigger: 'manual', goal: 'new', callbackHash: 'cb_new', platformTokenHash: '' })
     store.createJob({ id: 'job_dupe_running', repoId: runningRepo.id, userId: user.id, trigger: 'manual', goal: 'running', callbackHash: 'cb_running', platformTokenHash: '' })
     store.createJob({ id: 'job_dupe_queued', repoId: runningRepo.id, userId: user.id, trigger: 'manual', goal: 'queued', callbackHash: 'cb_queued', platformTokenHash: '' })
-    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = 'job_dupe_old'")
-    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:01.000Z' WHERE id = 'job_dupe_new'")
-    store.db.exec("UPDATE jobs SET status = 'running', created_at = '2026-01-01T00:00:02.000Z' WHERE id = 'job_dupe_running'")
-    store.db.exec("UPDATE jobs SET created_at = '2026-01-01T00:00:03.000Z' WHERE id = 'job_dupe_queued'")
+    store.run("UPDATE jobs SET created_at = '2026-01-01T00:00:00.000Z' WHERE id = 'job_dupe_old'")
+    store.run("UPDATE jobs SET created_at = '2026-01-01T00:00:01.000Z' WHERE id = 'job_dupe_new'")
+    store.run("UPDATE jobs SET status = 'running', created_at = '2026-01-01T00:00:02.000Z' WHERE id = 'job_dupe_running'")
+    store.run("UPDATE jobs SET created_at = '2026-01-01T00:00:03.000Z' WHERE id = 'job_dupe_queued'")
     store.close()
 
     const reopened = new Store(path)
@@ -246,7 +246,7 @@ test('pruneOldData removes old jobs, notifications and settings keys', () => {
     store.createJob({ id: 'job_new', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb2', platformTokenHash: '' })
     store.updateJob('job_new', { status: 'succeeded', finished_at: new Date().toISOString() })
     store.notify(user.id, 'test', 'old')
-    store.db.exec("UPDATE notifications SET created_at = '2000-01-01T00:00:00.000Z'")
+    store.run("UPDATE notifications SET created_at = '2000-01-01T00:00:00.000Z'")
     store.setSetting('followup:old', '2000-01-01T00:00:00.000Z')
     store.setSetting('followup:recent', new Date().toISOString())
     store.pruneOldData()
@@ -320,9 +320,9 @@ test('work items are ordered by priority, then oldest first', () => {
     store.createWorkItem({ id: 'work_old_low', repoId: repo.id, userId: user.id, title: 'old low', priority: 0 })
     store.createWorkItem({ id: 'work_old_high', repoId: repo.id, userId: user.id, title: 'old high', priority: 30 })
     store.createWorkItem({ id: 'work_new_high', repoId: repo.id, userId: user.id, title: 'new high', priority: 30 })
-    store.db.exec("UPDATE work_items SET created_at = '2026-01-01T00:00:00.000Z', updated_at = '2026-01-01T00:00:00.000Z' WHERE id = 'work_old_low'")
-    store.db.exec("UPDATE work_items SET created_at = '2026-01-02T00:00:00.000Z', updated_at = '2026-01-02T00:00:00.000Z' WHERE id = 'work_old_high'")
-    store.db.exec("UPDATE work_items SET created_at = '2026-01-03T00:00:00.000Z', updated_at = '2026-01-03T00:00:00.000Z' WHERE id = 'work_new_high'")
+    store.run("UPDATE work_items SET created_at = '2026-01-01T00:00:00.000Z', updated_at = '2026-01-01T00:00:00.000Z' WHERE id = 'work_old_low'")
+    store.run("UPDATE work_items SET created_at = '2026-01-02T00:00:00.000Z', updated_at = '2026-01-02T00:00:00.000Z' WHERE id = 'work_old_high'")
+    store.run("UPDATE work_items SET created_at = '2026-01-03T00:00:00.000Z', updated_at = '2026-01-03T00:00:00.000Z' WHERE id = 'work_new_high'")
 
     assert.deepEqual(store.listWorkItems(repo.id).map((item) => item.id), ['work_old_high', 'work_new_high', 'work_old_low'])
     // A recent edit must not move an old item behind a newer one at the same
@@ -545,7 +545,7 @@ test('job events, personal delivery and cost read models are windowed', () => {
     const repo = store.createRepo({ id: 'repo_read_models', userId: user.id, owner: 'o', name: 'rm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const old = store.createJob({ id: 'job_old_metric', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-old', platformTokenHash: '', kind: 'iterate' })
     store.updateJob(old.id, { status: 'succeeded', pr_url: 'https://github.com/o/rm/pull/1', pr_state: 'merged', started_at: '2000-01-01T00:00:00.000Z', finished_at: '2000-01-01T00:10:00.000Z' })
-    store.db.exec("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_old_metric'")
+    store.run("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_old_metric'")
 
     const job = store.createJob({ id: 'job_read_metric', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-new', platformTokenHash: '', kind: 'iterate' })
     store.updateJob(job.id, { status: 'succeeded', pr_url: 'https://github.com/o/rm/pull/2', pr_state: 'merged', started_at: new Date(Date.now() - 10 * 60_000).toISOString(), finished_at: new Date().toISOString(), review_score: null })
@@ -627,7 +627,7 @@ test('alerts surface stalled jobs, stale PRs and near-budget repositories', () =
     store.updateJob('job_pr_alert', { status: 'succeeded', pr_url: 'https://github.com/o/alerts/pull/1', pr_state: 'open' })
     store.createJob({ id: 'job_stalled_alert', repoId: repo.id, userId: user.id, trigger: 'manual', goal: 'g', callbackHash: 'cb-alert', platformTokenHash: '' })
     store.updateJob('job_stalled_alert', { status: 'running', started_at: '2000-01-01T00:00:00.000Z' })
-    store.db.exec("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_pr_alert'")
+    store.run("UPDATE jobs SET created_at = '2000-01-01T00:00:00.000Z' WHERE id = 'job_pr_alert'")
     store.recordUsage(user.id, null, 0.9, null, repo.id)
     store.markRepoCredential(repo.id, 'invalid')
     const alerts = store.alerts({ usdCny: 1 })
@@ -647,7 +647,7 @@ test('an idle repository with ready work raises an automation alert that clears 
     const user = makeUser(store, { login: 'idle-user', status: 'approved' })
     const repo = store.createRepo({ id: 'repo_idle', userId: user.id, owner: 'o', name: 'idle', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 60 })
     const item = store.createWorkItem({ id: 'work_idle', repoId: repo.id, userId: user.id, title: 'A title that must never reach a label', priority: 1 })
-    store.db.exec("UPDATE work_items SET created_at = '2026-11-16T10:00:00.000Z' WHERE id = 'work_idle'")
+    store.run("UPDATE work_items SET created_at = '2026-11-16T10:00:00.000Z' WHERE id = 'work_idle'")
     assert.equal(item.state, 'proposed')
 
     const idle = store.alerts({ usdCny: 1, now: '2026-11-16T12:00:00.000Z', automationIdleMinutes: 30 })
@@ -691,7 +691,7 @@ test('the automation alert and the dispatcher agree on when a repository is idle
     const user = makeUser(store, { login: 'idle-refused', status: 'pending' })
     const repo = store.createRepo({ id: 'repo_idle_refused', userId: user.id, owner: 'o', name: 'refused', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 60 })
     store.createWorkItem({ id: 'work_idle_refused', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
-    store.db.exec("UPDATE work_items SET created_at = '2026-11-16T10:00:00.000Z' WHERE id = 'work_idle_refused'")
+    store.run("UPDATE work_items SET created_at = '2026-11-16T10:00:00.000Z' WHERE id = 'work_idle_refused'")
     const idle = (instancesManaged = false): number =>
       store.alerts({ usdCny: 1, now: '2026-11-16T12:00:00.000Z', automationIdleMinutes: 30, instancesManaged })
         .filter((alert) => alert.kind === 'automation_idle_with_work').length

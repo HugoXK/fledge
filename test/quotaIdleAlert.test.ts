@@ -24,7 +24,7 @@ function harness(name: string, quota: number): { store: Store; jobs: Jobs; userI
     repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440,
   })
   store.createWorkItem({ id: `work_${name}`, repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
-  store.db.exec(`UPDATE work_items SET created_at = '${OLD}' WHERE id = 'work_${name}'`)
+  store.run(`UPDATE work_items SET created_at = '${OLD}' WHERE id = 'work_${name}'`)
   return { store, jobs, userId: user.id, repoId: repo.id }
 }
 

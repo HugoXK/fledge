@@ -22,7 +22,7 @@ async function renderApprovalPage(input: { locale: 'zh' | 'en'; created: string;
   const built = await buildApp({ config, store, mailer, runner: new MockRunner(), startScheduler: false })
   try {
     const applicant = makeUser(store, { login: 'applied-later', status: 'pending' })
-    store.db.exec(
+    store.run(
       `UPDATE users SET created_at = '${input.created}', application_submitted_at = ${input.submitted === null ? 'NULL' : `'${input.submitted}'`} WHERE id = '${applicant.id}'`,
     )
     const user = store.userById(applicant.id)

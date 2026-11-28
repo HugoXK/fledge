@@ -66,7 +66,7 @@ test('a threshold of zero records every statement; a high threshold records none
 test('databaseHealth reports the file and the table counts', () => {
   const store = new Store(':memory:')
   try {
-    const before = readDatabaseHealth(store.db)
+    const before = readDatabaseHealth(store.healthHandle())
     assert.ok(before.pageSize > 0)
     assert.ok(before.pageCount > 0)
     assert.equal(before.bytes, before.pageSize * before.pageCount)
@@ -74,7 +74,7 @@ test('databaseHealth reports the file and the table counts', () => {
     assert.ok(before.tables.every((table) => !table.name.startsWith('sqlite_')))
 
     makeUser(store, { login: 'db-health', status: 'approved' })
-    const after = readDatabaseHealth(store.db)
+    const after = readDatabaseHealth(store.healthHandle())
     const users = after.tables.find((table) => table.name === 'users')
     assert.ok(users !== undefined && users.rows >= 1)
   } finally {

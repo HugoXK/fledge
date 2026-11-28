@@ -1396,7 +1396,7 @@ test('a repository the dispatcher refuses is reported with its reason, not as id
     const user = makeUser(store, { login: 'refused-user', status: 'pending' })
     const repo = store.createRepo({ id: 'repo_refused', userId: user.id, owner: 'o', name: 'refused', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: true, intervalMinutes: 1440 })
     store.createWorkItem({ id: 'work_refused', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
-    store.db.exec("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused'")
+    store.run("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused'")
     assert.equal(idleAlerts(), 0)
 
     // The dispatcher names the approval it waits for instead of starting a job.
@@ -1439,7 +1439,7 @@ test('a repository whose bridge instance is not up is reported as instance_not_r
       created_at: '2026-11-16T09:00:00.000Z', updated_at: '2026-11-16T09:00:00.000Z', last_health_at: null,
     })
     store.createWorkItem({ id: 'work_refused_instance', repoId: repo.id, userId: user.id, title: 'Ready work', priority: 1 })
-    store.db.exec("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused_instance'")
+    store.run("UPDATE work_items SET created_at = '2020-01-01T00:00:00.000Z' WHERE id = 'work_refused_instance'")
 
     const before = blocked('instance_not_ready')
     await jobs.tick()
@@ -3368,13 +3368,13 @@ test('only the one-active-job index is reported as a busy queue', async () => {
     // insert: SQLite names the column of the partial unique index, and the
     // caller must see a busy queue instead of a 500.
     stubCreateJob(() => {
-      store.db.exec(`INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, created_at) VALUES ('job_busy_racer', 'repo_busy', '${user.id}', 'queued', 'manual', 'g', 'cb_racer', '${new Date().toISOString()}')`)
+      store.run(`INSERT INTO jobs (id, repo_id, user_id, status, trigger, goal, callback_hash, created_at) VALUES ('job_busy_racer', 'repo_busy', '${user.id}', 'queued', 'manual', 'g', 'cb_racer', '${new Date().toISOString()}')`)
       throw new Error('UNIQUE constraint failed: jobs.repo_id')
     })
     assert.deepEqual(await jobs.enqueue(repo, 'manual'), { ok: false, error: '这个仓库已有任务在运行', code: 'JOB_ACTIVE' })
 
     // Any other constraint failure is a bug and has to surface instead.
-    store.db.exec("UPDATE jobs SET status = 'failed' WHERE id = 'job_busy_racer'")
+    store.run("UPDATE jobs SET status = 'failed' WHERE id = 'job_busy_racer'")
     stubCreateJob(() => { throw new Error('UNIQUE constraint failed: jobs.id') })
     await assert.rejects(() => jobs.enqueue(repo, 'manual'), /jobs\.id/)
   } finally {

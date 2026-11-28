@@ -94,7 +94,7 @@ function seed(dbPath: string): void {
         ('o_unknown_old', 'mail', 'a@example.com', '{}', 'k_unknown_old', 'unknown', '${old}', '${old}'),
         ('o_unknown_new', 'mail', 'a@example.com', '{}', 'k_unknown_new', 'unknown', '${recent}', '${recent}');
     `
-    store.db.exec(sql)
+    store.exec(sql)
   } finally {
     store.close()
   }

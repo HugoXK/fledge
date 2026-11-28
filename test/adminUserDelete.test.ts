@@ -96,7 +96,7 @@ function seedTarget(
 }
 
 function clearRecentAuth(store: Store, raw: string): void {
-  store.db.exec(`UPDATE sessions SET recent_auth_at = NULL WHERE id_hash = '${sha256Hex(raw)}'`)
+  store.run(`UPDATE sessions SET recent_auth_at = NULL WHERE id_hash = '${sha256Hex(raw)}'`)
 }
 
 function confirmPayload(csrf: string, login: string): string {

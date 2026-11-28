@@ -425,8 +425,8 @@ test('a database written at schema 46 gains the analysis column and keeps its re
     const release = created
     // The 46 shape predates the column: dropping it is how this file becomes a
     // database the previous release wrote.
-    store.db.exec('ALTER TABLE repo_releases DROP COLUMN analysis_json')
-    store.db.exec('PRAGMA user_version = 46;')
+    store.run('ALTER TABLE repo_releases DROP COLUMN analysis_json')
+    store.run('PRAGMA user_version = 46;')
     store.close()
 
     const upgraded = new Store(path)

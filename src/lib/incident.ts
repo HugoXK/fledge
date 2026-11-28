@@ -203,7 +203,7 @@ export function buildIncidentBundle(input: {
   const instances = store.listRepoInstances()
   let database = true
   try {
-    store.db.prepare('SELECT 1').get()
+    store.ping()
   } catch {
     database = false
   }

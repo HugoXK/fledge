@@ -16,7 +16,7 @@ const OLD = new Date(Date.now() - 60 * 60_000).toISOString()
 // A session that has never re-authenticated has no recent_auth_at: that is also
 // the state of every session created before this change was deployed.
 function clearRecentAuth(store: Store, raw: string): void {
-  store.db.exec(`UPDATE sessions SET recent_auth_at = NULL WHERE id_hash = '${sha256Hex(raw)}'`)
+  store.run(`UPDATE sessions SET recent_auth_at = NULL WHERE id_hash = '${sha256Hex(raw)}'`)
 }
 
 async function build() {

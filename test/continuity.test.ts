@@ -519,7 +519,7 @@ test('a database written before the observation column opens and reads back as n
     const goal = 'fix bugs\n\n[Carry-over - auto-generated state, not a new goal]\ncarry-over: 1 used, 0 dropped (closed/merged)'
     store.createJob({ id: 'job_observation_old', repoId: repo.id, userId: user.id, trigger: 'schedule', goal, callbackHash: 'h', platformTokenHash: '' })
     store.updateJob('job_observation_old', { continuity_used: 1 })
-    store.db.exec('ALTER TABLE jobs DROP COLUMN carry_over_json')
+    store.run('ALTER TABLE jobs DROP COLUMN carry_over_json')
     store.close()
 
     const reopened = new Store(path)
