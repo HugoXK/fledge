@@ -19,14 +19,16 @@
 // and ends, it does not retry in a loop.
 
 import { loadRules, tierForChanges } from './lib/risk.mjs'
-import { HOLD_LABEL, classifyMergeCandidate } from './lib/merge-clean.mjs'
+import { CHANGES_LABEL, HOLD_LABELS, classifyMergeCandidate } from './lib/merge-clean.mjs'
 
 const TOKEN = process.env.GITHUB_TOKEN ?? process.env.GH_TOKEN ?? ''
 const REPO = process.env.GITHUB_REPOSITORY ?? ''
 const API = process.env.GITHUB_API_URL ?? 'https://api.github.com'
 const DRY_RUN = process.argv.includes('--dry-run')
 
-const MAX_PAGES = 3
+const MAX_FILE_PAGES = 30
+const MAX_CHECK_PAGES = 5
+const MAX_REVIEW_PAGES = 3
 
 function fail(message) {
   console.error(`merge-clean: ${message}`)
@@ -60,9 +62,17 @@ async function api(path, options = {}) {
   }
 }
 
+async function repository() {
+  const body = await api(`/repos/${REPO}`)
+  return {
+    defaultBranch: String(body?.default_branch ?? ''),
+    fullName: String(body?.full_name ?? REPO),
+  }
+}
+
 async function openPullRequests() {
   const pullRequests = []
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
+  for (let page = 1; page <= 30; page += 1) {
     const batch = await api(`/repos/${REPO}/pulls?state=open&per_page=100&page=${page}`)
     if (!Array.isArray(batch)) throw new Error('GET /pulls did not answer a list')
     pullRequests.push(...batch)
@@ -71,20 +81,42 @@ async function openPullRequests() {
   return pullRequests
 }
 
+// A short page is the end of the list. Hitting the page cap while the pages are
+// still full means the list is longer than this drain will read, so the caller
+// treats it as truncated instead of tiering an incomplete diff.
 async function pullRequestFiles(number) {
-  const files = []
-  for (let page = 1; page <= MAX_PAGES; page += 1) {
+  const list = []
+  let truncated = false
+  for (let page = 1; page <= MAX_FILE_PAGES; page += 1) {
     const batch = await api(`/repos/${REPO}/pulls/${number}/files?per_page=100&page=${page}`)
     if (!Array.isArray(batch)) throw new Error(`GET /pulls/${number}/files did not answer a list`)
-    files.push(...batch)
+    list.push(...batch)
+    if (batch.length < 100) return { list, truncated: false }
+  }
+  truncated = true
+  return { list, truncated }
+}
+
+async function reviewsOf(number) {
+  const reviews = []
+  for (let page = 1; page <= MAX_REVIEW_PAGES; page += 1) {
+    const batch = await api(`/repos/${REPO}/pulls/${number}/reviews?per_page=100&page=${page}`)
+    if (!Array.isArray(batch)) break
+    reviews.push(...batch)
     if (batch.length < 100) break
   }
-  return files
+  return reviews
 }
 
 async function checkRuns(sha) {
-  const body = await api(`/repos/${REPO}/commits/${sha}/check-runs?per_page=100`)
-  return Array.isArray(body?.check_runs) ? body.check_runs : []
+  const runs = []
+  for (let page = 1; page <= MAX_CHECK_PAGES; page += 1) {
+    const body = await api(`/repos/${REPO}/commits/${sha}/check-runs?per_page=100&page=${page}`)
+    const batch = Array.isArray(body?.check_runs) ? body.check_runs : []
+    runs.push(...batch)
+    if (batch.length < 100) break
+  }
+  return runs
 }
 
 async function headOf(number) {
@@ -98,25 +130,37 @@ function labelsOf(pr) {
 
 async function tierOf(number) {
   const files = await pullRequestFiles(number)
-  const changes = files.map((file) => ({
+  const changedFiles = Number.isInteger(Number(files.list.length)) ? files.list.length : 0
+  const changes = files.list.map((file) => ({
     path: String(file?.filename ?? ''),
     patch: file?.patch === undefined ? undefined : String(file.patch),
   }))
-  return tierForChanges(changes, loadRules()).tier
+  return { tier: tierForChanges(changes, loadRules()).tier, truncated: files.truncated, changedFiles }
 }
 
-async function decide(pr) {
+async function decide(pr, defaultBranch) {
   const labels = labelsOf(pr)
-  const cheap = classifyMergeCandidate({ pr, tier: '', checks: [], hold: labels.includes(HOLD_LABEL) })
-  // A pull request a cheap rule already refuses (draft, queued, hold, not open)
-  // needs no tier read and no check-run read.
+  const hold = HOLD_LABELS.some((label) => labels.includes(label))
+  const labelledChanges = labels.includes(CHANGES_LABEL)
+  const cheap = classifyMergeCandidate({ pr, tier: '', checks: [], hold, changesRequested: labelledChanges, defaultBranch })
+  // A pull request a cheap rule already refuses (not open, draft, fork, a
+  // non-default base, queued, hold, a change request) needs no tier read.
   if (cheap.reason !== 'tier-unknown') return cheap
   const number = Number(pr.number)
-  const tier = await tierOf(number)
-  if (tier !== 'T0' && tier !== 'T1') return classifyMergeCandidate({ pr, tier, checks: [] })
+  const read = await tierOf(number)
+  const reported = Number(pr?.changed_files ?? 0)
+  const truncated = read.truncated || (reported > 0 && reported > read.changedFiles)
+  if (truncated) {
+    return classifyMergeCandidate({ pr, tier: '', checks: [], hold, changesRequested: labelledChanges, defaultBranch, filesTruncated: true })
+  }
+  if (read.tier !== 'T0' && read.tier !== 'T1') {
+    return classifyMergeCandidate({ pr, tier: read.tier, checks: [], hold, changesRequested: labelledChanges, defaultBranch })
+  }
+  const reviews = await reviewsOf(number)
+  const changesRequested = labelledChanges || reviews.some((review) => String(review?.state ?? '') === 'CHANGES_REQUESTED')
   const checks = await checkRuns(String(pr?.head?.sha ?? ''))
   const observedHead = await headOf(number)
-  return classifyMergeCandidate({ pr, tier, checks, observedHead })
+  return classifyMergeCandidate({ pr, tier: read.tier, checks, hold, changesRequested, observedHead, defaultBranch })
 }
 
 function line(decision) {
@@ -142,9 +186,12 @@ async function main() {
   if (TOKEN === '') fail('GITHUB_TOKEN is not set')
   if (!/^[^/\s]+\/[^/\s]+$/.test(REPO)) fail('GITHUB_REPOSITORY is not owner/name')
 
+  const repo = await repository()
+  if (repo.defaultBranch === '') fail('GET /repos did not name a default branch')
+
   const pullRequests = await openPullRequests()
   const decisions = []
-  for (const pr of pullRequests) decisions.push(await decide(pr))
+  for (const pr of pullRequests) decisions.push(await decide(pr, repo.defaultBranch))
   for (const decision of decisions) console.log(`merge-clean: ${line(decision)}`)
 
   if (DRY_RUN) {
