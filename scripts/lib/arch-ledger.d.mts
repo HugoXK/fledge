@@ -35,3 +35,5 @@ export function readBaseLedger(input: {
 }): string | null
 
 export function isPullRequestEvent(input: { eventName?: string; baseRef?: string }): boolean
+
+export function queueBaseBranch(ref: string | undefined | null): string | null

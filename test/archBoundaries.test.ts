@@ -1,9 +1,12 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
+import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkArchitecture, checkFileSizes, checkImports } from '../scripts/lib/arch-boundaries.mjs'
-import { isPullRequestEvent, readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
+import { isPullRequestEvent, queueBaseBranch, readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -238,4 +241,160 @@ test('a dispatch run reads the working-tree ledger and exits 0', () => {
   })
   assert.equal(result.status, 0, result.stderr)
   assert.match(result.stdout, /\(ledger from head\)/)
+})
+
+// #1348: the pull_request refusal and the merge_group base lane are process
+// behaviour, not argument behaviour. These fixtures build the two trees the
+// script can see in CI — a directory with no repository at all, and a real
+// depth-1 clone of a merge commit — so each row asserts an exit code and the
+// ledger lane the report names, not only that a helper returned a boolean.
+
+const ARCH_SCRIPT = fileURLToPath(new URL('../scripts/arch-boundaries.mjs', import.meta.url))
+
+const GIT_IDENTITY = {
+  ...process.env,
+  GIT_AUTHOR_NAME: 'Fledge Test',
+  GIT_AUTHOR_EMAIL: 'test@fledge.invalid',
+  GIT_COMMITTER_NAME: 'Fledge Test',
+  GIT_COMMITTER_EMAIL: 'test@fledge.invalid',
+}
+
+function git(cwd: string, args: string[]) {
+  const result = spawnSync('git', args, { cwd, encoding: 'utf8', env: GIT_IDENTITY })
+  assert.equal(result.status, 0, `git ${args.join(' ')} failed: ${result.stderr}`)
+  return result.stdout
+}
+
+function runArch(cwd: string, env: Record<string, string>, argv: string[] = []) {
+  return spawnSync(process.execPath, [ARCH_SCRIPT, ...argv], {
+    cwd,
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_ACTIONS: 'true', GITHUB_BASE_REF: '', ...env },
+  })
+}
+
+/** A tree with `src/` and no repository: every base read fails, the head lane works. */
+function headLaneFixture(): string {
+  const dir = mkdtempSync(join(tmpdir(), 'arch-head-'))
+  mkdirSync(join(dir, 'src'), { recursive: true })
+  writeFileSync(join(dir, 'src', 'plain.ts'), 'export const plain = 1\n')
+  return dir
+}
+
+/**
+ * A real depth-1 clone whose HEAD is a merge commit: first parent is the base
+ * tip, and the parent is grafted away exactly as GitHub's `merge_group`
+ * checkout has it. Preconditions are asserted, so the fixture cannot quietly
+ * degrade into a full clone and make the merge_group test vacuous. The clone
+ * carries no queue ref, so these tests exercise the first-parent lane rather
+ * than the `GITHUB_REF` branch lane a real queue entry uses.
+ */
+function mergeGroupFixture({ withOrigin = true }: { withOrigin?: boolean } = {}): string {
+  const origin = mkdtempSync(join(tmpdir(), 'arch-origin-'))
+  git(origin, ['init', '-q'])
+  git(origin, ['checkout', '-q', '-B', 'main'])
+  mkdirSync(join(origin, 'src'), { recursive: true })
+  mkdirSync(join(origin, 'scripts', 'lib'), { recursive: true })
+  // The entry must be above the 1200-line limit or the gate reports it as stale,
+  // so the fixture file is a real ceiling entry and not a decoration.
+  const longFile = Array.from({ length: 1201 }, (_, index) => `export const value${String(index)} = ${String(index)}`).join('\n')
+  writeFileSync(join(origin, 'src', 'plain.ts'), `${longFile}\n`)
+  writeFileSync(join(origin, 'scripts', 'lib', 'arch-grandfather.json'), '{"src/plain.ts":1201}\n')
+  git(origin, ['add', '.'])
+  git(origin, ['commit', '-q', '-m', 'base'])
+  git(origin, ['checkout', '-q', '-b', 'feature'])
+  writeFileSync(join(origin, 'src', 'feature.ts'), 'export const feature = 2\n')
+  git(origin, ['add', '.'])
+  git(origin, ['commit', '-q', '-m', 'feature'])
+  git(origin, ['checkout', '-q', 'main'])
+  git(origin, ['merge', '-q', '--no-ff', 'feature', '-m', 'merge feature'])
+
+  const clone = mkdtempSync(join(tmpdir(), 'arch-clone-'))
+  git(clone, ['init', '-q'])
+  git(clone, ['remote', 'add', 'origin', origin])
+  git(clone, ['fetch', '-q', '--depth=1', 'origin', 'main:refs/remotes/origin/main'])
+  git(clone, ['checkout', '-q', 'refs/remotes/origin/main'])
+  if (!withOrigin) git(clone, ['remote', 'remove', 'origin'])
+
+  assert.equal(git(clone, ['rev-parse', '--is-shallow-repository']).trim(), 'true', 'the merge_group fixture must be shallow')
+  assert.notEqual(spawnSync('git', ['rev-parse', '--verify', 'HEAD^1'], { cwd: clone, encoding: 'utf8' }).status, 0,
+    'HEAD^1 must be grafted away before the gate deepens the clone')
+  return clone
+}
+
+test('a pull_request run whose base cannot be read refuses at spawn level', () => {
+  const clone = mergeGroupFixture({ withOrigin: false })
+  const result = runArch(clone, { GITHUB_EVENT_NAME: 'pull_request', GITHUB_BASE_REF: 'nope' })
+
+  assert.equal(result.status, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /refusing to judge the pull request against its own ceiling map/)
+})
+
+test('a merge_group entry reads the base ledger at its first parent', () => {
+  const clone = mergeGroupFixture()
+  const result = runArch(clone, { GITHUB_EVENT_NAME: 'merge_group' })
+
+  assert.equal(result.status, 0, result.stderr)
+  assert.match(result.stdout, /\(ledger from base:HEAD\^1\)/)
+})
+
+test('a merge_group entry whose first parent cannot be fetched keeps the named refusal', () => {
+  const clone = mergeGroupFixture({ withOrigin: false })
+  const result = runArch(clone, { GITHUB_EVENT_NAME: 'merge_group' })
+
+  assert.equal(result.status, 1, result.stdout + result.stderr)
+  assert.match(result.stderr, /refusing to judge the queue entry against its own ceiling map/)
+})
+
+test('an option-shaped --base is a revision, never a git option', () => {
+  const clone = mergeGroupFixture()
+  const escaped = join(clone, 'must-not-exist')
+
+  for (const value of ['--help', `--output=${escaped}:scripts/lib/arch-grandfather.json`]) {
+    const result = runArch(clone, { GITHUB_EVENT_NAME: 'push' }, ['--base', value])
+    assert.equal(result.status, 1, `${value}: ${result.stdout}`)
+    assert.match(result.stderr, /refusing to read the ceiling from the pull request head/, value)
+    assert.doesNotMatch(result.stdout + result.stderr, /usage: git/i, `${value} must not reach git's help`)
+  }
+  assert.equal(existsSync(escaped), false, 'an option-shaped base must not make git write a file')
+})
+
+test('the six-row event matrix decides exit code and ledger lane', () => {
+  const head = headLaneFixture()
+  const group = mergeGroupFixture()
+  const orphan = mergeGroupFixture({ withOrigin: false })
+
+  const rows: Array<{ row: string; cwd: string; env: Record<string, string>; status: number; lane: RegExp }> = [
+    { row: 'push', cwd: head, env: { GITHUB_EVENT_NAME: 'push' }, status: 0, lane: /\(ledger from head/ },
+    { row: 'schedule', cwd: head, env: { GITHUB_EVENT_NAME: 'schedule' }, status: 0, lane: /\(ledger from head/ },
+    { row: 'workflow_dispatch', cwd: head, env: { GITHUB_EVENT_NAME: 'workflow_dispatch' }, status: 0, lane: /\(ledger from head/ },
+    { row: 'merge_group', cwd: group, env: { GITHUB_EVENT_NAME: 'merge_group' }, status: 0, lane: /\(ledger from base:HEAD\^1\)/ },
+    { row: 'pull_request (base readable)', cwd: group, env: { GITHUB_EVENT_NAME: 'pull_request', GITHUB_BASE_REF: 'main' }, status: 0, lane: /\(ledger from base:origin\/main\)/ },
+    { row: 'pull_request (base unreadable)', cwd: orphan, env: { GITHUB_EVENT_NAME: 'pull_request', GITHUB_BASE_REF: 'nope' }, status: 1, lane: /refusing to judge the pull request/ },
+  ]
+
+  for (const { row, cwd, env, status, lane } of rows) {
+    const result = runArch(cwd, env)
+    assert.equal(result.status, status, `${row}: ${result.stdout}${result.stderr}`)
+    assert.match(`${result.stdout}${result.stderr}`, lane, row)
+  }
+})
+
+test('the queue ref names the base branch, including one with a slash', () => {
+  assert.equal(queueBaseBranch('refs/heads/gh-readonly-queue/main/pr-42-abc123'), 'main')
+  assert.equal(queueBaseBranch('refs/heads/gh-readonly-queue/release/1.x/pr-42-abc123'), 'release/1.x')
+  assert.equal(queueBaseBranch('refs/heads/main'), null)
+  assert.equal(queueBaseBranch('refs/heads/gh-readonly-queue/main'), null)
+  assert.equal(queueBaseBranch(undefined), null)
+})
+
+test('a merge_group entry that carries a queue ref reads the base branch it names', () => {
+  const clone = mergeGroupFixture()
+  const result = runArch(clone, {
+    GITHUB_EVENT_NAME: 'merge_group',
+    GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-7-abc123',
+  })
+
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /\(ledger from base:origin\/main\)/)
 })

@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { checkArchitecture } from './lib/arch-boundaries.mjs'
-import { isPullRequestEvent, readBaseLedger, selectLedger, violationLine } from './lib/arch-ledger.mjs'
+import { isPullRequestEvent, queueBaseBranch, readBaseLedger, selectLedger, violationLine } from './lib/arch-ledger.mjs'
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -48,12 +48,40 @@ function argument(name) {
   return at < 0 ? null : (process.argv[at + 1] ?? null)
 }
 
-function readAt(ref) {
+// #1348: `--end-of-options` closes git's option parser before the revision, so
+// an option-shaped `--base` / `ARCH_BASE_REF` is read as a revision and fails as
+// one instead of being interpreted as a flag (`--help`, `--output=…`). The value
+// is operator/local input, which makes this hardening rather than a live hole —
+// but "only the operator can reach it" is an assumption, not a control.
+function showRevision(revision, endOfOptions) {
   try {
-    return execFileSync('git', ['show', `${ref}:${LEDGER}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
-  } catch {
-    return null
+    const content = execFileSync('git', endOfOptions ? ['show', '--end-of-options', revision] : ['show', revision], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    })
+    return { content, error: null }
+  } catch (error) {
+    const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : ''
+    const first = stderr.trim().split('\n')[0] ?? ''
+    return { content: null, error: first === '' ? String(error) : first }
   }
+}
+
+function readAtDetailed(ref) {
+  const revision = `${ref}:${LEDGER}`
+  const strict = showRevision(revision, true)
+  if (strict.content !== null) return strict
+  // Git builds disagree about `--end-of-options` in front of a `<rev>:<path>`
+  // argument (the flag is accepted here on 2.43 and refused on the CI runner),
+  // so a ref that is not option-shaped is retried without it. An option-shaped
+  // ref is never retried: that is the shape the flag exists to refuse.
+  if (ref.startsWith('-')) return strict
+  return showRevision(revision, false)
+}
+
+function readAt(ref) {
+  return readAtDetailed(ref).content
 }
 
 // A pull-request checkout names only the merge ref, so `origin/<base>` has to be
@@ -77,24 +105,85 @@ function fetchRef(ref) {
 const envBase = process.env.GITHUB_BASE_REF === undefined || process.env.GITHUB_BASE_REF === ''
   ? null
   : `origin/${process.env.GITHUB_BASE_REF}`
+const eventName = process.env.GITHUB_EVENT_NAME ?? ''
 const explicitBase = argument('--base') ?? (process.env.ARCH_BASE_REF === undefined || process.env.ARCH_BASE_REF === '' ? null : process.env.ARCH_BASE_REF)
-const onPullRequest = isPullRequestEvent({ eventName: process.env.GITHUB_EVENT_NAME ?? '', baseRef: process.env.GITHUB_BASE_REF ?? '' })
+const onPullRequest = isPullRequestEvent({ eventName, baseRef: process.env.GITHUB_BASE_REF ?? '' })
+const mergeGroup = eventName === 'merge_group'
+
+// #1348: a `merge_group` checkout is the queue's merge commit, one commit deep,
+// so its first parent — the base tip the entry is built on — is grafted away.
+// The gate supplies that base itself: passing `merge_group.base_sha` through an
+// env var would need a `.github/workflows/**` edit, and a required job's
+// `steps:` may only grow at the end (#1276), which `gate-compare` enforces.
+function gitTry(args) {
+  try {
+    execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 })
+    return null
+  } catch (error) {
+    const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : ''
+    const first = stderr.trim().split('\n')[0] ?? ''
+    return first === '' ? String(error) : first
+  }
+}
+
+function gitOutput(args) {
+  try {
+    return execFileSync('git', args, { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 60_000 })
+  } catch (error) {
+    const stderr = error !== null && typeof error === 'object' && 'stderr' in error ? String(error.stderr) : ''
+    const first = stderr.trim().split('\n')[0] ?? ''
+    return first === '' ? String(error) : first
+  }
+}
+
+/**
+ * The base ledger of a `merge_group` entry whose checkout carries no queue ref.
+ *
+ * The base tip is the merge commit's first parent, and at depth 1 that object is
+ * grafted away. Deepening the clone was measured not to rewrite the graft on the
+ * CI runner, and even after the parent object is fetched by sha the graft keeps
+ * `HEAD^1` unresolvable — so the parent sha is read from the commit object and
+ * the ledger is read at that sha. One commit of history is still all the gate
+ * asks the remote for, and the report line stays `base:HEAD^1` because that is
+ * what the lane is, even when the sha below it is what git could resolve.
+ */
+function readMergeParent() {
+  const raw = gitOutput(['cat-file', '-p', 'HEAD'])
+  const parent = raw.split('\n').find((line) => line.startsWith('parent '))?.slice('parent '.length).trim()
+  if (parent === undefined || parent === '') return { content: null, error: 'the checkout is not a merge commit' }
+  const direct = readAtDetailed(parent)
+  if (direct.content !== null) return direct
+  const fetchFailure = gitTry(['fetch', '--no-tags', '--depth=1', 'origin', parent])
+  if (fetchFailure !== null) return { content: null, error: fetchFailure }
+  return readAtDetailed(parent)
+}
 
 // The ceiling is looked for in this order and the first readable source wins:
 // an explicit `--base`, the `GITHUB_BASE_REF` remote, then `HEAD^1` of the merge
 // commit GitHub checks out for a pull request (its first parent is the base tip).
 // Only an explicitly named base is strict: a default that cannot be read falls
 // back to the working tree and the report line says which ledger judged the run.
+const queueBase = mergeGroup ? queueBaseBranch(process.env.GITHUB_REF ?? '') : null
 const candidates = []
 if (explicitBase !== null) candidates.push({ ref: explicitBase, strict: true })
 else {
   if (envBase !== null) candidates.push({ ref: envBase, strict: false })
+  // A real queue entry names its base branch in `GITHUB_REF`, so it reads the
+  // same remote ledger a pull request does; the first-parent lane below is only
+  // for a checkout that carries no queue ref.
+  if (queueBase !== null) candidates.push({ ref: `origin/${queueBase}`, strict: false })
   if (onPullRequest) candidates.push({ ref: 'HEAD^1', strict: false })
 }
 let baseRef = null
 let baseContent = null
+let parentFailure = null
 for (const candidate of candidates) {
-  const content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
+  let content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
+  if (content === null && mergeGroup && candidate.ref === 'HEAD^1') {
+    const parent = readMergeParent()
+    content = parent.content
+    if (content === null) parentFailure = parent.error ?? 'the first parent could not be read'
+  }
   if (content !== null) {
     baseRef = candidate.ref
     baseContent = content
@@ -107,7 +196,12 @@ for (const candidate of candidates) {
 // head is the bypass itself, so the run fails instead of falling back.
 const inCi = (process.env.GITHUB_ACTIONS ?? '') === 'true'
 if (inCi && onPullRequest && baseContent === null) {
-  console.error('arch: cannot read the base ledger in CI; refusing to judge the pull request against its own ceiling map')
+  const reason = mergeGroup && parentFailure !== null ? ` (first parent: ${parentFailure})` : ''
+  console.error(
+    mergeGroup
+      ? `arch: cannot read the base ledger in CI for a merge_group entry; refusing to judge the queue entry against its own ceiling map${reason}`
+      : 'arch: cannot read the base ledger in CI; refusing to judge the pull request against its own ceiling map',
+  )
   process.exit(1)
 }
 

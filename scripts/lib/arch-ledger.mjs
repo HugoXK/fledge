@@ -72,3 +72,22 @@ export function isPullRequestEvent({ eventName, baseRef }) {
   if (eventName === '') return (baseRef ?? '') !== ''
   return false
 }
+
+/**
+ * The base branch a `merge_group` checkout is queued against.
+ *
+ * GitHub names a queue ref `refs/heads/gh-readonly-queue/<base>/pr-<n>-<sha>`,
+ * and `GITHUB_BASE_REF` is empty on that event. Reading the base branch name
+ * from the ref is not the env pass-through the card rejected: no `.github/**`
+ * edit is involved, and it only names a branch the script then fetches and
+ * reads itself. A checkout with no queue ref (a local run, a fixture) returns
+ * null and the caller falls back to `HEAD^1` (#1348).
+ */
+export function queueBaseBranch(ref) {
+  const prefix = 'refs/heads/gh-readonly-queue/'
+  if (typeof ref !== 'string' || !ref.startsWith(prefix)) return null
+  const rest = ref.slice(prefix.length)
+  const at = rest.lastIndexOf('/pr-')
+  if (at <= 0) return null
+  return rest.slice(0, at)
+}
