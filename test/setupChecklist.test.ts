@@ -66,6 +66,20 @@ test('a brand-new account starts at step 1 and every later step names its blocke
   assert.deepEqual(checklist.steps.map((step) => step.key), ['repo', 'role', 'model', 'instance', 'job'])
 })
 
+test('a deployment without workspaces has four steps, not five with one checked off', () => {
+  const checklist = setupChecklist(state({ instancesUsed: false }), en)
+  assert.deepEqual(checklist.steps.map((step) => step.key), ['repo', 'role', 'model', 'job'])
+  assert.equal(checklist.total, 4)
+  assert.equal(checklist.total, checklist.steps.length, 'the total is the displayed list')
+  assert.equal(checklist.done, 0)
+  assert.equal(checklist.complete, false)
+
+  const finished = setupChecklist(state({ instancesUsed: false, repos: 1, roleChosen: true, modelConfigured: true, jobs: 1, firstJobStatus: 'succeeded' }), en)
+  assert.equal(finished.done, 4, 'done never counts a step that is not displayed')
+  assert.equal(finished.complete, true)
+  assert.equal(finished.total, 4)
+})
+
 test('the next step follows the data, and a completed step stops being the action', () => {
   const withRepo = setupChecklist(state({ repos: 1, repoHref: '/repos/r1' }), en)
   assert.equal(withRepo.next?.key, 'role')
@@ -194,10 +208,13 @@ test('a deployment without workspaces does not ask for one', async () => {
     const page = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=en` } })
     assert.equal(page.statusCode, 200)
     assert.match(page.body, /data-setup-next="job"/, 'an empty FLYBOT_INSTANCE_IMAGE makes the first job the next step')
-    assert.match(page.body, /<li class="setup-step is-done[^"]*" data-setup-step="instance"/, 'the workspace step is done when the deployment has none')
+    assert.doesNotMatch(page.body, /data-setup-step="instance"/, 'the workspace step is not rendered when the deployment has none')
+    assert.match(page.body, /3 of 4 steps done/, 'the counter counts only the four displayed steps')
+    assert.doesNotMatch(page.body, /of 5 steps done/, 'the removed step is not in the denominator')
     assert.doesNotMatch(page.body, /Start the instance first|Start the workspace first/, 'the first job is not blocked on a workspace this deployment cannot start')
     const chinese = await built.app.inject({ method: 'GET', url: '/dashboard', headers: { cookie: `${session.cookie}; fledge_lang=zh` } })
     assert.doesNotMatch(chinese.body, /先启动实例|先启动工作区/, 'the zh render asks for no workspace either')
+    assert.match(chinese.body, /3 \/ 4 步已完成/, 'the zh counter counts four steps too')
   } finally {
     await built.app.close()
     store.close()

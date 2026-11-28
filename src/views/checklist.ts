@@ -71,8 +71,6 @@ export interface FirstRunOutcome {
   action: { href: string; label: string }
 }
 
-const TOTAL = 5
-
 // The threshold is `PLATFORM_QUOTA_COMFORT_CNY` in config; the checklist keeps
 // no second default, so a deployment changes the advice in one place. Below it
 // the platform still pays, but the user is advised to bring an own model before
@@ -145,17 +143,24 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
       // Adding or selecting a model does not depend on the repository role.
       blocked: null,
     },
-    {
-      key: 'instance',
-      title: t('启动工作区', 'Start workspace'),
-      done: !state.instancesUsed || state.instanceReady,
-      action: { href: repoHref, label: t('打开仓库启动', 'Open the repository') },
-      blocked: !state.modelConfigured && !state.platformAvailable
-        ? state.providerConfigured
-          ? t('先为仓库选择一个模型。', 'Choose a model for the repository first.')
-          : t('先添加一个模型。', 'Add a model first.')
-        : null,
-    },
+    // #1306: a deployment without workspaces has no step to start one. #1281
+    // already stopped blocking the first job on it; this removes the row and
+    // the denominator entry too, so the counter matches what is on screen.
+    ...(state.instancesUsed
+      ? [
+          {
+            key: 'instance' as const,
+            title: t('启动工作区', 'Start workspace'),
+            done: state.instanceReady,
+            action: { href: repoHref, label: t('打开仓库启动', 'Open the repository') },
+            blocked: !state.modelConfigured && !state.platformAvailable
+              ? state.providerConfigured
+                ? t('先为仓库选择一个模型。', 'Choose a model for the repository first.')
+                : t('先添加一个模型。', 'Add a model first.')
+              : null,
+          },
+        ]
+      : []),
     {
       key: 'job',
       title: t('运行第一个任务', 'Run the first job'),
@@ -168,9 +173,9 @@ export function setupChecklist(state: SetupState, t: Translate): SetupChecklist 
   return {
     steps,
     done,
-    total: TOTAL,
+    total: steps.length,
     next: steps.find((step) => !step.done),
-    complete: done === TOTAL,
+    complete: done === steps.length,
   }
 }
 

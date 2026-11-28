@@ -255,16 +255,18 @@ and a skipped check never read the same. The writer of that field is the drill's
 - **Bilingual UI** in Chinese and English. The locale is stored in the
   `fledge_lang` cookie, and the header switch shares the `hugoxk-lang`
   preference with the rest of the platform.
-- **First-run checklist** (`src/views/checklist.ts`): `/dashboard` shows five
-  steps — repository, role, model provider, instance, first job — and every
-  step's state is read from the database on the request, so a cookie, a second
-  browser or a cleared store cannot change which step is next. The pure state
-  machine decides the single primary action; a step whose prerequisite is
-  missing states the reason instead of offering a control. The workspace step
-  answers the deployment, not only the rows: with an empty
-  `FLYBOT_INSTANCE_IMAGE` the deployment runs no per-repository workspaces, so
-  that step reads done and the first job is not blocked on it; a deployment that
-  sets an image keeps the step and the blocker until a workspace is ready. The
+- **First-run checklist** (`src/views/checklist.ts`): `/dashboard` shows four
+  or five steps — repository, role, model provider, first job, and the instance
+  step only when the deployment runs workspaces — and every step's state is read
+  from the database on the request, so a cookie, a second browser or a cleared
+  store cannot change which step is next. The pure state machine decides the
+  single primary action; a step whose prerequisite is missing states the reason
+  instead of offering a control. The workspace step answers the deployment, not
+  only the rows: with an empty `FLYBOT_INSTANCE_IMAGE` the deployment runs no
+  per-repository workspaces, so that step is absent from the list and from the
+  counter, the total is the displayed list's length, and the first job is not
+  blocked on it; a deployment that sets an image keeps the step and the blocker
+  until a workspace is ready. The
   model-provider
   step is optional while the platform model is configured
   (`PLATFORM_LLM_BASE_URL` and `PLATFORM_LLM_KEY`) and the account's platform
