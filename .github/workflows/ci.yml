@@ -208,11 +208,8 @@ jobs:
           cache: npm
       - run: npm ci --ignore-scripts
       - name: Measure and enforce the coverage floor
-        # `tee` keeps the report for the summary below; the explicit `bash`
-        # shell is `bash --noprofile --norc -eo pipefail {0}`, so the suite's
-        # exit status is the step's and a red suite cannot report a green
-        # `coverage` check through `tee` (#1312).
-        shell: bash
+        # `tee` keeps the report for the summary below; the bash shell CI uses is
+        # `-eo pipefail`, so the threshold's exit code is still the step's.
         run: npm run test:coverage 2>&1 | tee coverage.txt
       - name: Enforce the changed-lines floor
         # #641: the floor above is one number over `src/**`, so a large covered
@@ -241,6 +238,19 @@ jobs:
             sed -n '/start of coverage report/,/end of coverage report/p' coverage.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail when the suite reported a failure
+        # Containment for #1312, not a root fix: the step above still pipes into
+        # `tee`, so its exit status is `tee`'s. This step reads the report `tee`
+        # kept and fails the job when the suite recorded a failure.
+        run: |
+          if [ ! -f coverage.txt ]; then
+            echo "coverage.txt is missing; the suite report cannot be judged" >&2
+            exit 1
+          fi
+          if grep -Eq '^not ok|^# fail [1-9]' coverage.txt; then
+            echo "the suite reported a failure; see coverage.txt" >&2
+            exit 1
+          fi
 
   build:
     name: build
