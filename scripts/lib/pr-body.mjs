@@ -27,19 +27,32 @@ const NOT_RUN_HEADING = /^[ \t]*#{1,6}[ \t]+Not run\b[^\n]*/im
 // fenced blocks removed; everything else in this file reads the body as written.
 //
 // The scan follows CommonMark narrowly: a fence opens with three or more
-// backticks or tildes at up to three spaces of indent, closes on the same
-// character with at least the same run length and nothing else on its line, and
-// an unterminated fence runs to the end of the body — the fail-closed answer for
-// a body whose author meant to quote something and did not close it.
+// backticks or tildes at up to three spaces of indent — or after one list or
+// block-quote marker, which is where GitHub also renders a fence (#1303) — and
+// closes on the same character with at least the same run length and nothing
+// else on its line. An unterminated fence runs to the end of the body — the
+// fail-closed answer for a body whose author meant to quote something and did
+// not close it.
 const FENCE_OPEN = /^ {0,3}(`{3,}|~{3,})/
 const FENCE_CLOSE = /^ {0,3}(`{3,}|~{3,})[ \t]*$/
+
+// #1303: a fence is also a fence when it is the content of one list or
+// block-quote item — GitHub renders `- ``` ` and `> ``` ` as code, so the
+// scanner has to see the opener, or the quoted `Ran:` counts as evidence and the
+// two-space close later reads as a new opener. One container level is stripped
+// before either fence pattern runs; evidence lines are still kept as written.
+const CONTAINER_PREFIX = /^ {0,3}(?:(?:[-*+]|\d{1,9}[.)])[ \t]+|> ?)/
+
+function fenceText(line) {
+  return line.replace(CONTAINER_PREFIX, '')
+}
 
 function unfenced(body) {
   const kept = []
   let fence = null
   for (const line of String(body ?? '').split(/\r?\n/)) {
     if (fence === null) {
-      const open = FENCE_OPEN.exec(line)
+      const open = FENCE_OPEN.exec(fenceText(line))
       if (open === null) {
         kept.push(line)
         continue
@@ -47,7 +60,7 @@ function unfenced(body) {
       fence = { char: open[1][0], length: open[1].length }
       continue
     }
-    const close = FENCE_CLOSE.exec(line)
+    const close = FENCE_CLOSE.exec(fenceText(line))
     if (close !== null && close[1][0] === fence.char && close[1].length >= fence.length) fence = null
   }
   return kept.join('\n')

@@ -396,6 +396,65 @@ Not run: nothing
   ])
 })
 
+// --- a fence opened on a list or block-quote marker (#1303) ------------------
+// GitHub renders a fenced block whose opening fence sits on a list-marker line
+// as code, so its content is never evidence. The scanner anchored at column 0,
+// so the opener was invisible, its content stayed body text, and the two-space
+// close then became a fresh opener that swallowed the real lines after it.
+
+const LIST_MARKER_FENCED_RAN = `Written-by: HugoXK
+Bot: Fledge Platform Dev-1
+
+Fixes #96
+
+Nothing was run for this change.
+
+- \`\`\`
+  Ran: nothing
+  \`\`\`
+
+Not run: Docker image, real SMTP
+`
+
+test('a Ran: line inside a fence a list marker opens is reported as missing', async () => {
+  const { checkBody, hasRanSection } = await bodyRules()
+  assert.equal(hasRanSection(LIST_MARKER_FENCED_RAN), false, 'a `- ```` ` opener starts a fence')
+  assert.deepEqual(checkBody(LIST_MARKER_FENCED_RAN, POLICY), ['the PR body needs a "Ran:" section'])
+})
+
+test('a Ran: line inside a fence a numbered-list marker opens is reported as missing', async () => {
+  const { checkBody, hasRanSection } = await bodyRules()
+  const numbered = LIST_MARKER_FENCED_RAN.replace('- ```', '1. ```')
+  assert.notEqual(numbered, LIST_MARKER_FENCED_RAN)
+  assert.equal(hasRanSection(numbered), false, 'a `1. ```` ` opener starts a fence')
+  assert.deepEqual(checkBody(numbered, POLICY), ['the PR body needs a "Ran:" section'])
+})
+
+test('a Ran: line inside a fence a block-quote marker opens is reported as missing', async () => {
+  const { checkBody, hasRanSection } = await bodyRules()
+  const quoted = LIST_MARKER_FENCED_RAN.replace('- ```', '> ```')
+  assert.notEqual(quoted, LIST_MARKER_FENCED_RAN)
+  assert.equal(hasRanSection(quoted), false, 'a `> ```` ` opener starts a fence')
+  assert.deepEqual(checkBody(quoted, POLICY), ['the PR body needs a "Ran:" section'])
+})
+
+test('a container fence that closes before a real Ran: line does not hide it', async () => {
+  const { checkBody } = await bodyRules()
+  const body = `Written-by: HugoXK
+
+Fixes #96
+
+- \`\`\`
+  Ran: nothing
+  \`\`\`
+
+Ran: npm test
+
+Not run: Docker image
+`
+  assert.deepEqual(checkBody(body, POLICY), [])
+})
+
 test('the shipped policy keeps attribution and verdict authorship apart', async () => {
   const { checkBody } = await bodyRules()
   const policy = JSON.parse(readFileSync(new URL('../.github/agent/review-policy.json', import.meta.url), 'utf8')) as {
