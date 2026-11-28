@@ -238,6 +238,19 @@ jobs:
             sed -n '/start of coverage report/,/end of coverage report/p' coverage.txt
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail when the suite reported a failure
+        # Containment for #1312, not a root fix: the step above still pipes into
+        # `tee`, so its exit status is `tee`'s. This step reads the report `tee`
+        # kept and fails the job when the suite recorded a failure.
+        run: |
+          if [ ! -f coverage.txt ]; then
+            echo "coverage.txt is missing; the suite report cannot be judged" >&2
+            exit 1
+          fi
+          if grep -Eq '^not ok|^# fail [1-9]' coverage.txt; then
+            echo "the suite reported a failure; see coverage.txt" >&2
+            exit 1
+          fi
 
   build:
     name: build
