@@ -48,9 +48,18 @@ function argument(name) {
   return at < 0 ? null : (process.argv[at + 1] ?? null)
 }
 
+// #1348: `--end-of-options` closes git's option parser before the revision, so
+// an option-shaped `--base` / `ARCH_BASE_REF` is read as a revision and fails as
+// one instead of being interpreted as a flag (`--help`, `--output=…`). The value
+// is operator/local input, which makes this hardening rather than a live hole —
+// but "only the operator can reach it" is an assumption, not a control.
 function readAt(ref) {
   try {
-    return execFileSync('git', ['show', `${ref}:${LEDGER}`], { cwd: root, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+    return execFileSync('git', ['show', '--end-of-options', `${ref}:${LEDGER}`], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    })
   } catch {
     return null
   }
@@ -77,8 +86,36 @@ function fetchRef(ref) {
 const envBase = process.env.GITHUB_BASE_REF === undefined || process.env.GITHUB_BASE_REF === ''
   ? null
   : `origin/${process.env.GITHUB_BASE_REF}`
+const eventName = process.env.GITHUB_EVENT_NAME ?? ''
 const explicitBase = argument('--base') ?? (process.env.ARCH_BASE_REF === undefined || process.env.ARCH_BASE_REF === '' ? null : process.env.ARCH_BASE_REF)
-const onPullRequest = isPullRequestEvent({ eventName: process.env.GITHUB_EVENT_NAME ?? '', baseRef: process.env.GITHUB_BASE_REF ?? '' })
+const onPullRequest = isPullRequestEvent({ eventName, baseRef: process.env.GITHUB_BASE_REF ?? '' })
+const mergeGroup = eventName === 'merge_group'
+
+// #1348: a `merge_group` checkout is the queue's merge commit, one commit deep,
+// so its first parent — the base tip the entry is built on — is grafted away and
+// `HEAD^1` is unreadable until one more commit of history is fetched. The gate
+// deepens its own clone: passing `merge_group.base_sha` through an env var would
+// need a `.github/workflows/**` edit, and a required job's `steps:` may only grow
+// at the end (#1276), which `gate-compare` enforces.
+function deepenOneCommit() {
+  try {
+    const shallow = execFileSync('git', ['rev-parse', '--is-shallow-repository'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim()
+    if (shallow !== 'true') return false
+    execFileSync('git', ['fetch', '--no-tags', '--deepen=1', 'origin'], {
+      cwd: root,
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+      timeout: 60_000,
+    })
+    return true
+  } catch {
+    return false
+  }
+}
 
 // The ceiling is looked for in this order and the first readable source wins:
 // an explicit `--base`, the `GITHUB_BASE_REF` remote, then `HEAD^1` of the merge
@@ -94,7 +131,10 @@ else {
 let baseRef = null
 let baseContent = null
 for (const candidate of candidates) {
-  const content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
+  let content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
+  if (content === null && mergeGroup && candidate.ref === 'HEAD^1' && deepenOneCommit()) {
+    content = readAt('HEAD^1')
+  }
   if (content !== null) {
     baseRef = candidate.ref
     baseContent = content
@@ -107,7 +147,11 @@ for (const candidate of candidates) {
 // head is the bypass itself, so the run fails instead of falling back.
 const inCi = (process.env.GITHUB_ACTIONS ?? '') === 'true'
 if (inCi && onPullRequest && baseContent === null) {
-  console.error('arch: cannot read the base ledger in CI; refusing to judge the pull request against its own ceiling map')
+  console.error(
+    mergeGroup
+      ? 'arch: cannot read the base ledger in CI for a merge_group entry; refusing to judge the queue entry against its own ceiling map'
+      : 'arch: cannot read the base ledger in CI; refusing to judge the pull request against its own ceiling map',
+  )
   process.exit(1)
 }
 

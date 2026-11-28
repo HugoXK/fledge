@@ -49,7 +49,12 @@ not a conclusion.
 - A new source file is at most 1,200 lines. The five files that predate the limit
   are recorded in `scripts/lib/arch-grandfather.json` at their current size; an
   entry may not grow, and it must be deleted once the file is at or below 1,200
-  lines.
+  lines. The ceiling map is read from the base branch, never from the tip under
+  test: `pull_request` reads `origin/<base>` (fetched in-script), `merge_group`
+  deepens its own depth-1 checkout by one commit and reads `HEAD^1`, and
+  `push`/`schedule`/`workflow_dispatch` read the working tree and name that lane
+  in the report line. A base that cannot be read on a `pull_request` or
+  `merge_group` run refuses instead of falling back to the head map.
 
   The baseline is sampled from `main` at the commit where the gate is
   introduced. The size rule is a ratchet: every entry may only decrease, and an
