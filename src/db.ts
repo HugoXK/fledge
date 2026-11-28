@@ -4,6 +4,7 @@ import { createHash, randomBytes } from 'node:crypto'
 import { dirname } from 'node:path'
 import { mkdirSync } from 'node:fs'
 import { log } from './lib/log.js'
+import { DEFAULT_SLOW_QUERY_MS, timedQuery, type HealthHandle } from './lib/dbHealth.js'
 import { nowIso } from './lib/time.js'
 import { isPriorityLevel, PRIORITY_BOUNDS } from './lib/priority.js'
 import { WORK_ITEM_TRANSITIONS, type WorkItemState } from './lib/workItems.js'
@@ -106,96 +107,9 @@ export interface ReviewOverrideRecord {
   reason: string
 }
 
-function detailValue(value: string | number | null | undefined): string {
-  if (value === null || value === undefined) return '-'
-  const text = String(value).trim()
-  return text === '' ? '-' : text
-}
+import { parseReviewOutcomeDetail, parseReviewOverrideDetail } from './lib/reviewOutcome.js'
 
-function detailField(text: string, key: string, next: string | null): string | null {
-  const start = text.indexOf(key)
-  if (start < 0) return null
-  const from = start + key.length
-  const end = next === null ? text.length : text.indexOf(next, from)
-  if (end < 0) return null
-  const value = text.slice(from, end).trim()
-  return value === '' || value === '-' ? null : value
-}
-
-function detailNumber(value: string | null): number | null {
-  if (value === null) return null
-  const parsed = Number(value)
-  return Number.isFinite(parsed) ? parsed : null
-}
-
-/** The `work_item.review_outcome` detail both the trend and an override read. */
-export function formatReviewOutcomeDetail(input: {
-  workItemId: string
-  outcome: 'approved' | 'changes_requested'
-  score: number | null
-  reviewJobId: string | null
-  model: string | null
-  tip: string | null
-}): string {
-  return `${input.workItemId}: ${input.outcome} score=${detailValue(input.score)} review=${detailValue(input.reviewJobId)} tip=${detailValue(input.tip)} model=${detailValue(input.model)}`
-}
-
-/**
- * Reads a decision row. A row written before the identity was recorded has no
- * `review=`/`tip=`/`model=` field; it still parses, and the caller shows
- * "not recorded" rather than inventing a revision.
- */
-export function parseReviewOutcomeDetail(detail: string): ReviewDecisionRecord | undefined {
-  const separator = detail.indexOf(': ')
-  if (separator < 0) return undefined
-  const body = detail.slice(separator + 2)
-  const outcome = body.startsWith('changes_requested ') ? 'changes_requested' : body.startsWith('approved ') ? 'approved' : undefined
-  if (outcome === undefined) return undefined
-  const scoreAt = body.indexOf(' score=')
-  if (scoreAt < 0) return undefined
-  const tail = body.slice(scoreAt + 1)
-  return {
-    workItemId: detail.slice(0, separator),
-    outcome,
-    // The score is the one field every row has carried since #361, so it is read
-    // from the prefix rather than between two markers a newer row introduced.
-    score: detailNumber(/^score=(\S+)/.exec(tail)?.[1] ?? null),
-    reviewJobId: detailField(tail, 'review=', ' tip='),
-    tip: detailField(tail, 'tip=', ' model='),
-    model: detailField(tail, 'model=', null),
-  }
-}
-
-/** The `job.merge_review_override` detail, built beside its reader. */
-export function formatReviewOverrideDetail(input: {
-  jobId: string
-  reviewJobId: string | null
-  score: number | null
-  model: string | null
-  tip: string | null
-  reason: string
-}): string {
-  return `${input.jobId}: review ${detailValue(input.reviewJobId)} score=${detailValue(input.score)} tip=${detailValue(input.tip)} model=${detailValue(input.model)} reason=${input.reason}`
-}
-
-/** A row in the shape this build never wrote returns undefined, not a guess. */
-export function parseReviewOverrideDetail(detail: string): ReviewOverrideRecord | undefined {
-  const separator = detail.indexOf(': ')
-  if (separator < 0) return undefined
-  const body = detail.slice(separator + 2)
-  if (!body.startsWith('review ')) return undefined
-  const scoreAt = body.indexOf(' score=')
-  if (scoreAt < 0) return undefined
-  const tail = body.slice(scoreAt + 1)
-  return {
-    reviewJobId: detailField(body, 'review ', ' score='),
-    score: detailNumber(/^score=(\S+)/.exec(tail)?.[1] ?? null),
-    tip: detailField(tail, 'tip=', ' model='),
-    model: detailField(tail, 'model=', ' reason='),
-    reason: detailField(body, 'reason=', null) ?? '',
-  }
-}
-
+export { formatReviewOutcomeDetail, formatReviewOverrideDetail, parseReviewOutcomeDetail, parseReviewOverrideDetail } from './lib/reviewOutcome.js'
 // Below this many completed reviews the page says "small sample" instead of
 // letting one score read as a trend.
 export const REVIEW_TREND_SMALL_SAMPLE = 5
@@ -2844,9 +2758,11 @@ export interface FeedbackEventRow {
 }
 
 export class Store {
-  readonly dialect: SqlDialect
+  private readonly dialect: SqlDialect
+  private readonly slowQueryMs: number
 
-  constructor(path: string) {
+  constructor(path: string, options: { slowQueryMs?: number } = {}) {
+    this.slowQueryMs = Math.max(0, options.slowQueryMs ?? DEFAULT_SLOW_QUERY_MS)
     if (path !== ':memory:') mkdirSync(dirname(path), { recursive: true })
     this.dialect = new SqliteDialect(path)
     this.dialect.exec('PRAGMA journal_mode = WAL;')
@@ -3435,16 +3351,23 @@ export class Store {
     this.dialect.ping()
   }
 
+  // #1231: the read-only handle the admin database card uses. It is the port,
+  // never the driver, so the card can read PRAGMA/page counts without a raw
+  // `node:sqlite` object escaping the adapter.
+  healthHandle(): HealthHandle {
+    return this.dialect
+  }
+
   get<T>(sql: string, ...params: unknown[]): T | undefined {
-    return this.dialect.prepare(sql).get(...clean(params)) as T | undefined
+    return timedQuery(this.slowQueryMs, sql, () => this.dialect.prepare(sql).get(...clean(params)) as T | undefined, (value) => (value === undefined ? 0 : 1))
   }
 
   all<T>(sql: string, ...params: unknown[]): T[] {
-    return this.dialect.prepare(sql).all(...clean(params)) as T[]
+    return timedQuery(this.slowQueryMs, sql, () => this.dialect.prepare(sql).all(...clean(params)) as T[], (value) => value.length)
   }
 
   run(sql: string, ...params: unknown[]): void {
-    this.dialect.prepare(sql).run(...clean(params))
+    timedQuery(this.slowQueryMs, sql, () => this.dialect.prepare(sql).run(...clean(params)), () => 0)
   }
 
   // The port's script entry: a seed can carry more than one statement, which a
@@ -7768,7 +7691,7 @@ export class Store {
   // Returns the number of rows the statement changed, which is how a guarded
   // transition reports whether this caller won it.
   runChanges(sql: string, ...params: unknown[]): number {
-    return Number(this.dialect.prepare(sql).run(...clean(params)).changes ?? 0)
+    return timedQuery(this.slowQueryMs, sql, () => Number(this.dialect.prepare(sql).run(...clean(params)).changes ?? 0), (changes) => changes)
   }
 
   // The terminal transition is the callback idempotency key: only the delivery
@@ -8741,8 +8664,8 @@ export class Store {
   }
 }
 
-export function openStore(path: string): Store {
-  const store = new Store(path)
+export function openStore(path: string, options: { slowQueryMs?: number } = {}): Store {
+  const store = new Store(path, options)
   log.info('database ready', { path })
   return store
 }

@@ -1838,6 +1838,22 @@ and the instance states, and returns the config as names only. The route
 `GET /admin/incident/:window` is superadmin-only and exports JSON or markdown;
 the CLI requires a copy and refuses the configured live DB path. Neither path
 writes a row, opens a request body or returns a token, email or host path.
+### Database health (#1231)
+
+Every `Store` read and write goes through one timing wrapper. The histogram
+`fledge_db_query_seconds{statement}` names the statement by its verb and table
+(`select:jobs`, `insert:quota_ledger`, `pragma:user_version`), never by its SQL
+text or a parameter, so the label set is bounded by the schema. A statement at or
+above `SLOW_QUERY_MS` (default 200) is also appended to a bounded 20-entry ring
+and logged with the same name, duration and row count; the logger redacts its
+fields, and no SQL, parameter or row body is passed.
+
+`/admin/metrics` renders the `SQLite health` card from two sources: `Store`'s own
+`databaseHealth()` reads `page_size`, `page_count`, `freelist_count` and every
+user table's `COUNT(*)` through the raw connection (so the card's own reads do
+not fill the slow-query ring), and `queryHealthSummary()` reads the histogram and
+the ring for the slowest statements and the newest slow query. The card is
+read-only; it starts the slow list empty on a restart and says so.
 
 ### Scheduled work, continuity and work items
 
@@ -2321,6 +2337,22 @@ branch and repository contents with the repository token. A 401/403 marks `repos
 'invalid'`, pauses auto-iterate, and notifies the owner with a re-authorize link.
 The repository page shows the credential banner until a refresh or a successful
 preflight clears it.
+
+### Lease health (#1230)
+
+A running job holds a worker lease; the heartbeat renews it every fifth of the
+lease window, and a renewal refused because another worker took the row is a lost
+lease. The scheduler publishes `fledge_job_lease_age_seconds` for the oldest
+lease still held, on every tick, and removes the series when no lease is live so
+an empty panel means "none" rather than a stale reading. A live job's refused
+renewal increments `fledge_job_lease_renew_failures_total{kind}`; the reaper's
+terminal `reaped` attempt increments `fledge_lease_expired_total{kind}`.
+`FledgeLeaseReaped` pages on the 15-minute increase of the reaped counter.
+
+The `/admin/metrics` automation card reads the same rows from the database
+instead of the process counters: it names the oldest live lease (job, kind,
+repository, age and expiry) and the newest reaped attempt (job, kind, repository
+and age). The lease rows survive a restart even though the counters do not.
 
 ### The model router as a dependency
 

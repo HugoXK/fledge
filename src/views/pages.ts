@@ -63,6 +63,7 @@ import { JOB_FILTER_KINDS, JOB_FILTER_STATUSES, jobFilterIsActive, jobFilterLabe
 import type { InstallationRepo } from '../repos/app.js'
 import { localizeMessage, localizeNotification, translator, type Locale, type Translate } from '../i18n.js'
 import type { AutomationHealthSummary } from '../jobs/automationHealth.js'
+import { DEFAULT_SLOW_QUERY_MS, type DatabaseHealth, type QueryHealthSummary } from '../lib/dbHealth.js'
 import { parseTeam, type TeamLiveState, type TeamQuestionState } from '../flybot/instances.js'
 import type { ChiefMessage } from '../lib/chiefTranscript.js'
 import type { PlatformStopRecord } from '../jobs/service.js'
@@ -4805,55 +4806,50 @@ function otherCurrencyText(buckets: Array<{ currency: string; amount: number }>)
   return buckets.map((row) => currencyAmount(row.amount, row.currency)).join(' · ')
 }
 
-// #807: one compact row on the metrics page, not a second metrics page. The
-// three numbers are the ones that answer "is the platform keeping the team
-// busy": ready work nobody picked up, how long a dispatch waited, and how much
-// is queued behind it. A number nobody measured reads "—" instead of 0.
-function automationWaitText(t: Translate, seconds: number): string {
-  if (seconds < 60) return t(`${Math.round(seconds)} 秒`, `${Math.round(seconds)} s`)
-  const minutes = Math.round(seconds / 60)
-  if (minutes < 60) return t(`${minutes} 分钟`, `${minutes} minutes`)
-  const hours = Math.round(minutes / 60)
-  return t(`${hours} 小时`, `${hours} hours`)
+import { automationHealthCard } from './automationHealthCard.js'
+
+export { automationHealthCard }
+
+function dbBytesText(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B'
+  const units = ['B', 'KiB', 'MiB', 'GiB', 'TiB']
+  let value = bytes
+  let unit = 0
+  while (value >= 1024 && unit < units.length - 1) {
+    value /= 1024
+    unit += 1
+  }
+  return `${value.toFixed(unit === 0 ? 0 : value >= 10 ? 0 : 1)} ${units[unit]}`
 }
 
-function automationLatencyText(t: Translate, ms: number | null): string {
-  if (ms === null) return '—'
-  if (ms < 1_000) return t(`${ms} 毫秒`, `${ms} ms`)
-  return t(`${(ms / 1_000).toFixed(1)} 秒`, `${(ms / 1_000).toFixed(1)} s`)
+function dbMsText(ms: number): string {
+  return ms < 1_000 ? `${ms.toFixed(1)} ms` : `${(ms / 1_000).toFixed(1)} s`
 }
 
-export function automationHealthCard(locale: Locale, summary: AutomationHealthSummary, idleAlertMinutes: number): string {
+// #1231: the database side of the automation card. The table counts are read
+// from the file; the slow statements are the bounded in-process ring. Nothing
+// here reads SQL text, a parameter or a row body.
+export function sqliteHealthCard(locale: Locale, input: { counters: DatabaseHealth; queries: QueryHealthSummary }, thresholdMs: number): string {
   const t = translator(locale)
-  const idle = summary.idleWithWork.length
-  const longest = summary.idleWithWork[0]?.seconds ?? 0
-  const idleBody = idle === 0
-    ? t('没有仓库在等派发。', 'No repository is waiting on a dispatch.')
-    : t(
-        `${idle} 个仓库有就绪工作、但没有任务在跑，最长已等待 ${automationWaitText(t, longest)}。`,
-        `${idle} ${idle === 1 ? 'repository' : 'repositories'} with ready work and no active job, longest wait ${automationWaitText(t, longest)}.`,
-      )
-  const latencyBody = summary.dispatchSamples === 0
-    ? t('还没有测量：本进程还没有派发过任务。', 'Not measured yet: this process has not dispatched a job.')
-    : t(
-        `${summary.dispatchSamples} 次派发的平均值，自本进程启动起算。`,
-        `Mean over ${summary.dispatchSamples} dispatch${summary.dispatchSamples === 1 ? '' : 'es'} since this process started.`,
-      )
-  const queueBody = summary.queueDepth === null
-    ? t('还没有测量。', 'Not measured yet.')
-    : t('等待 worker 的任务数。', 'Jobs waiting for a worker.')
-  return `<section class="card">
-    <h2>${escapeHtml(t('自动化健康', 'Automation health'))}</h2>
-    <p class="muted">${escapeHtml(t('读取刚结束的调度检查；数字来自进程内的计数器，重启后从零开始。', 'From the dispatch check that just ran; the numbers come from in-process counters and restart from zero.'))}</p>
+  const { counters, queries } = input
+  const freePercent = counters.pageCount === 0 ? 0 : (counters.freelistCount / counters.pageCount) * 100
+  const tableRows = counters.tables.slice(0, 3).map((row) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(String(row.rows))}</strong><small>${escapeHtml(row.name)}</small></div></div>`).join('')
+  const slowRows = queries.slowest.slice(0, 3).map((row) => `<div class="list-row"><div class="list-main"><strong>${escapeHtml(dbMsText(row.maxMs))}</strong><small>${escapeHtml(t(`${row.statement} · 平均 ${dbMsText(row.meanMs)} · ${row.count} 次`, `${row.statement} · mean ${dbMsText(row.meanMs)} · ${row.count} calls`))}</small></div></div>`).join('')
+  const last = queries.slow[0]
+  const lastBody = last === undefined
+    ? t('本进程启动后还没有超过阈值的查询。', 'No query above the threshold since this process started.')
+    : t(`最近：${last.statement}，${dbMsText(last.ms)}，${last.rows} 行，${humanTimeShort(last.at)}`, `Last: ${last.statement}, ${dbMsText(last.ms)}, ${last.rows} row(s), ${humanTimeShort(last.at)}`)
+  return `<section class="card" id="sqlite-health">
+    <h2>${escapeHtml(t('SQLite 健康', 'SQLite health'))}</h2>
+    <p class="muted">${escapeHtml(t('只读：文件大小、freelist、最大的表和最慢的语句；慢查询来自本进程启动后的有界记录。', 'Read-only: file size, freelist, the largest tables and the slowest statements; slow queries come from a bounded in-process record.'))}</p>
     <div class="list">
-      <div class="list-row"><div class="list-main"><strong>${idle}</strong><small>${escapeHtml(idleBody)}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${escapeHtml(automationLatencyText(t, summary.dispatchLatencyMs))}</strong><small>${escapeHtml(latencyBody)}</small></div></div>
-      <div class="list-row"><div class="list-main"><strong>${summary.queueDepth === null ? '—' : summary.queueDepth}</strong><small>${escapeHtml(queueBody)}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${escapeHtml(dbBytesText(counters.bytes))}</strong><small>${escapeHtml(t(`${counters.pageCount} 页 × ${counters.pageSize} B`, `${counters.pageCount} pages × ${counters.pageSize} B`))}</small></div></div>
+      <div class="list-row"><div class="list-main"><strong>${counters.freelistCount}</strong><small>${escapeHtml(t(`freelist 页，占 ${freePercent.toFixed(1)}%`, `free pages, ${freePercent.toFixed(1)}% of the file`))}</small></div></div>
+      ${tableRows === '' ? `<div class="list-row"><div class="list-main"><strong>—</strong><small>${escapeHtml(t('没有用户表。', 'No user tables.'))}</small></div></div>` : tableRows}
+      ${slowRows === '' ? `<div class="list-row"><div class="list-main"><strong>—</strong><small>${escapeHtml(t('还没有语句被测量。', 'No statement measured yet.'))}</small></div></div>` : slowRows}
+      <div class="list-row"><div class="list-main"><strong>${last === undefined ? '—' : escapeHtml(dbMsText(last.ms))}</strong><small>${escapeHtml(lastBody)}</small></div></div>
     </div>
-    <p class="fine">${escapeHtml(t(
-      `有就绪工作却没有任务在跑，超过 ${idleAlertMinutes} 分钟就会告警；本页只读，不会触发派发。`,
-      `An alert fires when ready work waits more than ${idleAlertMinutes} minutes with no job running; this page is read-only and dispatches nothing.`,
-    ))}</p>
+    <p class="fine">${escapeHtml(t(`语句名只保留动词和表名（例如 select:jobs），不记录 SQL、参数、token 或行内容；超过 ${dbMsText(thresholdMs)} 的语句进入慢查询记录。`, `A statement name keeps only the verb and table (for example select:jobs); no SQL, parameter, token or row body is recorded. Statements at or above ${dbMsText(thresholdMs)} enter the slow-query record.`))}</p>
   </section>`
 }
 
@@ -4957,10 +4953,12 @@ export function metricsPage(input: {
   since: string
   /** #807: the numbers the dispatcher publishes right now, not a window. */
   automation: AutomationHealthSummary
+  /** #1231: the database's own counters and the in-process slow-query ring. */
+  dbHealth: { counters: DatabaseHealth; queries: QueryHealthSummary }
   notice?: string
   error?: string
 }): string {
-  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, currency, alerts, failures, since, notice, error, automation } = input
+  const { config, locale, viewer, metrics, team, workItems, attribution, stages, delivery, daily, repoCosts, modelCosts, currency, alerts, failures, since, notice, error, automation, dbHealth } = input
   const windowDays = input.windowDays ?? 30
   const t = translator(locale)
   const successRate = metrics.jobs === 0 ? null : Math.round((metrics.succeeded / metrics.jobs) * 1000) / 10
@@ -4995,6 +4993,7 @@ export function metricsPage(input: {
     </div>
   </section>
   ${automationHealthCard(locale, automation, config.ops.automationIdleAlertMinutes)}
+  ${sqliteHealthCard(locale, dbHealth, config.metrics.slowQueryMs ?? DEFAULT_SLOW_QUERY_MS)}
   <section class="cols">
     <div class="card">
       <h2>${escapeHtml(t('漏斗', 'Funnel'))}</h2>

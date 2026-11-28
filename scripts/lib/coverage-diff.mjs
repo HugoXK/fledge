@@ -5,11 +5,13 @@
 // produced, and answers one question: are the lines this diff adds covered?
 //
 // The report is Node's test-runner report. It lists only the *uncovered* lines,
-// so a line is judged by that list rather than by a per-line hit count: a line
-// the report does not list as uncovered was executed or has nothing for a test
-// to execute. Changed lines that are comments, imports, type declarations,
-// punctuation or generated code are therefore not measured at all — the report
-// could never list them, and counting them would only dilute the ratio.
+// so a line is judged by that list rather than by a per-line hit count. Which
+// changed lines are measured is a line-shape rule, not a promise that the report
+// agrees: comments, static imports, declaration heads and declaration members
+// whose right-hand side is a type expression are exempt, because no test can
+// execute them, while a line that carries a value, a call or an operator is
+// measured. ADR 0029 (`docs/decisions/0029-coverage-measurement-semantics.md`)
+// records the rule and its residual.
 //
 // A file with no row at all is the one case the report cannot speak to: Node
 // prints a file only when the suite loaded it, so a new module no test imports
@@ -31,17 +33,121 @@ export function isGeneratedPath(path) {
   return GENERATED.some((pattern) => pattern.test(normalized))
 }
 
-// A line worth measuring. The list is an allowlist for code and an explicit
-// deny for the three kinds #641 says are not executable: comments, imports and
-// type declarations. A line that holds only punctuation (`}`, `),`, `]:`) is not
-// executable either, which is why the test is "carries a name or a literal".
+// A declaration member: `name: Type`, with optional `readonly` and `?`, and an
+// optional `,`/`;`. The right-hand side must parse as a type expression: a
+// built-in keyword, a capitalized (possibly dotted) type name with generic
+// arguments and array suffixes, a function type, or a union of those (literal
+// types are allowed inside a union). A lone literal (`key: 'instance',`), a
+// call, or any other operator keeps the line measured: those are values far more
+// often than types. ADR 0029 records the residual.
+const TYPE_KEYWORD = /^(?:boolean|number|string|any|unknown|never|void|object|symbol|bigint|null|undefined)$/
+const LITERAL_TYPE = /^(?:'[^']*'|"[^"]*"|\d+(?:\.\d+)?|true|false)$/
+const MEMBER_NAME = /^(?:readonly\s+)?([A-Za-z_$][A-Za-z0-9_$]*)\??\s*:\s*(.+?)\s*[,;]?$/
+
+// Split on a separator that sits outside (), [], {}, angle brackets and string
+// literals, so `Map<string, A | B>` is one type with two generic arguments.
+function splitTopLevel(text, separator) {
+  const parts = []
+  let depth = 0
+  let quote = ''
+  let start = 0
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]
+    if (quote !== '') {
+      if (character === quote && text[index - 1] !== '\\') quote = ''
+      continue
+    }
+    if (character === "'" || character === '"') {
+      quote = character
+      continue
+    }
+    if ('([{<'.includes(character)) depth += 1
+    else if (')]}>'.includes(character)) depth -= 1
+    else if (character === separator && depth === 0) {
+      parts.push(text.slice(start, index))
+      start = index + 1
+    }
+  }
+  parts.push(text.slice(start))
+  return parts
+}
+
+function isTypeAtom(text) {
+  let t = text.trim()
+  if (t === '') return false
+  if (/^readonly\s+/.test(t)) return isTypeAtom(t.replace(/^readonly\s+/, ''))
+  while (t.endsWith('[]')) t = t.slice(0, -2).trim()
+  if (TYPE_KEYWORD.test(t)) return true
+  const fn = /^\(([^()]*)\)\s*=>\s*(.+)$/.exec(t)
+  if (fn !== null) {
+    // A function type has an empty parameter list or typed parameters; an arrow
+    // function value with a bare parameter (`() => save()`) fails on its return.
+    const params = fn[1].trim()
+    if (params !== '' && !/^[A-Za-z_$][A-Za-z0-9_$]*\??\s*:/.test(params)) return false
+    return isTypeExpression(fn[2])
+  }
+  if (/^\(.+\)$/.test(t)) return isTypeExpression(t.slice(1, -1))
+  const name = /^([A-Z][A-Za-z0-9_$]*(?:\.[A-Za-z_$][A-Za-z0-9_$]*)*)(.*)$/.exec(t)
+  if (name === null) return false
+  let rest = name[2].trim()
+  if (rest.startsWith('<')) {
+    let depth = 0
+    let close = -1
+    for (let index = 0; index < rest.length; index += 1) {
+      if (rest[index] === '<') depth += 1
+      else if (rest[index] === '>' && --depth === 0) {
+        close = index
+        break
+      }
+    }
+    if (close === -1) return false
+    const args = splitTopLevel(rest.slice(1, close), ',')
+    if (args.some((arg) => !isTypeExpression(arg))) return false
+    rest = rest.slice(close + 1).trim()
+  }
+  return rest === ''
+}
+
+function isTypeExpression(text) {
+  const t = text.trim()
+  if (t === '') return false
+  const parts = splitTopLevel(t, '|')
+  if (parts.length > 1) return parts.every((part) => isTypeAtom(part) || LITERAL_TYPE.test(part.trim()))
+  return isTypeAtom(t)
+}
+
+function isDeclarationMember(trimmed) {
+  const match = MEMBER_NAME.exec(trimmed)
+  return match !== null && isTypeExpression(match[2])
+}
+
+// `namespace A { const x = 1 }` runs statements on the same line; the header
+// `namespace A {` and an empty body (comments aside) declare only. The keyword
+// list this replaces measured neither, so it hid an executable body.
+function namespaceIsDeclaration(trimmed) {
+  const open = trimmed.indexOf('{')
+  if (open === -1) return true
+  const body = trimmed
+    .slice(open + 1)
+    .replace(/\}\s*$/, '')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/[^\n]*/g, '')
+    .trim()
+  return body === ''
+}
+
+// A line worth measuring. Comments, static imports and declaration heads are
+// not executable, and a declaration member is not either. `import(` and
+// `import.meta` are expressions, not static imports, so they stay measured.
 export function isMeasuredLine(line) {
   const trimmed = String(line ?? '').trim()
   if (trimmed === '') return false
   if (/^(?:\/\/|\/\*|\*(?:\/|\s|$)|\*\/)/.test(trimmed)) return false
-  if (/^import\b/.test(trimmed)) return false
+  if (/^import\b/.test(trimmed) && !/^import\s*[.(]/.test(trimmed)) return false
   if (/^export\s+(?:type|interface|declare)\b/.test(trimmed)) return false
-  if (/^(?:type|interface|declare|namespace)\b/.test(trimmed)) return false
+  if (/^(?:type|interface|declare)\b/.test(trimmed)) return false
+  if (/^(?:export\s+)?(?:declare\s+)?namespace\b/.test(trimmed)) return !namespaceIsDeclaration(trimmed)
+  if (isDeclarationMember(trimmed)) return false
   if (!/[A-Za-z0-9_$]/.test(trimmed)) return false
   return true
 }

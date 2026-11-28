@@ -74,7 +74,7 @@ import { scanUntrusted, UNTRUSTED_EVENT_KIND } from './lib/firewall.js'
 import { VERSION } from './version.js'
 import { clearGauge, incCounter, observeHistogram, renderMetrics, setGauge } from './lib/metrics.js'
 import { publishBackupMetrics } from './lib/backupMetrics.js'
-import { automationHealth } from './jobs/automationHealth.js'
+import { adminHealthPayload } from './jobs/automationHealth.js'
 import { readReleaseStatus } from './lib/releaseStatus.js'
 import { previewRelease, previewAndDispatch, type ReleaseDispatchPreview } from './lib/releaseDispatch.js'
 import {
@@ -634,7 +634,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
   const { config } = options
   assertProductionConfig(config)
   await assertSafeNotificationWebhook(config)
-  const store = options.store ?? openStore(config.dbPath)
+  const store = options.store ?? openStore(config.dbPath, { slowQueryMs: config.metrics.slowQueryMs })
   store.ensureSuperadmin(config.github.adminLogin)
   const orphans = store.cleanupOrphans()
   if (orphans.retries + orphans.followups + orphans.jobEvents + orphans.instances > 0) {
@@ -5775,7 +5775,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
       alerts: store.alerts({ usdCny: config.quota.usdCny, automationIdleMinutes: config.ops.automationIdleAlertMinutes, instancesManaged: config.flybot.instanceImage !== '' }),
       windowDays,
       failures: failureBreakdown(store.failedJobsSince(since)),
-      automation: automationHealth(),
+      ...adminHealthPayload(store),
       since,
       notice: request.flash?.notice?.text,
       error: request.flash?.error?.text,

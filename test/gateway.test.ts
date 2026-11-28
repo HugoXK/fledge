@@ -47,6 +47,9 @@ test('platform quota is metered, enforced and bypassed by a user model', async (
     assert.equal(error.error.code, 'FLEDGE_QUOTA_EXHAUSTED')
 
     const encrypted = encryptSecret('own-key', config.tokenEncryptionKey)
+    // #1319: a loopback own-model is the private-host opt-in, exactly as the
+    // save-time guard requires; the gateway re-checks the same decision at use.
+    store.setUserAllowPrivateModels(user.id, true)
     store.setUserOwnModel(user.id, `${own.url}/v1`, encrypted, 'own-model')
     const third = await built.app.inject({ method: 'POST', url: '/v1/chat/completions', headers, payload: { model: 'ignored', messages: [{ role: 'user', content: 'own' }] } })
     assert.equal(third.statusCode, 200)
@@ -198,7 +201,9 @@ test('repository model aliases route to the configured provider', async () => {
     const repo = store.createRepo({ id: 'repo_gateway_models', userId: user.id, owner: 'o', name: 'm', defaultBranch: 'main', tokenEnc: 'x', permission: 'admin', repoRole: 'maintainer', goal: '', autoIterate: false, intervalMinutes: 1440 })
     const raw = `flg_${randomToken(32)}`
     store.createApiToken({ id: 'tok_repo_model', userId: user.id, kind: 'instance', name: 'flybot', tokenHash: sha256Hex(raw), prefix: raw.slice(0, 8), repoId: repo.id, expiresAt: null })
-    const providerRow = store.createModelProvider({ id: 'prv_gateway', userId: user.id, label: 'Provider A', baseUrl: `${provider.url}/v1`, keyEnc: encryptSecret('provider-key', config.tokenEncryptionKey), allowPrivate: false })
+    // #1319: the fake provider is loopback, so this fixture states the same
+    // private-host opt-in the save path would have needed.
+    const providerRow = store.createModelProvider({ id: 'prv_gateway', userId: user.id, label: 'Provider A', baseUrl: `${provider.url}/v1`, keyEnc: encryptSecret('provider-key', config.tokenEncryptionKey), allowPrivate: true })
     const model = store.createProviderModel({ id: 'pvm_gateway', providerId: providerRow.id, model: 'provider-model', label: 'Provider A Model' })
     store.setRepoModelSelection(repo.id, [model.id], model.id)
     const headers = { authorization: `Bearer ${raw}`, 'content-type': 'application/json' }
