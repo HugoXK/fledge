@@ -7262,7 +7262,7 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
         })
         if (merged) recordMergedDelivery(repo, existing.job_id, prUrl, title, typeof pull.merge_commit_sha === 'string' ? pull.merge_commit_sha : null, pullMergedAt)
       } else {
-        store.updateWorkItem(existing.id, { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
+        store.updateWorkItem(existing.id, existing.state === 'merged' || existing.state === 'closed' ? { title } : { state: existing.state === 'in_review' ? 'in_review' : 'pr_ready', pr_state: 'open', pr_url: prUrl, title })
       }
       return
     }
