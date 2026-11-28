@@ -1,3 +1,5 @@
+import type { LeaseQueryReader } from '../lib/leaseHealth.js'
+import { lastReapedLease, oldestLiveLease } from '../lib/leaseHealth.js'
 import { clearGauge, incCounter, metricsSnapshot, observeHistogram, setGauge } from '../lib/metrics.js'
 
 // #807: the console could say when the last run happened, not whether the
@@ -67,6 +69,40 @@ export function recordDispatched(input: { repo: RepoSeries; kind: string; readyA
   observeHistogram('fledge_automation_dispatch_latency_seconds', Math.max(0, input.now - input.readyAt) / 1_000, { kind: input.kind }, 'Time from ready work to a dispatched job')
 }
 
+// #1230: the oldest live lease is a gauge, not a histogram. It is published on
+// every scheduler tick and removed when no job holds a lease, so an empty panel
+// means "no live lease", not "the scheduler is silent". The attempt's start is
+// the lease grant; a queued claim that has not started falls back to the row.
+export function recordLeaseHealth(input: { oldestSince: number | null; now: number }): void {
+  if (input.oldestSince === null || !Number.isFinite(input.oldestSince)) {
+    clearGauge('fledge_job_lease_age_seconds')
+    return
+  }
+  setGauge('fledge_job_lease_age_seconds', Math.max(0, Math.round((input.now - input.oldestSince) / 1_000)), {}, 'Seconds the oldest live job lease has been held')
+}
+
+// #1230: the gauge is published from the scheduler tick with one call, so the
+// tick body in `service.ts` does not grow its own lease read.
+export function recordLeaseAge(store: LeaseQueryReader, now = Date.now()): void {
+  const oldest = oldestLiveLease(store)
+  recordLeaseHealth({ oldestSince: oldest === undefined ? null : Date.parse(oldest.since), now })
+}
+
+export interface LeaseHealth {
+  jobId: string
+  kind: string
+  repo: string
+  ageSeconds: number
+  expiresInSeconds: number | null
+}
+
+export interface ReapedLeaseHealth {
+  jobId: string
+  kind: string
+  repo: string
+  ageSeconds: number
+}
+
 export interface AutomationHealthSummary {
   /** Repositories that have ready work and no active job, oldest wait first. */
   idleWithWork: Array<{ repo: string; seconds: number }>
@@ -75,6 +111,10 @@ export interface AutomationHealthSummary {
   /** Mean over the samples taken since this process started; null when none. */
   dispatchLatencyMs: number | null
   dispatchSamples: number
+  /** The oldest lease the platform still holds; null when none is live. */
+  lease: LeaseHealth | null
+  /** The newest attempt the reaper closed; null when none was recorded. */
+  lastReaped: ReapedLeaseHealth | null
 }
 
 function gaugeValue(name: string, labels: Record<string, string> = {}): number | null {
@@ -88,7 +128,7 @@ function gaugeValue(name: string, labels: Record<string, string> = {}): number |
   return null
 }
 
-export function automationHealth(): AutomationHealthSummary {
+export function automationHealth(store?: LeaseQueryReader, now = Date.now()): AutomationHealthSummary {
   const snapshot = metricsSnapshot()
   const idleWithWork = snapshot.gauges
     .filter((entry) => entry.name === 'fledge_automation_idle_with_work_seconds')
@@ -101,11 +141,32 @@ export function automationHealth(): AutomationHealthSummary {
     sum += entry.sum
     count += entry.count
   }
+  const live = store === undefined ? undefined : oldestLiveLease(store)
+  const reaped = store === undefined ? undefined : lastReapedLease(store)
   return {
     idleWithWork,
     queueDepth: gaugeValue('fledge_queue_depth'),
     activeJobs: gaugeValue('fledge_jobs_active'),
     dispatchLatencyMs: count === 0 ? null : Math.round((sum / count) * 1_000),
     dispatchSamples: count,
+    lease: live === undefined
+      ? null
+      : {
+          jobId: live.job_id,
+          kind: live.kind,
+          repo: `${live.owner}/${live.name}`,
+          ageSeconds: Math.max(0, Math.round((now - Date.parse(live.since)) / 1_000)),
+          expiresInSeconds: live.lease_until === null
+            ? null
+            : Math.max(0, Math.round((Date.parse(live.lease_until) - now) / 1_000)),
+        },
+    lastReaped: reaped === undefined
+      ? null
+      : {
+          jobId: reaped.job_id,
+          kind: reaped.kind,
+          repo: `${reaped.owner}/${reaped.name}`,
+          ageSeconds: reaped.at === null ? 0 : Math.max(0, Math.round((now - Date.parse(reaped.at)) / 1_000)),
+        },
   }
 }

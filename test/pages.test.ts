@@ -1114,7 +1114,7 @@ test('the admin metrics page shows delivery, cost and alerts', () => {
       windowDays: 7,
       failures: [{ kind: 'quota', count: 1 }],
       since: '2026-01-01T00:00:00.000Z',
-      automation: { idleWithWork: [{ repo: 'o/r', seconds: 1_200 }], queueDepth: 2, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3 },
+      automation: { idleWithWork: [{ repo: 'o/r', seconds: 1_200 }], queueDepth: 2, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3, lease: null, lastReaped: null },
     })
     assert.match(page, /Delivery efficiency/)
     // #807: the automation card is on the same page as the numbers it reads.
@@ -1607,7 +1607,7 @@ test('admin metrics shows the failure breakdown', () => {
       windowDays: 30,
       failures: [{ kind: 'quota', count: 1 }, { kind: 'github', count: 1 }],
       since: '2026-01-01T00:00:00.000Z',
-      automation: { idleWithWork: [], queueDepth: 0, activeJobs: 0, dispatchLatencyMs: null, dispatchSamples: 0 },
+      automation: { idleWithWork: [], queueDepth: 0, activeJobs: 0, dispatchLatencyMs: null, dispatchSamples: 0, lease: null, lastReaped: null },
     })
     assert.match(page, /Failure breakdown/)
     assert.match(page, /Platform quota exhausted/)
@@ -3288,7 +3288,7 @@ function sparkMetricsPage(input: {
       windowDays: input.windowDays ?? 7,
       failures: [],
       since: '2026-01-01T00:00:00.000Z',
-      automation: { idleWithWork: [], queueDepth: 0, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3 },
+      automation: { idleWithWork: [], queueDepth: 0, activeJobs: 1, dispatchLatencyMs: 4_500, dispatchSamples: 3, lease: null, lastReaped: null },
     })
   } finally {
     store.close()
