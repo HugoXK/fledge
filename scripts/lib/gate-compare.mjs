@@ -530,6 +530,12 @@ export function compareGate({ base, head, required = REQUIRED_JOBS } = {}) {
     // `needs` growth is checked below.
     const baseAggregateIds = AGGREGATE_JOBS.filter((id) => baseJobs.has(id))
     const baseAggregate = baseAggregateIds.length === 1 ? baseJobs.get(baseAggregateIds[0]) : undefined
+    if (baseAggregateIds.length === 0) {
+      const looked = AGGREGATE_JOBS.map((id) => `\`${id}\``).join(' or ')
+      refuse(`the base tree's ${GATE_COMPARE_FILE} declares no aggregate job the gate accepts (looked for ${looked}), so this pull request cannot be judged against it`)
+    } else if (baseAggregateIds.length > 1) {
+      refuse(`the base tree's ${GATE_COMPARE_FILE} declares more than one aggregate job (\`${baseAggregateIds.join('` and `')}\`), so the gate cannot tell which one it checks`)
+    }
     if (baseAggregate !== undefined) {
       for (const [name, baseKey] of baseAggregate.keys) {
         if (allowlisted.has(name)) continue

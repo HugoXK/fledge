@@ -237,6 +237,17 @@ test('the aggregate cannot gain a step before its evaluator or change its shape'
   assert.match(looseResult.problems.join('\n'), /gains `continue-on-error:`/)
 })
 
+test('a base tree with no accepted aggregate job is refused, not silently accepted', () => {
+  // The policy tree is what the gate is judged against; without an aggregate in
+  // it there is no evaluator to compare the head's against, so silence must not
+  // read as a pass.
+  const baseWithoutAggregate = editJob(MINI, 'ci-ok', () => [])
+  assert.notEqual(baseWithoutAggregate, MINI, 'the fixture removed the aggregate job')
+  const result = compareGate({ base: baseWithoutAggregate, head: MINI, required: ['build'] })
+  assert.equal(result.ok, false, 'a base with no aggregate cannot judge the head')
+  assert.match(result.problems.join('\n'), /the base tree's .*declares no aggregate job/)
+})
+
 test('a step body line re-indented inside its block scalar is refused', () => {
   const base = [
     'name: CI',
