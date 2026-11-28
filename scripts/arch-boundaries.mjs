@@ -10,7 +10,7 @@ import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { checkArchitecture } from './lib/arch-boundaries.mjs'
-import { isPullRequestEvent, readBaseLedger, selectLedger, violationLine } from './lib/arch-ledger.mjs'
+import { isPullRequestEvent, queueBaseBranch, readBaseLedger, selectLedger, violationLine } from './lib/arch-ledger.mjs'
 
 function walk(dir, out = []) {
   for (const entry of readdirSync(dir, { withFileTypes: true })) {
@@ -109,23 +109,31 @@ function gitTry(args) {
 }
 
 function deepenOneCommit() {
+  let shallow = ''
   try {
-    const shallow = execFileSync('git', ['rev-parse', '--is-shallow-repository'], {
+    shallow = execFileSync('git', ['rev-parse', '--is-shallow-repository'], {
       cwd: root,
       encoding: 'utf8',
       stdio: ['ignore', 'pipe', 'ignore'],
     }).trim()
-    if (shallow !== 'true') return null
   } catch (error) {
     return error instanceof Error ? error.message : String(error)
   }
-  const one = gitTry(['fetch', '--no-tags', '--deepen=1', 'origin'])
-  if (one === null) return null
-  // A deepen can be refused by a transport that will not negotiate one more
-  // commit; `--unshallow` is the same in-script fetch with a wider ask, and it is
-  // the fallback `scripts/ci-changes.mjs` already uses for the same reason.
-  const all = gitTry(['fetch', '--no-tags', '--unshallow', 'origin'])
-  return all ?? one
+  if (shallow !== 'true') return `HEAD^1 unreadable and the checkout is not shallow (${shallow})`
+  // Three widening asks, cheapest first: one more commit, an explicit depth of
+  // two, then the whole history. Each keeps the fetch in-script; the refusal
+  // names the last thing git said so a queue red is diagnosable from the job log.
+  let last = ''
+  for (const args of [
+    ['fetch', '--no-tags', '--deepen=1', 'origin'],
+    ['fetch', '--no-tags', '--depth=2', 'origin'],
+    ['fetch', '--no-tags', '--unshallow', 'origin'],
+  ]) {
+    const failure = gitTry(args)
+    if (failure === null) return null
+    last = failure
+  }
+  return last
 }
 
 // The ceiling is looked for in this order and the first readable source wins:
@@ -133,10 +141,15 @@ function deepenOneCommit() {
 // commit GitHub checks out for a pull request (its first parent is the base tip).
 // Only an explicitly named base is strict: a default that cannot be read falls
 // back to the working tree and the report line says which ledger judged the run.
+const queueBase = mergeGroup ? queueBaseBranch(process.env.GITHUB_REF ?? '') : null
 const candidates = []
 if (explicitBase !== null) candidates.push({ ref: explicitBase, strict: true })
 else {
   if (envBase !== null) candidates.push({ ref: envBase, strict: false })
+  // A real queue entry names its base branch in `GITHUB_REF`, so it reads the
+  // same remote ledger a pull request does; the deepen below is only for a
+  // checkout that carries no queue ref.
+  if (queueBase !== null) candidates.push({ ref: `origin/${queueBase}`, strict: false })
   if (onPullRequest) candidates.push({ ref: 'HEAD^1', strict: false })
 }
 let baseRef = null
@@ -146,7 +159,10 @@ for (const candidate of candidates) {
   let content = readBaseLedger({ ref: candidate.ref, readAt, fetchRef })
   if (content === null && mergeGroup && candidate.ref === 'HEAD^1') {
     deepenFailure = deepenOneCommit()
-    if (deepenFailure === null) content = readAt('HEAD^1')
+    if (deepenFailure === null) {
+      content = readAt('HEAD^1')
+      if (content === null) deepenFailure = 'HEAD^1 still unreadable after the deepen'
+    }
   }
   if (content !== null) {
     baseRef = candidate.ref

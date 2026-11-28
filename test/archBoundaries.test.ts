@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { checkArchitecture, checkFileSizes, checkImports } from '../scripts/lib/arch-boundaries.mjs'
-import { isPullRequestEvent, readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
+import { isPullRequestEvent, queueBaseBranch, readBaseLedger, selectLedger, violationLine } from '../scripts/lib/arch-ledger.mjs'
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url))
 
@@ -376,4 +376,23 @@ test('the six-row event matrix decides exit code and ledger lane', () => {
     assert.equal(result.status, status, `${row}: ${result.stdout}${result.stderr}`)
     assert.match(`${result.stdout}${result.stderr}`, lane, row)
   }
+})
+
+test('the queue ref names the base branch, including one with a slash', () => {
+  assert.equal(queueBaseBranch('refs/heads/gh-readonly-queue/main/pr-42-abc123'), 'main')
+  assert.equal(queueBaseBranch('refs/heads/gh-readonly-queue/release/1.x/pr-42-abc123'), 'release/1.x')
+  assert.equal(queueBaseBranch('refs/heads/main'), null)
+  assert.equal(queueBaseBranch('refs/heads/gh-readonly-queue/main'), null)
+  assert.equal(queueBaseBranch(undefined), null)
+})
+
+test('a merge_group entry that carries a queue ref reads the base branch it names', () => {
+  const clone = mergeGroupFixture()
+  const result = runArch(clone, {
+    GITHUB_EVENT_NAME: 'merge_group',
+    GITHUB_REF: 'refs/heads/gh-readonly-queue/main/pr-7-abc123',
+  })
+
+  assert.equal(result.status, 0, result.stdout + result.stderr)
+  assert.match(result.stdout, /\(ledger from base:origin\/main\)/)
 })
