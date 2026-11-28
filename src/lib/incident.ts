@@ -1,5 +1,6 @@
 import type { Config } from '../config.js'
 import type { AlertView, AuditRow, DeploymentRow, JobEventRow, RepoInstanceRow, Store } from '../db.js'
+import { readAuditSince, readIncidentCounts, readJobEventsSince, readSchemaVersion } from './incidentQueries.js'
 import { releaseSurface } from './releaseSurface.js'
 import { maskEmail, maskIp, redact } from './secrets.js'
 
@@ -222,8 +223,8 @@ export function buildIncidentBundle(input: {
     window,
     release: releaseSurface(),
     build: { commit: config.build.commit, builtAt: config.build.builtAt },
-    schemaVersion: store.schemaVersion(),
-    counts: store.incidentCounts(),
+    schemaVersion: readSchemaVersion(store),
+    counts: readIncidentCounts(store),
     readiness: {
       database,
       instances: {
@@ -237,8 +238,8 @@ export function buildIncidentBundle(input: {
     unavailable,
     instances: instances.map(instanceOf),
     alerts: alerts.map(alertOf),
-    jobEvents: store.recentJobEventsSince(window.since, INCIDENT_JOB_EVENTS).map(jobEventOf),
-    audit: store.listAuditSince(window.since, INCIDENT_AUDIT_ROWS).map(auditOf),
+    jobEvents: readJobEventsSince(store, window.since, INCIDENT_JOB_EVENTS).map(jobEventOf),
+    audit: readAuditSince(store, window.since, INCIDENT_AUDIT_ROWS).map(auditOf),
     latestDeployment: latest === undefined ? null : deploymentOf(latest),
     configFingerprint: configFingerprint(config),
   }

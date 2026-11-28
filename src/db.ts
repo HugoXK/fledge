@@ -3422,16 +3422,6 @@ export class Store {
     }
   }
 
-  schemaVersion(): number {
-    return Number(this.get<{ user_version: number }>('PRAGMA user_version')?.user_version ?? 0)
-  }
-
-  incidentCounts(): { users: number; repos: number; jobs: number } {
-    const count = (table: 'users' | 'repos' | 'jobs'): number =>
-      Number(this.get<{ n: number }>(`SELECT COUNT(*) AS n FROM ${table}`)?.n ?? 0)
-    return { users: count('users'), repos: count('repos'), jobs: count('jobs') }
-  }
-
   close(): void {
     this.db.close()
   }
@@ -4210,12 +4200,6 @@ export class Store {
       jobId,
       jobId,
     )
-  }
-
-  // #1234: the incident bundle reads one bounded window across jobs, not one
-  // job's timeline. The caller caps the window at 24h and the rows at 200.
-  recentJobEventsSince(sinceIso: string, limit = 200): JobEventRow[] {
-    return this.all<JobEventRow>('SELECT * FROM job_events WHERE at >= ? ORDER BY at DESC, id DESC LIMIT ?', sinceIso, limit)
   }
 
   listJobEvents(jobId: string, limit = 200): JobEventRow[] {
@@ -8470,10 +8454,6 @@ export class Store {
 
   listAudit(limit = 100): AuditRow[] {
     return this.all<AuditRow>('SELECT * FROM audit_log ORDER BY id DESC LIMIT ?', limit)
-  }
-
-  listAuditSince(sinceIso: string, limit = 500): AuditRow[] {
-    return this.all<AuditRow>('SELECT * FROM audit_log WHERE at >= ? ORDER BY at DESC, id DESC LIMIT ?', sinceIso, limit)
   }
 
   listAuditPage(limit: number, offset: number): AuditRow[] {

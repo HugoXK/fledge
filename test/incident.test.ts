@@ -97,7 +97,10 @@ test('the bundle redacts a planted token, email and host path in an audit row an
     assert.equal(text.includes(hostPath), false)
     assert.equal(text.includes(dataPath), false)
     assert.equal(text.includes(windowsPath), false)
-    assert.equal(text.includes(url), true, 'a URL path is not a host path')
+    // A regex, not `includes(url)`: CodeQL reads a URL substring check as an
+    // incomplete host check and blocks it at high severity (rule id
+    // js/incomplete-url-substring-sanitization).
+    assert.match(text, /https:\/\/fledge\.example\.com\/admin\/metrics/, 'a URL path is not a host path')
     assert.match(text, /\[path\]/)
     assert.equal(text.includes(config.sessionSecret), false)
     const markdown = incidentMarkdown(bundle)
@@ -107,7 +110,7 @@ test('the bundle redacts a planted token, email and host path in an audit row an
     assert.equal(markdown.includes(hostPath), false)
     assert.equal(markdown.includes(dataPath), false)
     assert.equal(markdown.includes(windowsPath), false)
-    assert.equal(markdown.includes(url), true, 'a URL path is not a host path')
+    assert.match(markdown, /https:\/\/fledge\.example\.com\/admin\/metrics/, 'a URL path is not a host path')
   } finally {
     store.close()
   }

@@ -41,7 +41,8 @@ import { failureBreakdown } from './lib/failure.js'
 import { fetchFailureLog, logFailureReason } from './actions/workflowLog.js'
 import { parseVerification } from './lib/verification.js'
 import { cachedRouterProbe } from './lib/routerHealth.js'
-import { buildIncidentBundle, incidentMarkdown, parseIncidentWindow } from './lib/incident.js'
+import { registerIncidentRoute } from './lib/incidentRoute.js'
+import { queryText } from './lib/queryText.js'
 import { changeStoryAttribution, readChangeStory, type ChangeStory } from './lib/changeStory.js'
 import { DEFAULT_TRIAGE_GOAL, Jobs } from './jobs/service.js'
 import { parseIssueUrl, parsePrUrl } from './jobs/prUrl.js'
@@ -364,11 +365,6 @@ function jobSummary(job: JobRow): {
     reviewScore: job.review_score,
     costUsd: job.cost_usd,
   }
-}
-
-function queryText(request: FastifyRequest, name: string): string | undefined {
-  const value = (request.query as Record<string, unknown> | undefined)?.[name]
-  return typeof value === 'string' && value !== '' ? value.slice(0, 500) : undefined
 }
 
 // The preview's query is a closed set of names, so it is read into a literal:
@@ -5776,25 +5772,8 @@ export async function buildApp(options: BuildOptions): Promise<BuiltApp> {
     }))
   })
 
-  // #1234: a read-only artifact for a support conversation. Superadmin only, and
-  // every string comes from `src/lib/incident.ts`, which redacts and caps it
-  // before either the JSON or the markdown leaves the process.
-  app.get('/admin/incident/:window', async (request, reply) => {
-    const viewer = requireSuperAdmin(request)
-    if (viewer.preview === true) return reply.redirect('/console')
-    const parsed = parseIncidentWindow(String((request.params as Record<string, string>).window))
-    if (!parsed.ok) return reply.code(400).send({ error: parsed.error })
-    const clock = githubApp.clockState()
-    const router = config.router.url === '' ? undefined : await cachedRouterProbe(config).catch(() => undefined)
-    const bundle = buildIncidentBundle({ store, config, window: parsed.window, clock, router })
-    const format = queryText(request, 'format')
-    const markdown = format === 'markdown' || format === 'md'
-    const extension = markdown ? 'md' : 'json'
-    reply.header('content-disposition', `attachment; filename="fledge-incident-${parsed.window.label}.${extension}"`)
-    return markdown
-      ? reply.type('text/markdown; charset=utf-8').send(incidentMarkdown(bundle))
-      : reply.type('application/json; charset=utf-8').send(bundle)
-  })
+  // #1234: the route module owns the superadmin rule and the redacted builder.
+  registerIncidentRoute(app, { store, config, clockState: () => githubApp.clockState() })
 
   const adminVisibleUserIds = (viewer: { user: UserRow }): string[] | null => {
     if (viewer.user.role === 'superadmin') return null
