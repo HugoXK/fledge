@@ -3,10 +3,16 @@ import type { SqlDialect, SqlRunResult, SqlStatement } from './dialect.js'
 
 type SqlValue = string | number | bigint | null | Uint8Array
 
-// #1229: the only production file that imports `node:sqlite`. Everything that
-// tells SQLite its dialect (`PRAGMA`, `user_version`, `ALTER TABLE`, `BEGIN
-// IMMEDIATE`) arrives through this adapter, so a second backend is a sibling
-// class, not a rewrite of `src/db.ts`.
+function resultOf(value: { changes: number | bigint; lastInsertRowid: number | bigint }): SqlRunResult {
+  return { changes: Number(value.changes), lastInsertRowid: Number(value.lastInsertRowid) }
+}
+
+// #1229: the only production file that imports the SQLite driver. It owns the
+// transaction statements (`BEGIN IMMEDIATE`/`COMMIT`/`ROLLBACK`) and normalizes
+// the driver's `number | bigint` result fields; the `PRAGMA`/`ALTER TABLE`/
+// `user_version` text still lives in `src/db.ts`, because this slice removes the
+// direct driver dependency (scope (a) in the card) and does not yet move the
+// dialect SQL.
 export class SqliteDialect implements SqlDialect {
   private readonly db: DatabaseSync
 
@@ -15,8 +21,7 @@ export class SqliteDialect implements SqlDialect {
   }
 
   run(sql: string, ...params: unknown[]): SqlRunResult {
-    const result = this.db.prepare(sql).run(...(params as SqlValue[]))
-    return { changes: Number(result.changes), lastInsertRowid: Number(result.lastInsertRowid) }
+    return resultOf(this.db.prepare(sql).run(...(params as SqlValue[])))
   }
 
   get<T = unknown>(sql: string, ...params: unknown[]): T | undefined {
@@ -32,7 +37,12 @@ export class SqliteDialect implements SqlDialect {
   }
 
   prepare(sql: string): SqlStatement {
-    return this.db.prepare(sql) as unknown as SqlStatement
+    const statement = this.db.prepare(sql)
+    return {
+      run: (...params: unknown[]) => resultOf(statement.run(...(params as SqlValue[]))),
+      get: <T = unknown>(...params: unknown[]) => statement.get(...(params as SqlValue[])) as T | undefined,
+      all: <T = unknown>(...params: unknown[]) => statement.all(...(params as SqlValue[])) as T[],
+    }
   }
 
   transaction<T>(fn: () => T): T {

@@ -66,6 +66,9 @@ test('the prepared statement result contract is {changes, lastInsertRowid} throu
     const same = dialect.prepare('UPDATE r SET v = ? WHERE id = ?').run('two', 1)
     assert.equal(same.changes, 1)
     assert.equal(typeof same.lastInsertRowid, 'number', 'the result keeps the second contract field')
+    const inserted = dialect.prepare('INSERT INTO r (v) VALUES (?)').run('three')
+    assert.equal(inserted.changes, 1)
+    assert.equal(typeof inserted.lastInsertRowid, 'number', 'prepare().run() normalizes the driver bigint too')
     assert.equal(dialect.get<{ v: string }>('SELECT v FROM r WHERE id = 1')?.v, 'two')
   } finally {
     dialect.close()
@@ -86,6 +89,36 @@ test('a constraint violation is refused through the port and through Store', () 
     store.run('CREATE TABLE uniq (id INTEGER PRIMARY KEY, v TEXT UNIQUE)')
     store.run('INSERT INTO uniq (v) VALUES (?)', 'x')
     assert.throws(() => store.run('INSERT INTO uniq (v) VALUES (?)', 'x'), /UNIQUE|constraint/i)
+  } finally {
+    store.close()
+  }
+})
+
+test('a foreign-key violation is refused through the port and through Store', () => {
+  // PRAGMA foreign_keys defaults to OFF in SQLite, so this is the one dialect
+  // setting a second backend can silently differ on; the port case turns it on
+  // and proves the refusal, and Store turns it on in its constructor.
+  const dialect = new SqliteDialect(':memory:')
+  try {
+    dialect.exec('PRAGMA foreign_keys = ON')
+    assert.equal(dialect.get<{ foreign_keys: number }>('PRAGMA foreign_keys')?.foreign_keys, 1)
+    dialect.exec('CREATE TABLE fk_parent (id TEXT PRIMARY KEY)')
+    dialect.exec('CREATE TABLE fk_child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES fk_parent(id))')
+    assert.throws(() => dialect.run('INSERT INTO fk_child (id, parent_id) VALUES (?, ?)', 'c1', 'missing'), /FOREIGN KEY|constraint/i)
+    dialect.run('INSERT INTO fk_parent (id) VALUES (?)', 'p1')
+    dialect.run('INSERT INTO fk_child (id, parent_id) VALUES (?, ?)', 'c1', 'p1')
+    assert.equal(dialect.all('SELECT id FROM fk_child').length, 1)
+  } finally {
+    dialect.close()
+  }
+  const store = new Store(':memory:')
+  try {
+    store.exec('CREATE TABLE fk_parent (id TEXT PRIMARY KEY)')
+    store.exec('CREATE TABLE fk_child (id TEXT PRIMARY KEY, parent_id TEXT NOT NULL REFERENCES fk_parent(id))')
+    assert.throws(() => store.run('INSERT INTO fk_child (id, parent_id) VALUES (?, ?)', 'c1', 'missing'), /FOREIGN KEY|constraint/i)
+    store.run('INSERT INTO fk_parent (id) VALUES (?)', 'p1')
+    store.run('INSERT INTO fk_child (id, parent_id) VALUES (?, ?)', 'c1', 'p1')
+    assert.equal(store.all('SELECT id FROM fk_child').length, 1)
   } finally {
     store.close()
   }
@@ -171,6 +204,9 @@ test('the Store constructor runs the journal_mode, user_version and ALTER TABLE 
 
 test('only the SQLite adapter imports node:sqlite under src/', () => {
   const root = process.cwd()
+  // The two exceptions are named here on purpose: adding a third means editing
+  // this set and the architecture paragraph together, so the surface cannot
+  // drift one file at a time.
   const allowed = new Set(['src/db/sqlite.ts', 'src/lib/prevRelease.ts', 'src/lib/evolution/export.ts'])
   const found: string[] = []
   const walk = (dir: string): void => {
